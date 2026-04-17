@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 type Ctor = new (...args: never[]) => unknown
 type ThrowMatcher = string | RegExp | Error | Ctor | ((err: Error) => boolean)
 
-export interface Matchers<T> {
+interface Matchers<T> {
 	toBe(expected: T): void
 	toEqual(expected: unknown): void
 	toBeDefined(): void
@@ -19,13 +19,13 @@ export interface Matchers<T> {
 	toThrow(matcher?: ThrowMatcher): void
 }
 
-export interface AsyncMatchers<T> {
+interface AsyncMatchers<T> {
 	toBe(expected: T): Promise<void>
 	toBeUndefined(): Promise<void>
 	toThrow(matcher?: ThrowMatcher): Promise<void>
 }
 
-export interface Expect<T> extends Matchers<T> {
+interface Expect<T> extends Matchers<T> {
 	readonly not: Pick<Matchers<T>, 'toBe' | 'toThrow'>
 	readonly resolves: AsyncMatchers<Awaited<T>>
 	readonly rejects: AsyncMatchers<unknown>

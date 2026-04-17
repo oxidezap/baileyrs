@@ -37,6 +37,7 @@
   ],
   "scripts": {
     "build": "tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js",
+    "benchmark": "node ./Example/benchmark.ts",
     "example": "node ./Example/example.ts",
     "format": "oxfmt src Example",
     "format:check": "oxfmt --check src Example",
@@ -54,7 +55,6 @@
   "devDependencies": {
     "@types/node": "^22",
     "jimp": "^1.6.0",
-    "json": "^11.0.0",
     "music-metadata": "^11.12.3",
     "oxfmt": "^0.45.0",
     "oxlint": "^1.60.0",
