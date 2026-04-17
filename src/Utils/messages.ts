@@ -682,6 +682,35 @@ export const getContentType = (content: proto.IMessage | undefined) => {
 	}
 }
 
+const getFutureProofMessage = (message: WAMessageContent | null | undefined) =>
+	message?.ephemeralMessage ||
+	message?.viewOnceMessage ||
+	message?.documentWithCaptionMessage ||
+	message?.viewOnceMessageV2 ||
+	message?.viewOnceMessageV2Extension ||
+	message?.editedMessage ||
+	message?.associatedChildMessage ||
+	message?.groupStatusMessage ||
+	message?.groupStatusMessageV2
+
+const extractFromTemplateMessage = (
+	msg: proto.Message.TemplateMessage.IHydratedFourRowTemplate | proto.Message.IButtonsMessage
+) => {
+	if (msg.imageMessage) {
+		return { imageMessage: msg.imageMessage }
+	} else if (msg.documentMessage) {
+		return { documentMessage: msg.documentMessage }
+	} else if (msg.videoMessage) {
+		return { videoMessage: msg.videoMessage }
+	} else if (msg.locationMessage) {
+		return { locationMessage: msg.locationMessage }
+	} else {
+		return {
+			conversation: 'contentText' in msg ? msg.contentText : 'hydratedContentText' in msg ? msg.hydratedContentText : ''
+		}
+	}
+}
+
 /**
  * Normalizes ephemeral, view once messages to regular message content
  * Eg. image messages in ephemeral messages, in view once messages etc.
@@ -704,20 +733,6 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
 	}
 
 	return content!
-
-	function getFutureProofMessage(message: typeof content) {
-		return (
-			message?.ephemeralMessage ||
-			message?.viewOnceMessage ||
-			message?.documentWithCaptionMessage ||
-			message?.viewOnceMessageV2 ||
-			message?.viewOnceMessageV2Extension ||
-			message?.editedMessage ||
-			message?.associatedChildMessage ||
-			message?.groupStatusMessage ||
-			message?.groupStatusMessageV2
-		)
-	}
 }
 
 /**
@@ -725,25 +740,6 @@ export const normalizeMessageContent = (content: WAMessageContent | null | undef
  * Eg. extracts the inner message from a disappearing message/view once message
  */
 export const extractMessageContent = (content: WAMessageContent | undefined | null): WAMessageContent | undefined => {
-	const extractFromTemplateMessage = (
-		msg: proto.Message.TemplateMessage.IHydratedFourRowTemplate | proto.Message.IButtonsMessage
-	) => {
-		if (msg.imageMessage) {
-			return { imageMessage: msg.imageMessage }
-		} else if (msg.documentMessage) {
-			return { documentMessage: msg.documentMessage }
-		} else if (msg.videoMessage) {
-			return { videoMessage: msg.videoMessage }
-		} else if (msg.locationMessage) {
-			return { locationMessage: msg.locationMessage }
-		} else {
-			return {
-				conversation:
-					'contentText' in msg ? msg.contentText : 'hydratedContentText' in msg ? msg.hydratedContentText : ''
-			}
-		}
-	}
-
 	content = normalizeMessageContent(content)
 
 	if (content?.buttonsMessage) {

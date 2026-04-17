@@ -1,5 +1,7 @@
 import type { AuthenticationState } from '../Types/index.ts'
 
+const cacheKey = (store: string, key: string) => `${store}\0${key}`
+
 /**
  * Creates a purely in-memory store for the WASM bridge.
  *
@@ -8,8 +10,6 @@ import type { AuthenticationState } from '../Types/index.ts'
  */
 export function useMemoryStore(): NonNullable<AuthenticationState['store']> {
 	const data = new Map<string, Uint8Array>()
-
-	const cacheKey = (store: string, key: string) => `${store}\0${key}`
 
 	return {
 		async get(store: string, key: string): Promise<Uint8Array | null> {

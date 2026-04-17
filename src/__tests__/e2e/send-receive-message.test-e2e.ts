@@ -5,12 +5,13 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
-import makeWASocket, {
+import {
 	Boom,
 	DisconnectReason,
 	downloadMediaMessage,
 	type DownloadMediaMessageContext,
 	jidNormalizedUser,
+	makeWASocket,
 	proto,
 	useMultiFileAuthState,
 	type WAMessage

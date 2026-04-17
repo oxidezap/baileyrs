@@ -45,8 +45,8 @@
     "lint:fix": "oxlint --fix && oxfmt src Example",
     "prepack": "npm run build",
     "prepare": "npm run build",
-    "test": "node --experimental-transform-types --test 'src/**/*.test.ts'",
-    "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= SOCKET_URL=wss://127.0.0.1:8080/ws/chat node --experimental-transform-types --test 'src/**/*.test-e2e.ts'"
+    "test": "node --experimental-transform-types --experimental-test-isolation=none --test 'src/**/*.test.ts'",
+    "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= SOCKET_URL=wss://127.0.0.1:8080/ws/chat node --experimental-transform-types --experimental-test-isolation=none --test 'src/**/*.test-e2e.ts'"
   },
   "dependencies": {
     "pino": "^9.6",

@@ -533,18 +533,18 @@ export async function wrapLegacyStore(
 	}
 
 	/** Route a store to its handler */
-	const resolve = (store: string): 'device' | 'signal' | 'bridge-only' | 'converter' | 'unknown' => {
-		if (store === 'device') return 'device'
-		if (BINARY_STORES.has(store)) return 'signal'
-		if (BRIDGE_ONLY_STORES.has(store)) return 'bridge-only'
-		if (STORE_MAP[store]) return 'converter'
+	const resolve = (storeName: string): 'device' | 'signal' | 'bridge-only' | 'converter' | 'unknown' => {
+		if (storeName === 'device') return 'device'
+		if (BINARY_STORES.has(storeName)) return 'signal'
+		if (BRIDGE_ONLY_STORES.has(storeName)) return 'bridge-only'
+		if (STORE_MAP[storeName]) return 'converter'
 		return 'unknown'
 	}
 
 	/** Translate bridge key format to upstream Baileys key format */
-	const translateKey = (store: string, key: string): string => {
+	const translateKey = (storeName: string, key: string): string => {
 		// Bridge encodes sync_key IDs as hex; upstream stores use base64
-		if (store === 'sync_key') return hexToBase64(key)
+		if (storeName === 'sync_key') return hexToBase64(key)
 		return key
 	}
 

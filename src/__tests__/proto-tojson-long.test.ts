@@ -1,5 +1,4 @@
 import { describe, it } from 'node:test'
-import '../index.ts'
 import { proto } from '../../WAProto/index.js'
 import { expect } from './expect.ts'
 

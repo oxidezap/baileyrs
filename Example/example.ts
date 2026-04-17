@@ -1,12 +1,13 @@
 import readline from 'node:readline'
-import makeWASocket, {
+import {
 	Boom,
 	DEFAULT_CONNECTION_CONFIG,
 	DisconnectReason,
 	fetchLatestWaWebVersion,
+	makeWASocket,
 	proto,
-	useMultiFileAuthState,
 	useLegacyMultiFileAuthState,
+	useMultiFileAuthState,
 	wrapLegacyStore
 } from '../lib/index.js'
 import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
@@ -39,6 +40,9 @@ const useLegacyStore = process.argv.includes('--use-legacy-store')
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 const question = (text: string) => new Promise<string>(resolve => rl.question(text, resolve))
 
+const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MB'
+const numFmt = (v: number) => new Intl.NumberFormat('en').format(v)
+
 // start a connection
 const startSock = async () => {
 	// Two auth modes:
@@ -57,8 +61,9 @@ const startSock = async () => {
 	}
 
 	// fetch latest version of WA Web
-	const { version, isLatest } = await fetchLatestWaWebVersion()
-	logger.debug({ version: version.join('.'), isLatest }, `using latest WA version`)
+	const latest = await fetchLatestWaWebVersion()
+	const { version } = latest
+	logger.debug({ version: version.join('.'), isLatest: latest.isLatest }, `using latest WA version`)
 
 	const sock = makeWASocket({
 		version,
@@ -206,20 +211,18 @@ const startSock = async () => {
 
 							if (text === 'memory') {
 								const v8 = await import('v8')
-								const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MB'
-								const n = (v: number) => new Intl.NumberFormat('en').format(v)
 
 								const mem = process.memoryUsage()
 								const heap = v8.getHeapStatistics()
 								const spaces = v8
 									.getHeapSpaceStatistics()
 									.filter(s => s.space_used_size > 0)
-									.sort((a, b) => b.space_used_size - a.space_used_size)
+									.toSorted((a, b) => b.space_used_size - a.space_used_size)
 								const wasm = getWasmMemoryBytes()
 								const diag = await sock.waClient!.getMemoryDiagnostics()
 								const wasmEntries = Object.entries(diag)
 									.filter(([, v]) => v > 0)
-									.sort(([, a], [, b]) => b - a)
+									.toSorted(([, a], [, b]) => b - a)
 
 								const report = [
 									'📊 Memory Report',
@@ -236,13 +239,13 @@ const startSock = async () => {
 									'',
 									`── V8 Stats ──`,
 									`  Native contexts:   ${heap.number_of_native_contexts}`,
-									`  Global handles:    ${n(heap.used_global_handles_size)} / ${n(heap.total_global_handles_size)}`,
+									`  Global handles:    ${numFmt(heap.used_global_handles_size)} / ${numFmt(heap.total_global_handles_size)}`,
 									`  Malloced:          ${mb(heap.malloced_memory)}`,
 									`  Peak malloced:     ${mb(heap.peak_malloced_memory)}`,
 									'',
 									`── WASM (${mb(wasm)}) ──`,
 									...(wasmEntries.length
-										? wasmEntries.map(([k, v]) => `  ${k.padEnd(26)} ${n(v).padStart(8)}`)
+										? wasmEntries.map(([k, v]) => `  ${k.padEnd(26)} ${numFmt(v).padStart(8)}`)
 										: ['  (all caches empty)']),
 									'',
 									`── Total: ${mb(mem.rss + wasm)} ──`

@@ -13,6 +13,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 	let ws: WebSocket | undefined
 	let handle: JsTransportHandle | undefined
 	let disconnectTarget: WebSocket | undefined
+	const abortControllers = new WeakMap<WebSocket, AbortController>()
 
 	return {
 		connect(h: JsTransportHandle) {
@@ -25,39 +26,59 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 
+			const ctrl = new AbortController()
+			abortControllers.set(newWs, ctrl)
+			const listenerOpts = { signal: ctrl.signal }
+
 			return new Promise<void>((resolve, reject) => {
 				let settled = false
 
-				newWs.onopen = () => {
-					if (ws !== newWs) return
-					settled = true
-					handle?.onConnected()
-					resolve()
-				}
-
-				newWs.onmessage = (event: MessageEvent) => {
-					if (ws !== newWs) return
-					const data = event.data as ArrayBuffer
-					handle?.onData(new Uint8Array(data))
-				}
-
-				newWs.onclose = () => {
-					if (ws !== newWs) return
-					handle?.onDisconnected()
-					if (!settled) {
+				newWs.addEventListener(
+					'open',
+					() => {
+						if (ws !== newWs) return
 						settled = true
-						reject(new Error('WebSocket closed before open'))
-					}
-				}
+						handle?.onConnected()
+						resolve()
+					},
+					listenerOpts
+				)
 
-				newWs.onerror = event => {
-					if (ws !== newWs) return
-					logger.error({ err: event }, 'WebSocket error')
-					if (!settled) {
-						settled = true
-						reject(new Error('WebSocket connection failed'))
-					}
-				}
+				newWs.addEventListener(
+					'message',
+					(event: MessageEvent) => {
+						if (ws !== newWs) return
+						const data = event.data as ArrayBuffer
+						handle?.onData(new Uint8Array(data))
+					},
+					listenerOpts
+				)
+
+				newWs.addEventListener(
+					'close',
+					() => {
+						if (ws !== newWs) return
+						handle?.onDisconnected()
+						if (!settled) {
+							settled = true
+							reject(new Error('WebSocket closed before open'))
+						}
+					},
+					listenerOpts
+				)
+
+				newWs.addEventListener(
+					'error',
+					event => {
+						if (ws !== newWs) return
+						logger.error({ err: event }, 'WebSocket error')
+						if (!settled) {
+							settled = true
+							reject(new Error('WebSocket connection failed'))
+						}
+					},
+					listenerOpts
+				)
 			})
 		},
 		send(data: Uint8Array) {
@@ -71,11 +92,8 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 				// Fire onDisconnected BEFORE closing — the Rust engine's
 				// read_messages_loop needs this event to exit and reconnect.
 				handle?.onDisconnected()
-				// Remove handlers to prevent double-fire from the close event
-				toClose.onopen = null
-				toClose.onmessage = null
-				toClose.onclose = null
-				toClose.onerror = null
+				// Abort listeners to prevent double-fire from the close event
+				abortControllers.get(toClose)?.abort()
 				try {
 					toClose.close()
 				} catch {

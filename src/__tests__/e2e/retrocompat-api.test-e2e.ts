@@ -11,11 +11,12 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { after, before, describe, mock, test } from 'node:test'
 import P from 'pino'
-import makeWASocket, {
+import {
 	type BinaryNode,
 	Boom,
 	DisconnectReason,
 	jidNormalizedUser,
+	makeWASocket,
 	useMultiFileAuthState
 } from '../../index.ts'
 import { expect } from '../expect.ts'
