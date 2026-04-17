@@ -37,7 +37,7 @@
   ],
   "scripts": {
     "build": "tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js",
-    "example": "tsx ./Example/example.ts",
+    "example": "node ./Example/example.ts",
     "format": "prettier --write \"src/**/*.{ts,js,json,md}\"",
     "lint": "tsc && eslint src --ext .js,.ts",
     "lint:fix": "npm run format && npm run lint -- --fix",
@@ -69,7 +69,6 @@
     "prettier": "^3.5.3",
     "ts-jest": "^29.4.0",
     "tsc-esm-fix": "^3.1.2",
-    "tsx": "^4.20.3",
     "typescript": "^5.8.2"
   },
   "peerDependencies": {
