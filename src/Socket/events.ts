@@ -1,7 +1,7 @@
-import { Boom } from '@hapi/boom'
 import type { MessageInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
 import type { BaileysEventMap, BinaryNode, ConnectionState, WAMessage, WAPresence } from '../Types/index'
 import { DisconnectReason, WAProto } from '../Types/index'
+import { Boom } from '../Utils/boom'
 import type { SocketContext } from './types'
 import { jidStr } from './types'
 

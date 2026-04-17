@@ -1,7 +1,7 @@
 {
   "name": "@oxidezap/baileyrs",
   "type": "module",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API",
   "keywords": [
     "whatsapp",
@@ -47,7 +47,6 @@
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= SOCKET_URL=wss://127.0.0.1:8080/ws/chat node --experimental-vm-modules ./node_modules/.bin/jest --testMatch '**/*.test-e2e.ts' --runInBand --forceExit"
   },
   "dependencies": {
-    "@hapi/boom": "^10.0.1",
     "pino": "^9.6",
     "whatsapp-rust-bridge": "0.6.0-alpha.8"
   },

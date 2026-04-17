@@ -1,4 +1,3 @@
-import { Boom } from '@hapi/boom'
 import type { IAudioMetadata } from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
@@ -8,6 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import type { WAMediaUpload } from '../Types/index'
+import { Boom } from './boom'
 import type { ILogger } from './logger'
 
 const randomId = () => globalThis.crypto.randomUUID()

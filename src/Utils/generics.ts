@@ -1,5 +1,5 @@
-import { Boom } from '@hapi/boom'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index'
+import { Boom } from './boom'
 const baileysVersion = DEFAULT_CONNECTION_CONFIG.version
 import type { WAVersion } from '../Types/index'
 

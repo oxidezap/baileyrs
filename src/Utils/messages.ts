@@ -1,4 +1,3 @@
-import { Boom } from '@hapi/boom'
 import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
@@ -26,6 +25,7 @@ import type {
 } from '../Types/index'
 import { WAMessageStatus, WAProto } from '../Types/index'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index'
+import { Boom } from './boom'
 import { unixTimestampSeconds } from './generics'
 import type { ILogger } from './logger'
 import {

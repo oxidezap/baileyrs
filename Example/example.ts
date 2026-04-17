@@ -1,6 +1,5 @@
-import { Boom } from '@hapi/boom'
 import readline from 'node:readline'
-import makeWASocket, { DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, proto, useMultiFileAuthState, useLegacyMultiFileAuthState, wrapLegacyStore } from '../lib/index.js'
+import makeWASocket, { Boom, DEFAULT_CONNECTION_CONFIG, DisconnectReason, fetchLatestWaWebVersion, proto, useMultiFileAuthState, useLegacyMultiFileAuthState, wrapLegacyStore } from '../lib/index.js'
 import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
 import P from 'pino'
 import process from "node:process";

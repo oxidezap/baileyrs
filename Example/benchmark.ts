@@ -1,6 +1,5 @@
-import { Boom } from '@hapi/boom'
 import P from 'pino'
-import makeWASocket, { DisconnectReason, useMemoryStore } from '../lib/index.js'
+import makeWASocket, { Boom, DisconnectReason, useMemoryStore } from '../lib/index.js'
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 const TERMINAL_DISCONNECT_REASONS = [

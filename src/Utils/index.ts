@@ -1,3 +1,4 @@
+export * from './boom'
 export * from './generics'
 export * from './messages'
 export * from './messages-media'

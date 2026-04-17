@@ -37,8 +37,7 @@ import makeWASocket from '@oxidezap/baileyrs'
 ## Quick Start
 
 ```ts
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@oxidezap/baileyrs'
-import { Boom } from '@hapi/boom'
+import makeWASocket, { Boom, DisconnectReason, useMultiFileAuthState } from '@oxidezap/baileyrs'
 
 const { state } = await useMultiFileAuthState('auth_info')
 const sock = makeWASocket({ auth: state })
@@ -62,6 +61,31 @@ sock.ev.on('messages.upsert', ({ messages }) => {
     }
 })
 ```
+
+## Error Handling
+
+baileyrs ships its own `Boom` error class, API-compatible with
+[`@hapi/boom`](https://github.com/hapijs/boom) — no extra dependency needed.
+Methods that fail (including `sendMessage`, media uploads, and connection errors)
+throw a `Boom` with a `statusCode` aligned to WhatsApp disconnect reasons.
+
+```ts
+import { Boom } from '@oxidezap/baileyrs'
+
+try {
+    await sock.sendMessage(jid, { text: 'hi' })
+} catch (err) {
+    if (Boom.isBoom(err)) {
+        console.log(err.statusCode)          // fast path
+        console.log(err.output.statusCode)   // @hapi/boom-compatible
+        console.log(err.data)                // optional user payload
+    }
+}
+```
+
+If you have existing code importing `Boom` from `@hapi/boom`, the
+`(err as Boom)?.output?.statusCode` pattern continues to work via structural
+typing — only the underlying dependency changed.
 
 ## Connecting
 

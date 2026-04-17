@@ -1,4 +1,3 @@
-import { Boom } from '@hapi/boom'
 import { encodeProto } from 'whatsapp-rust-bridge'
 import type {
 	AnyMessageContent,
@@ -11,6 +10,7 @@ import type {
 	WAMessageKey
 } from '../Types/index'
 import { WAProto } from '../Types/index'
+import { Boom } from '../Utils/boom'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages'
 import { jidNormalizedUser } from '../WABinary/index'
 import type { SocketContext } from './types'
