@@ -499,6 +499,12 @@ is preserved, to make migration from Baileys straightforward.
 
 See [ATTRIBUTION.md](ATTRIBUTION.md) for the full attribution notice.
 
+## Ecosystem
+
+Middleware and tools that work on top of baileyrs:
+
+- **[baileys-antiban](https://github.com/kobie3717/baileys-antiban)** — Drop-in anti-ban middleware: rate limiting, warmup schedules, reply-ratio guard, contact graph warmer, and circadian presence choreography. Transport-agnostic as of v1.4 (works with both `baileys` and `@oxidezap/baileyrs`). [npm](https://www.npmjs.com/package/baileys-antiban)
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or in any way officially connected to
