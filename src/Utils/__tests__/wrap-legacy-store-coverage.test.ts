@@ -205,11 +205,9 @@ describe('wrap-legacy-store: sender_key multi-state record', () => {
 		const protoBack = (await wrapped.get('sender_key', bridgeKey)) as Uint8Array
 		const decoded = bridgeProto.SenderKeyRecordStructure.decode(protoBack)
 		expect(decoded.senderKeyStates!.length).toBe(3)
+		const collected = decoded.senderKeyStates!.map(s => s.senderKeyId).slice()
 		// eslint-disable-next-line unicorn/no-array-sort
-		const ids = decoded
-			.senderKeyStates!.map(s => s.senderKeyId)
-			.slice()
-			.sort((a, b) => a! - b!)
+		const ids = collected.sort((a, b) => a! - b!)
 		expect(ids).toEqual([100, 200, 300])
 	})
 })
