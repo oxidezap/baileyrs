@@ -94,6 +94,9 @@
       "optional": true
     }
   },
+  "overrides": {
+    "protobufjs": "^7.5.5"
+  },
   "publishConfig": {
     "access": "public"
   },
