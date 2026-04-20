@@ -1,4 +1,4 @@
-import type { proto } from '../../WAProto/index.js'
+import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { AccountSettings } from './Auth.ts'
 import type { QuickReplyAction } from './Bussines.ts'
 import type { BufferedEventData } from './Events.ts'

@@ -1,14 +1,24 @@
 import { Buffer } from 'node:buffer'
 import { EventEmitter } from 'node:events'
-import { createWhatsAppClient, initWasmEngine, type WasmWhatsAppClient } from 'whatsapp-rust-bridge'
-import type { proto } from '../../WAProto/index.js'
+import {
+	createWhatsAppClient,
+	encodeProto,
+	initWasmEngine,
+	type MediaType,
+	type UploadMediaResult,
+	type WasmWhatsAppClient
+} from 'whatsapp-rust-bridge'
+import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index.ts'
 import type { BinaryNode, ConnectionState, Contact, UserFacingSocketConfig, WAMessage } from '../Types/index.ts'
 import { DisconnectReason } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
-import { downloadMediaMessage } from '../Utils/messages.ts'
+import type { ILogger } from '../Utils/logger.ts'
+import { _registerActiveBridgeClient, downloadMediaMessage } from '../Utils/messages.ts'
+import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
+import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
@@ -22,6 +32,30 @@ import { makeHttpClient, makeTransport } from './transport.ts'
 import type { SocketContext } from './types.ts'
 
 let wasmInitialized = false
+
+/**
+ * Returns a no-op `SignalKeyStore`-shaped facade. baileyrs hands this out from
+ * `sock.authState.keys` when no legacy `auth.keys` was provided so that
+ * upstream-Baileys code paths (typically post-error cleanup like
+ * `keys.set({ 'sender-key': { [groupId]: null } })`) don't crash on a missing
+ * `.set` method. The Rust bridge owns the real Signal state — this facade is
+ * deliberately inert; reads come back empty and writes are dropped after a
+ * `debug` log so the call site stays traceable.
+ */
+function noopKeyStore(logger: ILogger) {
+	return {
+		get: async () => ({}),
+		set: async (data: Record<string, Record<string, unknown> | undefined>) => {
+			const types = Object.keys(data).filter(k => data[k])
+			if (types.length) {
+				logger.debug({ types }, 'authState.keys.set called — bridge owns Signal state, dropping no-op')
+			}
+		},
+		clear: async () => {
+			logger.debug('authState.keys.clear called — no-op (bridge state is not cleared from JS)')
+		}
+	}
+}
 
 /** Build the signalRepository object that delegates to the bridge */
 function makeSignalRepository(ctx: SocketContext) {
@@ -63,6 +97,27 @@ function makeSignalRepository(ctx: SocketContext) {
 		},
 		deleteSession: async (jids: string[]): Promise<void> => {
 			return (await ctx.getClient()).signalDeleteSessions(jids)
+		},
+		/**
+		 * Bidirectional LID ↔ PN lookup. Mirrors the upstream Baileys
+		 * `signalRepository.lidMapping` API.
+		 *
+		 * Pure passthrough to the bridge — `client.lidForPn` / `client.pnForLid`
+		 * delegate to the core's `get_lid_pn_entry`, which is cache-aside as
+		 * of whatsapp-rust PR #565: hits the in-memory `lid_pn_cache` first
+		 * and falls through to `backend.get_pn_mapping` / `get_lid_mapping`
+		 * (so JsStoreCallbacks-backed sessions resolve every persisted
+		 * mapping without warm-up needing a list primitive).
+		 */
+		lidMapping: {
+			getLIDForPN: async (pn: string): Promise<string | null> => {
+				const client = await ctx.getClient()
+				return (await client.lidForPn(pn)) ?? null
+			},
+			getPNForLID: async (lid: string): Promise<string | null> => {
+				const client = await ctx.getClient()
+				return (await client.pnForLid(lid)) ?? null
+			}
 		}
 	}
 }
@@ -89,6 +144,27 @@ function makeWsEmitter(getClient: () => WasmWhatsAppClient | undefined) {
 	Object.defineProperty(ws, 'isOpen', {
 		get: () => getClient()?.isConnected() ?? false,
 		enumerable: true
+	})
+
+	// Upstream Baileys exposes `sock.ws.socket.readyState` (the underlying
+	// WebSocket's standard property) and a lot of bots — keep-alive timers,
+	// reconnect heuristics, "is the link up?" checks — read it directly.
+	// baileyrs has no JS-side WebSocket (the noise socket lives inside the
+	// Rust core), but the only thing those callers care about is the same
+	// two-value answer the standard WebSocket constants encode:
+	//   1 = OPEN, 3 = CLOSED — same numeric values WHATWG defines.
+	// Anything other than 1 means "not usable", so collapsing the
+	// CONNECTING/CLOSING transitional states to CLOSED preserves the
+	// branching every realistic caller does (`readyState === 1`).
+	const socketShim = {}
+	Object.defineProperty(socketShim, 'readyState', {
+		get: () => (getClient()?.isConnected() ? 1 : 3),
+		enumerable: true
+	})
+	Object.defineProperty(ws, 'socket', {
+		value: socketShim,
+		enumerable: true,
+		configurable: true
 	})
 
 	return { ws, isRawNodeEnabled: () => rawNodeEnabled }
@@ -149,13 +225,42 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	const init = async () => {
 		if (!wasmInitialized) {
-			initWasmEngine(logger)
+			initWasmEngine(logger, makeNativeCryptoProvider())
 			wasmInitialized = true
 		}
 
-		ev.emit('connection.update', { connection: 'connecting' } as Partial<ConnectionState>)
+		// Defer to a microtask so callers have a turn to attach listeners
+		// after `makeWASocket()` returns. Without this the emit fires
+		// synchronously inside `init()` (before the function reaches its
+		// first `await`), which is also before the caller ever sees `conn.ev`,
+		// so any handler registered via `conn.ev.on('connection.update', …)`
+		// or `conn.ev.process(…)` silently misses the initial 'connecting'
+		// state. Bots like sung that drive UI off the lifecycle (spinners,
+		// reconnection counters) end up tracking a state machine they never
+		// got to enter, then crash when the next state ('open' / 'close')
+		// references prerequisites that the missed event was supposed to set
+		// up.
+		queueMicrotask(() => ev.emit('connection.update', { connection: 'connecting' } as Partial<ConnectionState>))
 
-		const bridgeStore = auth.store ?? null
+		// Auto-promote upstream-Baileys-style `auth: { creds, keys }` to a
+		// `JsStoreCallbacks`-shaped store via `wrapLegacyStore`. The synthetic
+		// `saveCreds` callback re-emits `creds.update` so the bot's existing
+		// `ev.on('creds.update', saveCreds)` listener handles persistence —
+		// matches the lifecycle hook every upstream-Baileys setup already
+		// wires, so migration needs zero changes to the auth block.
+		let bridgeStore = auth.store ?? null
+		if (!bridgeStore && auth.creds && auth.keys) {
+			const legacyState = { creds: auth.creds, keys: auth.keys }
+			bridgeStore = await wrapLegacyStore(
+				legacyState,
+				async () => {
+					ev.emit('creds.update', auth.creds!)
+				},
+				logger
+			)
+			logger.debug('auth: auto-wrapped legacy {creds, keys} via wrapLegacyStore')
+		}
+
 		client = await createWhatsAppClient(
 			makeTransport(fullConfig),
 			makeHttpClient(fullConfig),
@@ -163,6 +268,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			bridgeStore,
 			fullConfig.cache ?? null
 		)
+		// Make this client the fallback for standalone helpers like
+		// downloadContentFromMessage that have no socket reference.
+		_registerActiveBridgeClient(client, logger)
 
 		const [osName, browserName] = fullConfig.browser
 		await client.setDeviceProps(osName, browserName)
@@ -289,7 +397,16 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					account: cachedAccount,
 					platform: pairedAccount?.platform
 				},
-				keys: auth.keys ?? {}
+				// `keys` is a no-op facade for upstream-Baileys code that pokes
+				// at the legacy SignalKeyStore (e.g. clearing sender-keys after a
+				// decrypt error: `keys.set({ 'sender-key': { [groupId]: null } })`).
+				// In baileyrs the bridge owns all Signal state, so writes here
+				// would silently no-op even if we delegated them — the real
+				// sender-key store is internal to Rust. We expose stable methods
+				// that don't crash, log at debug for traceability, and return
+				// empty results from `.get` so callers fall through to whatever
+				// regen path they already have.
+				keys: auth.keys ?? noopKeyStore(logger)
 			}
 		},
 		generateMessageTag,
@@ -347,7 +464,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			message: proto.IMessage,
 			extraAttrs?: BinaryNode['attrs']
 		): Promise<{ nodes: BinaryNode[]; shouldIncludeDeviceIdentity: boolean }> => {
-			return (await ctx.getClient()).createParticipantNodes(jids, message, extraAttrs ?? {})
+			const bytes = encodeProto('Message', message as Record<string, unknown>)
+			return (await ctx.getClient()).createParticipantNodesBytes(jids, bytes, extraAttrs ?? {})
 		},
 		signalRepository: makeSignalRepository(ctx),
 		/** @deprecated Pre-key management is handled by the Rust bridge. */
@@ -360,8 +478,37 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		setAutoReconnect: (enabled: boolean) => {
 			client?.setAutoReconnect(enabled)
 		},
-		sendPresenceUpdate: async (presence: 'available' | 'unavailable') => {
-			return (await ctx.getClient()).sendPresence(presence)
+		/**
+		 * Update presence either globally (`available`/`unavailable`) or per-chat
+		 * (`composing`/`recording`/`paused`), matching upstream Baileys' overload.
+		 * Chat-state updates require `toJid`; omitting it raises `Boom(400)` so the
+		 * caller hears about the protocol mistake instead of the bridge silently
+		 * sending nothing.
+		 */
+		sendPresenceUpdate: async (
+			presence: 'available' | 'unavailable' | 'composing' | 'recording' | 'paused',
+			toJid?: string
+		) => {
+			const c = await ctx.getClient()
+			if (presence === 'available' || presence === 'unavailable') {
+				return c.sendPresence(presence)
+			}
+
+			if (!toJid) {
+				throw new Boom(`sendPresenceUpdate('${presence}') requires a target jid`, { statusCode: 400 })
+			}
+
+			return c.sendChatState(toJid, presence)
+		},
+		/**
+		 * Plaintext media upload helper, source-compatible with the upstream
+		 * Baileys `sock.waUploadToServer(buf, { mediaType })` shape so existing
+		 * callers (or `prepareWAMessageMedia(msg, { upload: sock.waUploadToServer })`)
+		 * keep working. Delegates to the bridge's encrypt + CDN-failover upload.
+		 */
+		waUploadToServer: async (data: Uint8Array | Buffer, opts: { mediaType: MediaType }): Promise<UploadMediaResult> => {
+			const bytes = data instanceof Uint8Array && !Buffer.isBuffer(data) ? data : new Uint8Array(data)
+			return (await ctx.getClient()).uploadMedia(bytes, opts.mediaType)
 		},
 		fetchPrivacySettings: async () => {
 			return (await ctx.getClient()).fetchPrivacySettings()
@@ -416,7 +563,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			await (await ctx.getClient()).groupMemberAddMode(jid, mode)
 		},
 		sendStatusMessage: async (message: Record<string, unknown>, recipients: string[]): Promise<string> => {
-			return (await ctx.getClient()).sendStatusMessage(message, recipients)
+			const bytes = encodeProto('Message', message)
+			return (await ctx.getClient()).sendStatusMessageBytes(bytes, recipients)
 		},
 		...makeMessageMethods(ctx),
 		...makeGroupMethods(ctx),

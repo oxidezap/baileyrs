@@ -23,9 +23,14 @@ export type BrowsersMap = {
 	appropriate(browser: string): [string, string, string]
 }
 
+// `connectionLost` and `timedOut` deliberately share status code 408 — both
+// are surfaced to callers as upstream Baileys does, even though the wire-level
+// distinction collapses to the same HTTP-style code. Keep the values aligned
+// with `@whiskeysockets/baileys`.
+/* eslint-disable typescript-eslint/no-duplicate-enum-values */
 export enum DisconnectReason {
 	connectionClosed = 428,
-	connectionLost = 499,
+	connectionLost = 408,
 	connectionReplaced = 440,
 	timedOut = 408,
 	loggedOut = 401,
@@ -35,6 +40,7 @@ export enum DisconnectReason {
 	forbidden = 403,
 	unavailableService = 503
 }
+/* eslint-enable typescript-eslint/no-duplicate-enum-values */
 
 export type WAInitResponse = {
 	ref: string

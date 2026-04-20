@@ -1,7 +1,7 @@
 import type { Readable } from 'stream'
 import type { URL } from 'url'
 import type { UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
-import { proto } from '../../WAProto/index.js'
+import { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { MediaType } from '../Defaults/index.ts'
 import type { GroupMetadata } from './GroupMetadata.ts'
 import type { CacheStore } from './Socket.ts'
@@ -362,6 +362,20 @@ export type MediaGenerationOptions = {
 		upload: UploadMediaResult
 		metadata?: Partial<MediaMetadata>
 	}>
+
+	/**
+	 * Legacy upload callback compatible with upstream Baileys' `prepareWAMessageMedia`
+	 * `{ upload: conn.waUploadToServer }` pattern. When provided, baileyrs will route
+	 * the plaintext media buffer through this function instead of the bridge's
+	 * built-in `waClient.uploadMedia`. The callback must return the same shape the
+	 * Rust bridge produces (`url`, `directPath`, `mediaKey`, `fileSha256`,
+	 * `fileEncSha256`, `fileLength`).
+	 *
+	 * Prefer `processMedia` for new code — `upload` is a thin compat shim that
+	 * exists to keep `prepareWAMessageMedia(message, { upload: sock.waUploadToServer })`
+	 * working when migrating bots from upstream Baileys.
+	 */
+	upload?: (media: Buffer, opts: { mediaType: MediaType }) => Promise<UploadMediaResult>
 }
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
 	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>

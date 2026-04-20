@@ -45,7 +45,6 @@ export class Boom<TData = unknown> extends Error {
 	readonly isBoom = true as const
 	readonly statusCode: number
 	readonly data?: TData
-	#output: BoomOutput | undefined
 
 	constructor(message?: string | Error, options: BoomOptions<TData> = {}) {
 		const msg = message instanceof Error ? message.message : (message ?? 'Unknown error')
@@ -59,20 +58,24 @@ export class Boom<TData = unknown> extends Error {
 		return this.statusCode >= 500
 	}
 
+	/**
+	 * `@hapi/boom`-compatible nested status info. Computed on every access
+	 * (no `#private` cache) so the getter survives prototype-chain rewrites
+	 * by other Boom-shaped wrappers — concretely, `new HapiBoom(ourBoom)`
+	 * coerces the input to be `instanceof Boom` via `Object.setPrototypeOf`
+	 * but never calls our constructor, leaving any private slot uninitialized
+	 * and crashing the getter at runtime.
+	 */
 	get output(): BoomOutput {
-		if (this.#output === undefined) {
-			this.#output = {
+		return {
+			statusCode: this.statusCode,
+			headers: EMPTY_HEADERS,
+			payload: {
 				statusCode: this.statusCode,
-				headers: EMPTY_HEADERS,
-				payload: {
-					statusCode: this.statusCode,
-					error: statusPhrase(this.statusCode),
-					message: this.message
-				}
+				error: statusPhrase(this.statusCode),
+				message: this.message
 			}
 		}
-
-		return this.#output
 	}
 
 	static isBoom(err: unknown): err is Boom {

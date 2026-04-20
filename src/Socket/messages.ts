@@ -11,6 +11,7 @@ import type {
 } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
+import { unixTimestampSeconds } from '../Utils/generics.ts'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
 import { jidNormalizedUser } from '../WABinary/index.ts'
 import type { SocketContext } from './types.ts'
@@ -51,14 +52,14 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 
 		if (contentType === 'protocolMessage') {
 			const protoMsg = msg.protocolMessage
-			if (protoMsg?.type === WAProto.Message.ProtocolMessage.Type.REVOKE && protoMsg?.key) {
+			if (protoMsg?.type === WAProto.Message.ProtocolMessage.Type.REVOKE && protoMsg?.key?.id) {
 				await client.revokeMessage(jid, protoMsg.key.id)
 				return fullMsg
 			}
 
 			if (
 				protoMsg?.type === WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT &&
-				protoMsg?.key &&
+				protoMsg?.key?.id &&
 				protoMsg?.editedMessage
 			) {
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
@@ -72,18 +73,26 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		delete (msg as Record<string, unknown>).messageContextInfo
 
 		let msgId: string
+		const msgBytes = encodeProto('Message', msg as Record<string, unknown>)
 		if (jid === 'status@broadcast' && options?.statusJidList?.length) {
-			msgId = await client.sendStatusMessage(msg as Record<string, unknown>, options.statusJidList)
+			msgId = await client.sendStatusMessageBytes(msgBytes, options.statusJidList)
 		} else {
-			msgId = await client.sendMessage(jid, msg as Record<string, unknown>)
+			msgId = await client.sendMessageBytes(jid, msgBytes)
 		}
 
 		fullMsg.key.id = msgId || fullMsg.key.id
 
-		ctx.ev.emit('messages.upsert', {
-			messages: [fullMsg],
-			type: 'append'
-		} as BaileysEventMap['messages.upsert'])
+		// Local echo of the message we just sent. Suppressed when
+		// `emitOwnEvents=false` so callers that explicitly opted out of seeing
+		// their own outbound messages don't get them looped back. This is the
+		// upstream-Baileys semantics of `emitOwnEvents` — it controls THIS
+		// echo, not inbound `fromMe` messages from other linked devices.
+		if (ctx.fullConfig.emitOwnEvents !== false) {
+			ctx.ev.emit('messages.upsert', {
+				messages: [fullMsg],
+				type: 'append'
+			} as BaileysEventMap['messages.upsert'])
+		}
 
 		return fullMsg
 	},
@@ -132,31 +141,43 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 * over the message ID. Use `sendMessage` for the high-level API that handles
 	 * media upload, message generation, link previews, etc.
 	 *
+	 * Returns a {@link WAMessage} envelope (matching upstream Baileys' shape) so
+	 * callers can do `const msg = await relayMessage(...)` and forward `msg.key`
+	 * to subsequent operations. The returned `key.id` is the server-assigned id.
+	 *
 	 * @param jid Recipient JID
 	 * @param message Raw protobuf Message (snake_case keys)
 	 * @param options Relay options (messageId, statusJidList)
-	 * @returns Message ID
 	 */
 	relayMessage: async (
 		jid: string,
 		message: WAProto.IMessage,
 		{ messageId, statusJidList }: MessageRelayOptions = {}
-	): Promise<string> => {
+	): Promise<WAMessage> => {
 		const client = await ctx.getClient()
+		const user = ctx.getUser()
+		const userJid = user?.id ? jidNormalizedUser(user.id) : undefined
 
 		// Rust handles messageContextInfo internally (reporting tokens, message secrets).
 		// Strip it to avoid conflicts with the Rust-generated values.
 		delete (message as Record<string, unknown>).messageContextInfo
 
-		if (jid === 'status@broadcast' && statusJidList?.length) {
-			return client.sendStatusMessage(message as Record<string, unknown>, statusJidList)
-		}
-
-		// Use encodeProto (Rust prost) for binary encoding — it has the full
-		// proto schema including InteractiveMessage/FutureProofMessage oneofs
-		// that the fork's minimal WAProto doesn't include.
 		const bytes = encodeProto('Message', message)
-		return client.relayMessageBytes(jid, bytes, messageId ?? null)
+		const id =
+			jid === 'status@broadcast' && statusJidList?.length
+				? await client.sendStatusMessageBytes(bytes, statusJidList)
+				: await client.relayMessageBytes(jid, bytes, messageId ?? null)
+
+		return {
+			key: {
+				id,
+				remoteJid: jid,
+				fromMe: true,
+				...(userJid ? { participant: userJid } : {})
+			},
+			message,
+			messageTimestamp: unixTimestampSeconds()
+		} as WAMessage
 	},
 
 	readMessages: async (keys: { remoteJid: string; id: string; participant?: string }[]) => {
@@ -230,6 +251,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		return (await ctx.getClient()).relayMessage(messageKey.remoteJid!, message, null)
+		const bytes = encodeProto('Message', message)
+		return (await ctx.getClient()).relayMessageBytes(messageKey.remoteJid!, bytes, null)
 	}
 })

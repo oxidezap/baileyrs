@@ -1,8 +1,10 @@
 import type { URL } from 'url'
 import type { CacheConfig } from 'whatsapp-rust-bridge'
-import type { proto } from '../../WAProto/index.js'
+import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
 import type { AuthenticationState } from './Auth.ts'
+import type { GroupMetadata } from './GroupMetadata.ts'
+import type { WAMessageContent, WAMessageKey } from './Message.ts'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -52,4 +54,52 @@ export type SocketConfig = {
 	 * Omitted fields keep defaults. See CacheConfig type for details.
 	 */
 	cache?: CacheConfig
+
+	// ─────────────────────────────────────────────────────────────────────
+	// Upstream-Baileys options accepted for type-level compatibility.
+	//
+	// All of the following are silently ignored by baileyrs because the Rust
+	// bridge handles the underlying behavior natively. They live here so that
+	// `makeWASocket({...upstreamConfig})` keeps type-checking against code
+	// migrated from `@whiskeysockets/baileys` without forcing the caller to
+	// strip fields. None of these have a runtime effect — passing them is a
+	// no-op, not an error.
+	// ─────────────────────────────────────────────────────────────────────
+
+	/** @deprecated QR timeout is handled by the bridge connection state machine. */
+	qrTimeout?: number
+	/** @deprecated Message retries are managed by the bridge. */
+	maxMsgRetryCount?: number
+	/** @deprecated Retry backoff is handled by the bridge. */
+	retryRequestDelayMs?: number
+	/** @deprecated Link previews are not generated automatically; build via your own helper if needed. */
+	generateHighQualityLinkPreview?: boolean
+	/** @deprecated See `generateHighQualityLinkPreview`. */
+	linkPreviewImageThumbnailWidth?: number
+	/** @deprecated Session recreation is automatic via the bridge's signal layer. */
+	enableAutoSessionRecreation?: boolean
+	/** @deprecated The bridge keeps its own recent-message cache. */
+	enableRecentMessageCache?: boolean
+	/** @deprecated Use `sendPresenceUpdate('available')` after `connection: 'open'` instead. */
+	markOnlineOnConnect?: boolean
+	/** @deprecated Auth/key storage is owned by the bridge; transactions are an internal concern. */
+	transactionOpts?: { maxCommitRetries: number; delayBetweenTriesMs: number }
+	/** @deprecated History sync is driven by the bridge; see `messaging-history.set` events. */
+	syncFullHistory?: boolean
+	/** @deprecated Init queries are issued by the bridge on connect. */
+	fireInitQueries?: boolean
+	/** @deprecated History download policy lives in the bridge. */
+	downloadHistory?: boolean
+	/** @deprecated See `syncFullHistory`. */
+	shouldSyncHistoryMessage?: (msg: proto.Message.IHistorySyncNotification) => boolean
+	/** @deprecated QR rendering is the caller's responsibility — listen on `connection.update` for the QR string. */
+	printQRInTerminal?: boolean
+	/** @deprecated Offline-message handling is built into the bridge event stream. */
+	ignoreOfflineMessages?: boolean
+	/** @deprecated Retry counters are kept inside the bridge. */
+	msgRetryCounterCache?: CacheStore
+	/** @deprecated The bridge maintains its own group-metadata cache (see `cache.group`). */
+	cachedGroupMetadata?: (jid: string) => Promise<GroupMetadata | undefined>
+	/** @deprecated Decryption retries are handled by the bridge using its message store. */
+	getMessage?: (key: WAMessageKey) => Promise<WAMessageContent | undefined>
 }

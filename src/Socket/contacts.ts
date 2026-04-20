@@ -1,17 +1,26 @@
 import type { SocketContext } from './types.ts'
 
-export const makeContactMethods = (ctx: SocketContext) => ({
-	onWhatsApp: async (...jids: string[]) => {
-		const client = await ctx.getClient()
-		const results: { exists: boolean; jid: string }[] = []
-		for (const jid of jids) {
-			const r = await client.isOnWhatsApp(jid)
-			for (const entry of r) {
-				results.push({ exists: entry.isRegistered, jid: entry.jid })
-			}
-		}
+export type OnWhatsAppResult = {
+	exists: boolean
+	jid: string
+	lid?: string
+	/** PN counterpart, present when the server returned a LID as primary JID. */
+	pnJid?: string
+	isBusiness?: boolean
+}
 
-		return results
+export const makeContactMethods = (ctx: SocketContext) => ({
+	onWhatsApp: async (...jids: string[]): Promise<OnWhatsAppResult[]> => {
+		const client = await ctx.getClient()
+		// Single batched usync — the bridge splits PN/LID inputs internally and
+		// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
+		const results = await client.isOnWhatsApp(jids)
+		return results.map(r => {
+			const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
+			if (r.lid) out.lid = r.lid
+			if (r.pnJid) out.pnJid = r.pnJid
+			return out
+		})
 	},
 
 	profilePictureUrl: async (jid: string, type: 'preview' | 'image' = 'preview') => {

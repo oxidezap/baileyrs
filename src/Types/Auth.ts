@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
-import type { proto } from '../../WAProto/index.js'
+import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { Contact } from './Contact.ts'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }

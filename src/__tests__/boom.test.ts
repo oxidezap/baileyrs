@@ -53,11 +53,26 @@ describe('Boom', () => {
 		})
 	})
 
-	it('output is lazily constructed and cached', () => {
+	it('output is structurally consistent across accesses', () => {
+		// We deliberately do NOT cache `output` (the previous `#private` cache
+		// crashed when the prototype chain was rewritten by `@hapi/boom`-style
+		// wrappers). Each access should still return the same shape/values —
+		// just not the same reference.
 		const b = new Boom('x', { statusCode: 400 })
-		const o1 = b.output
-		const o2 = b.output
-		expect(o1).toBe(o2)
+		expect(b.output).toEqual(b.output)
+	})
+
+	it('survives a HapiBoom-style wrap that hijacks the prototype', () => {
+		// Simulates `new HapiBoom(ourBoom)` which uses `Object.setPrototypeOf`
+		// to make the input `instanceof Boom` without re-running our
+		// constructor. The previous `#output` field crashed here at the first
+		// `.output` access because the WeakMap had no entry for the rewrapped
+		// instance.
+		const original = new Boom('x', { statusCode: 408 })
+		const hijacked = Object.create(Boom.prototype) as Boom
+		Object.assign(hijacked, original)
+		expect(() => hijacked.output).not.toThrow()
+		expect(hijacked.output.statusCode).toBe(408)
 	})
 
 	it('shares the same frozen headers across instances', () => {

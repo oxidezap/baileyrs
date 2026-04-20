@@ -1,4 +1,4 @@
-import { proto } from '../../WAProto/index.js'
+import { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { Boom } from '../Utils/boom.ts'
 import type { AuthenticationCreds, LIDMapping } from './Auth.ts'
 import type { WACallEvent } from './Call.ts'
@@ -67,10 +67,19 @@ export type BaileysEventMap = {
 
 	'groups.upsert': GroupMetadata[]
 	'groups.update': Partial<GroupMetadata>[]
-	/** apply an action to participants in a group */
+	/**
+	 * Participant change in a group.
+	 *
+	 * `participants` is `GroupParticipant[]` — matches upstream Baileys exactly
+	 * (`@whiskeysockets/baileys` declares the same shape). Each entry has at
+	 * least `id` (the participant JID); `admin` is populated for promote/demote
+	 * actions where the new role is unambiguous from the action itself.
+	 * Use `action` to interpret the change (add/remove/promote/demote/modify).
+	 */
 	'group-participants.update': {
 		id: string
 		author: string
+		/** PN counterpart of `author` when the group is LID-addressed. baileyrs-only extension. */
 		authorPn?: string
 		participants: GroupParticipant[]
 		action: ParticipantAction

@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
 import type { UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
-import { proto } from '../../WAProto/index.js'
+import { proto } from 'whatsapp-rust-bridge/proto-types'
 import {
 	CALL_AUDIO_PREFIX,
 	CALL_VIDEO_PREFIX,
@@ -52,7 +52,13 @@ type MediaUploadData = {
 	seconds?: number
 	gifPlayback?: boolean
 	fileName?: string
-	jpegThumbnail?: string
+	/**
+	 * Pre-encoded JPEG thumbnail bytes. Accept `string` (legacy upstream Baileys
+	 * shape — base64) so callers migrating from `@whiskeysockets/baileys` keep
+	 * compiling; we coerce to `Uint8Array` before handing the value to the
+	 * proto encoder, which (unlike protobufjs) does not auto-decode base64.
+	 */
+	jpegThumbnail?: string | Uint8Array | Buffer
 	mimetype?: string
 	width?: number
 	height?: number
@@ -162,7 +168,10 @@ export const prepareWAMessageMedia = async (
 			const obj = proto.Message.decode(mediaBuff)
 			const key = `${mediaType}Message`
 
-			Object.assign(obj[key as keyof proto.Message], { ...uploadData, media: undefined })
+			// `obj[key]` is a discriminated-union slot; cache hits always store
+			// a media submessage (not e.g. `conversation: string`), so cast to
+			// `object` for `Object.assign`'s benefit.
+			Object.assign(obj[key as keyof proto.Message] as object, { ...uploadData, media: undefined })
 
 			return obj
 		}
@@ -188,6 +197,14 @@ export const prepareWAMessageMedia = async (
 			if (metadata.seconds !== undefined) uploadData.seconds = metadata.seconds
 			if (metadata.waveform !== undefined) uploadData.waveform = metadata.waveform
 		}
+	} else if (options.upload) {
+		// Legacy upstream-Baileys compat: { upload: sock.waUploadToServer }.
+		// Same plaintext-in / UploadMediaResult-out contract as waClient.uploadMedia.
+		const [result] = await Promise.all([
+			options.upload(buffer, { mediaType: effectiveMediaType }),
+			extractBuiltInMetadata(buffer, mediaType, uploadData, options)
+		])
+		uploadResult = result
 	} else {
 		// Default: in-memory encrypt + upload via Rust, built-in metadata extraction
 		const [result] = await Promise.all([
@@ -195,6 +212,15 @@ export const prepareWAMessageMedia = async (
 			extractBuiltInMetadata(buffer, mediaType, uploadData, options)
 		])
 		uploadResult = result
+	}
+
+	// Coerce any string-form `jpegThumbnail` (the legacy upstream Baileys output)
+	// into bytes — the bridge's ts-proto encoder reads `.byteLength` directly
+	// and throws `invalid uint32: undefined` on strings. Done here (not at
+	// extraction time) so values arriving via `processMedia`, link-preview
+	// builders, or direct user input go through the same coercion.
+	if (typeof uploadData.jpegThumbnail === 'string') {
+		uploadData.jpegThumbnail = Buffer.from(uploadData.jpegThumbnail, 'base64')
 	}
 
 	const obj = WAProto.Message.fromObject({
@@ -549,14 +575,20 @@ export const generateWAMessageContent = async (
 	) {
 		const messageType = Object.keys(m)[0]! as Extract<keyof proto.IMessage, MessageWithContextInfo>
 		const key = m[messageType]
-		if (key && 'contextInfo' in key) {
-			key.contextInfo = key.contextInfo || {}
+		// `key` is a freshly-created plain object (e.g. `{ text: 'hi' }`) — its
+		// `contextInfo` slot is declared by the proto schema but not yet an own
+		// property, so `'contextInfo' in key` is false and the legacy guarded
+		// assignment silently skipped the mention payload. Match upstream
+		// Baileys: create `contextInfo` if absent, then merge.
+		if (key && typeof key === 'object') {
+			const target = key as { contextInfo?: proto.IContextInfo }
+			const ci = (target.contextInfo ??= {})
 			if (message.mentions?.length) {
-				key.contextInfo.mentionedJid = message.mentions
+				ci.mentionedJid = message.mentions
 			}
 
 			if (message.mentionAll) {
-				key.contextInfo.nonJidMentions = 1
+				ci.nonJidMentions = 1
 			}
 		}
 	}
@@ -837,6 +869,77 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	}
 }
 
+/**
+ * Module-level pointer to the most-recently created bridge client. Updated by
+ * `makeWASocket` so standalone helpers like {@link downloadContentFromMessage}
+ * (which carry no socket reference) can find the bridge without forcing the
+ * caller to plumb `waClient` through. Multi-account hosts that juggle several
+ * sockets should pass `opts.client` explicitly; otherwise this points at the
+ * client created last.
+ */
+let activeBridgeClient: WasmWhatsAppClient | undefined
+let activeBridgeLogger: ILogger | undefined
+
+export const _registerActiveBridgeClient = (client: WasmWhatsAppClient, logger?: ILogger) => {
+	activeBridgeClient = client
+	activeBridgeLogger = logger
+}
+
+const noopLogger: ILogger = {
+	level: 'silent',
+	child: () => noopLogger,
+	trace: () => {},
+	debug: () => {},
+	info: () => {},
+	warn: () => {},
+	error: () => {}
+}
+
+/**
+ * Upstream-Baileys-compatible standalone media download. Builds a synthetic
+ * `WAMessage` from the supplied media subcontent (image/video/audio/etc fields)
+ * and routes it through {@link downloadMediaMessage}, so CDN failover, auth
+ * refresh, HMAC verification, and AES-256-CBC decryption all happen inside the
+ * Rust bridge — same code path as `sock.downloadMedia`.
+ *
+ * The bridge client is required. Pass it explicitly via `opts.client` for
+ * multi-account hosts; otherwise the helper falls back to the most-recently
+ * created bridge client (registered automatically by `makeWASocket`).
+ */
+export const downloadContentFromMessage = async (
+	mediaContent: {
+		directPath?: string | null
+		mediaKey?: Uint8Array | null
+		fileSha256?: Uint8Array | null
+		fileEncSha256?: Uint8Array | null
+		fileLength?: number | Long | null
+		url?: string | null
+	},
+	type: MediaType,
+	opts: MediaDownloadOptions & { client?: WasmWhatsAppClient; logger?: ILogger } = {}
+): Promise<Readable> => {
+	const client = opts.client ?? activeBridgeClient
+	if (!client) {
+		throw new Boom(
+			'downloadContentFromMessage: no bridge client available. ' +
+				'Pass `opts.client = sock.waClient`, or call after `makeWASocket()` has initialized.',
+			{ statusCode: 500 }
+		)
+	}
+
+	const fakeMessage = {
+		key: {} as WAMessage['key'],
+		message: { [`${type}Message`]: mediaContent } as WAMessageContent
+	} as WAMessage
+
+	return downloadMediaMessage(fakeMessage, 'stream', opts, {
+		logger: opts.logger ?? activeBridgeLogger ?? noopLogger,
+		reuploadRequest: async (m: WAMessage) => m,
+		waClient: client
+	})
+}
+
+type Long = { low: number; high: number; unsigned: boolean }
 type VoteAggregation = { name: string; voters: string[] }
 
 /**

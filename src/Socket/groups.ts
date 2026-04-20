@@ -79,8 +79,51 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 		return await (await ctx.getClient()).groupRevokeInvite(jid)
 	},
 
-	groupSettingUpdate: async (jid: string, setting: 'locked' | 'announce' | 'membership_approval', value: boolean) => {
-		await (await ctx.getClient()).groupSettingUpdate(jid, setting, value)
+	groupSettingUpdate: async (
+		jid: string,
+		setting:
+			| 'locked'
+			| 'announce'
+			| 'membership_approval'
+			| 'announcement'
+			| 'not_announcement'
+			| 'unlocked'
+			| 'on'
+			| 'off',
+		value?: boolean
+	) => {
+		// Map upstream-Baileys legacy single-arg verbs onto the bridge's
+		// (setting, boolean) contract. Keeps `conn.groupSettingUpdate(jid, 'announcement')`
+		// working without forcing call-site migration.
+		let resolvedSetting: 'locked' | 'announce' | 'membership_approval'
+		let resolvedValue: boolean
+		switch (setting) {
+			case 'announcement':
+				resolvedSetting = 'announce'
+				resolvedValue = true
+				break
+			case 'not_announcement':
+				resolvedSetting = 'announce'
+				resolvedValue = false
+				break
+			case 'unlocked':
+				resolvedSetting = 'locked'
+				resolvedValue = false
+				break
+			case 'on':
+				resolvedSetting = 'locked'
+				resolvedValue = true
+				break
+			case 'off':
+				resolvedSetting = 'locked'
+				resolvedValue = false
+				break
+			default:
+				resolvedSetting = setting
+				resolvedValue = value ?? false
+		}
+
+		await (await ctx.getClient()).groupSettingUpdate(jid, resolvedSetting, resolvedValue)
 	},
 
 	groupToggleEphemeral: async (jid: string, expiration: number) => {
@@ -114,5 +157,19 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 
 	groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: 'approve' | 'reject') => {
 		return await (await ctx.getClient()).groupRequestParticipantsUpdate(jid, participants, action)
+	},
+
+	/**
+	 * Set or clear the bot's per-group "member label" — the small tag rendered
+	 * under the bot's display name inside that group's UI. Empty `label`
+	 * clears it. Sent as a `ProtocolMessage` over the regular message path
+	 * (matching WA Web's wire format), not as an IQ.
+	 *
+	 * Self-applied only — WhatsApp's protocol does not let admins change
+	 * other members' labels even with admin privileges; the same restriction
+	 * applies in the official mobile app.
+	 */
+	updateMemberLabel: async (jid: string, label: string): Promise<void> => {
+		await (await ctx.getClient()).updateMemberLabel(jid, label)
 	}
 })

@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test'
-import { proto } from '../../WAProto/index.js'
+import { proto } from 'whatsapp-rust-bridge/proto-types'
 import { expect } from './expect.ts'
 
 describe('proto serialization', () => {

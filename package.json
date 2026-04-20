@@ -29,11 +29,22 @@
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./logger": {
+      "types": "./lib/Utils/logger.d.ts",
+      "default": "./lib/Utils/logger.js"
+    },
+    "./lib/*": {
+      "types": "./lib/*.d.ts",
+      "default": "./lib/*.js"
+    },
+    "./lib/*.js": {
+      "types": "./lib/*.d.ts",
+      "default": "./lib/*.js"
     }
   },
   "files": [
-    "lib/**/*",
-    "WAProto/**/*"
+    "lib/**/*"
   ],
   "scripts": {
     "build": "tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js",
@@ -45,15 +56,16 @@
     "lint:fix": "oxlint --fix && oxfmt src Example",
     "prepack": "npm run build",
     "prepare": "npm run build",
-    "test": "node --experimental-transform-types --experimental-test-isolation=none --test-force-exit --test 'src/**/*.test.ts'",
-    "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= SOCKET_URL=wss://127.0.0.1:8080/ws/chat node --experimental-transform-types --experimental-test-isolation=none --test-force-exit --test 'src/**/*.test-e2e.ts'"
+    "test": "node --experimental-transform-types --experimental-test-isolation=none --test 'src/**/*.test.ts'",
+    "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= SOCKET_URL=wss://127.0.0.1:8080/ws/chat node --experimental-transform-types --experimental-test-isolation=none --test 'src/**/*.test-e2e.ts'"
   },
   "dependencies": {
     "pino": "^9.6",
-    "whatsapp-rust-bridge": "0.6.0-alpha.9"
+    "whatsapp-rust-bridge": "0.6.0-alpha.10"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "baileys": "github:WhiskeySockets/Baileys#improved-tctoken",
     "jimp": "^1.6.0",
     "music-metadata": "^11.12.3",
     "oxfmt": "^0.45.0",

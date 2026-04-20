@@ -25,14 +25,40 @@ so existing integrations can migrate with minimal changes. See
 
 ## Installation
 
+### New project
+
 ```sh
 npm install @oxidezap/baileyrs
 ```
 
-Then import:
 ```ts
 import makeWASocket from '@oxidezap/baileyrs'
 ```
+
+### Drop-in replacement for upstream Baileys
+
+baileyrs is API-compatible with [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys).
+Existing projects switch over by aliasing the package — **no source changes needed**:
+
+```sh
+npm install @whiskeysockets/baileys@npm:@oxidezap/baileyrs
+```
+
+That writes the alias to your `package.json`:
+
+```jsonc
+{
+  "dependencies": {
+    "@whiskeysockets/baileys": "npm:@oxidezap/baileyrs@^0.0.8"
+  }
+}
+```
+
+Every `import { makeWASocket } from '@whiskeysockets/baileys'` in your codebase
+now resolves to baileyrs. Auth state, event listeners, and message APIs work
+unchanged — see [Migrating from Upstream Baileys](#migrating-from-upstream-baileys)
+for what happens behind the scenes and the (very small) surface where behavior
+differs.
 
 ## Quick Start
 
@@ -156,12 +182,76 @@ No creds management, no type routing — just `(store, key) → bytes`. Works wi
 
 ### Migrating from Upstream Baileys
 
-`wrapLegacyStore` imports an existing session from [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) (or any custom store built on it, like [mysql-baileys](https://github.com/bobslavtriev/mysql-baileys)) without requiring a new QR scan.
+baileyrs accepts the upstream `auth: { creds, keys }` shape directly — the
+internal `wrapLegacyStore` adapter runs automatically when it sees that
+shape, so the **`makeWASocket(...)` call site needs zero changes**:
+
+```ts
+// makeWASocket() works as-is once the npm alias is in place.
+// Auto-wrap kicks in when it sees {creds, keys}.
+const sock = makeWASocket({ auth: state })
+
+sock.ev.on('creds.update', saveCreds)  // still fires — adapter re-emits
+```
+
+The one switch you do make is **how you load `state`**. baileyrs's
+`useMultiFileAuthState` is a *new-state-only* helper: it provisions a
+binary `.bin` store for the Rust engine and ignores any pre-existing
+upstream JSON. To carry an existing pairing across the migration, swap
+the import to `useLegacyMultiFileAuthState` (one line):
+
+```diff
+- import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys'
++ import makeWASocket, { useLegacyMultiFileAuthState as useMultiFileAuthState } from '@whiskeysockets/baileys'
+
+  const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+  const sock = makeWASocket({ auth: state })
+  sock.ev.on('creds.update', saveCreds)
+```
+
+Same approach works for any custom upstream auth (`useMySQLAuthState`,
+`useRedisAuthState`, mysql-baileys, etc.) — your loader keeps returning
+`{creds, keys, saveCreds}`, baileyrs auto-wraps it on the way in.
+
+#### Existing sessions migrate without re-pairing
+
+`useLegacyMultiFileAuthState` reads the existing `creds.json` +
+`pre-key-*.json` / `session-*.json` files from the same folder upstream
+Baileys was using and hands them to the Rust engine. Pair-ID, identity,
+signed pre-keys, and Signal sessions are all preserved. No QR re-scan,
+no logged-out events.
+
+> **Where the new state goes**: baileyrs continues to write the legacy
+> JSON files (via `saveCreds`) so the folder stays compatible with both
+> sides during a rollback window. The Rust engine treats the JSON as the
+> source of truth as long as you keep using `useLegacyMultiFileAuthState`.
+> If you later want to drop the JSON layer, switch to
+> `useMultiFileAuthState` — but that path requires a fresh QR.
+
+#### Gotchas
+
+A few behaviors that differ from upstream — almost always to your advantage:
+
+- **Auto-reconnect is built in.** Don't call `makeWASocket()` again from
+  `connection.update`'s `'close'` branch. The Rust engine retries with
+  fibonacci backoff; opening a second socket leaks the first one.
+- **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
+  side caches group metadata and message keys natively. You can still pass
+  them — they're respected as overrides — but they're optional.
+- **`Boom` ships in the box.** baileyrs exports its own
+  `@hapi/boom`-compatible `Boom` (see [Error Handling](#error-handling))
+  so the existing `(err as Boom).output.statusCode` pattern works
+  unchanged. If your `package.json` was pulling `@hapi/boom` only for
+  baileys, you can drop the dependency.
+
+#### Manual `wrapLegacyStore` (advanced)
+
+If you want explicit control over when the adapter runs (testing, custom
+shapes, mixed storage), call it yourself:
 
 ```ts
 import makeWASocket, { useLegacyMultiFileAuthState, wrapLegacyStore } from '@oxidezap/baileyrs'
 
-// Works with any upstream auth state: useMultiFileAuthState, useMySQLAuthState, etc.
 const { state, saveCreds } = await useLegacyMultiFileAuthState('/path/to/baileys_auth_info')
 const store = await wrapLegacyStore(state, saveCreds)
 const sock = makeWASocket({ auth: { store } })

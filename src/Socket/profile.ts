@@ -1,3 +1,4 @@
+import { isJidGroup, jidNormalizedUser } from '../WABinary/index.ts'
 import type { SocketContext } from './types.ts'
 
 export const makeProfileMethods = (ctx: SocketContext) => {
@@ -27,20 +28,36 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 			return await (await ctx.getClient()).getLid()
 		},
 
+		/**
+		 * Update a profile picture. When `jid` is a group jid the bridge routes
+		 * to the group set-picture IQ (admin only); otherwise the IQ targets
+		 * the logged-in user's own profile (the `jid` argument is informational
+		 * — own-profile updates can't be set on someone else's behalf).
+		 */
 		updateProfilePicture: async (jid: string, imgData: Uint8Array) => {
+			const client = await ctx.getClient()
+			if (isJidGroup(jid)) {
+				return client.setGroupProfilePicture(jid, imgData)
+			}
+
 			const selfJid = ctx.getUser()?.id
-			if (selfJid && jid !== selfJid) {
+			if (selfJid && jidNormalizedUser(jid) !== jidNormalizedUser(selfJid)) {
 				ctx.logger.warn(
 					{ jid, selfJid },
-					'updateProfilePicture: bridge only supports updating own picture, ignoring target jid'
+					'updateProfilePicture: only own profile or group avatars can be changed; falling back to self'
 				)
 			}
 
-			return await (await ctx.getClient()).updateProfilePicture(imgData)
+			return client.updateProfilePicture(imgData)
 		},
 
-		removeProfilePicture: async () => {
-			return await (await ctx.getClient()).removeProfilePicture()
+		removeProfilePicture: async (jid?: string) => {
+			const client = await ctx.getClient()
+			if (jid && isJidGroup(jid)) {
+				return client.removeGroupProfilePicture(jid)
+			}
+
+			return client.removeProfilePicture()
 		},
 
 		updateProfileStatus: async (status: string) => {
