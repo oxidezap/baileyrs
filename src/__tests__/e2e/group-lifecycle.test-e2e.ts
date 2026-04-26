@@ -17,76 +17,15 @@
  * regressions that proto-level unit tests would miss.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
-import {
-	Boom,
-	DisconnectReason,
-	jidNormalizedUser,
-	makeWASocket,
-	type proto,
-	useMultiFileAuthState,
-	WAMessageStubType
-} from '../../index.ts'
+import { type proto, WAMessageStubType } from '../../index.ts'
 import { expect } from '../expect.ts'
+import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
-type WASocket = ReturnType<typeof makeWASocket>
-
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
-const socketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
-
-interface TestClient {
-	sock: WASocket
-	jid: string
-	lid?: string
-	authFolder: string
-	label: string
-}
-
-async function createTestClient(label: string): Promise<TestClient> {
-	const authFolder = mkdtempSync(join(tmpdir(), `baileys-grp-${label}-`))
-	const { state } = await useMultiFileAuthState(authFolder)
-
-	const sock = makeWASocket({
-		auth: state,
-		waWebSocketUrl: socketUrl,
-		logger: logger.child({ user: label })
-	})
-
-	const jid = await new Promise<string>((resolve, reject) => {
-		sock.ev.on('connection.update', update => {
-			if (update.connection === 'open') {
-				resolve(jidNormalizedUser(sock.user?.id))
-			} else if (update.connection === 'close') {
-				const reason = (update.lastDisconnect?.error as Boom)?.output?.statusCode
-				if (reason === DisconnectReason.loggedOut) {
-					reject(new Error(`${label}: Logged out`))
-				}
-			}
-		})
-	})
-
-	return { sock, jid, lid: sock.user?.lid, authFolder, label }
-}
-
-async function destroyTestClient(client: TestClient) {
-	try {
-		client.sock.setAutoReconnect(false)
-		await client.sock.end()
-	} catch {
-		/* ignore */
-	}
-	try {
-		rmSync(client.authFolder, { recursive: true, force: true })
-	} catch {
-		/* ignore */
-	}
-}
 
 function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
@@ -115,9 +54,9 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 
 	before(async () => {
 		;[alice, bob, charlie] = await Promise.all([
-			createTestClient('alice'),
-			createTestClient('bob'),
-			createTestClient('charlie')
+			createTestClient({ label: 'alice', folderPrefix: 'baileys-grp' }),
+			createTestClient({ label: 'bob', folderPrefix: 'baileys-grp' }),
+			createTestClient({ label: 'charlie', folderPrefix: 'baileys-grp' })
 		])
 		logger.info({ alice: alice.jid, bob: bob.jid, charlie: charlie.jid }, 'Trio paired')
 	})

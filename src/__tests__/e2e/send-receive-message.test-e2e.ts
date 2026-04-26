@@ -1,22 +1,17 @@
 import { Buffer } from 'node:buffer'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
 import {
-	Boom,
-	DisconnectReason,
 	downloadMediaMessage,
 	type DownloadMediaMessageContext,
-	jidNormalizedUser,
 	makeWASocket,
 	proto,
-	useMultiFileAuthState,
 	type WAMessage
 } from '../../index.ts'
 import { expect } from '../expect.ts'
+import { createTestClient, destroyTestClient } from './test-client.ts'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,53 +20,6 @@ import { expect } from '../expect.ts'
 type WASocket = ReturnType<typeof makeWASocket>
 
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
-const socketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
-
-async function createTestClient(label: string): Promise<{
-	sock: WASocket
-	jid: string
-	lid?: string
-	authFolder: string
-}> {
-	const authFolder = mkdtempSync(join(tmpdir(), `baileys-e2e-${label}-`))
-	const { state } = await useMultiFileAuthState(authFolder)
-
-	const sock = makeWASocket({
-		auth: state,
-		waWebSocketUrl: socketUrl,
-		logger: logger.child({ user: label })
-	})
-
-	const jid = await new Promise<string>((resolve, reject) => {
-		sock.ev.on('connection.update', update => {
-			if (update.connection === 'open') {
-				resolve(jidNormalizedUser(sock.user?.id))
-			} else if (update.connection === 'close') {
-				const reason = (update.lastDisconnect?.error as Boom)?.output?.statusCode
-				if (reason === DisconnectReason.loggedOut) {
-					reject(new Error(`${label}: Logged out`))
-				}
-			}
-		})
-	})
-
-	return { sock, jid, lid: sock.user?.lid, authFolder }
-}
-
-async function destroyTestClient(client: { sock: WASocket; authFolder: string }) {
-	try {
-		client.sock.setAutoReconnect(false)
-		await client.sock.end()
-	} catch {
-		/* ignore */
-	}
-
-	try {
-		rmSync(client.authFolder, { recursive: true, force: true })
-	} catch {
-		/* ignore */
-	}
-}
 
 function waitForMessage(
 	sock: WASocket,
@@ -117,7 +65,10 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 	let bob: Awaited<ReturnType<typeof createTestClient>>
 
 	before(async () => {
-		;[alice, bob] = await Promise.all([createTestClient('alice'), createTestClient('bob')])
+		;[alice, bob] = await Promise.all([
+			createTestClient({ label: 'alice' }),
+			createTestClient({ label: 'bob' })
+		])
 		logger.info({ alice: alice.jid, bob: bob.jid }, 'Both users connected')
 	})
 

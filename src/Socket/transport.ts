@@ -102,9 +102,9 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			// Await the actual close before returning. Without this, the caller
 			// (core's `connect_and_run` on a 515 reconnect path) can race-open a
 			// brand-new WebSocket while the previous TCP connection is still in
-			// CLOSING on the server side; some servers (notably the bartender
-			// mock) queue / reject the new accept() until the old one is fully
-			// released, stalling reconnect to the 20s connect-timeout ceiling.
+			// CLOSING on the server side; some servers queue/reject the new
+			// accept() until the old one is fully released, stalling reconnect
+			// to the 20s connect-timeout ceiling.
 			if (toClose.readyState === WebSocket.CLOSED) return
 
 			const closed = new Promise<void>(resolve => {

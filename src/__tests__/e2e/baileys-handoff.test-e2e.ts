@@ -55,6 +55,7 @@ import * as upstreamBaileys from 'baileys'
 import P from 'pino'
 import { Boom, DisconnectReason, jidNormalizedUser, makeWASocket, type proto } from '../../index.ts'
 import { expect } from '../expect.ts'
+import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
@@ -147,6 +148,10 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 
 	// Persist as keys/creds advance — without this the swap reads stale state.
 	sock.ev.on('creds.update', saveCreds)
+
+	// Bartender mock-server is scan-driven; an external "phone" must POST
+	// the QR for pair-success to flow.
+	attachQrAutoresponder(sock, socketUrl)
 
 	const jid = await new Promise<string>((resolve, reject) => {
 		const tid = setTimeout(() => reject(new Error(`${label}: connect timeout (bridge)`)), 30_000)

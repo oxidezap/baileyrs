@@ -5,78 +5,24 @@
  * work correctly against the mock WA server.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import process from 'node:process'
 import { after, before, describe, mock, test } from 'node:test'
 import P from 'pino'
-import {
-	type BinaryNode,
-	Boom,
-	DisconnectReason,
-	jidNormalizedUser,
-	makeWASocket,
-	useMultiFileAuthState
-} from '../../index.ts'
+import { type BinaryNode, Boom, DisconnectReason } from '../../index.ts'
 import { expect } from '../expect.ts'
-
-type WASocket = ReturnType<typeof makeWASocket>
+import { createTestClient, destroyTestClient } from './test-client.ts'
 
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
-const socketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
-
-async function createTestClient(label: string): Promise<{
-	sock: WASocket
-	jid: string
-	authFolder: string
-}> {
-	const authFolder = mkdtempSync(join(tmpdir(), `baileys-compat-${label}-`))
-	const { state } = await useMultiFileAuthState(authFolder)
-
-	const sock = makeWASocket({
-		auth: state,
-		waWebSocketUrl: socketUrl,
-		logger: logger.child({ user: label })
-	})
-
-	const jid = await new Promise<string>((resolve, reject) => {
-		sock.ev.on('connection.update', update => {
-			if (update.connection === 'open') {
-				resolve(jidNormalizedUser(sock.user?.id))
-			} else if (update.connection === 'close') {
-				const reason = (update.lastDisconnect?.error as Boom)?.output?.statusCode
-				if (reason === DisconnectReason.loggedOut) {
-					reject(new Error(`${label}: Logged out`))
-				}
-			}
-		})
-	})
-
-	return { sock, jid, authFolder }
-}
-
-async function destroyTestClient(client: { sock: WASocket; authFolder: string }) {
-	try {
-		client.sock.setAutoReconnect(false)
-		await client.sock.end()
-	} catch {
-		/* ignore */
-	}
-
-	try {
-		rmSync(client.authFolder, { recursive: true, force: true })
-	} catch {
-		/* ignore */
-	}
-}
 
 describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
 	let alice: Awaited<ReturnType<typeof createTestClient>>
 	let bob: Awaited<ReturnType<typeof createTestClient>>
 
 	before(async () => {
-		;[alice, bob] = await Promise.all([createTestClient('compat-alice'), createTestClient('compat-bob')])
+		;[alice, bob] = await Promise.all([
+			createTestClient({ label: 'compat-alice', folderPrefix: 'baileys-compat' }),
+			createTestClient({ label: 'compat-bob', folderPrefix: 'baileys-compat' })
+		])
 		logger.info({ alice: alice.jid, bob: bob.jid }, 'Both users connected')
 	})
 
