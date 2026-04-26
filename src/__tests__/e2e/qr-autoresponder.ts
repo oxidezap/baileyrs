@@ -32,23 +32,32 @@ export function mockAdminScanQrUrl(socketUrl: string): string {
  */
 export function attachQrAutoresponder(sock: WASocket, socketUrl: string): () => void {
 	const url = mockAdminScanQrUrl(socketUrl)
-	let done = false
+	let succeeded = false
+	let inflight = false
 
 	const listener = async (update: { qr?: string }) => {
-		if (done || !update.qr) return
-		done = true
+		// `succeeded` permanently latches once the mock acks the scan; `inflight`
+		// just prevents racing duplicate POSTs while one is still pending. A
+		// failed first attempt must remain retryable because WA rotates QR
+		// values on a timer and the listener will see each rotation.
+		if (succeeded || inflight || !update.qr) return
+		inflight = true
 		try {
 			const resp = await fetch(url, {
 				method: 'POST',
 				body: update.qr,
 				headers: { 'content-type': 'text/plain' }
 			})
-			if (!resp.ok) {
+			if (resp.ok) {
+				succeeded = true
+			} else {
 				const text = await resp.text().catch(() => '')
 				console.error(`qr-autoresponder: admin POST returned ${resp.status}: ${text}`)
 			}
 		} catch (e) {
 			console.error(`qr-autoresponder: admin POST failed: ${(e as Error).message}`)
+		} finally {
+			inflight = false
 		}
 	}
 
