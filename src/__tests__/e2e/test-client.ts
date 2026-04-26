@@ -16,13 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import P from 'pino'
-import {
-	Boom,
-	DisconnectReason,
-	jidNormalizedUser,
-	makeWASocket,
-	useMultiFileAuthState
-} from '../../index.ts'
+import { Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>

@@ -65,10 +65,7 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 	let bob: Awaited<ReturnType<typeof createTestClient>>
 
 	before(async () => {
-		;[alice, bob] = await Promise.all([
-			createTestClient({ label: 'alice' }),
-			createTestClient({ label: 'bob' })
-		])
+		;[alice, bob] = await Promise.all([createTestClient({ label: 'alice' }), createTestClient({ label: 'bob' })])
 		logger.info({ alice: alice.jid, bob: bob.jid }, 'Both users connected')
 	})
 
