@@ -69,8 +69,21 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		// Rust handles messageContextInfo (reporting tokens, message secrets) internally
+		// Rust handles messageContextInfo (reporting tokens, message secrets) internally.
+		// Exception: pinInChatMessage relies on messageAddOnDurationInSecs to tell the
+		// server how long to pin (86400s / 604800s / 2592000s) or 0 to unpin. The bridge
+		// does not set this field, so we must preserve it across the delete.
+		const pinAddOnDuration =
+			contentType === 'pinInChatMessage'
+				? (msg as { messageContextInfo?: { messageAddOnDurationInSecs?: number } }).messageContextInfo
+						?.messageAddOnDurationInSecs
+				: undefined
 		delete (msg as Record<string, unknown>).messageContextInfo
+		if (pinAddOnDuration !== undefined) {
+			;(msg as Record<string, unknown>).messageContextInfo = {
+				messageAddOnDurationInSecs: pinAddOnDuration
+			}
+		}
 
 		let msgId: string
 		const msgBytes = encodeProto('Message', msg as Record<string, unknown>)
