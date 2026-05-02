@@ -13,6 +13,8 @@ interface Matchers<T> {
 	toBeInstanceOf(ctor: Ctor): void
 	toBeGreaterThan(n: number): void
 	toBeGreaterThanOrEqual(n: number): void
+	toBeLessThan(n: number): void
+	toBeLessThanOrEqual(n: number): void
 	toContain(item: unknown): void
 	toHaveLength(n: number): void
 	toHaveProperty(path: string): void
@@ -65,8 +67,10 @@ export function expect<T>(actual: T): Expect<T> {
 		toBeTruthy: () => assert.ok(actual),
 		toBeFalsy: () => assert.ok(!actual),
 		toBeInstanceOf: c => assert.ok(actual instanceof c),
-		toBeGreaterThan: n => assert.ok((actual as number) > n),
-		toBeGreaterThanOrEqual: n => assert.ok((actual as number) >= n),
+		toBeGreaterThan: n => assert.ok((actual as number) > n, `expected ${String(actual)} > ${n}`),
+		toBeGreaterThanOrEqual: n => assert.ok((actual as number) >= n, `expected ${String(actual)} >= ${n}`),
+		toBeLessThan: n => assert.ok((actual as number) < n, `expected ${String(actual)} < ${n}`),
+		toBeLessThanOrEqual: n => assert.ok((actual as number) <= n, `expected ${String(actual)} <= ${n}`),
 		toContain: item => toContainImpl(actual, item),
 		toHaveLength: n => assert.strictEqual((actual as { length?: number }).length, n),
 		toHaveProperty: p => toHavePropertyImpl(actual, p),

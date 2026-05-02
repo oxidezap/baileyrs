@@ -27,6 +27,26 @@ function getMediaContent(content: WAMessageContent | null | undefined) {
 	)
 }
 
+/**
+ * Drop `messageContextInfo` before handing the proto to the Rust bridge so the
+ * bridge can fill in its own `messageSecret` / `reportingTokenVersion`.
+ *
+ * Exception: pin messages need `messageAddOnDurationInSecs` (86400 / 604800 /
+ * 2592000 to pin, 0 to unpin). The bridge does not set this field, so we save
+ * it across the delete and restore it on a fresh contextInfo.
+ *
+ * Mutates `msg` in place.
+ */
+export function stripContextInfoForBridge(msg: WAMessageContent): void {
+	const contentType = getContentType(msg)
+	const pinAddOnDuration =
+		contentType === 'pinInChatMessage' ? msg.messageContextInfo?.messageAddOnDurationInSecs : undefined
+	delete (msg as Record<string, unknown>).messageContextInfo
+	if (pinAddOnDuration !== undefined && pinAddOnDuration !== null) {
+		msg.messageContextInfo = { messageAddOnDurationInSecs: pinAddOnDuration }
+	}
+}
+
 export const makeMessageMethods = (ctx: SocketContext) => ({
 	sendMessage: async (
 		jid: string,
@@ -69,21 +89,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		// Rust handles messageContextInfo (reporting tokens, message secrets) internally.
-		// Exception: pinInChatMessage relies on messageAddOnDurationInSecs to tell the
-		// server how long to pin (86400s / 604800s / 2592000s) or 0 to unpin. The bridge
-		// does not set this field, so we must preserve it across the delete.
-		const pinAddOnDuration =
-			contentType === 'pinInChatMessage'
-				? (msg as { messageContextInfo?: { messageAddOnDurationInSecs?: number } }).messageContextInfo
-						?.messageAddOnDurationInSecs
-				: undefined
-		delete (msg as Record<string, unknown>).messageContextInfo
-		if (pinAddOnDuration !== undefined) {
-			;(msg as Record<string, unknown>).messageContextInfo = {
-				messageAddOnDurationInSecs: pinAddOnDuration
-			}
-		}
+		stripContextInfoForBridge(msg)
 
 		let msgId: string
 		const msgBytes = encodeProto('Message', msg as Record<string, unknown>)
@@ -171,9 +177,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		const user = ctx.getUser()
 		const userJid = user?.id ? jidNormalizedUser(user.id) : undefined
 
-		// Rust handles messageContextInfo internally (reporting tokens, message secrets).
-		// Strip it to avoid conflicts with the Rust-generated values.
-		delete (message as Record<string, unknown>).messageContextInfo
+		stripContextInfoForBridge(message as WAMessageContent)
 
 		const bytes = encodeProto('Message', message)
 		const id =

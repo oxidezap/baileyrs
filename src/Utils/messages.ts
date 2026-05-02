@@ -464,7 +464,8 @@ export const generateWAMessageContent = async (
 		m.pinInChatMessage.type = message.type
 		m.pinInChatMessage.senderTimestampMs = Date.now()
 
-		m.messageContextInfo.messageAddOnDurationInSecs = message.type === 1 ? message.time || 86400 : 0
+		m.messageContextInfo.messageAddOnDurationInSecs =
+			message.type === proto.PinInChat.Type.PIN_FOR_ALL ? message.time || 86400 : 0
 	} else if (hasNonNullishProperty(message, 'buttonReply')) {
 		switch (message.type) {
 			case 'template':
