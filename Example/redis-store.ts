@@ -34,7 +34,16 @@ export function makeRedisStore(redis: Redis | string = "redis://default:redis123
 		},
 
 		async flush(): Promise<void> {
-			// ioredis writes are not batched by default; no-op unless you add pipelining
+			const pipeline = client.pipeline();
+			let cursor = "0";
+			do {
+				const [next, keys] = await client.scan(cursor, "MATCH", "baileyrs:*", "COUNT", 100);
+				cursor = next;
+				for (const key of keys) {
+					pipeline.del(key);
+				}
+			} while (cursor !== "0");
+			await pipeline.exec();
 		},
 	};
 }
