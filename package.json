@@ -60,7 +60,6 @@
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= SOCKET_URL=wss://127.0.0.1:8080/ws/chat node --experimental-transform-types --experimental-test-isolation=none --test 'src/**/*.test-e2e.ts'"
   },
   "dependencies": {
-    "ioredis": "^5.10.1",
     "pino": "^9.6",
     "whatsapp-rust-bridge": "^0.6.0-alpha.20"
   },
