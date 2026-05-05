@@ -422,6 +422,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				/* ignore */
 			}
 
+			// Barrier: bridge cleanup paths fired during `disconnect()` may
+			// emit `set()` calls that are still queued as microtasks /
+			// `setImmediate` callbacks at this point. Two yields to the
+			// event loop drain (1) microtask queue and (2) the next
+			// macrotask tick where wasm-bindgen async callbacks land.
+			// Without this barrier, the flushes below run before the bridge
+			// has finished writing — a race that loses the last few sets
+			// (typically the closing-session ratchet step).
+			await new Promise(resolve => setImmediate(resolve))
+			await new Promise(resolve => setImmediate(resolve))
+
 			try {
 				await auth.store?.flush?.()
 			} catch {
