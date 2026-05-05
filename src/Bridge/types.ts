@@ -165,7 +165,20 @@ export interface CanonicalReceipt {
 	 * variant string — no `data` payload preserved). Drives the
 	 * `readTimestamp` / `playedTimestamp` slot in the emitted update.
 	 */
-	receiptType?: 'delivered' | 'sender' | 'retry' | 'read' | 'read-self' | 'played' | 'played-self' | 'inactive' | 'other'
+	receiptType?:
+		| 'delivered'
+		| 'sender'
+		| 'retry'
+		| 'enc-rekey-retry'
+		| 'read'
+		| 'read-self'
+		| 'played'
+		| 'played-self'
+		| 'inactive'
+		| 'peer-msg'
+		| 'history-sync'
+		| 'server-error'
+		| 'other'
 }
 
 // ── Contacts ──
@@ -257,6 +270,13 @@ export type CanonicalGroupAction =
 	| { type: 'delete'; reason?: string }
 	| { type: 'link'; linkType: string }
 	| { type: 'unlink'; unlinkType: string; unlinkReason?: string }
+	/**
+	 * Anti-spam: server temporarily restricted new joins until `expiration`.
+	 * `lockType` is the server's category (e.g. `'inviter_blocklisted'`).
+	 */
+	| { type: 'growthLocked'; expiration: number; lockType: string }
+	/** Server lifted a growth lock. */
+	| { type: 'growthUnlocked' }
 	/**
 	 * Single join-request created by a user. `requestMethod` carries
 	 * `invite_link` / `linked_group_join` / `non_admin_add`.

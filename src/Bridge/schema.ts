@@ -503,8 +503,9 @@ const parseReceiptType = (raw: unknown): import('./types.ts').CanonicalReceipt['
 		case 'sender':
 			return 'sender'
 		case 'retry':
-		case 'enc_rekey_retry':
 			return 'retry'
+		case 'enc_rekey_retry':
+			return 'enc-rekey-retry'
 		case 'read':
 			return 'read'
 		case 'read_self':
@@ -515,6 +516,12 @@ const parseReceiptType = (raw: unknown): import('./types.ts').CanonicalReceipt['
 			return 'played-self'
 		case 'inactive':
 			return 'inactive'
+		case 'peer_msg':
+			return 'peer-msg'
+		case 'history_sync':
+			return 'history-sync'
+		case 'server_error':
+			return 'server-error'
 		case undefined:
 			return undefined
 		default:
@@ -697,6 +704,15 @@ const adaptGroupAction = (raw: unknown): CanonicalGroupAction | null => {
 				unlinkType: asString(raw.unlink_type) ?? '',
 				unlinkReason: asString(raw.unlink_reason)
 			}
+		case 'growth_locked':
+		case 'growthlocked': {
+			const expiration = asNumber(raw.expiration)
+			if (expiration == null) return null
+			return { type: 'growthLocked', expiration, lockType: asString(raw.lock_type) ?? '' }
+		}
+		case 'growth_unlocked':
+		case 'growthunlocked':
+			return { type: 'growthUnlocked' }
 		case 'membership_approval_request':
 			return {
 				type: 'membershipApprovalRequest',
