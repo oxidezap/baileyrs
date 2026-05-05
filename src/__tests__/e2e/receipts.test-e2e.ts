@@ -101,8 +101,16 @@ describe('E2E: Receipts (delivery + read, 1:1 + group)', { timeout: 60_000 }, ()
 		const bobReceives = waitForMessage(bob.sock, m => getTextContent(m) === text && !m.key?.fromMe)
 		const charlieReceives = waitForMessage(charlie.sock, m => getTextContent(m) === text && !m.key?.fromMe)
 
+		// Receipts can land before sendMessage's promise resolves, so arm
+		// the waiter against a captured-by-closure id and await it after
+		// the message-arrival promises rather than after sendMessage.
+		let sentId = ''
+		const groupReceiptArrives = waitForEvent(alice.sock, 'message-receipt.update', updates =>
+			updates.some(u => sentId !== '' && u.key.id === sentId && (u.receipt.receiptTimestamp ?? 0) > 0)
+		)
+
 		const sent = await alice.sock.sendMessage(groupJid, { text })
-		const sentId = sent.key.id!
+		sentId = sent.key.id!
 
 		await Promise.all([bobReceives, charlieReceives])
 
@@ -112,9 +120,7 @@ describe('E2E: Receipts (delivery + read, 1:1 + group)', { timeout: 60_000 }, ()
 		// it defaults to false, so this test asserts only the receipt
 		// arrival. Tighten to `participant != null` once that bridge gap
 		// is closed.
-		const update = await waitForEvent(alice.sock, 'message-receipt.update', updates =>
-			updates.some(u => u.key.id === sentId && (u.receipt.receiptTimestamp ?? 0) > 0)
-		)
+		const update = await groupReceiptArrives
 		const groupReceipt = update.find(u => u.key.id === sentId)
 		expect(groupReceipt).toBeDefined()
 		expect(groupReceipt!.receipt.receiptTimestamp).toBeGreaterThan(0)
