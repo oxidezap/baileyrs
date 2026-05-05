@@ -89,10 +89,17 @@ export async function useBridgeStore(folder: string): Promise<NonNullable<Authen
 		// Drain in a loop because new sets can land while we're awaiting the
 		// previous batch's writeFile. Bounded so a caller emitting writes in
 		// a tight loop can't lock us forever — `Socket/index.ts.end()` waits
-		// on this and must always return.
+		// on this and must always return. If the cap is hit with writes
+		// still pending, surface that to the caller — silently dropping
+		// them would lose Signal session steps and corrupt next decrypt.
 		for (let i = 0; i < FLUSH_MAX_PASSES && pendingWrites.size > 0; i++) {
 			const keys = [...pendingWrites.keys()]
 			await Promise.all(keys.map(flushWrite))
+		}
+		if (pendingWrites.size > 0) {
+			throw new Error(
+				`use-bridge-store flushAll did not quiesce after ${FLUSH_MAX_PASSES} passes (${pendingWrites.size} pending writes remain)`
+			)
 		}
 	}
 
