@@ -518,8 +518,29 @@ const adaptContactUpdate = (data: unknown): CanonicalEvent | null => {
 	}
 }
 
-/** Bridge wire `ReceiptType` → canonical kebab-cased variant. */
+/**
+ * Bridge wire `ReceiptType` → canonical kebab-cased variant.
+ *
+ * The bridge's generated `.d.ts` advertises `ReceiptType` as
+ * `{type: "delivered"} | …`, but `#[serde(from = "String")]` on the rust
+ * enum disables the matching `Serialize` rename: the wire form is the
+ * bare PascalCase variant name (`"Delivered"`, `"Read"`, `"PeerMsg"`).
+ * Keep both spellings here so a future bridge bump that re-introduces
+ * the snake_case wire form keeps working.
+ */
 const RECEIPT_TYPE_MAP: Record<string, NonNullable<import('./types.ts').CanonicalReceipt['receiptType']>> = {
+	Delivered: 'delivered',
+	Sender: 'sender',
+	Retry: 'retry',
+	EncRekeyRetry: 'enc-rekey-retry',
+	Read: 'read',
+	ReadSelf: 'read-self',
+	Played: 'played',
+	PlayedSelf: 'played-self',
+	Inactive: 'inactive',
+	PeerMsg: 'peer-msg',
+	HistorySync: 'history-sync',
+	ServerError: 'server-error',
 	delivered: 'delivered',
 	sender: 'sender',
 	retry: 'retry',
