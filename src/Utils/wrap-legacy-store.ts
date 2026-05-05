@@ -18,6 +18,8 @@ import { join } from 'node:path'
 import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
 import { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { AuthenticationCreds, AuthenticationState, LTHashState, SignalDataTypeMap } from '../Types/index.ts'
+import { jidDecode } from '../WABinary/jid-utils.ts'
+import { BufferJSON } from './generics.ts'
 
 // Runtime WAProto exports ADVSignedDeviceIdentity but d.ts uses AdvSignedDeviceIdentity
 type ProtoCodec = {
@@ -74,19 +76,17 @@ const STORE_MAP: Record<string, string> = {
 // `converters` below.
 const BINARY_STORES = new Set<string>()
 
-// Bridge-only stores — raw binary persisted through keys interface.
-// `lid_mapping` is intentionally excluded — it has a converter so the
-// `pn:`/`lid:` prefixed bridge keys translate to upstream's bare-userpart
-// `{pnUser}` + `{lidUser}_reverse` shape, letting both libraries share
-// the same on-disk LID↔PN mapping table.
-const BRIDGE_ONLY_STORES = new Set([
-	'signed_prekey',
-	'sender_key_devices',
-	'base_key',
-	'sent_message',
-	'mutation_mac',
-	'meta'
-])
+// Bridge-only stores — raw binary persisted through the keys interface.
+// Derived from STORE_MAP: anything mapped to a `bridge-*` upstream type
+// has no peer in upstream Baileys' SignalDataTypeMap and must round-trip
+// as raw bytes. `lid_mapping` is mapped to upstream's `lid-mapping` type
+// instead (its converter rewrites the key prefixes), so it's not
+// bridge-only and is naturally excluded by the prefix filter.
+const BRIDGE_ONLY_STORES = new Set(
+	Object.entries(STORE_MAP)
+		.filter(([, upstreamType]) => upstreamType.startsWith('bridge-'))
+		.map(([bridgeName]) => bridgeName)
+)
 
 // ---- Bridge Jid type (matches Rust Jid serde derive) ----
 
@@ -423,22 +423,6 @@ interface UpstreamSenderKeyState {
 	senderMessageKeys?: Array<{ iteration?: number; seed?: Uint8Array | Buffer }>
 }
 
-// BufferJSON-compatible replacer/reviver matching upstream `Utils/generics`.
-const bufferJsonReplacer = (_k: string, v: unknown): unknown => {
-	if (Buffer.isBuffer(v) || v instanceof Uint8Array || (v as { type?: string })?.type === 'Buffer') {
-		const data = (v as { data?: unknown })?.data ?? v
-		return { type: 'Buffer', data: Buffer.from(data as Uint8Array).toString('base64') }
-	}
-	return v
-}
-const bufferJsonReviver = (_k: string, v: unknown): unknown => {
-	const obj = v as { type?: string; data?: unknown } | null
-	if (obj && typeof obj === 'object' && obj.type === 'Buffer' && typeof obj.data === 'string') {
-		return Buffer.from(obj.data, 'base64')
-	}
-	return v
-}
-
 const sk_toBytes = (v: Uint8Array | Buffer | undefined): Uint8Array =>
 	v ? new Uint8Array(Buffer.from(v)) : new Uint8Array()
 const sk_toBuffer = (v: Uint8Array | Buffer | undefined): Buffer => Buffer.from(v ?? new Uint8Array())
@@ -464,11 +448,11 @@ function bridgeSenderKeyProtoToJson(protoBytes: Uint8Array): Buffer {
 			seed: sk_toBuffer(mk.seed)
 		}))
 	}))
-	return Buffer.from(JSON.stringify(states, bufferJsonReplacer), 'utf-8')
+	return Buffer.from(JSON.stringify(states, BufferJSON.replacer), 'utf-8')
 }
 
 function upstreamSenderKeyJsonToProto(jsonBuf: Uint8Array): Uint8Array {
-	const states = JSON.parse(Buffer.from(jsonBuf).toString('utf-8'), bufferJsonReviver) as UpstreamSenderKeyState[]
+	const states = JSON.parse(Buffer.from(jsonBuf).toString('utf-8'), BufferJSON.reviver) as UpstreamSenderKeyState[]
 	const senderKeyStates = states.map(s => ({
 		senderKeyId: s.senderKeyId ?? 0,
 		senderChainKey: { iteration: s.senderChainKey?.iteration ?? 0, seed: sk_toBytes(s.senderChainKey?.seed) },
@@ -784,21 +768,6 @@ function upstreamSessionRecordToProto(record: unknown): Uint8Array {
 
 // ---- Device/Creds ----
 
-/** Parse a JID string into { user, device, server } */
-function parseJid(jid: string | undefined): { user: string; device: number; server: string } | null {
-	if (!jid) return null
-	const atIdx = jid.indexOf('@')
-	if (atIdx < 0) return null
-	const server = jid.slice(atIdx + 1)
-	const userPart = jid.slice(0, atIdx)
-	const colonIdx = userPart.indexOf(':')
-	if (colonIdx >= 0) {
-		return { user: userPart.slice(0, colonIdx), device: parseInt(userPart.slice(colonIdx + 1)) || 0, server }
-	}
-
-	return { user: userPart, device: 0, server }
-}
-
 function credsToDeviceJson(creds: AuthenticationCreds): Uint8Array {
 	/** Serialize a key pair as [private(32) + public(32)] matching Rust key_pair_serde */
 	const kp = (pair: { public: Uint8Array; private: Uint8Array } | undefined): number[] => {
@@ -808,14 +777,14 @@ function credsToDeviceJson(creds: AuthenticationCreds): Uint8Array {
 
 	// Extract device number from me.id (e.g. "559984726662:7@s.whatsapp.net")
 	// or fall back to me.lid (e.g. "236395184570386:10@lid") for the device index
-	const pnJid = parseJid(creds.me?.id)
-	const lidJid = parseJid(creds.me?.lid)
+	const pnJid = jidDecode(creds.me?.id)
+	const lidJid = jidDecode(creds.me?.lid)
 	// If me.id has no device suffix, use the LID's device number
-	const deviceNum = pnJid && pnJid.device > 0 ? pnJid.device : (lidJid?.device ?? 0)
+	const deviceNum = pnJid?.device ?? lidJid?.device ?? 0
 
 	return toJson({
 		pn: pnJid ? { user: pnJid.user, server: 's.whatsapp.net', device: deviceNum, agent: 0, integrator: 0 } : null,
-		lid: lidJid ? { user: lidJid.user, server: 'lid', device: lidJid.device, agent: 0, integrator: 0 } : null,
+		lid: lidJid ? { user: lidJid.user, server: 'lid', device: lidJid.device ?? 0, agent: 0, integrator: 0 } : null,
 		registration_id: creds.registrationId ?? 0,
 		noise_key: kp(creds.noiseKey),
 		identity_key: kp(creds.signedIdentityKey),
@@ -1307,37 +1276,9 @@ export async function wrapLegacyStore(
 }
 
 // ---- Legacy multi-file auth state loader ----
-// Reads upstream Baileys' creds.json + per-key .json files (BufferJSON format).
-// This is the same format used by @whiskeysockets/baileys useMultiFileAuthState.
-
-/** JSON reviver that restores `{ type: "Buffer", data: "base64" | number[] }` → Buffer */
-interface BufferLike {
-	type?: string
-	buffer?: boolean
-	data?: unknown
-	value?: unknown
-}
-const bufferReviver = (_: string, value: unknown) => {
-	if (
-		value !== null &&
-		value !== undefined &&
-		typeof value === 'object' &&
-		((value as BufferLike).type === 'Buffer' || (value as BufferLike).buffer === true)
-	) {
-		const data = (value as BufferLike).data ?? (value as BufferLike).value
-		return typeof data === 'string'
-			? Buffer.from(data, 'base64')
-			: Buffer.from((Array.isArray(data) ? data : []) as number[])
-	}
-
-	return value
-}
-
-/** JSON replacer that serializes Buffer/Uint8Array → `{ type: "Buffer", data: "base64" }` */
-const bufferReplacer = (_: string, value: unknown) =>
-	value instanceof Uint8Array || Buffer.isBuffer(value)
-		? { type: 'Buffer', data: Buffer.from(value).toString('base64') }
-		: value
+// Reads upstream Baileys' creds.json + per-key .json files via the
+// shared `BufferJSON` codec (same as @whiskeysockets/baileys
+// useMultiFileAuthState).
 
 const fixFileName = (file?: string) => file?.replace(/\//g, '__')?.replace(/:/g, '-')
 
@@ -1366,14 +1307,14 @@ export async function useLegacyMultiFileAuthState(
 	const readData = async (file: string) => {
 		try {
 			const data = await readFile(join(folder, fixFileName(file)!), 'utf-8')
-			return JSON.parse(data, bufferReviver)
+			return JSON.parse(data, BufferJSON.reviver)
 		} catch {
 			return null
 		}
 	}
 
 	const writeData = async (data: unknown, file: string) => {
-		await writeFile(join(folder, fixFileName(file)!), JSON.stringify(data, bufferReplacer))
+		await writeFile(join(folder, fixFileName(file)!), JSON.stringify(data, BufferJSON.replacer))
 	}
 
 	const removeData = async (file: string) => {
