@@ -775,16 +775,16 @@ function credsToDeviceJson(creds: AuthenticationCreds): Uint8Array {
 		return bufToNumArray(Buffer.from(pair.private)).concat(bufToNumArray(Buffer.from(pair.public)))
 	}
 
-	// Extract device number from me.id (e.g. "559984726662:7@s.whatsapp.net")
-	// or fall back to me.lid (e.g. "236395184570386:10@lid") for the device index
 	const pnJid = jidDecode(creds.me?.id)
 	const lidJid = jidDecode(creds.me?.lid)
-	// If me.id has no device suffix, use the LID's device number
 	const deviceNum = pnJid?.device ?? lidJid?.device ?? 0
 
+	// Preserve `server` so hosted / hosted.lid accounts survive migration.
 	return toJson({
-		pn: pnJid ? { user: pnJid.user, server: 's.whatsapp.net', device: deviceNum, agent: 0, integrator: 0 } : null,
-		lid: lidJid ? { user: lidJid.user, server: 'lid', device: lidJid.device ?? 0, agent: 0, integrator: 0 } : null,
+		pn: pnJid ? { user: pnJid.user, server: pnJid.server, device: deviceNum, agent: 0, integrator: 0 } : null,
+		lid: lidJid
+			? { user: lidJid.user, server: lidJid.server, device: lidJid.device ?? 0, agent: 0, integrator: 0 }
+			: null,
 		registration_id: creds.registrationId ?? 0,
 		noise_key: kp(creds.noiseKey),
 		identity_key: kp(creds.signedIdentityKey),
