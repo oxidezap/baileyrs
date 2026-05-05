@@ -109,13 +109,18 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 	groupSettingUpdate: async (jid: string, setting: GroupSettingArg, value?: boolean) => {
 		// Map upstream-Baileys legacy single-arg verbs onto the bridge's
 		// (setting, boolean) contract via GROUP_SETTING_ALIASES. Native
-		// settings ('locked' / 'announce' / 'membership_approval') fall
-		// through with the caller-supplied `value`.
-		const resolved = GROUP_SETTING_ALIASES[setting] ?? {
-			setting: setting as GroupSettingResolved['setting'],
-			value: value ?? false
+		// settings ('locked' / 'announce' / 'membership_approval') require
+		// an explicit `value` — silently defaulting to `false` masks a
+		// caller bug as a successful "turn off" call.
+		const alias = GROUP_SETTING_ALIASES[setting]
+		if (alias) {
+			await (await ctx.getClient()).groupSettingUpdate(jid, alias.setting, alias.value)
+			return
 		}
-		await (await ctx.getClient()).groupSettingUpdate(jid, resolved.setting, resolved.value)
+		if (value === undefined) {
+			throw new TypeError(`groupSettingUpdate: setting "${setting}" requires an explicit boolean value`)
+		}
+		await (await ctx.getClient()).groupSettingUpdate(jid, setting as GroupSettingResolved['setting'], value)
 	},
 
 	groupToggleEphemeral: async (jid: string, expiration: number) => {
