@@ -15,6 +15,7 @@ import type {
 	BinaryNode,
 	ConnectionState,
 	Contact,
+	LIDMapping,
 	ReachoutTimelockState,
 	UserFacingSocketConfig,
 	WAMessage
@@ -153,6 +154,52 @@ function makeSignalRepository(ctx: SocketContext) {
 			getPNForLID: async (lid: string): Promise<string | null> => {
 				const client = await ctx.getClient()
 				return (await client.pnForLid(lid)) ?? null
+			},
+			/**
+			 * Batch variant of `getLIDForPN`. Upstream Baileys' equivalent
+			 * coalesces in-flight requests and de-duplicates inputs; we run
+			 * the lookups in parallel and return the same `LIDMapping[]`
+			 * shape so callers (e.g. `process-message.ts`) keep working.
+			 *
+			 * Returns `null` (not `[]`) when the input list is empty, to
+			 * mirror upstream's "absent" sentinel.
+			 */
+			getLIDsForPNs: async (pns: string[]): Promise<LIDMapping[] | null> => {
+				if (pns.length === 0) return null
+				const client = await ctx.getClient()
+				const unique = [...new Set(pns)]
+				const resolved = await Promise.all(
+					unique.map(async pn => {
+						const lid = (await client.lidForPn(pn)) ?? null
+						return lid ? ({ pn, lid } satisfies LIDMapping) : null
+					})
+				)
+				return resolved.filter((m): m is LIDMapping => m !== null)
+			},
+			getPNsForLIDs: async (lids: string[]): Promise<LIDMapping[] | null> => {
+				if (lids.length === 0) return null
+				const client = await ctx.getClient()
+				const unique = [...new Set(lids)]
+				const resolved = await Promise.all(
+					unique.map(async lid => {
+						const pn = (await client.pnForLid(lid)) ?? null
+						return pn ? ({ pn, lid } satisfies LIDMapping) : null
+					})
+				)
+				return resolved.filter((m): m is LIDMapping => m !== null)
+			},
+			/**
+			 * No-op shim. The Rust bridge auto-learns LID↔PN mappings inside
+			 * `decode_message` / `usync` and persists them through
+			 * `JsStoreCallbacks` — upstream Baileys callers (notably
+			 * `process-message.ts` re-feeding mappings from `historySync`)
+			 * keep type-checking, but we don't need to write back.
+			 *
+			 * Logs at debug so unexpected paths stay traceable.
+			 */
+			storeLIDPNMappings: async (pairs: LIDMapping[]): Promise<void> => {
+				if (pairs.length === 0) return
+				ctx.logger.debug({ count: pairs.length }, 'lidMapping.storeLIDPNMappings — bridge auto-learns, no-op')
 			}
 		}
 	}
