@@ -50,9 +50,14 @@ export const buildGroupNotificationDomainEvent = (notification: CanonicalGroupUp
 	const action = notification.action
 	if (isParticipantAction(action)) {
 		const participants = action.participants.map(p => {
-			const entry: { id: string; admin?: 'admin' | 'superadmin' | null } = { id: p.jid }
+			const entry: { id: string; admin?: 'admin' | 'superadmin' | null; phoneNumber?: string } = { id: p.jid }
 			if (action.type === 'promote') entry.admin = 'admin'
 			else if (action.type === 'demote') entry.admin = null
+			// Carry the PN counterpart when the canonical layer extracted it
+			// from the bridge `<participant phone_number="...">` attribute.
+			// Lets bots in LID-mode groups DM the user via PN without an
+			// extra `lidMapping.getPNForLID` round-trip.
+			if (p.phoneNumber) entry.phoneNumber = p.phoneNumber
 			return entry
 		})
 		return {
