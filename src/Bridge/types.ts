@@ -203,7 +203,15 @@ export interface CanonicalChatPresence {
 	type: 'chatPresence'
 	chatJid: string
 	senderJid: string
+	/**
+	 * Bridge `ChatPresence` discriminator — `'composing' | 'paused'`.
+	 * Combine with `media` to derive upstream's `WAPresence`:
+	 * `composing + audio → recording`, `composing + '' → composing`,
+	 * `paused → paused`.
+	 */
 	state: string
+	/** `'audio'` when the user is recording a voice note, otherwise `''`. */
+	media?: string
 }
 
 // ── Groups ──

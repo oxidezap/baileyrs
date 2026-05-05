@@ -188,7 +188,13 @@ const ADAPTERS = {
 		const chat = asJidString(src.chat)
 		const sender = asJidString(src.sender)
 		if (!chat || !sender) return null
-		return { type: 'chatPresence', chatJid: chat, senderJid: sender, state: asString(data.state) ?? 'composing' }
+		return {
+			type: 'chatPresence',
+			chatJid: chat,
+			senderJid: sender,
+			state: asString(data.state) ?? 'composing',
+			media: asString(data.media)
+		}
 	},
 
 	// ── Groups ──

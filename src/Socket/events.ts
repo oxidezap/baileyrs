@@ -395,19 +395,19 @@ const DISPATCHERS: DispatcherMap = {
 			}
 		}),
 	chatPresence: (evt, { ctx }) => {
-		// Bridge emits `ReceivedChatState` ("typing" / "recording_audio" /
-		// "idle"); upstream Baileys' `WAPresence` uses "composing" /
-		// "recording" / "paused". Map the wire vocab to upstream's so
-		// consumers branching on `lastKnownPresence === 'composing'` see
-		// the right value.
+		// Bridge `ChatPresenceUpdate.state` is `'composing' | 'paused'`.
+		// `recording` is signaled via `media === 'audio'` riding on top of
+		// `composing` — upstream Baileys' `WAPresence` collapses the two
+		// signals into 'composing' / 'recording' / 'paused'. Without
+		// reading `media` we can never emit 'recording'.
 		const mapped: WAPresence =
-			evt.state === 'typing'
-				? 'composing'
-				: evt.state === 'recording_audio'
+			evt.state === 'composing'
+				? evt.media === 'audio'
 					? 'recording'
-					: evt.state === 'idle'
-						? 'paused'
-						: (evt.state as WAPresence)
+					: 'composing'
+				: evt.state === 'paused'
+					? 'paused'
+					: (evt.state as WAPresence)
 		ctx.ev.emit('presence.update', {
 			id: evt.chatJid,
 			presences: { [evt.senderJid]: { lastKnownPresence: mapped } }
