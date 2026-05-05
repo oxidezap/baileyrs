@@ -206,11 +206,16 @@ const ADAPTERS = {
 		// Bridge sends `media: ''` for "no media" — normalize to undefined
 		// so consumers can rely on field omission as the absence signal.
 		const media = asString(data.media)
+		// Bridge `state` MUST be one of the two canonical values; defaulting
+		// to 'composing' on an unknown/missing value would synthesize a
+		// false typing indicator. Drop the event instead.
+		const rawState = asString(data.state)
+		if (rawState !== 'composing' && rawState !== 'paused') return null
 		return {
 			type: 'chatPresence',
 			chatJid: chat,
 			senderJid: sender,
-			state: asString(data.state) ?? 'composing',
+			state: rawState,
 			media: media === 'audio' ? 'audio' : undefined
 		}
 	},

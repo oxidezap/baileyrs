@@ -959,16 +959,16 @@ describe('dispatch: app-state deletes', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('dispatch: chat_presence → presence.update', () => {
-	const collectPresence = (state: string, media?: string) => {
-		const updates = collect(
+	const collectAll = (state: string, media?: string) =>
+		collect(
 			{
 				type: 'chat_presence',
 				data: { source: { chat: jid('group', 'g.us'), sender: jid('5511') }, state, media: media ?? '' }
 			},
 			'presence.update'
 		)
-		return Object.values(updates[0]?.presences ?? {})[0]?.lastKnownPresence
-	}
+	const collectPresence = (state: string, media?: string) =>
+		Object.values(collectAll(state, media)[0]?.presences ?? {})[0]?.lastKnownPresence
 
 	it("composing without media → 'composing'", () => {
 		expect(collectPresence('composing', '')).toBe('composing')
@@ -982,8 +982,8 @@ describe('dispatch: chat_presence → presence.update', () => {
 		expect(collectPresence('paused')).toBe('paused')
 	})
 
-	it("falls back to 'paused' for unknown wire states", () => {
-		expect(collectPresence('typing')).toBe('paused')
+	it('drops the event entirely for unknown wire states (no false typing indicators)', () => {
+		expect(collectAll('typing')).toEqual([])
 	})
 })
 
