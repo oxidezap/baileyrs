@@ -142,6 +142,21 @@ const toBuf = (v: unknown): Uint8Array | null =>
  *  Matches Rust's serde_json Vec<u8> format: [byte, byte, ...] */
 const bufToNumArray = (v: Uint8Array | Buffer): number[] => Array.from(Buffer.from(v))
 
+/**
+ * `true` when the key bytes are absent or all zeros. Used at the device-read
+ * boundary to detect a partially-hydrated creds object (e.g. migration
+ * remnants where only `me.id` survived) and tell the bridge to bootstrap
+ * fresh material instead of blowing up the noise handshake with `precondition-required`.
+ */
+const isZeroKey = (b: Uint8Array | Buffer | undefined | null): boolean => {
+	if (!b) return true
+	// Buffer is a Uint8Array subclass at runtime, so this view is always safe.
+	const view = b as Uint8Array
+	if (view.length === 0) return true
+	for (let i = 0; i < view.length; i++) if (view[i] !== 0) return false
+	return true
+}
+
 /** Bridge uses hex-encoded key IDs for sync_key; upstream uses base64. Convert hex→base64. */
 const hexToBase64 = (hex: string): string => Buffer.from(hex, 'hex').toString('base64')
 
@@ -1168,6 +1183,16 @@ export async function wrapLegacyStore(
 					// bootstrap its own device identity and write it back
 					// through `set('device', 'device', …)` on pair-success.
 					if (!creds.noiseKey && !creds.me?.id) return null
+					// Even when `noiseKey` is present as an object, the bytes
+					// can still be all-zero — happens after a partial migration
+					// from a legacy creds.json that only persisted `me.id`.
+					// `credsToDeviceJson` would happily emit zero-filled key
+					// slots, which the server rejects with the same 428. Treat
+					// any zero-byte critical key as a bootstrap signal.
+					if (isZeroKey(creds.noiseKey?.private) || isZeroKey(creds.signedIdentityKey?.private)) {
+						warn('device read: noiseKey/signedIdentityKey is zero-valued; signaling bootstrap to bridge')
+						return null
+					}
 					return credsToDeviceJson(creds)
 				}
 				if (key === 'account') {
