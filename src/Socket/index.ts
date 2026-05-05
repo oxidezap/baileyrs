@@ -163,6 +163,11 @@ function makeSignalRepository(ctx: SocketContext) {
 			 * the lookups in parallel and return the same `LIDMapping[]`
 			 * shape so callers (e.g. `process-message.ts`) keep working.
 			 *
+			 * Uses `Promise.allSettled` so one bridge-side failure (e.g.
+			 * malformed JID, transient cache miss) doesn't reject the
+			 * whole batch and lose every successful lookup. Failures are
+			 * logged at debug and skipped.
+			 *
 			 * Returns `null` (not `[]`) when the input list is empty, to
 			 * mirror upstream's "absent" sentinel.
 			 */
@@ -170,25 +175,41 @@ function makeSignalRepository(ctx: SocketContext) {
 				if (pns.length === 0) return null
 				const client = await ctx.getClient()
 				const unique = [...new Set(pns)]
-				const resolved = await Promise.all(
+				const settled = await Promise.allSettled(
 					unique.map(async pn => {
 						const lid = (await client.lidForPn(pn)) ?? null
 						return lid ? ({ pn, lid } satisfies LIDMapping) : null
 					})
 				)
-				return resolved.filter((m): m is LIDMapping => m !== null)
+				const resolved: LIDMapping[] = []
+				for (const r of settled) {
+					if (r.status === 'fulfilled') {
+						if (r.value) resolved.push(r.value)
+					} else {
+						ctx.logger.debug({ err: r.reason }, 'getLIDsForPNs: lookup rejected — skipping')
+					}
+				}
+				return resolved
 			},
 			getPNsForLIDs: async (lids: string[]): Promise<LIDMapping[] | null> => {
 				if (lids.length === 0) return null
 				const client = await ctx.getClient()
 				const unique = [...new Set(lids)]
-				const resolved = await Promise.all(
+				const settled = await Promise.allSettled(
 					unique.map(async lid => {
 						const pn = (await client.pnForLid(lid)) ?? null
 						return pn ? ({ pn, lid } satisfies LIDMapping) : null
 					})
 				)
-				return resolved.filter((m): m is LIDMapping => m !== null)
+				const resolved: LIDMapping[] = []
+				for (const r of settled) {
+					if (r.status === 'fulfilled') {
+						if (r.value) resolved.push(r.value)
+					} else {
+						ctx.logger.debug({ err: r.reason }, 'getPNsForLIDs: lookup rejected — skipping')
+					}
+				}
+				return resolved
 			},
 			/**
 			 * No-op shim. The Rust bridge auto-learns LID↔PN mappings inside
