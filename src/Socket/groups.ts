@@ -3,25 +3,18 @@ import type { GroupMetadata } from '../Types/index.ts'
 import type { SocketContext } from './types.ts'
 
 /**
- * Aliases accepted by upstream Baileys' single-arg `groupSettingUpdate(jid, verb)`.
- * Each alias resolves to a `(setting, value)` pair the bridge expects.
+ * Verbs accepted by upstream Baileys' single-arg `groupSettingUpdate(jid, verb)`:
+ * `'announcement' | 'not_announcement' | 'locked' | 'unlocked'`. Native
+ * settings (`'announce' | 'membership_approval'`) flow through the
+ * two-arg form with an explicit boolean value.
  */
-type GroupSettingArg =
-	| 'locked'
-	| 'announce'
-	| 'membership_approval'
-	| 'announcement'
-	| 'not_announcement'
-	| 'unlocked'
-	| 'on'
-	| 'off'
+type GroupSettingArg = 'announce' | 'membership_approval' | 'locked' | 'unlocked' | 'announcement' | 'not_announcement'
 type GroupSettingResolved = { setting: 'locked' | 'announce' | 'membership_approval'; value: boolean }
 const GROUP_SETTING_ALIASES: Partial<Record<GroupSettingArg, GroupSettingResolved>> = {
 	announcement: { setting: 'announce', value: true },
 	not_announcement: { setting: 'announce', value: false },
-	unlocked: { setting: 'locked', value: false },
-	on: { setting: 'locked', value: true },
-	off: { setting: 'locked', value: false }
+	locked: { setting: 'locked', value: true },
+	unlocked: { setting: 'locked', value: false }
 }
 
 /** Convert bridge GroupMetadataResult to Baileys GroupMetadata */
