@@ -364,7 +364,20 @@ const ADAPTERS = {
 	// ── Generic notification / raw node ──
 	notification: data => {
 		if (!isObject(data)) return { type: 'noop', bridgeType: 'notification' }
-		const attrs = isObject(data.attrs) ? (data.attrs as Record<string, string>) : {}
+		// Validate attrs values are actually strings — bridge serde might
+		// emit numbers / nested objects on rare attrs (e.g. server bugs),
+		// and the previous unchecked cast would smuggle non-strings into
+		// CanonicalNotification.attrs (typed `Record<string, string>`).
+		// Drop non-string values, coerce the rest.
+		const attrs: Record<string, string> = {}
+		if (isObject(data.attrs)) {
+			for (const [k, v] of Object.entries(data.attrs)) {
+				if (typeof v === 'string') attrs[k] = v
+				else if (typeof v === 'number' || typeof v === 'boolean') attrs[k] = String(v)
+				// Drop nested objects / null silently — they wouldn't make
+				// sense on a flat attrs map anyway.
+			}
+		}
 		return { type: 'notification', tag: asString(data.tag) ?? 'notification', attrs }
 	},
 

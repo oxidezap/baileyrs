@@ -288,13 +288,25 @@ const DISPATCHERS: DispatcherMap = {
 			protocolMsg?.type === WAProto.Message.ProtocolMessage.Type.GROUP_MEMBER_LABEL_CHANGE &&
 			protocolMsg.memberLabel?.label
 		) {
-			ctx.ev.emit('group.member-tag.update', {
-				groupId: evt.chatJid,
-				label: protocolMsg.memberLabel.label,
-				participant: evt.senderJid ?? '',
-				participantAlt: evt.participantAlt,
-				messageTimestamp: evt.timestamp
-			})
+			// `senderJid` is required for this event — it identifies the
+			// participant whose label changed. If the bridge ever surfaced a
+			// label-change without one (server bug / non-group context), an
+			// empty-string fallback would corrupt downstream consumer state.
+			// Skip with a warn instead.
+			if (!evt.senderJid) {
+				ctx.logger.warn(
+					{ chatJid: evt.chatJid, label: protocolMsg.memberLabel.label },
+					'GROUP_MEMBER_LABEL_CHANGE without senderJid — dropping (no participant to attribute)'
+				)
+			} else {
+				ctx.ev.emit('group.member-tag.update', {
+					groupId: evt.chatJid,
+					label: protocolMsg.memberLabel.label,
+					participant: evt.senderJid,
+					participantAlt: evt.participantAlt,
+					messageTimestamp: evt.timestamp
+				})
+			}
 		}
 
 		const protocolKeyId = protocolMsg?.key?.id
@@ -414,16 +426,18 @@ const DISPATCHERS: DispatcherMap = {
 		// Bridge `ChatPresenceUpdate.state` is `'composing' | 'paused'`.
 		// `recording` is signaled via `media === 'audio'` riding on top of
 		// `composing` — upstream Baileys' `WAPresence` collapses the two
-		// signals into 'composing' / 'recording' / 'paused'. Without
-		// reading `media` we can never emit 'recording'.
-		const mapped: WAPresence =
-			evt.state === 'composing'
-				? evt.media === 'audio'
-					? 'recording'
-					: 'composing'
-				: evt.state === 'paused'
-					? 'paused'
-					: (evt.state as WAPresence)
+		// signals into 'composing' / 'recording' / 'paused'. Anything
+		// outside this set falls back to `'paused'` (the safe sentinel —
+		// "stopped doing whatever they were doing") rather than passing
+		// through unvalidated, which previously could leak unknown wire
+		// values onto consumer-facing `WAPresence`.
+		let mapped: WAPresence
+		if (evt.state === 'composing') mapped = evt.media === 'audio' ? 'recording' : 'composing'
+		else if (evt.state === 'paused') mapped = 'paused'
+		else {
+			ctx.logger.debug({ state: evt.state, media: evt.media }, 'chat_presence: unknown state — falling back to paused')
+			mapped = 'paused'
+		}
 		ctx.ev.emit('presence.update', {
 			id: evt.chatJid,
 			presences: { [evt.senderJid]: { lastKnownPresence: mapped } }
