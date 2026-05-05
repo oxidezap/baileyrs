@@ -1,5 +1,5 @@
 import type { GroupMetadataResult } from 'whatsapp-rust-bridge'
-import type { GroupMetadata } from '../Types/index.ts'
+import type { GroupMetadata, GroupParticipant } from '../Types/index.ts'
 import type { SocketContext } from './types.ts'
 
 /** Convert bridge GroupMetadataResult to Baileys GroupMetadata */
@@ -47,8 +47,28 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 		// CreateGroupResult.
 		const client = await ctx.getClient()
 		const { gid } = await client.createGroup(subject, participants)
-		const metadata = await client.getGroupMetadata(gid)
-		return bridgeGroupToMetadata(metadata)
+		try {
+			const metadata = await client.getGroupMetadata(gid)
+			return bridgeGroupToMetadata(metadata)
+		} catch (err) {
+			// Group exists on the server (createGroup succeeded) but we
+			// couldn't read it back. Return a minimal partial so the caller
+			// keeps the gid + the inputs they supplied — they can refetch
+			// later via `sock.groupMetadata(gid)`. Losing the gid here would
+			// orphan the group entirely.
+			ctx.logger.warn(
+				{ err, gid },
+				'groupCreate: group created but getGroupMetadata failed — returning partial metadata'
+			)
+			const fallback: Partial<GroupMetadata> & { id: string } = {
+				id: gid,
+				subject,
+				participants: participants.map(
+					id => ({ id, isAdmin: false, admin: null }) satisfies Partial<GroupParticipant> & { id: string }
+				) as GroupParticipant[]
+			}
+			return fallback as GroupMetadata
+		}
 	},
 
 	groupLeave: async (jid: string) => {
