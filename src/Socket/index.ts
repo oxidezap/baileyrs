@@ -478,16 +478,20 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			await new Promise(resolve => setImmediate(resolve))
 			await new Promise(resolve => setImmediate(resolve))
 
+			// Capture the FIRST flush failure so a corrupt-on-shutdown auth
+			// state surfaces to the caller. Always finish the rest of
+			// cleanup; rethrow at the end so c.free() still runs.
+			let firstFlushError: unknown
 			try {
 				await auth.store?.flush?.()
-			} catch {
-				/* ignore */
+			} catch (e) {
+				firstFlushError ??= e
 			}
 
 			try {
 				await autoWrappedStore?.flush?.()
-			} catch {
-				/* ignore */
+			} catch (e) {
+				firstFlushError ??= e
 			}
 
 			try {
@@ -495,6 +499,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			} catch {
 				/* ignore */
 			}
+
+			if (firstFlushError) throw firstFlushError
 		}
 	}
 
