@@ -28,6 +28,7 @@ import { _registerActiveBridgeClient, downloadMediaMessage } from '../Utils/mess
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
+import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
@@ -582,7 +583,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				throw err
 			}
 
-			return resultPromise
+			const result = await resultPromise
+			// Mirror upstream `Socket/socket.ts:217-220`: a stanza with an
+			// `<error>` child is a server-rejection. Throw a Boom carrying
+			// the error code so consumers branching on
+			// `lastDisconnect.error.statusCode` / `.data` can react. Without
+			// this, code expecting upstream semantics treats a 403 / 405
+			// error response as success and reads garbage attrs.
+			assertNodeErrorFree(result)
+			return result
 		},
 		sendRawMessage: async (data: Uint8Array | Buffer) => {
 			return (await ctx.getClient()).sendRawMessage(data instanceof Uint8Array ? data : new Uint8Array(data))
