@@ -1,5 +1,5 @@
 import type { GroupMetadataResult } from 'whatsapp-rust-bridge'
-import type { GroupMetadata, GroupParticipant } from '../Types/index.ts'
+import type { GroupMetadata } from '../Types/index.ts'
 import type { SocketContext } from './types.ts'
 
 /** Convert bridge GroupMetadataResult to Baileys GroupMetadata */
@@ -38,37 +38,12 @@ export const makeGroupMethods = (ctx: SocketContext) => ({
 	},
 
 	groupCreate: async (subject: string, participants: string[]): Promise<GroupMetadata> => {
-		// Bridge's `createGroup` returns only `{ gid }`. Upstream Baileys
-		// returns the full GroupMetadata (id/subject/owner/participants[]/…)
-		// after parsing the IQ response. Match that contract by chasing the
-		// metadata once the group exists. Two round-trips total — same as
-		// upstream which extracts metadata from the create response — but
-		// this way we don't depend on the bridge to expose every field on
-		// CreateGroupResult.
-		const client = await ctx.getClient()
-		const { gid } = await client.createGroup(subject, participants)
-		try {
-			const metadata = await client.getGroupMetadata(gid)
-			return bridgeGroupToMetadata(metadata)
-		} catch (err) {
-			// Group exists on the server (createGroup succeeded) but we
-			// couldn't read it back. Return a minimal partial so the caller
-			// keeps the gid + the inputs they supplied — they can refetch
-			// later via `sock.groupMetadata(gid)`. Losing the gid here would
-			// orphan the group entirely.
-			ctx.logger.warn(
-				{ err, gid },
-				'groupCreate: group created but getGroupMetadata failed — returning partial metadata'
-			)
-			const fallback: Partial<GroupMetadata> & { id: string } = {
-				id: gid,
-				subject,
-				participants: participants.map(
-					id => ({ id, isAdmin: false, admin: null }) satisfies Partial<GroupParticipant> & { id: string }
-				) as GroupParticipant[]
-			}
-			return fallback as GroupMetadata
-		}
+		// Bridge's `createGroup` parses the full `<group>` node from the
+		// server's create response and returns the same `GroupMetadataResult`
+		// shape as `getGroupMetadata` — single round-trip, matches upstream
+		// Baileys' `extractGroupMetadata(result)` flow.
+		const metadata = await (await ctx.getClient()).createGroup(subject, participants)
+		return bridgeGroupToMetadata(metadata)
 	},
 
 	groupLeave: async (jid: string) => {
