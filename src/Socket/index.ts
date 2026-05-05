@@ -536,15 +536,22 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			return new Promise<T>((resolve, reject) => {
 				const timeout = timeoutMs ?? fullConfig.defaultQueryTimeoutMs
 				let timer: NodeJS.Timeout | undefined
+				const tag = `TAG:${msgId}`
+				// Use `on`+explicit `off` instead of `once`. Two callers
+				// awaiting the same id (rare but legal — can happen when an
+				// id is reused for retries, or when both an `<ack>` and an
+				// `<iq result>` carry the same id) would otherwise have the
+				// second listener silently consumed by the first emit.
 				const onRecv = (data: T) => {
 					if (timer) clearTimeout(timer)
+					ws.off(tag, listener)
 					resolve(data)
 				}
-
-				ws.once(`TAG:${msgId}`, onRecv as (...args: unknown[]) => void)
+				const listener = onRecv as (...args: unknown[]) => void
+				ws.on(tag, listener)
 				if (timeout) {
 					timer = setTimeout(() => {
-						ws.off(`TAG:${msgId}`, onRecv as (...args: unknown[]) => void)
+						ws.off(tag, listener)
 						reject(new Boom('Timed out waiting for message', { statusCode: DisconnectReason.timedOut }))
 					}, timeout)
 					// Query timers shouldn't keep the process alive past sock.end()
@@ -559,11 +566,19 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 
 			const msgId = node.attrs.id
+			const tag = `TAG:${msgId}`
+			// Snapshot the listeners on this tag BEFORE attaching ours so a
+			// sendNode failure can remove only what we added — never another
+			// caller's listener. `removeAllListeners(tag)` was the prior
+			// behavior; it could nuke a parallel `waitForMessage` belonging
+			// to a different consumer.
+			const before = ws.listeners(tag)
 			const resultPromise = sock.waitForMessage<BinaryNode>(msgId, timeoutMs)
 			try {
 				await sock.sendNode(node)
 			} catch (err) {
-				ws.removeAllListeners(`TAG:${msgId}`)
+				const ours = ws.listeners(tag).filter(l => !before.includes(l))
+				for (const l of ours) ws.off(tag, l as (...args: unknown[]) => void)
 				throw err
 			}
 
