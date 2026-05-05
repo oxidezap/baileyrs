@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { decodeStubParticipant, type StubParticipantPayload } from '../Utils/group-stub-params.ts'
 
 type Ctor = new (...args: never[]) => unknown
 type ThrowMatcher = string | RegExp | Error | Ctor | ((err: Error) => boolean)
@@ -72,6 +73,23 @@ function toMatchObjectImpl(actual: unknown, expected: unknown): void {
 		} else {
 			assert.deepStrictEqual(actVal, expVal, `mismatch at "${key}"`)
 		}
+	}
+}
+
+/**
+ * Assert a `messageStubParameters[i]` raw string decodes to a participant
+ * payload that contains AT LEAST the expected fields. Extra fields on the
+ * decoded payload (e.g. a `phoneNumber` the bridge happens to include) do
+ * NOT fail the assert — callers state only what they care about. Fails
+ * loudly when the string is missing, not valid JSON, or has the wrong
+ * shape, which catches regressions where a raw JID leaks back in.
+ */
+export function expectStubParticipant(raw: string | null | undefined, expected: StubParticipantPayload): void {
+	const decoded = decodeStubParticipant(raw)
+	assert.ok(decoded !== null, `expected stub participant payload, got ${JSON.stringify(raw)}`)
+	assert.strictEqual(decoded.id, expected.id, 'stub participant id mismatch')
+	if (expected.phoneNumber !== undefined) {
+		assert.strictEqual(decoded.phoneNumber, expected.phoneNumber, 'stub participant phoneNumber mismatch')
 	}
 }
 

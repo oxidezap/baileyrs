@@ -21,7 +21,7 @@ import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
 import { type proto, WAMessageStubType } from '../../index.ts'
-import { expect } from '../expect.ts'
+import { expect, expectStubParticipant } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
@@ -44,16 +44,6 @@ function plainPnJid(jid: string): string {
 function lidJid(client: TestClient): string {
 	if (!client.lid) throw new Error(`${client.label} has no LID — was it paired?`)
 	return plainPnJid(client.lid)
-}
-
-/**
- * Upstream Baileys serializes each `messageStubParameters[i]` for
- * GROUP_PARTICIPANT_* stubs as `JSON.stringify({ id, phoneNumber? })`,
- * so consumers can `JSON.parse` it cleanly. Pull `.id` out for assertions.
- */
-function stubParticipantId(raw: string | null | undefined): string | undefined {
-	if (!raw) return undefined
-	return JSON.parse(raw).id as string
 }
 
 describe('E2E: Group lifecycle (create → message → promote → demote → kick)', { timeout: 90_000 }, () => {
@@ -189,11 +179,10 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 			expect(evt.participants[0]!.id).toBe(lidJid(bob))
 		}
 
-		// Stub message — what sung's anti-system handler reads from. Each
-		// param is `JSON.stringify({ id, phoneNumber? })` for upstream parity.
+		// Stub message — what sung's anti-system handler reads from.
 		const [bobStub, charlieStub] = await Promise.all([bobStubPromote, charlieStubPromote])
-		expect(stubParticipantId(bobStub.messageStubParameters?.[0])).toBe(lidJid(bob))
-		expect(stubParticipantId(charlieStub.messageStubParameters?.[0])).toBe(lidJid(bob))
+		expectStubParticipant(bobStub.messageStubParameters?.[0], { id: lidJid(bob) })
+		expectStubParticipant(charlieStub.messageStubParameters?.[0], { id: lidJid(bob) })
 	})
 
 	test('Bob (now admin) sends to group → alice+charlie receive', async () => {
@@ -224,7 +213,7 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 
 		const bobStub = await bobStubDemote
 		expect(bobStub.messageStubType).toBe(WAMessageStubType.GROUP_PARTICIPANT_DEMOTE)
-		expect(stubParticipantId(bobStub.messageStubParameters?.[0])).toBe(lidJid(bob))
+		expectStubParticipant(bobStub.messageStubParameters?.[0], { id: lidJid(bob) })
 	})
 
 	test('Alice removes charlie → alice+bob see remove + stub; charlie sees its own removal', async () => {
@@ -249,7 +238,7 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 
 		const bobStub = await bobStubRemove
 		expect(bobStub.messageStubType).toBe(WAMessageStubType.GROUP_PARTICIPANT_REMOVE)
-		expect(stubParticipantId(bobStub.messageStubParameters?.[0])).toBe(lidJid(charlie))
+		expectStubParticipant(bobStub.messageStubParameters?.[0], { id: lidJid(charlie) })
 	})
 
 	test('After kick: alice+bob can still message each other in the group', async () => {

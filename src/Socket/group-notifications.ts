@@ -1,6 +1,7 @@
 import type { CanonicalGroupAction, CanonicalGroupUpdate } from '../Bridge/types.ts'
 import type { BaileysEventMap, GroupMetadata, WAMessage } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
+import { encodeStubParticipant } from '../Utils/group-stub-params.ts'
 
 /**
  * Bridges `<notification type="w:gp2">` actions onto the two event surfaces
@@ -231,14 +232,11 @@ const SIMPLE_STUBS: Record<string, { stubType: number; idSuffix: string }> = {
 const stubRecipesFor = (action: CanonicalGroupAction): StubRecipe[] => {
 	if (isParticipantAction(action)) {
 		const stubType = PARTICIPANT_STUBS[action.type]
-		// Match upstream `messages-recv.ts:714`: each stubParameter is a
-		// `JSON.stringify({ id, phoneNumber? })` so upstream
-		// `process-message.ts` `JSON.parse`s cleanly.
-		return action.participants.map((p, idx) => {
-			const entry: { id: string; phoneNumber?: string } = { id: p.jid }
-			if (p.phoneNumber) entry.phoneNumber = p.phoneNumber
-			return { stubType, stubParams: [JSON.stringify(entry)], idSuffix: `${idx}-${p.jid.split('@')[0]}` }
-		})
+		return action.participants.map((p, idx) => ({
+			stubType,
+			stubParams: [encodeStubParticipant({ id: p.jid, phoneNumber: p.phoneNumber })],
+			idSuffix: `${idx}-${p.jid.split('@')[0]}`
+		}))
 	}
 
 	const toggle = TOGGLE_STUBS[action.type]
