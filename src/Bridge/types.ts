@@ -62,11 +62,18 @@ export interface CanonicalLoggedOut {
 	reason?: string
 }
 
+/**
+ * `reason` is the canonical signal — numeric wire code mapped to
+ * `DisconnectReason` by the dispatcher. `message` is the optional
+ * human-readable description for logs/diagnostics; consumers branching
+ * on the failure should use `reason`, not parse `message`.
+ */
 export interface CanonicalConnectFailure {
 	type: 'connectFailure'
+	/** Optional human-facing description (logs only — DO NOT branch on this). */
 	message?: string
 	/**
-	 * Bridge `ConnectFailureReason` numeric wire code:
+	 * Canonical numeric wire code (the source of truth for branching):
 	 *  400=Generic, 401=LoggedOut, 402=TempBanned, 403=MainDeviceGone,
 	 *  405=ClientOutdated, 406=UnknownLogout, 409=BadUserAgent,
 	 *  413=CatExpired, 414=CatInvalid, 415=NotFound, 418=ClientUnknown,
@@ -141,12 +148,20 @@ export interface CanonicalMessage {
 	 */
 	unavailableRequestId?: string
 	/**
-	 * Bridge `EditAttribute` (raw stanza string: "1" sender-edit,
-	 * "2" sender-revoke, "3" admin-revoke, "7" pin, "8" unpin, "" none).
+	 * Bridge `EditAttribute` (raw stanza string). Restricted to the wire
+	 * values the server emits so consumers can `switch` exhaustively.
+	 *
+	 *   "1" — sender-edit
+	 *   "2" — sender-revoke
+	 *   "3" — admin-revoke
+	 *   "7" — pin
+	 *   "8" — unpin
+	 *   ""  — none (omitted at the canonical layer; never reaches here)
+	 *
 	 * Used to set `key.editAttribute` on the wrapped WAMessage so consumers
 	 * can dedupe edits against the original message id.
 	 */
-	editAttribute?: string
+	editAttribute?: '1' | '2' | '3' | '7' | '8'
 	messageProto: WAProto.IMessage
 }
 
@@ -231,12 +246,16 @@ export interface CanonicalChatPresence {
 	/**
 	 * Bridge `ChatPresence` discriminator — `'composing' | 'paused'`.
 	 * Combine with `media` to derive upstream's `WAPresence`:
-	 * `composing + audio → recording`, `composing + '' → composing`,
+	 * `composing + audio → recording`, `composing + (absent) → composing`,
 	 * `paused → paused`.
 	 */
 	state: string
-	/** `'audio'` when the user is recording a voice note, otherwise `''`. */
-	media?: string
+	/**
+	 * `'audio'` when the user is recording a voice note. Absent (not the
+	 * empty string) when no media — adapter normalizes the bridge's `''`
+	 * away so consumers can rely on field omission as the "no media" signal.
+	 */
+	media?: 'audio'
 }
 
 // ── Groups ──
@@ -425,14 +444,6 @@ export interface CanonicalUndecryptableMessage {
 	raw: unknown
 }
 
-/**
- * History sync — the chats/contacts/messages backfill that lands after
- * the initial pair (and again on demand). Already walked into
- * upstream-Baileys-shaped buckets by `processHistoryMessage`; the
- * dispatcher just re-emits them on `messaging-history.set` with the
- * extra metadata fields upstream expects on top
- * (`isLatest` / `chunkOrder` / `peerDataRequestSessionId`).
- */
 /**
  * Newsletter (channel) live update. The bridge folds reaction-count
  * deltas for one or more messages of a single newsletter into one

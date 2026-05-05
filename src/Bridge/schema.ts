@@ -199,12 +199,15 @@ const ADAPTERS = {
 		const chat = asJidString(src.chat)
 		const sender = asJidString(src.sender)
 		if (!chat || !sender) return null
+		// Bridge sends `media: ''` for "no media" — normalize to undefined
+		// so consumers can rely on field omission as the absence signal.
+		const media = asString(data.media)
 		return {
 			type: 'chatPresence',
 			chatJid: chat,
 			senderJid: sender,
 			state: asString(data.state) ?? 'composing',
-			media: asString(data.media)
+			media: media === 'audio' ? 'audio' : undefined
 		}
 	},
 
@@ -434,7 +437,18 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 	const participantAlt = isGroup && isBridgeJid(src.sender_alt) ? bridgeJidToString(src.sender_alt) : undefined
 	const remoteJidAlt = !isGroup && isBridgeJid(src.recipient_alt) ? bridgeJidToString(src.recipient_alt) : undefined
 
-	const editAttribute = asString(info.edit)
+	// Bridge `EditAttribute` is one of "1"|"2"|"3"|"7"|"8" or "" (none) — narrow
+	// to the literal set so consumers can switch exhaustively without
+	// re-parsing.
+	const editAttributeRaw = asString(info.edit)
+	const editAttribute: '1' | '2' | '3' | '7' | '8' | undefined =
+		editAttributeRaw === '1' ||
+		editAttributeRaw === '2' ||
+		editAttributeRaw === '3' ||
+		editAttributeRaw === '7' ||
+		editAttributeRaw === '8'
+			? editAttributeRaw
+			: undefined
 	return {
 		type: 'message',
 		chatJid: chat,
@@ -449,7 +463,7 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 		isViewOnce: info.is_view_once === true ? true : undefined,
 		isOffline: asBoolOr(info.is_offline, false) ? true : undefined,
 		unavailableRequestId: asString(info.unavailable_request_id),
-		editAttribute: editAttribute && editAttribute !== '' ? editAttribute : undefined,
+		editAttribute,
 		messageProto: messageProto as never
 	}
 }
