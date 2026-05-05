@@ -394,6 +394,18 @@ export interface CanonicalUndecryptableMessage {
  * (`isLatest` / `chunkOrder` / `peerDataRequestSessionId`).
  */
 /**
+ * Newsletter (channel) live update. The bridge folds reaction-count
+ * deltas for one or more messages of a single newsletter into one
+ * event; the dispatcher fans them out into upstream's per-reaction
+ * `newsletter.reaction` events.
+ */
+export interface CanonicalNewsletterLiveUpdate {
+	type: 'newsletterLiveUpdate'
+	newsletterJid: string
+	messages: { serverId: string; reactions: { code: string; count: number }[] }[]
+}
+
+/**
  * One or more LID↔PN mappings learned from a server-side event. Today
  * sourced from `contact_number_changed` (carries up to two pairs:
  * `old_lid↔old_jid`, `new_lid↔new_jid`). The dispatcher fans these out
@@ -521,6 +533,7 @@ export type CanonicalEvent =
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate
+	| CanonicalNewsletterLiveUpdate
 	| CanonicalChatDelete
 	| CanonicalMessageDelete
 	| CanonicalDisappearingModeChanged

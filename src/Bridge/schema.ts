@@ -284,7 +284,30 @@ const ADAPTERS = {
 		}
 	},
 	business_status_update: () => ({ type: 'noop', bridgeType: 'business_status_update' }),
-	newsletter_live_update: () => ({ type: 'noop', bridgeType: 'newsletter_live_update' }),
+	newsletter_live_update: data => {
+		const newsletterJid = asJidString(data.newsletter_jid)
+		if (!newsletterJid) return { type: 'noop', bridgeType: 'newsletter_live_update' }
+		const rawMessages = Array.isArray(data.messages) ? data.messages : []
+		const messages = rawMessages
+			.map(m => {
+				if (!isObject(m)) return null
+				const serverId = asNumber(m.server_id)?.toString() ?? asString(m.server_id)
+				if (!serverId) return null
+				const rawReactions = Array.isArray(m.reactions) ? m.reactions : []
+				const reactions = rawReactions
+					.map(r => {
+						if (!isObject(r)) return null
+						const code = asString(r.code)
+						const count = asNumber(r.count)
+						if (!code || count == null) return null
+						return { code, count }
+					})
+					.filter((r): r is { code: string; count: number } => r !== null)
+				return { serverId, reactions }
+			})
+			.filter((m): m is { serverId: string; reactions: { code: string; count: number }[] } => m !== null)
+		return { type: 'newsletterLiveUpdate', newsletterJid, messages }
+	},
 	contact_number_changed: data => {
 		// Bridge `ContactNumberChanged` carries up to two LID↔PN pairs:
 		// (old_lid, old_jid) and (new_lid, new_jid). We learn whatever's

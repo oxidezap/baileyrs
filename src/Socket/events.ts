@@ -513,6 +513,25 @@ const DISPATCHERS: DispatcherMap = {
 				}
 			]
 		}),
+	newsletterLiveUpdate: (evt, { ctx }) => {
+		// Fan out one `newsletter.reaction` per (message, reaction) pair —
+		// matches upstream `messages-recv.ts:320` semantics. Upstream sets
+		// `removed: true` when count is 0 (user removed their reaction);
+		// we mirror that.
+		for (const msg of evt.messages) {
+			for (const reaction of msg.reactions) {
+				ctx.ev.emit('newsletter.reaction', {
+					id: evt.newsletterJid,
+					server_id: msg.serverId,
+					reaction: {
+						code: reaction.code,
+						count: reaction.count,
+						removed: reaction.count === 0
+					}
+				})
+			}
+		}
+	},
 	disappearingModeChanged: (evt, { ctx }) =>
 		// Upstream surfaces this through `chats.update.ephemeralExpiration`
 		// (set in `process-message.ts:417` for the protocolMessage path).
