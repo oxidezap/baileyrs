@@ -554,9 +554,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// `sock.user.verifiedName`. Build the same structure on the fly
 		// from the merged auth.creds + paired-account state.
 		get user(): Contact | undefined {
-			if (!user) return undefined
+			if (!user?.id) return undefined
 			return {
-				id: user.id ?? '',
+				id: user.id,
 				lid: user.lid,
 				name: pairedAccount?.businessName ?? auth.creds?.me?.name,
 				verifiedName: auth.creds?.me?.verifiedName,
