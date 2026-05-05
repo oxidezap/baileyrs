@@ -356,6 +356,15 @@ const DISPATCHERS: DispatcherMap = {
 	noop: (evt, { ctx }) =>
 		ctx.logger.trace({ bridgeType: evt.bridgeType, detail: evt.detail }, 'bridge event acknowledged (no Baileys equivalent)'),
 
+	lidMappingUpdate: (evt, { ctx }) => {
+		// Mirror upstream `messages-recv.ts:287`: one `lid-mapping.update`
+		// event per pair, payload is the bare `{ lid, pn }` shape.
+		for (const mapping of evt.mappings) {
+			ctx.ev.emit('lid-mapping.update', mapping)
+		}
+	},
+
+
 	historySync: (evt, { ctx }) => {
 		// 1:1 with upstream `process-message.ts:371-376`. `isLatest` is true
 		// when this is the first history sync the bot has seen since

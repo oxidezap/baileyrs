@@ -316,6 +316,18 @@ export interface CanonicalUndecryptableMessage {
  * extra metadata fields upstream expects on top
  * (`isLatest` / `chunkOrder` / `peerDataRequestSessionId`).
  */
+/**
+ * One or more LID↔PN mappings learned from a server-side event. Today
+ * sourced from `contact_number_changed` (carries up to two pairs:
+ * `old_lid↔old_jid`, `new_lid↔new_jid`). The dispatcher fans these out
+ * onto upstream's `lid-mapping.update` channel, one event per pair —
+ * matches `messages-recv.ts:287` semantics.
+ */
+export interface CanonicalLidMappingUpdate {
+	type: 'lidMappingUpdate'
+	mappings: { lid: string; pn: string }[]
+}
+
 export interface CanonicalHistorySync {
 	type: 'historySync'
 	chats: Chat[]
@@ -406,6 +418,7 @@ export type CanonicalEvent =
 	| CanonicalMarkChatAsReadUpdate
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
+	| CanonicalLidMappingUpdate
 	| CanonicalHistorySync
 	| CanonicalRawNode
 	| CanonicalNotification

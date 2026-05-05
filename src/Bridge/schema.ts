@@ -237,7 +237,21 @@ const ADAPTERS = {
 	disappearing_mode_changed: () => ({ type: 'noop', bridgeType: 'disappearing_mode_changed' }),
 	business_status_update: () => ({ type: 'noop', bridgeType: 'business_status_update' }),
 	newsletter_live_update: () => ({ type: 'noop', bridgeType: 'newsletter_live_update' }),
-	contact_number_changed: () => ({ type: 'noop', bridgeType: 'contact_number_changed' }),
+	contact_number_changed: data => {
+		// Bridge `ContactNumberChanged` carries up to two LID↔PN pairs:
+		// (old_lid, old_jid) and (new_lid, new_jid). We learn whatever's
+		// present and let the dispatcher fan out one upstream event per
+		// pair. Mirrors upstream `messages-recv.ts:287`.
+		const oldJid = asJidString(data.old_jid)
+		const newJid = asJidString(data.new_jid)
+		const oldLid = asJidString(data.old_lid)
+		const newLid = asJidString(data.new_lid)
+		const mappings: { lid: string; pn: string }[] = []
+		if (oldLid && oldJid) mappings.push({ lid: oldLid, pn: oldJid })
+		if (newLid && newJid) mappings.push({ lid: newLid, pn: newJid })
+		if (mappings.length === 0) return { type: 'noop', bridgeType: 'contact_number_changed' }
+		return { type: 'lidMappingUpdate', mappings }
+	},
 	contact_sync_requested: () => ({ type: 'noop', bridgeType: 'contact_sync_requested' }),
 	user_about_update: () => ({ type: 'noop', bridgeType: 'user_about_update' }),
 	delete_chat_update: () => ({ type: 'noop', bridgeType: 'delete_chat_update' }),
