@@ -409,7 +409,25 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			client.setRawNodeForwarding(true)
 		}
 
-		client.run()
+		// `run()` is fire-and-forget by design (the bridge runs the read
+		// loop until disconnect/free) but typed `Promise<void>`. A late
+		// rejection (lost connection during cleanup, etc) without a
+		// `.catch` would escape to `process.on('unhandledRejection')`.
+		// Funnel into the connection.update channel so consumers' regular
+		// reconnect/diagnostic plumbing handles it like any other close.
+		const runPromise = client.run() as unknown as Promise<void> | undefined
+		if (runPromise && typeof runPromise.catch === 'function') {
+			runPromise.catch(err => {
+				logger.error({ err }, 'bridge client.run() rejected')
+				ev.emit('connection.update', {
+					connection: 'close',
+					lastDisconnect: {
+						error: err instanceof Error ? err : new Boom(String(err), { statusCode: 500 }),
+						date: new Date()
+					}
+				} as Partial<ConnectionState>)
+			})
+		}
 	}
 
 	let initError: Error | undefined
