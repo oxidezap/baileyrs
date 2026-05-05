@@ -78,7 +78,11 @@ const ADAPTERS = {
 	disconnected: () => ({ type: 'disconnected' }),
 	stream_replaced: () => ({ type: 'streamReplaced' }),
 	client_outdated: () => ({ type: 'clientOutdated' }),
-	temporary_ban: () => ({ type: 'temporaryBan' }),
+	temporary_ban: data => ({
+		type: 'temporaryBan',
+		code: asNumber(data?.code),
+		expire: asNumber(data?.expire)
+	}),
 	qr_scanned_without_multidevice: () => ({ type: 'qrScannedWithoutMultidevice' }),
 	logged_out: () => ({ type: 'loggedOut' }),
 
@@ -103,7 +107,9 @@ const ADAPTERS = {
 	pair_error: data => ({ type: 'pairError', error: asString(data.error) ?? 'Unknown pairing error' }),
 
 	connect_failure: data =>
-		isObject(data) ? { type: 'connectFailure', message: asString(data.message) } : { type: 'connectFailure' },
+		isObject(data)
+			? { type: 'connectFailure', message: asString(data.message), reason: asNumber(data.reason) }
+			: { type: 'connectFailure' },
 
 	stream_error: data => ({ type: 'streamError', code: asString(data.code) ?? 'unknown' }),
 

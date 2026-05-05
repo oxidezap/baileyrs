@@ -116,6 +116,54 @@ const emitClose = (ctx: SocketContext, reason: string, statusCode: number) =>
 	} as Partial<ConnectionState>)
 
 /**
+ * Map bridge `ConnectFailureReason` wire codes (per the bridge's
+ * `.d.ts` annotation) onto upstream Baileys' `DisconnectReason`.
+ * Unknown codes fall through to `connectionClosed` so existing
+ * reconnect heuristics keep working.
+ */
+const mapConnectFailureToDisconnect = (reason: number | undefined): number => {
+	switch (reason) {
+		case 401: // LoggedOut
+		case 403: // MainDeviceGone
+		case 406: // UnknownLogout
+			return DisconnectReason.loggedOut
+		case 402: // TempBanned
+			return DisconnectReason.forbidden
+		case 405: // ClientOutdated
+			return DisconnectReason.badSession
+		case 411: // MultideviceMismatch (legacy alias)
+			return DisconnectReason.multideviceMismatch
+		case 503: // ServiceUnavailable
+		case 501: // Experimental
+			return DisconnectReason.unavailableService
+		case 408: // Timed out
+			return DisconnectReason.timedOut
+		case 515: // RestartRequired
+			return DisconnectReason.restartRequired
+		// 400, 409, 413, 414, 415, 418, 500, undefined → generic close
+		default:
+			return DisconnectReason.connectionClosed
+	}
+}
+
+const describeTempBan = (code: number | undefined): string => {
+	switch (code) {
+		case 101:
+			return 'sent_to_too_many_people'
+		case 102:
+			return 'blocked_by_users'
+		case 103:
+			return 'created_too_many_groups'
+		case 104:
+			return 'sent_too_many_same_message'
+		case 106:
+			return 'broadcast_list'
+		default:
+			return code != null ? `code_${code}` : 'unknown'
+	}
+}
+
+/**
  * Sole `as` cast in the dispatch path. The bridge runtime's
  * `connection.update` slot accepts the full ConnectionState union, but we
  * only ever emit partials shaped as `{ connection, … }`. The Baileys event
@@ -142,7 +190,14 @@ const DISPATCHERS: DispatcherMap = {
 	},
 	pairError: (evt, { ctx }) => emitClose(ctx, 'Pairing failed: ' + evt.error, DisconnectReason.connectionClosed),
 	loggedOut: (_, { ctx }) => emitClose(ctx, 'Logged out', DisconnectReason.loggedOut),
-	connectFailure: (evt, { ctx }) => emitClose(ctx, evt.message ?? 'Connection failure', DisconnectReason.connectionClosed),
+	connectFailure: (evt, { ctx }) => {
+		// Map bridge `ConnectFailureReason` wire codes onto Baileys'
+		// DisconnectReason. Defaults to connectionClosed for unknown codes.
+		// LoggedOut paths (401/403/406) drive bots' "should I re-pair?"
+		// branch — folding them into connectionClosed kept that broken.
+		const status = mapConnectFailureToDisconnect(evt.reason)
+		emitClose(ctx, evt.message ?? 'Connection failure', status)
+	},
 	streamError: (evt, { ctx }) => emitClose(ctx, 'Stream error: ' + evt.code, DisconnectReason.badSession),
 	streamReplaced: (_, { ctx }) =>
 		emitConnectionUpdate(ctx, {
@@ -153,7 +208,21 @@ const DISPATCHERS: DispatcherMap = {
 			}
 		}),
 	clientOutdated: (_, { ctx }) => emitClose(ctx, 'Client outdated', DisconnectReason.badSession),
-	temporaryBan: (_, { ctx }) => emitClose(ctx, 'Temporary ban', DisconnectReason.forbidden),
+	temporaryBan: (evt, { ctx }) => {
+		// Surface the wire code + expire on the Boom so consumers reading
+		// `lastDisconnect.error.data` can act on the specific reason.
+		const reason = describeTempBan(evt.code)
+		const message = evt.expire
+			? `Temporary ban (${reason}); expires at ${new Date(evt.expire * 1000).toISOString()}`
+			: `Temporary ban (${reason})`
+		ctx.ev.emit('connection.update', {
+			connection: 'close',
+			lastDisconnect: {
+				error: new Boom(message, { statusCode: DisconnectReason.forbidden, data: { code: evt.code, expire: evt.expire } }),
+				date: new Date()
+			}
+		} as Partial<ConnectionState>)
+	},
 	qrScannedWithoutMultidevice: (_, { ctx }) => ctx.logger.warn('QR scanned but multi-device not enabled on phone'),
 
 	// ── Messages ──

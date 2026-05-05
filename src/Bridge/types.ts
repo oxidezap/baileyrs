@@ -53,6 +53,15 @@ export interface CanonicalLoggedOut {
 export interface CanonicalConnectFailure {
 	type: 'connectFailure'
 	message?: string
+	/**
+	 * Bridge `ConnectFailureReason` numeric wire code:
+	 *  400=Generic, 401=LoggedOut, 402=TempBanned, 403=MainDeviceGone,
+	 *  405=ClientOutdated, 406=UnknownLogout, 409=BadUserAgent,
+	 *  413=CatExpired, 414=CatInvalid, 415=NotFound, 418=ClientUnknown,
+	 *  500=InternalServerError, 501=Experimental, 503=ServiceUnavailable.
+	 *  The dispatcher maps this to the matching `DisconnectReason`.
+	 */
+	reason?: number
 }
 
 export interface CanonicalStreamError {
@@ -70,6 +79,15 @@ export interface CanonicalClientOutdated {
 
 export interface CanonicalTemporaryBan {
 	type: 'temporaryBan'
+	/**
+	 * Bridge `TempBanReason` numeric wire code:
+	 *  101=SentToTooManyPeople, 102=BlockedByUsers,
+	 *  103=CreatedTooManyGroups, 104=SentTooManySameMessage,
+	 *  106=BroadcastList.
+	 */
+	code?: number
+	/** Unix-seconds at which the ban lifts. */
+	expire?: number
 }
 
 export interface CanonicalQrScannedWithoutMultidevice {
