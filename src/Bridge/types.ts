@@ -44,10 +44,22 @@ export interface CanonicalPairSuccess {
 export interface CanonicalPairError {
 	type: 'pairError'
 	error: string
+	/** Account JID after pairing (may be set even on error). */
+	id?: string
+	/** LID for the account. */
+	lid?: string
+	/** Business display name when paired account is a Business profile. */
+	businessName?: string
+	/** Wire platform string (`'web'`, `'smbi'`, etc). */
+	platform?: string
 }
 
 export interface CanonicalLoggedOut {
 	type: 'loggedOut'
+	/** `true` when the bridge surfaced the logout during initial connect. */
+	onConnect?: boolean
+	/** Server-supplied reason string (Debug formatted from the bridge enum). */
+	reason?: string
 }
 
 export interface CanonicalConnectFailure {

@@ -84,7 +84,11 @@ const ADAPTERS = {
 		expire: asNumber(data?.expire)
 	}),
 	qr_scanned_without_multidevice: () => ({ type: 'qrScannedWithoutMultidevice' }),
-	logged_out: () => ({ type: 'loggedOut' }),
+	logged_out: data => ({
+		type: 'loggedOut',
+		onConnect: asBoolOr(data?.on_connect, false),
+		reason: asString(data?.reason)
+	}),
 
 	qr: data => (data.code ? { type: 'qr', code: data.code } : null),
 	pairing_code: data => (data.code ? { type: 'qr', code: data.code } : null),
@@ -104,7 +108,14 @@ const ADAPTERS = {
 		}
 	},
 
-	pair_error: data => ({ type: 'pairError', error: asString(data.error) ?? 'Unknown pairing error' }),
+	pair_error: data => ({
+		type: 'pairError',
+		error: asString(data.error) ?? 'Unknown pairing error',
+		id: typeof data.id === 'string' ? data.id : asJidString(data.id),
+		lid: typeof data.lid === 'string' ? data.lid : asJidString(data.lid),
+		businessName: asString(data.business_name),
+		platform: asString(data.platform)
+	}),
 
 	connect_failure: data =>
 		isObject(data)

@@ -194,7 +194,8 @@ const DISPATCHERS: DispatcherMap = {
 		ctx.ev.emit('creds.update', { registered: true, me: { id, lid, name: businessName }, platform })
 	},
 	pairError: (evt, { ctx }) => emitClose(ctx, 'Pairing failed: ' + evt.error, DisconnectReason.connectionClosed),
-	loggedOut: (_, { ctx }) => emitClose(ctx, 'Logged out', DisconnectReason.loggedOut),
+	loggedOut: (evt, { ctx }) =>
+		emitClose(ctx, evt.reason ? `Logged out: ${evt.reason}` : 'Logged out', DisconnectReason.loggedOut),
 	connectFailure: (evt, { ctx }) => {
 		// Map bridge `ConnectFailureReason` wire codes onto Baileys'
 		// DisconnectReason. Defaults to connectionClosed for unknown codes.
