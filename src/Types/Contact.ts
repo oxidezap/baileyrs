@@ -21,4 +21,6 @@ export interface Contact {
 	 */
 	imgUrl?: string | null
 	status?: string
+	/** Meta username if the contact has set one (history sync surfaces it on the chat). */
+	username?: string
 }

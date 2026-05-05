@@ -24,7 +24,9 @@
  */
 
 import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
+import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
+import { processHistoryMessage } from '../Utils/process-history-message.ts'
 import type {
 	CanonicalCallAction,
 	CanonicalCallActionType,
@@ -195,9 +197,40 @@ const ADAPTERS = {
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
 
+	// ── History sync — fully decoded by the bridge, normalized 1:1 with upstream ──
+	history_sync: data => {
+		// `data` is `proto.IHistorySync & { syncType, chunkOrder?, progress? }` —
+		// the bridge serialized the whole proto via `to_js_value_camel`. Walk
+		// it through the upstream-aligned `processHistoryMessage` to bucket
+		// chats / contacts / messages / lidPnMappings, then forward the
+		// metadata fields (the dispatcher folds in `isLatest` /
+		// `peerDataRequestSessionId`).
+		if (!isObject(data)) return null
+		const processed = processHistoryMessage(data as proto.IHistorySync)
+		// Top-level metadata overlay wins over the proto's own `syncType` /
+		// `progress` fields when both present — the bridge maintains the
+		// authoritative copy across multi-chunk arrivals.
+		const metaSyncType = asNumber((data as Record<string, unknown>).syncType)
+		const metaChunkOrder = asNumber((data as Record<string, unknown>).chunkOrder)
+		const metaProgress = asNumber((data as Record<string, unknown>).progress)
+		return {
+			type: 'historySync',
+			chats: processed.chats,
+			contacts: processed.contacts,
+			messages: processed.messages,
+			lidPnMappings: processed.lidPnMappings,
+			syncType: metaSyncType ?? processed.syncType,
+			progress: metaProgress ?? processed.progress,
+			chunkOrder: metaChunkOrder
+			// peerDataRequestSessionId is not in the bridge payload today —
+			// upstream sources it from the `historySyncNotification` of the
+			// triggering protocolMessage, which we don't see here. Bridge
+			// could surface it on the event; tracked for a follow-up.
+		}
+	},
+
 	// ── Acknowledged but no Baileys equivalent (noop) ──
 	self_push_name_updated: () => ({ type: 'noop', bridgeType: 'self_push_name_updated' }),
-	history_sync: () => ({ type: 'noop', bridgeType: 'history_sync' }),
 	offline_sync_completed: () => ({ type: 'noop', bridgeType: 'offline_sync_completed' }),
 	offline_sync_preview: () => ({ type: 'noop', bridgeType: 'offline_sync_preview' }),
 	device_list_update: () => ({ type: 'noop', bridgeType: 'device_list_update' }),

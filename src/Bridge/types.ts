@@ -14,6 +14,7 @@
  *   - Optional fields use `?` (omitted) rather than `null`.
  */
 
+import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
 // ── Connection lifecycle ──
@@ -307,6 +308,30 @@ export interface CanonicalUndecryptableMessage {
 	raw: unknown
 }
 
+/**
+ * History sync — the chats/contacts/messages backfill that lands after
+ * the initial pair (and again on demand). Already walked into
+ * upstream-Baileys-shaped buckets by `processHistoryMessage`; the
+ * dispatcher just re-emits them on `messaging-history.set` with the
+ * extra metadata fields upstream expects on top
+ * (`isLatest` / `chunkOrder` / `peerDataRequestSessionId`).
+ */
+export interface CanonicalHistorySync {
+	type: 'historySync'
+	chats: Chat[]
+	contacts: Contact[]
+	messages: WAMessage[]
+	lidPnMappings: LIDMapping[]
+	/** `proto.HistorySync.HistorySyncType` numeric. */
+	syncType?: number
+	/** Progress 0-100, when the bridge passed it through. */
+	progress?: number
+	/** Multi-chunk ordering — present when sync arrives in chunks. */
+	chunkOrder?: number
+	/** PDO session id, set on `ON_DEMAND` syncs answering a `fetchMessageHistory`. */
+	peerDataRequestSessionId?: string
+}
+
 export interface CanonicalRawNode {
 	type: 'rawNode'
 	node: BinaryNode
@@ -381,6 +406,7 @@ export type CanonicalEvent =
 	| CanonicalMarkChatAsReadUpdate
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
+	| CanonicalHistorySync
 	| CanonicalRawNode
 	| CanonicalNotification
 	| CanonicalMexNotification

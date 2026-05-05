@@ -1,7 +1,7 @@
 {
   "name": "@oxidezap/baileyrs",
   "type": "module",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "description": "A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API",
   "keywords": [
     "whatsapp",
@@ -61,7 +61,7 @@
   },
   "dependencies": {
     "pino": "^9.6",
-    "whatsapp-rust-bridge": "^0.6.0-alpha.20"
+    "whatsapp-rust-bridge": "file:../whatsapp-rust-bridge"
   },
   "devDependencies": {
     "@types/node": "^22",

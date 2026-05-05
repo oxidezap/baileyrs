@@ -8,6 +8,21 @@ import type { AuthenticationCreds, WAVersion } from '../Types/index.ts'
 export const unixTimestampSeconds = (date: Date = new Date()) => Math.floor(date.getTime() / 1000)
 
 /**
+ * Coerce a protobuf timestamp into a plain JS number. Matches upstream
+ * Baileys' `Utils/generics.ts:toNumber` — protobufjs may hand us a `Long`
+ * (`{ low, high, toNumber() }`), a plain number, or `null`/`undefined`.
+ */
+export const toNumber = (t: { toNumber?: () => number; low?: number } | number | null | undefined): number => {
+	if (t == null) return 0
+	if (typeof t === 'number') return t
+	if (typeof t === 'object') {
+		if (typeof t.toNumber === 'function') return t.toNumber()
+		if (typeof t.low === 'number') return t.low
+	}
+	return 0
+}
+
+/**
  * Promise-based timeout. Mirrors upstream Baileys' `delay` so bot code that
  * destructures `delay` from the package keeps working unchanged.
  */

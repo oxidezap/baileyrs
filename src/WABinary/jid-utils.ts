@@ -62,6 +62,10 @@ export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 export const isJidGroup = (jid: string | undefined) => jid?.endsWith('@g.us')
 export const isJidStatusBroadcast = (jid: string) => jid === 'status@broadcast'
 export const isJidNewsletter = (jid: string | undefined) => jid?.endsWith('@newsletter')
+export const isLidUser = (jid: string | undefined) => jid?.endsWith('@lid')
+export const isPnUser = (jid: string | undefined) => jid?.endsWith('@s.whatsapp.net') || jid?.endsWith('@c.us')
+export const isHostedLidUser = (jid: string | undefined) => jid?.endsWith('@hosted.lid')
+export const isHostedPnUser = (jid: string | undefined) => jid?.endsWith('@hosted')
 
 export const jidNormalizedUser = (jid: string | undefined) => {
 	const result = jidDecode(jid)

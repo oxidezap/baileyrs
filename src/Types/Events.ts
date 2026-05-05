@@ -36,6 +36,8 @@ export type BaileysEventMap = {
 		isLatest?: boolean
 		progress?: number | null
 		syncType?: proto.HistorySync.HistorySyncType | null
+		/** Multi-chunk ordering — present when sync arrives in chunks. */
+		chunkOrder?: number | null
 		peerDataRequestSessionId?: string | null
 	}
 	/** upsert chats */

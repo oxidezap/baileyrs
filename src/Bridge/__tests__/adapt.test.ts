@@ -364,10 +364,19 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 	})
 
 	describe('noop / passthrough', () => {
-		it('history_sync collapses to noop', () => {
+		it('history_sync with empty payload yields an empty historySync canonical', () => {
+			// Bridge change moved this off the noop path. With an empty
+			// proto we still produce a CanonicalHistorySync with empty
+			// arrays — the dispatcher emits messaging-history.set unchanged.
 			expect(adaptBridgeEvent({ type: 'history_sync', data: {} } as never)).toEqual({
-				type: 'noop',
-				bridgeType: 'history_sync'
+				type: 'historySync',
+				chats: [],
+				contacts: [],
+				messages: [],
+				lidPnMappings: [],
+				syncType: undefined,
+				progress: undefined,
+				chunkOrder: undefined
 			})
 		})
 

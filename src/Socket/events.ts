@@ -354,7 +354,30 @@ const DISPATCHERS: DispatcherMap = {
 		ctx.logger.trace({ opName: evt.opName, offline: evt.offline }, 'bridge mex notification with no Baileys mapping (drop)')
 	},
 	noop: (evt, { ctx }) =>
-		ctx.logger.trace({ bridgeType: evt.bridgeType, detail: evt.detail }, 'bridge event acknowledged (no Baileys equivalent)')
+		ctx.logger.trace({ bridgeType: evt.bridgeType, detail: evt.detail }, 'bridge event acknowledged (no Baileys equivalent)'),
+
+	historySync: (evt, { ctx }) => {
+		// 1:1 with upstream `process-message.ts:371-376`. `isLatest` is true
+		// when this is the first history sync the bot has seen since
+		// pairing — upstream tracks it in `creds.processedHistoryMessages`,
+		// but in baileyrs the bridge owns creds, so we approximate with the
+		// `INITIAL_BOOTSTRAP` syncType which only fires once per pair. Bots
+		// gating "first hydrate" logic on `isLatest` see the same boolean.
+		const HSType = WAProto.HistorySync.HistorySyncType
+		const isInitial = evt.syncType === HSType.INITIAL_BOOTSTRAP
+		const payload: BaileysEventMap['messaging-history.set'] = {
+			chats: evt.chats,
+			contacts: evt.contacts,
+			messages: evt.messages,
+			isLatest: evt.syncType === HSType.ON_DEMAND ? undefined : isInitial,
+			progress: evt.progress,
+			syncType: evt.syncType,
+			chunkOrder: evt.chunkOrder,
+			peerDataRequestSessionId: evt.peerDataRequestSessionId,
+			lidPnMappings: evt.lidPnMappings.length > 0 ? evt.lidPnMappings : undefined
+		}
+		ctx.ev.emit('messaging-history.set', payload)
+	}
 }
 
 /**
