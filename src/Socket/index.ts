@@ -388,7 +388,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			makeHttpClient(fullConfig),
 			handleEvent,
 			bridgeStore,
-			fullConfig.cache ?? null
+			fullConfig.cache ?? null,
+			fullConfig.version
 		)
 		// Make this client the fallback for standalone helpers like
 		// downloadContentFromMessage that have no socket reference.
@@ -402,9 +403,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			platformType: browserToPlatformType(browserName),
 			...fullConfig.deviceProps
 		})
-
-		const [major, minor, patch] = fullConfig.version
-		client.setVersion(major, minor, patch)
 
 		const [jid, lid, account] = await Promise.all([
 			client.getJid(),
