@@ -65,7 +65,7 @@
   },
   "devDependencies": {
     "@types/node": "^22",
-    "baileys": "7.0.0-rc11",
+    "baileys": "github:WhiskeySockets/Baileys#improved-tctoken",
     "jimp": "^1.6.0",
     "music-metadata": "^11.12.3",
     "oxfmt": "^0.45.0",
