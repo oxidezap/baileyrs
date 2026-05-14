@@ -24,7 +24,6 @@
 
 import process from 'node:process'
 import { after, before, beforeEach, describe, test } from 'node:test'
-import { setTimeout as delay } from 'node:timers/promises'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 
@@ -155,9 +154,7 @@ describe('E2E regression: WASM OOB in whatsapp-rust-bridge', { timeout: 300_000 
 			}
 		}
 
-		// Give one extra macrotask sweep for any straggler async work to
-		// reach `currentCrashes()` before the final assert.
-		await delay(50)
+		await quiesce()
 
 		expect(currentCrashes().filter(c => isWasmOobCrash(c.err)).length).toBe(0)
 	})
