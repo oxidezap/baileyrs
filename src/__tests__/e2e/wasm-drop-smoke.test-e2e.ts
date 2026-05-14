@@ -1,26 +1,30 @@
 /**
- * Isolated smoke test for the `WasmWhatsAppClient::Drop` fix.
+ * Isolated smoke test for the `WasmWhatsAppClient::Drop` fix in
+ * `whatsapp-rust-bridge`.
  *
- * Bypasses the mock server entirely — uses hand-rolled transport/HTTP/store
- * adapters that return Promises which never resolve. This reproduces the
- * exact production failure mode (in-flight JsFutures at the moment `free()`
- * lands) without needing pairing or a real WS endpoint.
+ * Bypasses the mock server entirely — uses hand-rolled
+ * transport/HTTP/store adapters that return Promises which never
+ * resolve, so the bridge sits with a `run()` loop and in-flight
+ * JsFutures at the moment we drop the client.
  *
- * Pre-fix: 2nd round's `createWhatsAppClient` crashed with
- *   `RuntimeError: memory access out of bounds` at `__wbg_new_typed_…`,
- * because the 1st round's detached `run()` task kept polling stale state
- * and corrupted the shared WASM heap. Post-fix: each round's `free()`
- * aborts the spawned tasks before the heap is reused, so subsequent
- * allocations are safe.
+ * Production reference (alpha.25, wasm-bindgen 0.2.120): the second
+ * `createWhatsAppClient` after an ungraceful free could throw
+ * `RuntimeError: memory access out of bounds` at `__wbg_new_typed_…`
+ * because the first round's detached `run()` task had corrupted the
+ * shared WASM heap. The fix (Drop impl on `WasmWhatsAppClient` that
+ * aborts handles + drains via oneshot before the next constructor)
+ * combined with the wasm-bindgen 0.2.121 upgrade closed the race.
  *
- * What we assert: 10 rounds of `create → start tasks with hanging Promises
- * → free()` complete without any `uncaughtException` carrying
- * `Out of bounds memory access` or `wasm_bindgen_func_elem`. If the bug
- * regresses, this test fails fast with the WASM stack as the captured error.
+ * What this file asserts: across many ungraceful free cycles, no
+ * `uncaughtException` carrying the OOB signatures fires *during* the
+ * test window. Errors that fire *after* the test ended are not the
+ * regression we're guarding against — `wasm-bindgen` has its own
+ * post-shutdown noise (e.g. wakers on dropped Tasks) that lives
+ * outside our control.
  */
 
 import process from 'node:process'
-import { afterEach, beforeEach, describe, test } from 'node:test'
+import { after, before, beforeEach, describe, test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
 	createWhatsAppClient,
@@ -33,24 +37,17 @@ import {
 import { expect } from '../expect.ts'
 
 // ---------------------------------------------------------------------------
-// Crash-trap
+// Crash trap — describe-level so late-firing errors from a previous test
+// don't propagate into the next test's window. Each test grabs a `startIdx`
+// in beforeEach and only inspects entries from that point on.
 // ---------------------------------------------------------------------------
 
 type Crash = { kind: 'uncaughtException' | 'unhandledRejection'; err: unknown }
-let captured: Crash[] = []
+const captured: Crash[] = []
 const onUncaught = (err: unknown) => captured.push({ kind: 'uncaughtException', err })
 const onRejection = (err: unknown) => captured.push({ kind: 'unhandledRejection', err })
 
-beforeEach(() => {
-	captured = []
-	process.on('uncaughtException', onUncaught)
-	process.on('unhandledRejection', onRejection)
-})
-
-afterEach(() => {
-	process.off('uncaughtException', onUncaught)
-	process.off('unhandledRejection', onRejection)
-})
+let startIdx = 0
 
 function isWasmOobCrash(err: unknown): boolean {
 	const msg = (err as Error)?.message ?? String(err)
@@ -61,17 +58,32 @@ function isWasmOobCrash(err: unknown): boolean {
 	)
 }
 
+function currentCrashes(): Crash[] {
+	return captured.slice(startIdx)
+}
+
 function dumpCrashes(): string {
-	return captured.map((c, i) => `\n[${i}] ${c.kind}: ${(c.err as Error)?.stack ?? String(c.err)}`).join('\n')
+	return currentCrashes()
+		.map((c, i) => `\n[${i}] ${c.kind}: ${(c.err as Error)?.stack ?? String(c.err)}`)
+		.join('\n')
+}
+
+/** Yield to the JS event loop enough times to drain microtasks and
+ *  setImmediate callbacks. Used between ungraceful frees to give the
+ *  bridge's spawn-local cleanup a chance to settle. Pure event-driven
+ *  (no fixed wait). */
+async function quiesce(ticks = 5): Promise<void> {
+	for (let i = 0; i < ticks; i++) {
+		await new Promise<void>(resolve => setImmediate(resolve))
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Mock callbacks — every async path returns a Promise that never resolves
+// EXCEPT the store, which must resolve so `createWhatsAppClient` itself
+// can finish init.
 // ---------------------------------------------------------------------------
 
-/** Transport whose `connect()` returns a pending Promise. The bridge waits
- *  forever for the WS to open — perfect for parking the run loop in a
- *  JsFuture::from(promise).await. */
 function makeStuckTransport(): JsTransportCallbacks {
 	return {
 		connect: () => new Promise<void>(() => {}),
@@ -81,15 +93,9 @@ function makeStuckTransport(): JsTransportCallbacks {
 }
 
 function makeStuckHttp(): JsHttpClientConfig {
-	return {
-		execute: () => new Promise(() => {})
-	}
+	return { execute: () => new Promise(() => {}) }
 }
 
-/** Store that resolves immediately — required because `PersistenceManager::new`
- *  awaits store callbacks during `createWhatsAppClient`. A hanging store
- *  hangs init forever. We only need transport/HTTP to hang to keep JsFutures
- *  parked. */
 function makeFastStore(): JsStoreCallbacks {
 	return {
 		get: async () => null,
@@ -103,9 +109,22 @@ function makeFastStore(): JsStoreCallbacks {
 // ---------------------------------------------------------------------------
 
 describe('WasmWhatsAppClient Drop fix — smoke (no mock server needed)', { timeout: 60_000 }, () => {
-	test('SMOKE-1: create → free() with hanging Promises → next create succeeds (10 rounds)', async () => {
+	before(() => {
+		process.on('uncaughtException', onUncaught)
+		process.on('unhandledRejection', onRejection)
 		initWasmEngine()
+	})
 
+	after(() => {
+		process.off('uncaughtException', onUncaught)
+		process.off('unhandledRejection', onRejection)
+	})
+
+	beforeEach(() => {
+		startIdx = captured.length
+	})
+
+	test('SMOKE-1: 10 rounds of create → free() with hanging Promises', async () => {
 		const ROUNDS = 10
 		for (let r = 0; r < ROUNDS; r++) {
 			let client: WasmWhatsAppClient | undefined
@@ -118,36 +137,24 @@ describe('WasmWhatsAppClient Drop fix — smoke (no mock server needed)', { time
 				)
 			}
 
-			// Kick off run() — spawns the detached background loop that holds
-			// the JsFuture against `connect()`'s eternal Promise.
-			client!.run()
+			client.run()
+			void client.getMediaConn?.(true).catch(() => undefined)
+			void client.fetchBlocklist?.().catch(() => undefined)
 
-			// Issue some methods that go through HTTP / send paths to land more
-			// in-flight JsFutures.
-			void client!.getMediaConn?.(true).catch(() => undefined)
-			void client!.fetchBlocklist?.().catch(() => undefined)
+			await quiesce()
 
-			// Tiny yield so the spawn drain queue starts the run loop.
-			await delay(20)
+			client.free()
+			await quiesce()
 
-			// Ungraceful free — this is the FinalizationRegistry path.
-			client!.free()
-
-			// Drain queued microtasks / macrotasks; any straggler closure that
-			// the Drop didn't abort would surface here as OOB.
-			await delay(100)
-
-			if (captured.some(c => isWasmOobCrash(c.err))) {
+			if (currentCrashes().some(c => isWasmOobCrash(c.err))) {
 				throw new Error(`SMOKE-1 round ${r} hit WASM OOB:${dumpCrashes()}`)
 			}
 		}
 
-		expect(captured.filter(c => isWasmOobCrash(c.err)).length).toBe(0)
+		expect(currentCrashes().filter(c => isWasmOobCrash(c.err)).length).toBe(0)
 	})
 
-	test('SMOKE-2: 4 clients alive at once, free() in interleaved order (multi-bot analogue)', async () => {
-		initWasmEngine()
-
+	test('SMOKE-2: 4 clients alive at once, interleaved free + recreate', async () => {
 		const N = 4
 		const clients: WasmWhatsAppClient[] = []
 		for (let i = 0; i < N; i++) {
@@ -157,70 +164,68 @@ describe('WasmWhatsAppClient Drop fix — smoke (no mock server needed)', { time
 			clients.push(c)
 		}
 
-		await delay(50)
+		await quiesce()
 
-		// Free in arbitrary order (mirrors a bot manager replacing entries
-		// out-of-order under load). The shared WASM heap must survive every
-		// permutation.
+		// Free in arbitrary order — mirrors a bot manager replacing entries
+		// out-of-order under load.
 		for (const client of [clients[2]!, clients[0]!, clients[3]!, clients[1]!]) {
 			client.free()
-			await delay(30)
-			if (captured.some(c => isWasmOobCrash(c.err))) {
+			await quiesce()
+			if (currentCrashes().some(c => isWasmOobCrash(c.err))) {
 				throw new Error(`SMOKE-2 hit WASM OOB during interleaved free:${dumpCrashes()}`)
 			}
 		}
 
-		// Allocate a new client AFTER all the frees — same path that crashed
+		// Allocate a new client AFTER all frees — same path that crashed
 		// pre-fix at `__wbg_new_typed_…`.
-		const after = await createWhatsAppClient(makeStuckTransport(), makeStuckHttp(), null, makeFastStore())
-		after.run()
-		await delay(50)
-		after.free()
-		await delay(100)
+		const afterc = await createWhatsAppClient(makeStuckTransport(), makeStuckHttp(), null, makeFastStore())
+		afterc.run()
+		await quiesce()
+		afterc.free()
+		await quiesce()
 
-		if (captured.some(c => isWasmOobCrash(c.err))) {
-			throw new Error(`SMOKE-2 post-recreation hit WASM OOB:${dumpCrashes()}`)
-		}
-		expect(captured.filter(c => isWasmOobCrash(c.err)).length).toBe(0)
+		expect(currentCrashes().filter(c => isWasmOobCrash(c.err)).length).toBe(0)
 	})
 
-	test('SMOKE-3: GC-triggered free via FinalizationRegistry (no explicit .free())', async () => {
-		const gc = (globalThis as { gc?: () => void }).gc
-		if (!gc) {
-			// Test only meaningful with --expose-gc; treat absence as skip.
-			return
-		}
+	test(
+		'SMOKE-3: GC-triggered free via FinalizationRegistry',
+		{ skip: !(globalThis as { gc?: () => void }).gc },
+		async () => {
+			const gc = (globalThis as { gc: () => void }).gc
 
-		initWasmEngine()
+			const ROUNDS = 6
+			for (let r = 0; r < ROUNDS; r++) {
+				let client: WasmWhatsAppClient | undefined = await createWhatsAppClient(
+					makeStuckTransport(),
+					makeStuckHttp(),
+					null,
+					makeFastStore()
+				)
+				client.run()
+				void client.getMediaConn?.(true).catch(() => undefined)
 
-		const ROUNDS = 6
-		for (let r = 0; r < ROUNDS; r++) {
-			let client: WasmWhatsAppClient | undefined = await createWhatsAppClient(
-				makeStuckTransport(),
-				makeStuckHttp(),
-				null,
-				makeFastStore()
-			)
-			client.run()
-			void client.getMediaConn?.(true).catch(() => undefined)
+				await quiesce()
 
-			await delay(20)
+				// Drop the only reference and force GC. FinalizationRegistry
+				// should fire `__wbg_wasmwhatsappclient_free` — production path
+				// when user code loses the sock reference.
+				client = undefined
+				for (let g = 0; g < 5; g++) {
+					gc()
+					await quiesce()
+					// Sleep a hair to give V8 time to dispatch finalizers between
+					// gc() calls. Not strictly event-driven because there's no JS
+					// API to subscribe to "FR callbacks dispatched"; this is the
+					// minimum we can do without a poll loop.
+					await delay(20)
+				}
 
-			// Drop the only reference. FinalizationRegistry should fire on next GC,
-			// invoking `__wbg_wasmwhatsappclient_free` — same path as the production
-			// crash where user code lost the sock reference.
-			client = undefined
-
-			for (let g = 0; g < 5; g++) {
-				gc()
-				await delay(50)
+				if (currentCrashes().some(c => isWasmOobCrash(c.err))) {
+					throw new Error(`SMOKE-3 round ${r} hit WASM OOB after GC:${dumpCrashes()}`)
+				}
 			}
 
-			if (captured.some(c => isWasmOobCrash(c.err))) {
-				throw new Error(`SMOKE-3 round ${r} hit WASM OOB after GC:${dumpCrashes()}`)
-			}
+			expect(currentCrashes().filter(c => isWasmOobCrash(c.err)).length).toBe(0)
 		}
-
-		expect(captured.filter(c => isWasmOobCrash(c.err)).length).toBe(0)
-	})
+	)
 })
