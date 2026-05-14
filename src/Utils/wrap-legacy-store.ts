@@ -868,7 +868,26 @@ function updateCredsFromDevice(bytes: Uint8Array, creds: AuthenticationCreds): v
 
 		if (d.push_name && creds.me) creds.me.name = d.push_name
 		if (d.registration_id) creds.registrationId = d.registration_id
-		if (d.next_pre_key_id) creds.nextPreKeyId = d.next_pre_key_id
+		if (d.next_pre_key_id) {
+			creds.nextPreKeyId = d.next_pre_key_id
+			// Keep `firstUnuploadedPreKeyId` pinned to `nextPreKeyId`. Upstream
+			// Baileys uses `nextPreKeyId - firstUnuploadedPreKeyId` to decide
+			// whether a fresh `getNextPreKeys()` call needs to generate a new
+			// keypair or can reuse one already in the store. Bridge consumes
+			// prekeys without bumping `firstUnuploadedPreKeyId`, so without
+			// this pin upstream sees a non-empty "available" range pointing at
+			// IDs that have already been deleted from disk — leading to
+			// `preKeys = {}` from `getNextPreKeys`, then
+			// `xmppPreKey(undefined)` → TypeError on retry receipt
+			// construction, then no retry sent, then upstream never decrypts
+			// the first post-handoff message from a bridge peer.
+			//
+			// Pinning to `nextPreKeyId` forces upstream to always generate a
+			// fresh keypair on `getNextPreKeys`, side-stepping the inconsistent
+			// "available" range. The cost is one extra Curve keygen on the
+			// first retry after handoff — negligible.
+			creds.firstUnuploadedPreKeyId = d.next_pre_key_id
+		}
 		if (d.props_hash !== undefined) creds.lastPropHash = d.props_hash ?? undefined
 		if (d.platform) creds.platform = d.platform
 
