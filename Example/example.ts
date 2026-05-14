@@ -163,46 +163,45 @@ const startSock = async () => {
 								const msgId = await sock.relayMessage(msg.key.remoteJid!, {
 									interactiveMessage: {
 										body: { text: 'Send a PIX payment using the button below.' },
-										interactiveMessage: {
-											nativeFlowMessage: {
-												buttons: [
-													{
-														name: 'payment_info',
-														buttonParamsJson: JSON.stringify({
-															currency: 'BRL',
-															total_amount: { value: 0, offset: 100 },
-															reference_id: Math.random().toString(36).substring(2, 13).toUpperCase(),
-															type: 'physical-goods',
-															order: {
-																status: 'pending',
-																subtotal: { value: 0, offset: 100 },
-																order_type: 'ORDER',
-																items: [
-																	{
-																		name: '',
-																		amount: { value: 0, offset: 100 },
-																		quantity: 0,
-																		sale_amount: { value: 0, offset: 100 }
-																	}
-																]
-															},
-															payment_settings: [
+										nativeFlowMessage: {
+											buttons: [
+												{
+													name: 'payment_info',
+													buttonParamsJson: JSON.stringify({
+														currency: 'BRL',
+														total_amount: { value: 1000, offset: 100 },
+														reference_id: Math.random().toString(36).substring(2, 13).toUpperCase(),
+														type: 'physical-goods',
+														order: {
+															status: 'pending',
+															subtotal: { value: 1000, offset: 100 },
+															order_type: 'ORDER',
+															items: [
 																{
-																	type: 'pix_static_code',
-																	pix_static_code: {
-																		merchant_name: 'Example Bot',
-																		key: '00000000-0000-0000-0000-000000000000',
-																		key_type: 'EVP'
-																	}
+																	name: 'PIX charge',
+																	amount: { value: 1000, offset: 100 },
+																	quantity: 1,
+																	sale_amount: { value: 1000, offset: 100 }
 																}
-															],
-															share_payment_status: false,
-															referral: 'chat_attachment'
-														})
-													}
-												],
-												messageVersion: 1
-											}
+															]
+														},
+														payment_settings: [
+															{
+																type: 'pix_static_code',
+																pix_static_code: {
+																	merchant_name: 'Example Bot',
+																	key: '00000000-0000-0000-0000-000000000000',
+																	key_type: 'EVP'
+																}
+															}
+														],
+														share_payment_status: false,
+														referral: 'chat_attachment'
+													})
+												}
+											],
+											messageParamsJson: '{}',
+											messageVersion: 1
 										}
 									}
 								})
