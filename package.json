@@ -61,7 +61,7 @@
   },
   "dependencies": {
     "pino": "^9.6",
-    "whatsapp-rust-bridge": "0.6.0-alpha.25"
+    "whatsapp-rust-bridge": "0.6.0-alpha.26"
   },
   "devDependencies": {
     "@types/node": "^22",
