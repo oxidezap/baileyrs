@@ -222,10 +222,7 @@ async function destroyClient(client: AnyClient, removeFolder: boolean) {
 		} else {
 			// Upstream's `end()` is void and its background workers
 			// (`commitWithRetry`) keep firing after teardown. Wait for the
-			// connection-close event (bounded) and give the per-id mutex
-			// queue a beat to drain BEFORE rmSync — otherwise the ENOENT
-			// retry/backoff loop fires for ~30s post-teardown and contends
-			// for the host with the next suite's WebSocket handshake.
+			// connection-close event (bounded).
 			const closed = new Promise<void>(resolve => {
 				const on = (u: { connection?: string }) => {
 					if (u.connection === 'close') {
@@ -237,7 +234,12 @@ async function destroyClient(client: AnyClient, removeFolder: boolean) {
 			})
 			client.sock.end(undefined)
 			await Promise.race([closed, new Promise<void>(r => setTimeout(r, 1000).unref())])
-			await new Promise<void>(r => setTimeout(r, 100).unref())
+			// Only beat the per-id mutex when we're about to rmSync —
+			// otherwise the ENOENT retry/backoff loop fires for ~30s
+			// post-teardown.
+			if (removeFolder) {
+				await new Promise<void>(r => setTimeout(r, 100).unref())
+			}
 		}
 	} catch {
 		/* ignore */

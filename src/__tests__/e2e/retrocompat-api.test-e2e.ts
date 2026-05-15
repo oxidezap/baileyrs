@@ -77,25 +77,24 @@ describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
 	// -- CB: events between users --
 
 	test('sendNode delivers stanza and CB: fires on recipient', async () => {
-		// Alice sends a raw IQ node to Bob, Bob should see it as a CB: event
-		// This tests the full raw_node pipeline: sendNode → noise → mock server → raw_node event → CB: emit
 		const tag = alice.sock.generateMessageTag()
 
-		const bobReceived = new Promise<BinaryNode>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				bob.sock.ws.off(`TAG:${tag}`, handler)
-				reject(new Error('Timed out waiting for TAG event'))
-			}, 10_000)
-
+		// The TAG event for the server's reply to Alice's IQ fires on
+		// alice.sock.ws (Alice is who sent it). Mock may or may not echo
+		// — short sentinel race; the must-not-throw on sendNode is the
+		// real assertion.
+		const aliceReceived = new Promise<BinaryNode | null>(resolve => {
 			const handler = (node: BinaryNode) => {
 				clearTimeout(timeout)
 				resolve(node)
 			}
-
-			bob.sock.ws.once(`TAG:${tag}`, handler)
+			const timeout = setTimeout(() => {
+				alice.sock.ws.off(`TAG:${tag}`, handler)
+				resolve(null)
+			}, 500)
+			alice.sock.ws.once(`TAG:${tag}`, handler)
 		})
 
-		// Send a ping IQ from Alice
 		await alice.sock.sendNode({
 			tag: 'iq',
 			attrs: {
@@ -106,16 +105,9 @@ describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
 			}
 		})
 
-		// The mock server should echo or respond, and Bob should see the response
-		// via raw_node forwarding → TAG: event
-		// If mock server doesn't relay IQs between users, this tests Alice's own response
-		try {
-			const response = await bobReceived
-			expect(response).toBeDefined()
+		const response = await aliceReceived
+		if (response) {
 			expect(response.tag).toBeDefined()
-		} catch {
-			// TAG events may not fire if mock server doesn't relay IQs — that's OK
-			// The important thing is sendNode didn't throw
 		}
 	})
 
@@ -189,8 +181,8 @@ describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
 		const cbReceived = new Promise<BinaryNode>(resolve => {
 			const timeout = setTimeout(() => {
 				bob.sock.ws.off('CB:message', handler)
-				resolve({ tag: 'timeout', attrs: {} }) // resolve with sentinel
-			}, 10_000)
+				resolve({ tag: 'timeout', attrs: {} })
+			}, 2_000)
 
 			const handler = (node: BinaryNode) => {
 				clearTimeout(timeout)

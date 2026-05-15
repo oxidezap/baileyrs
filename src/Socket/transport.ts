@@ -33,6 +33,19 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			return new Promise<void>((resolve, reject) => {
 				let settled = false
 
+				// Reject on abort. Without this, when `disconnect()` is called
+				// between WS creation and the `open` event firing (common
+				// during 515-driven reconnect bursts), `ctrl.abort()` removes
+				// the open/close/error listeners that would settle this
+				// promise — leaving it pending forever, until the Rust core's
+				// 20s TRANSPORT_CONNECT_TIMEOUT trips and forces a retry.
+				ctrl.signal.addEventListener('abort', () => {
+					if (!settled) {
+						settled = true
+						reject(new Error('WebSocket aborted before open'))
+					}
+				})
+
 				newWs.addEventListener(
 					'open',
 					() => {
