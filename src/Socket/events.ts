@@ -113,10 +113,10 @@ type DispatcherFn<T extends CanonicalEvent['type']> = (evt: CanonicalByType<T>, 
  */
 type DispatcherMap = { [K in CanonicalEvent['type']]: DispatcherFn<K> }
 
-const emitClose = (ctx: SocketContext, reason: string, statusCode: number) =>
+const emitClose = (ctx: SocketContext, reason: string, statusCode: number, data?: Record<string, unknown>) =>
 	ctx.ev.emit('connection.update', {
 		connection: 'close',
-		lastDisconnect: { error: new Boom(reason, { statusCode }), date: new Date() }
+		lastDisconnect: { error: new Boom(reason, { statusCode, data }), date: new Date() }
 	} as Partial<ConnectionState>)
 
 /**
@@ -203,7 +203,13 @@ const DISPATCHERS: DispatcherMap = {
 		const status = mapConnectFailureToDisconnect(evt.reason)
 		emitClose(ctx, evt.message ?? 'Connection failure', status)
 	},
-	streamError: (evt, { ctx }) => emitClose(ctx, 'Stream error: ' + evt.code, DisconnectReason.badSession),
+	// Preserve the wire code on `boom.data.streamErrorCode` so consumers can
+	// branch on the actual `<stream:error code="...">` (e.g. 500 vs an
+	// unknown code) without losing the canonical DisconnectReason.badSession.
+	streamError: (evt, { ctx }) =>
+		emitClose(ctx, 'Stream error: ' + evt.code, DisconnectReason.badSession, {
+			streamErrorCode: evt.code
+		}),
 	streamReplaced: (_, { ctx }) =>
 		emitConnectionUpdate(ctx, {
 			connection: 'close',
