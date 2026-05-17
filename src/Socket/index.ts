@@ -441,7 +441,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				ev.emit('connection.update', {
 					connection: 'close',
 					lastDisconnect: {
-						error: err instanceof Error ? err : new Boom(String(err), { statusCode: 500 }),
+						// restartRequired (515) signals "Rust read loop crashed
+						// unrecoverably, restart the sock". Previously mapped to
+						// 500, which collided with the server-side <stream:error
+						// code="500"> path and made it impossible for consumers
+						// to tell the two apart.
+						error:
+							err instanceof Error
+								? err
+								: new Boom(String(err), { statusCode: DisconnectReason.restartRequired }),
 						date: new Date()
 					}
 				} as Partial<ConnectionState>)
