@@ -113,12 +113,7 @@ type DispatcherFn<T extends CanonicalEvent['type']> = (evt: CanonicalByType<T>, 
  */
 type DispatcherMap = { [K in CanonicalEvent['type']]: DispatcherFn<K> }
 
-const emitClose = (
-	ctx: SocketContext,
-	reason: string,
-	statusCode: number,
-	data?: Record<string, unknown>
-) =>
+const emitClose = (ctx: SocketContext, reason: string, statusCode: number, data?: Record<string, unknown>) =>
 	ctx.ev.emit('connection.update', {
 		connection: 'close',
 		lastDisconnect: { error: new Boom(reason, { statusCode, data }), date: new Date() }

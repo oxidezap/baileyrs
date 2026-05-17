@@ -446,10 +446,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 						// 500, which collided with the server-side <stream:error
 						// code="500"> path and made it impossible for consumers
 						// to tell the two apart.
-						error:
-							err instanceof Error
-								? err
-								: new Boom(String(err), { statusCode: DisconnectReason.restartRequired }),
+						error: err instanceof Error ? err : new Boom(String(err), { statusCode: DisconnectReason.restartRequired }),
 						date: new Date()
 					}
 				} as Partial<ConnectionState>)
