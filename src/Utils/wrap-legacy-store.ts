@@ -554,10 +554,15 @@ const CHAIN_TYPE_RECEIVING = 2
 const BASE_KEY_TYPE_OURS = 1
 const BASE_KEY_TYPE_THEIRS = 2
 
-const b64 = (b: Uint8Array | undefined | null): string =>
-	b ? Buffer.from(b).toString('base64') : Buffer.alloc(0).toString('base64')
+// Non-nullable to keep the empty-vs-missing distinction visible at call sites.
+const b64 = (b: Uint8Array): string => Buffer.from(b).toString('base64')
+const fromB64 = (s: string): Buffer => Buffer.from(s, 'base64')
 
-const fromB64 = (s: string | undefined | null): Buffer => (s ? Buffer.from(s, 'base64') : Buffer.alloc(0))
+const EMPTY_BYTES = new Uint8Array()
+
+// Rust `chain_key.index` and JS `chainKey.counter` differ by 1 (fresh = 0 vs -1).
+const rustIndexToJsCounter = (index: number | null | undefined): number => (index ?? 0) - 1
+const jsCounterToRustIndex = (counter: number): number => counter + 1
 
 // Reuse the proto-types interfaces directly so `RecordStructure.create({…})`
 // type-checks without casts. `proto.SessionStructure.IChain` etc. live under
@@ -583,6 +588,8 @@ function deriveProtoMessageKey(seed: Buffer, counter: number): BridgeMessageKeyP
 	const t1 = expand(Buffer.alloc(0), 0x01)
 	const t2 = expand(t1, 0x02)
 	const t3 = expand(t2, 0x03)
+	// Message keys use the same counter/index value in both impls — only the
+	// chain key has the off-by-one (see `rustIndexToJsCounter`).
 	return {
 		index: counter,
 		cipherKey: new Uint8Array(t1),
@@ -626,23 +633,24 @@ function sessionStructureToEntry(session: BridgeSessionProto, closedTs: number):
 			? lastReceiver.senderRatchetKey
 			: !weAreAlice && session.aliceBaseKey && session.aliceBaseKey.length > 0
 				? session.aliceBaseKey
-				: new Uint8Array()
+				: EMPTY_BYTES
 
-	const senderRatchetPub = session.senderChain.senderRatchetKey ?? new Uint8Array()
-	const senderRatchetPriv = session.senderChain.senderRatchetKeyPrivate ?? new Uint8Array()
+	const senderRatchetPub = session.senderChain.senderRatchetKey ?? EMPTY_BYTES
+	const senderRatchetPriv = session.senderChain.senderRatchetKeyPrivate ?? EMPTY_BYTES
 
 	const _chains: Record<string, UpstreamChainEntry> = {}
-	if (session.senderChain.chainKey?.key && senderRatchetPub.length > 0) {
+	const senderChainKey = session.senderChain.chainKey
+	if (senderChainKey?.key?.length && senderRatchetPub.length > 0) {
 		_chains[b64(senderRatchetPub)] = {
-			chainKey: { counter: session.senderChain.chainKey.index ?? 0, key: b64(session.senderChain.chainKey.key) },
+			chainKey: { counter: rustIndexToJsCounter(senderChainKey.index), key: b64(senderChainKey.key) },
 			chainType: CHAIN_TYPE_SENDING,
 			messageKeys: {}
 		}
 	}
 	for (const rc of receiverChains) {
-		if (!rc.chainKey?.key || !rc.senderRatchetKey || rc.senderRatchetKey.length === 0) continue
+		if (!rc.chainKey?.key?.length || !rc.senderRatchetKey?.length) continue
 		_chains[b64(rc.senderRatchetKey)] = {
-			chainKey: { counter: rc.chainKey.index ?? 0, key: b64(rc.chainKey.key) },
+			chainKey: { counter: rustIndexToJsCounter(rc.chainKey.index), key: b64(rc.chainKey.key) },
 			chainType: CHAIN_TYPE_RECEIVING,
 			messageKeys: {}
 		}
@@ -663,7 +671,7 @@ function sessionStructureToEntry(session: BridgeSessionProto, closedTs: number):
 			closed: closedTs,
 			used: now,
 			created: now,
-			remoteIdentityKey: b64(session.remoteIdentityPublic ?? new Uint8Array())
+			remoteIdentityKey: b64(session.remoteIdentityPublic ?? EMPTY_BYTES)
 		},
 		_chains
 	}
@@ -711,8 +719,11 @@ function entryToSessionStructure(entry: UpstreamSessionEntry): BridgeSessionProt
 		senderRatchetKey: new Uint8Array(senderRatchetPub),
 		senderRatchetKeyPrivate: new Uint8Array(senderRatchetPriv),
 		chainKey: senderChainEntry
-			? { index: senderChainEntry.chainKey.counter, key: new Uint8Array(fromB64(senderChainEntry.chainKey.key)) }
-			: { index: 0, key: new Uint8Array() },
+			? {
+					index: jsCounterToRustIndex(senderChainEntry.chainKey.counter),
+					key: new Uint8Array(fromB64(senderChainEntry.chainKey.key))
+				}
+			: { index: 0, key: EMPTY_BYTES },
 		messageKeys: [] // sender chain is sequential — no skipped cache either side
 	}
 
@@ -721,7 +732,7 @@ function entryToSessionStructure(entry: UpstreamSessionEntry): BridgeSessionProt
 		if (ch.chainType !== CHAIN_TYPE_RECEIVING) continue
 		receiverChains.push({
 			senderRatchetKey: new Uint8Array(fromB64(k)),
-			chainKey: { index: ch.chainKey.counter, key: new Uint8Array(fromB64(ch.chainKey.key)) },
+			chainKey: { index: jsCounterToRustIndex(ch.chainKey.counter), key: new Uint8Array(fromB64(ch.chainKey.key)) },
 			// JS holds 32-byte HMAC seeds; Rust holds the post-HKDF split.
 			// Lossless JS→Rust derivation via deriveProtoMessageKey.
 			messageKeys: jsChainMessageKeysToProto(ch.messageKeys)
