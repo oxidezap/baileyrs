@@ -297,6 +297,7 @@ const ADAPTERS = {
 	offline_sync_completed: () => ({ type: 'noop', bridgeType: 'offline_sync_completed' }),
 	offline_sync_preview: () => ({ type: 'noop', bridgeType: 'offline_sync_preview' }),
 	device_list_update: () => ({ type: 'noop', bridgeType: 'device_list_update' }),
+	identity_change: () => ({ type: 'noop', bridgeType: 'identity_change' }),
 	disappearing_mode_changed: data => {
 		const jid = asJidString(data.from)
 		const duration = asNumber(data.duration)
