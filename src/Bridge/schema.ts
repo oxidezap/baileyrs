@@ -72,6 +72,40 @@ type AdapterMap = { [K in BridgeEventType]: AdapterFn<K> }
 const extractAction = (data: { action?: unknown }): Record<string, unknown> | undefined =>
 	isObject(data.action) ? data.action : undefined
 
+/**
+ * Resolve the `key.participantAlt` / `key.remoteJidAlt` pair from a bridge
+ * `MessageSource`. These mirror upstream Baileys' LID↔PN alternate addressing,
+ * but the bridge exposes the alternates as `sender_alt` (the message author's
+ * other address) and `recipient_alt` (the recipient's other address).
+ *
+ * Mapping:
+ *  - **Group:** the author is the participant, so `participantAlt = sender_alt`.
+ *    `remoteJidAlt` is left undefined (the group JID has no alternate).
+ *  - **DM:** the chat *is* the other party. For an **incoming** DM the other
+ *    party is the author, so its alternate lives in `sender_alt`; for an
+ *    **outgoing** (`fromMe`) DM the other party is the recipient, so it lives in
+ *    `recipient_alt`. Either way it surfaces as `remoteJidAlt`.
+ *
+ * This fixes the long-standing gap where DM `remoteJidAlt` was always read from
+ * `recipient_alt` — which the core only ever populates for outgoing messages —
+ * so incoming DMs (the common case) never got a `remoteJidAlt`.
+ */
+const resolveAltAddressing = (
+	src: Record<string, unknown>,
+	isGroup: boolean,
+	isFromMe: boolean
+): { participantAlt: string | undefined; remoteJidAlt: string | undefined } => {
+	const senderAlt = isBridgeJid(src.sender_alt) ? bridgeJidToString(src.sender_alt) : undefined
+	const recipientAlt = isBridgeJid(src.recipient_alt) ? bridgeJidToString(src.recipient_alt) : undefined
+
+	if (isGroup) {
+		return { participantAlt: senderAlt, remoteJidAlt: undefined }
+	}
+	// DM: the partner's alternate is the author's (sender_alt) for incoming, or
+	// the recipient's (recipient_alt) for outgoing.
+	return { participantAlt: undefined, remoteJidAlt: isFromMe ? recipientAlt : senderAlt }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-event adapters — the bulk of the file. One entry per WhatsAppEvent variant.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,15 +179,15 @@ const ADAPTERS = {
 		const id = asString(info.id)
 		if (!src || !chat || !id) return null
 		const isGroup = asBoolOr(src.is_group, false)
-		const participantAlt = isGroup && isBridgeJid(src.sender_alt) ? bridgeJidToString(src.sender_alt) : undefined
-		const remoteJidAlt = !isGroup && isBridgeJid(src.recipient_alt) ? bridgeJidToString(src.recipient_alt) : undefined
+		const isFromMe = asBoolOr(src.is_from_me, false)
+		const { participantAlt, remoteJidAlt } = resolveAltAddressing(src, isGroup, isFromMe)
 		return {
 			type: 'undecryptableMessage',
 			chatJid: chat,
 			senderJid: isGroup ? asJidString(src.sender) : undefined,
 			id,
 			timestamp: toUnixSeconds(info.timestamp),
-			isFromMe: asBoolOr(src.is_from_me, false),
+			isFromMe,
 			isGroup,
 			pushName: asString(info.push_name),
 			participantAlt,
@@ -452,10 +486,10 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 	}
 
 	const isGroup = asBoolOr(src.is_group, false)
+	const isFromMe = asBoolOr(src.is_from_me, false)
 	const senderRaw = src.sender
 	const senderJid = isGroup ? asJidString(senderRaw) : undefined
-	const participantAlt = isGroup && isBridgeJid(src.sender_alt) ? bridgeJidToString(src.sender_alt) : undefined
-	const remoteJidAlt = !isGroup && isBridgeJid(src.recipient_alt) ? bridgeJidToString(src.recipient_alt) : undefined
+	const { participantAlt, remoteJidAlt } = resolveAltAddressing(src, isGroup, isFromMe)
 
 	// Bridge `EditAttribute` is one of "1"|"2"|"3"|"7"|"8" or "" (none) — narrow
 	// to the literal set so consumers can switch exhaustively without
@@ -474,7 +508,7 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 		chatJid: chat,
 		senderJid,
 		isGroup,
-		isFromMe: asBoolOr(src.is_from_me, false),
+		isFromMe,
 		id,
 		timestamp: toUnixSeconds(info.timestamp),
 		pushName: asString(info.push_name),

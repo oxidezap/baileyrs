@@ -263,6 +263,86 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			if (result?.type !== 'message') throw new Error('narrowing')
 			expect(result.senderJid).toBe('5511@s.whatsapp.net')
 			expect(result.participantAlt).toBe('999@lid')
+			// Group has no remoteJidAlt (the group JID has no alternate form).
+			expect(result.remoteJidAlt).toBeUndefined()
+		})
+
+		// Incoming DM: the chat IS the partner, and the partner's alternate
+		// address is exposed by the core as `sender_alt` (read from the stanza's
+		// sender_pn/sender_lid). It must surface as `remoteJidAlt`. Regression:
+		// it used to be read from `recipient_alt`, which the core never fills for
+		// incoming messages, so DMs never got a remoteJidAlt.
+		it('incoming DM maps sender_alt → remoteJidAlt (not participantAlt)', () => {
+			const result = adaptBridgeEvent({
+				type: 'message',
+				data: {
+					message: { conversation: 'hi' },
+					info: {
+						id: 'DM1',
+						timestamp: 1_734_000_000,
+						source: {
+							chat: { user: '259829012635749', server: 'lid' },
+							sender: { user: '259829012635749', server: 'lid' },
+							sender_alt: { user: '6283164859390', server: 's.whatsapp.net' },
+							is_from_me: false,
+							is_group: false
+						}
+					}
+				}
+			} as never)
+			if (result?.type !== 'message') throw new Error('narrowing')
+			expect(result.remoteJidAlt).toBe('6283164859390@s.whatsapp.net')
+			expect(result.participantAlt).toBeUndefined()
+			expect(result.senderJid).toBeUndefined() // DMs carry no senderJid
+		})
+
+		// Outgoing DM: the partner is the recipient, whose alternate lives in
+		// `recipient_alt`. (The core only populates this for outgoing messages.)
+		it('outgoing DM maps recipient_alt → remoteJidAlt', () => {
+			const result = adaptBridgeEvent({
+				type: 'message',
+				data: {
+					message: { conversation: 'hi' },
+					info: {
+						id: 'DM2',
+						timestamp: 1_734_000_000,
+						source: {
+							chat: { user: '6283164859390', server: 's.whatsapp.net' },
+							sender: { user: '111', server: 'lid' },
+							recipient_alt: { user: '259829012635749', server: 'lid' },
+							is_from_me: true,
+							is_group: false
+						}
+					}
+				}
+			} as never)
+			if (result?.type !== 'message') throw new Error('narrowing')
+			expect(result.isFromMe).toBe(true)
+			expect(result.remoteJidAlt).toBe('259829012635749@lid')
+			expect(result.participantAlt).toBeUndefined()
+		})
+
+		// An incoming DM without any alternate (no sender_alt) must NOT crash and
+		// must leave remoteJidAlt undefined — the field is genuinely optional.
+		it('incoming DM with no alternate leaves remoteJidAlt undefined', () => {
+			const result = adaptBridgeEvent({
+				type: 'message',
+				data: {
+					message: { conversation: 'hi' },
+					info: {
+						id: 'DM3',
+						timestamp: 1_734_000_000,
+						source: {
+							chat: { user: '5511', server: 's.whatsapp.net' },
+							sender: { user: '5511', server: 's.whatsapp.net' },
+							is_from_me: false,
+							is_group: false
+						}
+					}
+				}
+			} as never)
+			if (result?.type !== 'message') throw new Error('narrowing')
+			expect(result.remoteJidAlt).toBeUndefined()
 		})
 
 		it('receipt collects message_ids and timestamp', () => {
