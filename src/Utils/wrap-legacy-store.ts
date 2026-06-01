@@ -1302,6 +1302,120 @@ export async function wrapLegacyStore(
 			}
 		},
 
+		// Batch variant of `set`. The upstream `SignalKeyStore.set(data)` is
+		// already batch-shaped (`{ [type]: { [id]: value | null } }`), so the
+		// win here is collapsing every entry of the SAME bridge store into a
+		// SINGLE `store.set(...)` call instead of one call per entry. The core
+		// never mixes stores in one batch, so all entries share one upstream
+		// `type` → at most one `store.set` (the 'device' route is the exception,
+		// handled item-by-item below since it mutates creds, not the keyStore).
+		// Conversion semantics MUST mirror `set` exactly — only the write is
+		// grouped.
+		async setMany(bridgeStore: string, entries: [key: string, value: Uint8Array][]) {
+			const route = resolve(bridgeStore)
+			const type = STORE_MAP[bridgeStore]!
+
+			if (route === 'device') {
+				// device/account mutate creds, not the keyStore — can't be
+				// grouped. In practice 'device' never arrives as a large batch.
+				for (const [key, value] of entries) {
+					if (key === 'device') {
+						updateCredsFromDevice(value, creds)
+						debounceSave()
+						continue
+					}
+
+					if (key === 'account') {
+						try {
+							creds.account = ADVSignedDeviceIdentity.decode(value)
+							debounceSave()
+						} catch (e) {
+							warn('failed to decode account update:', e)
+						}
+
+						continue
+					}
+
+					await writeBinary(type, key, value)
+				}
+
+				return
+			}
+
+			// `signal` (currently unreachable) and `bridge-only` are raw
+			// binary passthrough — no key translation, no value conversion.
+			if (route === 'signal' || route === 'bridge-only') {
+				const batch: Record<string, unknown> = {}
+				for (const [key, value] of entries) batch[key] = Buffer.from(value)
+				try {
+					await store.set({ [type]: batch })
+				} catch (e) {
+					// MUST reject: Rust treats a resolved setMany as "persisted" and then
+					// rewrites its self-index. Swallowing would index unwritten values.
+					warn(`SET-MANY ${bridgeStore} (${entries.length} entries) failed:`, e)
+					throw e
+				}
+
+				return
+			}
+
+			if (route === 'converter') {
+				const batch: Record<string, unknown> = {}
+				for (const [key, value] of entries) {
+					// Per-entry conversion can fail (bad LID/PN, malformed
+					// value); log and skip that one entry, like `set` does.
+					try {
+						const upstreamKey = translateKey(bridgeStore, key)
+						batch[upstreamKey] = converters[bridgeStore]?.fromBridge(key, value) ?? Buffer.from(value)
+					} catch (e) {
+						warn(`SET ${bridgeStore}/${key} failed:`, e)
+					}
+				}
+
+				try {
+					await store.set({ [type]: batch })
+				} catch (e) {
+					// MUST reject: Rust treats a resolved setMany as "persisted" and then
+					// rewrites its self-index. Swallowing would index unwritten values.
+					warn(`SET-MANY ${bridgeStore} (${entries.length} entries) failed:`, e)
+					throw e
+				}
+
+				return
+			}
+
+			warn(`SET-MANY unknown store: ${bridgeStore} (${entries.length} entries)`)
+		},
+
+		// Batch variant of `delete`. Collapses all `{ [id]: null }` tombstones
+		// for one store into a single `store.set(...)`. Mirrors `delete`:
+		// 'device' is a no-op, and the converter route translates each key.
+		async deleteMany(bridgeStore: string, bridgeKeys: string[]) {
+			if (bridgeStore === 'device') return
+			const route = resolve(bridgeStore)
+			const type = STORE_MAP[bridgeStore]
+			if (!type) return
+
+			const batch: Record<string, unknown> = {}
+			for (const key of bridgeKeys) {
+				const storeKey = route === 'converter' ? translateKey(bridgeStore, key) : key
+				batch[storeKey] = null
+			}
+
+			try {
+				await store.set({ [type]: batch })
+			} catch (e) {
+				warn(`DELETE-MANY ${bridgeStore} (${bridgeKeys.length} keys) failed:`, e)
+				throw e
+			}
+		},
+
+		// The upstream Baileys keyStore is id-addressed (`get(type, ids[])`) with
+		// no list-a-category primitive, so this adapter CANNOT enumerate. It
+		// declares `batch` only — the core keeps its self-maintained meta-indexes
+		// for this backend (no enumerate/prefixDelete, no listKeys/deletePrefix).
+		capabilities: { batch: true },
+
 		async flush() {
 			// Drain in a loop because `set('device', ...)` calls landing
 			// during `await saveCreds()` queue a fresh `credsTimer`. A
