@@ -462,7 +462,9 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 				syncType: undefined,
 				progress: undefined,
 				chunkOrder: undefined,
-				peerDataRequestSessionId: undefined
+				peerDataRequestSessionId: undefined,
+				batchIndex: undefined,
+				isFinalBatch: true
 			})
 		})
 

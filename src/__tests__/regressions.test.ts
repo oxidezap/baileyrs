@@ -374,7 +374,10 @@ describe('adapter: history_sync', () => {
 			syncType: undefined,
 			progress: undefined,
 			chunkOrder: undefined,
-			peerDataRequestSessionId: undefined
+			peerDataRequestSessionId: undefined,
+			// Batch markers: absent in the payload → defaults to a single final batch.
+			batchIndex: undefined,
+			isFinalBatch: true
 		})
 	})
 
@@ -1018,6 +1021,22 @@ describe('dispatch: emitCBEvents emits all upstream patterns', () => {
 // Dispatcher — history sync (messaging-history.set + bootstrap fan-out)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The bridge may split one chunk into bounded batches (isFinalBatch=false on
+// all but the last). `isLatest`/`progress` are chunk-level, so they must fire
+// ONLY on the final batch; intermediate batches just append content.
+const conv = (id: string) => ({
+	id,
+	messages: [
+		{
+			message: {
+				key: { remoteJid: id, fromMe: false, id: 'M' },
+				message: { conversation: 'x' },
+				messageTimestamp: 1730000000
+			}
+		}
+	]
+})
+
 describe('dispatch: history_sync → messaging-history.set', () => {
 	const runHistory = (data: Record<string, unknown>) => collect({ type: 'history_sync', data }, 'messaging-history.set')
 
@@ -1060,6 +1079,62 @@ describe('dispatch: history_sync → messaging-history.set', () => {
 	it('ON_DEMAND sets isLatest=undefined', () => {
 		const sets = runHistory({ syncType: HSType.ON_DEMAND, conversations: [] })
 		expect(sets[0]?.isLatest).toBeUndefined()
+	})
+
+	it('batched INITIAL_BOOTSTRAP: intermediate batch has isLatest=false and no progress, content still flows', () => {
+		const mid = runHistory({
+			syncType: HSType.INITIAL_BOOTSTRAP,
+			progress: 50,
+			batchIndex: 0,
+			isFinalBatch: false,
+			conversations: [conv('a@s.whatsapp.net')]
+		})
+		expect(mid[0]?.isLatest).toBe(false)
+		expect(mid[0]?.progress).toBeUndefined()
+		expect(mid[0]?.chats[0]?.id).toBe('a@s.whatsapp.net')
+		expect(mid[0]?.messages[0]?.key.id).toBe('M')
+	})
+
+	it('batched INITIAL_BOOTSTRAP: final batch sets isLatest=true and carries progress', () => {
+		const fin = runHistory({
+			syncType: HSType.INITIAL_BOOTSTRAP,
+			progress: 100,
+			batchIndex: 1,
+			isFinalBatch: true,
+			conversations: [conv('b@s.whatsapp.net')]
+		})
+		expect(fin[0]?.isLatest).toBe(true)
+		expect(fin[0]?.progress).toBe(100)
+		expect(fin[0]?.chats[0]?.id).toBe('b@s.whatsapp.net')
+	})
+
+	it('missing batch markers behave as a single final batch (back-compat)', () => {
+		const sets = runHistory({
+			syncType: HSType.INITIAL_BOOTSTRAP,
+			progress: 20,
+			conversations: [conv('c@s.whatsapp.net')]
+		})
+		expect(sets[0]?.isLatest).toBe(true)
+		expect(sets[0]?.progress).toBe(20)
+	})
+
+	it('two chunks with the same syncType each dispatch independently', () => {
+		const a = runHistory({
+			syncType: HSType.RECENT,
+			chunkOrder: 1,
+			isFinalBatch: true,
+			conversations: [conv('a@s.whatsapp.net')]
+		})
+		const b = runHistory({
+			syncType: HSType.RECENT,
+			chunkOrder: 2,
+			isFinalBatch: true,
+			conversations: [conv('b@s.whatsapp.net')]
+		})
+		expect(a[0]?.chats[0]?.id).toBe('a@s.whatsapp.net')
+		expect(b[0]?.chats[0]?.id).toBe('b@s.whatsapp.net')
+		expect(a[0]?.isLatest).toBe(false)
+		expect(b[0]?.isLatest).toBe(false)
 	})
 
 	it('PUSH_NAME populates contacts via item.pushnames', () => {

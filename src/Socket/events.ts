@@ -626,12 +626,18 @@ const DISPATCHERS: DispatcherMap = {
 		// gating "first hydrate" logic on `isLatest` see the same boolean.
 		const HSType = WAProto.HistorySync.HistorySyncType
 		const isInitial = evt.syncType === HSType.INITIAL_BOOTSTRAP
+		// The bridge may split one chunk into bounded batches (isFinalBatch=false
+		// on all but the last). `isLatest`/`progress` are chunk-level signals, so
+		// they only fire on the final batch — intermediate batches just append
+		// data. A non-batched bridge omits the flag → `!== false` keeps the old
+		// single-event behavior.
+		const isFinalBatch = evt.isFinalBatch !== false
 		const payload: BaileysEventMap['messaging-history.set'] = {
 			chats: evt.chats,
 			contacts: evt.contacts,
 			messages: evt.messages,
-			isLatest: evt.syncType === HSType.ON_DEMAND ? undefined : isInitial,
-			progress: evt.progress,
+			isLatest: evt.syncType === HSType.ON_DEMAND ? undefined : isInitial && isFinalBatch,
+			progress: isFinalBatch ? evt.progress : undefined,
 			syncType: evt.syncType,
 			chunkOrder: evt.chunkOrder,
 			peerDataRequestSessionId: evt.peerDataRequestSessionId,

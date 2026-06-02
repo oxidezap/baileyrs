@@ -291,9 +291,11 @@ export async function useBridgeStore(folder: string): Promise<NonNullable<Authen
 			for (const [key, value] of entries) {
 				const cacheKey = `${store}\0${key}`
 
-				// Skip write if value is identical to cached version
+				// Skip write if value is identical to cached version.
+				// Buffer.compare accepts Uint8Array directly (no copy), unlike
+				// Buffer.from(prev).equals(Buffer.from(value)) which copied both.
 				const prev = cache.get(cacheKey)
-				if (prev && Buffer.from(prev).equals(Buffer.from(value))) {
+				if (prev && prev.length === value.length && Buffer.compare(prev, value) === 0) {
 					continue
 				}
 

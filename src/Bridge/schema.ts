@@ -313,6 +313,10 @@ const ADAPTERS = {
 		const metaChunkOrder = asNumber(overlay.chunkOrder)
 		const metaProgress = asNumber(overlay.progress)
 		const peerDataRequestSessionId = asString(overlay.peerDataRequestSessionId)
+		// Batch markers (the bridge splits a chunk into bounded sub-batches).
+		// Absent on a non-batched bridge → treat as a single final batch.
+		const batchIndex = asNumber(overlay.batchIndex)
+		const isFinalBatch = overlay.isFinalBatch !== false
 		return {
 			type: 'historySync',
 			chats: processed.chats,
@@ -322,7 +326,9 @@ const ADAPTERS = {
 			syncType: metaSyncType ?? processed.syncType,
 			progress: metaProgress ?? processed.progress,
 			chunkOrder: metaChunkOrder,
-			peerDataRequestSessionId
+			peerDataRequestSessionId,
+			batchIndex,
+			isFinalBatch
 		}
 	},
 

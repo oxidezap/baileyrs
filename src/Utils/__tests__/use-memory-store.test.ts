@@ -8,7 +8,7 @@ const dec = (u: Uint8Array | null) => (u ? new TextDecoder().decode(u) : null)
 describe('useMemoryStore — batch + enumeration', () => {
 	it('declares full capabilities', () => {
 		const store = useMemoryStore()
-		assert.deepEqual(store.capabilities, { batch: true, enumerate: true, prefixDelete: true })
+		assert.deepEqual(store.capabilities, { batch: true, enumerate: true, prefixDelete: true, writeBack: true })
 	})
 
 	it('setMany writes every entry; get reads them back', async () => {

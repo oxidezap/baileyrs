@@ -507,6 +507,15 @@ export interface CanonicalHistorySync {
 	chunkOrder?: number
 	/** PDO session id, set on `ON_DEMAND` syncs answering a `fetchMessageHistory`. */
 	peerDataRequestSessionId?: string
+	/**
+	 * Sub-chunk batch index (0-based). The bridge splits a single WhatsApp
+	 * history-sync chunk into bounded batches to cap WASM decode memory; each
+	 * batch arrives as its own event. Internal — not surfaced on the public
+	 * `messaging-history.set` payload.
+	 */
+	batchIndex?: number
+	/** True on the last batch of a chunk (carries the tail: pushnames/mappings/…). */
+	isFinalBatch?: boolean
 }
 
 export interface CanonicalRawNode {

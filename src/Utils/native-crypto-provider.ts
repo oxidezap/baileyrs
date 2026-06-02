@@ -15,20 +15,14 @@ export const makeNativeCryptoProvider = () => ({
 		const c = createCipheriv('aes-256-cbc', key, iv)
 		const a = c.update(plaintext)
 		const b = c.final()
-		const out = new Uint8Array(a.length + b.length)
-		out.set(a, 0)
-		out.set(b, a.length)
-		return out
+		return Buffer.concat([a, b])
 	},
 
 	aesCbc256Decrypt(key: Uint8Array, iv: Uint8Array, ciphertext: Uint8Array): Uint8Array {
 		const d = createDecipheriv('aes-256-cbc', key, iv)
 		const a = d.update(ciphertext)
 		const b = d.final()
-		const out = new Uint8Array(a.length + b.length)
-		out.set(a, 0)
-		out.set(b, a.length)
-		return out
+		return Buffer.concat([a, b])
 	},
 
 	aesGcm256Encrypt(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: Uint8Array): Uint8Array {
@@ -37,11 +31,7 @@ export const makeNativeCryptoProvider = () => ({
 		const a = c.update(plaintext)
 		const b = c.final()
 		const tag = c.getAuthTag()
-		const out = new Uint8Array(a.length + b.length + tag.length)
-		out.set(a, 0)
-		out.set(b, a.length)
-		out.set(tag, a.length + b.length)
-		return out
+		return Buffer.concat([a, b, tag])
 	},
 
 	aesGcm256Decrypt(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ciphertextWithTag: Uint8Array): Uint8Array {
@@ -55,10 +45,7 @@ export const makeNativeCryptoProvider = () => ({
 		const a = d.update(ciphertextWithTag.subarray(0, ctLen))
 		// d.final() throws on tag mismatch — Rust adapter maps that to AuthFailed.
 		const b = d.final()
-		const out = new Uint8Array(a.length + b.length)
-		out.set(a, 0)
-		out.set(b, a.length)
-		return out
+		return Buffer.concat([a, b])
 	},
 
 	hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {

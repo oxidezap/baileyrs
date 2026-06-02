@@ -71,7 +71,11 @@ export function useMemoryStore(): NonNullable<AuthenticationState['store']> {
 
 		// Declares the optional primitives the bridge may use. An in-memory Map
 		// can do everything; enumeration lets the core drop its meta-indexes.
-		capabilities: { batch: true, enumerate: true, prefixDelete: true },
+		// `writeBack`: this store is ephemeral (lost on process exit), so there
+		// is no durability to lose — let the bridge buffer per-message Signal
+		// state in WASM and cross to this Map only on flush (disconnect). That
+		// keeps the hot path off the JS↔WASM boundary.
+		capabilities: { batch: true, enumerate: true, prefixDelete: true, writeBack: true },
 
 		async flush() {}
 	}
