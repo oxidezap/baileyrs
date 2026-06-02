@@ -26,7 +26,7 @@ import type {
 import { WAMessageStatus, WAProto } from '../Types/index.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
 import { Boom } from './boom.ts'
-import { unixTimestampSeconds } from './generics.ts'
+import { toNumber, unixTimestampSeconds } from './generics.ts'
 import type { ILogger } from './logger.ts'
 import {
 	generateThumbnail,
@@ -841,7 +841,9 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 			mediaKey: Uint8Array
 			fileSha256?: Uint8Array
 			fileEncSha256?: Uint8Array
-			fileLength?: number | null
+			// int64 proto field — arrives as a protobufjs `Long` object from the
+			// bridge, so coerce via `toNumber` (plain `Number()` yields NaN).
+			fileLength?: number | Long | null
 		}
 		if (!mediaObj.fileSha256 || !mediaObj.fileEncSha256) {
 			throw new Boom('Media message missing fileSha256 or fileEncSha256', { statusCode: 400 })
@@ -852,7 +854,7 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 			mediaObj.mediaKey,
 			mediaObj.fileSha256,
 			mediaObj.fileEncSha256,
-			Number(mediaObj.fileLength || 0),
+			toNumber(mediaObj.fileLength ?? 0),
 			mediaType
 		] as const
 

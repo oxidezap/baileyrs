@@ -10,6 +10,7 @@ import {
 	proto,
 	type WAMessage
 } from '../../index.ts'
+import { toNumber } from '../../Utils/generics.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient } from './test-client.ts'
 
@@ -209,7 +210,9 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 		expect(imgMsg?.caption).toBe(caption)
 		expect(imgMsg?.mimetype).toContain('image')
 		expect(imgMsg?.mediaKey).toBeDefined()
-		expect(imgMsg?.fileLength).toBeGreaterThan(0)
+		// `fileLength` is an int64 proto field → a protobufjs `Long` object, so
+		// coerce via `toNumber` before the numeric assertion.
+		expect(toNumber(imgMsg?.fileLength)).toBeGreaterThan(0)
 		expect(imgMsg?.fileSha256).toBeDefined()
 
 		// Download as buffer (via Rust bridge)
@@ -264,7 +267,7 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 		expect(vidMsg?.caption).toBe(caption)
 		expect(vidMsg?.mimetype).toContain('video')
 		expect(vidMsg?.mediaKey).toBeDefined()
-		expect(vidMsg?.fileLength).toBeGreaterThan(0)
+		expect(toNumber(vidMsg?.fileLength)).toBeGreaterThan(0)
 
 		// Download as buffer
 		const buffer = await downloadMediaMessage(received as WAMessage, 'buffer', {}, downloadCtx(alice.sock))

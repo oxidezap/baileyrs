@@ -21,6 +21,7 @@ import type {
 } from '../Types/index.ts'
 import { DisconnectReason, WAProto } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
+import { toNumber } from '../Utils/generics.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
 import {
 	buildGroupJoinRequestEvents,
@@ -316,8 +317,11 @@ const DISPATCHERS: DispatcherMap = {
 					}
 				])
 			} else if (protocolMsg.type === WAProto.Message.ProtocolMessage.Type.MESSAGE_EDIT && protocolMsg.editedMessage) {
+				// `timestampMs` is an int64 proto field → a protobufjs `Long`
+				// object from the bridge; `toNumber` is Long-safe (plain
+				// `Number()` would yield NaN and corrupt the edit timestamp).
 				const tsMs = protocolMsg.timestampMs
-				const editedTs = tsMs != null ? Math.floor(Number(tsMs) / 1000) : (evt.timestamp ?? waMsg.messageTimestamp)
+				const editedTs = tsMs != null ? Math.floor(toNumber(tsMs) / 1000) : (evt.timestamp ?? waMsg.messageTimestamp)
 				ctx.ev.emit('messages.update', [
 					{
 						key: { ...waMsg.key, id: protocolKeyId },
