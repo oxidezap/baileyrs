@@ -291,6 +291,29 @@ const ADAPTERS = {
 		if (!jid) return null
 		return { type: 'markChatAsReadUpdate', jid, read: asBoolOr(extractAction(data)?.read, true) }
 	},
+	label_edit_update: data => {
+		const labelId = asString(data.label_id)
+		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }
+		const action = extractAction(data)
+		// `predefinedId` is proto `predefined_id` (a number); upstream `Label`
+		// wants it as a string. Dual-read the spelling, then stringify.
+		const predefined = asNumber(action?.predefinedId ?? action?.predefined_id)
+		return {
+			type: 'labelEdit',
+			labelId,
+			name: asString(action?.name) ?? '',
+			color: asNumber(action?.color) ?? 0,
+			deleted: asBoolOr(action?.deleted, false),
+			predefinedId: predefined != null ? String(predefined) : undefined
+		}
+	},
+	label_association_update: data => {
+		const labelId = asString(data.label_id)
+		const chatJid = asJidString(data.chat_jid)
+		if (!labelId || !chatJid) return { type: 'noop', bridgeType: 'label_association_update' }
+		// `action.labeled === true` → label added to the chat, else removed.
+		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
+	},
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
@@ -579,6 +602,7 @@ const adaptContactUpdate = (data: unknown): CanonicalEvent | null => {
  */
 const RECEIPT_TYPE_MAP: Record<string, NonNullable<import('./types.ts').CanonicalReceipt['receiptType']>> = {
 	Delivered: 'delivered',
+	Sent: 'sent',
 	Sender: 'sender',
 	Retry: 'retry',
 	EncRekeyRetry: 'enc-rekey-retry',
@@ -591,6 +615,7 @@ const RECEIPT_TYPE_MAP: Record<string, NonNullable<import('./types.ts').Canonica
 	HistorySync: 'history-sync',
 	ServerError: 'server-error',
 	delivered: 'delivered',
+	sent: 'sent',
 	sender: 'sender',
 	retry: 'retry',
 	enc_rekey_retry: 'enc-rekey-retry',

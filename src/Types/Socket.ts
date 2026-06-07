@@ -74,6 +74,14 @@ export type SocketConfig = {
 	 */
 	deviceProps?: DevicePropsInput
 
+	/**
+	 * Number of one-time pre-keys generated and uploaded per batch. Defaults to
+	 * WhatsApp Web's 812; clamped to the protocol-safe range at upload time.
+	 * Lower it to cut memory/CPU of the first pre-key upload (the whole batch is
+	 * generated and encoded in one shot). Must be set before connecting.
+	 */
+	wantedPreKeyCount?: number
+
 	// ─────────────────────────────────────────────────────────────────────
 	// Upstream-Baileys options accepted for type-level compatibility.
 	//
