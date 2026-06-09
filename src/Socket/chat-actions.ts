@@ -45,9 +45,21 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 			await client.deleteMessageForMe(jid, mod.deleteForMe.key.id!, !!mod.deleteForMe.key.fromMe)
 		} else if ('pushNameSetting' in mod) {
 			await client.setPushName(mod.pushNameSetting)
+		} else if ('contact' in mod) {
+			// Save/rename a contact (syncs the name to linked devices). `jid` is the
+			// contact's bare PN jid. `contact: null` (removal) has no bridge/core path
+			// yet, so it is ignored.
+			if (mod.contact) {
+				await client.saveContact(
+					jid,
+					mod.contact.fullName ?? undefined,
+					mod.contact.firstName ?? undefined,
+					mod.contact.saveOnPrimaryAddressbook ?? true
+				)
+			}
 		} else {
 			// App-state-patch variants not yet exposed by bridge:
-			// clear, contact, disableLinkPreviews, addLabel, addChatLabel,
+			// clear, disableLinkPreviews, addLabel, addChatLabel,
 			// removeChatLabel, addMessageLabel, removeMessageLabel, quickReply
 			const variant = Object.keys(mod)[0]
 			ctx.logger.warn(
