@@ -47,8 +47,7 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 			await client.setPushName(mod.pushNameSetting)
 		} else if ('contact' in mod) {
 			// Save/rename a contact (syncs the name to linked devices). `jid` is the
-			// contact's bare PN jid. `contact: null` (removal) has no bridge/core path
-			// yet, so it is ignored.
+			// contact's bare PN jid.
 			if (mod.contact) {
 				await client.saveContact(
 					jid,
@@ -56,6 +55,10 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 					mod.contact.firstName ?? undefined,
 					mod.contact.saveOnPrimaryAddressbook ?? true
 				)
+			} else {
+				// `contact: null` = remove-contact in upstream Baileys; no
+				// bridge/core path yet — warn instead of silently dropping.
+				ctx.logger.warn({ jid }, 'chatModify: contact removal (contact: null) not yet supported by bridge')
 			}
 		} else if ('clear' in mod) {
 			// Clear a chat's messages while keeping the chat. `lastMessages` (the
