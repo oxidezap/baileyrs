@@ -22,8 +22,8 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 	 * Compatibility wrapper for original Baileys chatModify API.
 	 * Routes to the appropriate bridge method based on the modification type.
 	 *
-	 * Fully supported: archive, pin, mute, star, markRead, delete, deleteForMe, pushNameSetting
-	 * Not yet in bridge (app-state patches): clear, contact, disableLinkPreviews, labels, quickReply
+	 * Fully supported: archive, pin, mute, star, markRead, delete, deleteForMe, pushNameSetting, contact, clear
+	 * Not yet in bridge (app-state patches): disableLinkPreviews, labels, quickReply
 	 */
 	chatModify: async (mod: ChatModification, jid: string) => {
 		const client = await ctx.getClient()
@@ -45,9 +45,32 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 			await client.deleteMessageForMe(jid, mod.deleteForMe.key.id!, !!mod.deleteForMe.key.fromMe)
 		} else if ('pushNameSetting' in mod) {
 			await client.setPushName(mod.pushNameSetting)
+		} else if ('contact' in mod) {
+			// Save/rename a contact (syncs the name to linked devices). `jid` is the
+			// contact's bare PN jid.
+			if (mod.contact) {
+				await client.saveContact(
+					jid,
+					mod.contact.fullName ?? undefined,
+					mod.contact.firstName ?? undefined,
+					mod.contact.saveOnPrimaryAddressbook ?? true
+				)
+			} else {
+				// `contact: null` = remove-contact in upstream Baileys; no
+				// bridge/core path yet — warn instead of silently dropping.
+				ctx.logger.warn({ jid }, 'chatModify: contact removal (contact: null) not yet supported by bridge')
+			}
+		} else if ('clear' in mod) {
+			// Clear a chat's messages while keeping the chat. `lastMessages` (the
+			// message range) is ignored, same as the `delete` branch — the bridge
+			// clears the whole chat. deleteStarred/deleteMedia aren't part of the
+			// Baileys `clear` shape, so default both to false (keep starred + media).
+			if (mod.clear) {
+				await client.clearChat(jid, false, false)
+			}
 		} else {
 			// App-state-patch variants not yet exposed by bridge:
-			// clear, contact, disableLinkPreviews, addLabel, addChatLabel,
+			// disableLinkPreviews, addLabel, addChatLabel,
 			// removeChatLabel, addMessageLabel, removeMessageLabel, quickReply
 			const variant = Object.keys(mod)[0]
 			ctx.logger.warn(

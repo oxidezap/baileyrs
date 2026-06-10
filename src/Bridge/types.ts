@@ -182,6 +182,7 @@ export interface CanonicalReceipt {
 	 */
 	receiptType?:
 		| 'delivered'
+		| 'sent'
 		| 'sender'
 		| 'retry'
 		| 'enc-rekey-retry'
@@ -380,6 +381,34 @@ export interface CanonicalMarkChatAsReadUpdate {
 	read: boolean
 }
 
+// ── Labels ──
+
+/**
+ * A label was created, renamed/recolored, or deleted on a linked device
+ * (bridge `label_edit_update`). Maps to upstream `labels.edit` (`Label`).
+ */
+export interface CanonicalLabelEdit {
+	type: 'labelEdit'
+	labelId: string
+	name: string
+	color: number
+	deleted: boolean
+	/** Predefined-label id, stringified to match upstream `Label.predefinedId`. */
+	predefinedId?: string
+}
+
+/**
+ * A label was associated with / removed from a chat on a linked device
+ * (bridge `label_association_update`). Maps to upstream `labels.association`.
+ */
+export interface CanonicalLabelAssociation {
+	type: 'labelAssociation'
+	labelId: string
+	chatJid: string
+	/** `true` = label added to the chat, `false` = removed. */
+	labeled: boolean
+}
+
 // ── Calls ──
 
 export type CanonicalCallActionType = 'offer' | 'preAccept' | 'accept' | 'reject' | 'terminate'
@@ -471,6 +500,12 @@ export interface CanonicalLidMappingUpdate {
 /** A chat was deleted from the user's app-state index. */
 export interface CanonicalChatDelete {
 	type: 'chatDelete'
+	jid: string
+}
+
+/** A chat's messages were cleared (the chat itself is kept) via app-state sync. */
+export interface CanonicalChatClear {
+	type: 'chatClear'
 	jid: string
 }
 
@@ -590,11 +625,14 @@ export type CanonicalEvent =
 	| CanonicalMuteUpdate
 	| CanonicalStarUpdate
 	| CanonicalMarkChatAsReadUpdate
+	| CanonicalLabelEdit
+	| CanonicalLabelAssociation
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate
 	| CanonicalNewsletterLiveUpdate
 	| CanonicalChatDelete
+	| CanonicalChatClear
 	| CanonicalMessageDelete
 	| CanonicalDisappearingModeChanged
 	| CanonicalHistorySync

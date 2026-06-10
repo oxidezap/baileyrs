@@ -211,9 +211,9 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 * Send a receipt for messages. The bridge handles most receipt types automatically
 	 * (delivered, sender). Use `readMessages` for the common case of sending read receipts.
 	 *
-	 * Supported types via bridge: 'read', 'read-self'
+	 * Supported types via bridge: 'read', 'read-self', 'played'
 	 * Auto-handled by bridge: 'sender', 'inactive', undefined (delivered)
-	 * Not supported: 'played', 'hist_sync', 'peer_msg' (logged as warning)
+	 * Not supported: 'hist_sync', 'peer_msg' (logged as warning)
 	 */
 	sendReceipt: async (jid: string, participant: string | undefined, messageIds: string[], type: MessageReceiptType) => {
 		if (!messageIds.length) return
@@ -225,9 +225,20 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				...(participant ? { participant } : {})
 			}))
 			await (await ctx.getClient()).readMessages(keys)
+		} else if (type === 'played') {
+			// Voice/video-note played receipts. The bridge (and core) pick the wire
+			// type (`played` vs `played-self` for newsletters) and the `participant`
+			// attr from the chat jid, so we just hand over the keys — same shape as
+			// readMessages.
+			const keys = messageIds.map(id => ({
+				remoteJid: jid,
+				id,
+				...(participant ? { participant } : {})
+			}))
+			await (await ctx.getClient()).markPlayed(keys)
 		} else {
 			// delivered/sender/inactive receipts are sent automatically by the Rust bridge
-			// played/hist_sync/peer_msg require bridge-side support
+			// hist_sync/peer_msg require bridge-side support
 			ctx.logger.debug(
 				{ type, jid, count: messageIds.length },
 				'sendReceipt: type handled automatically by bridge or not yet supported'
@@ -247,6 +258,13 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				.map(k => ({ remoteJid: k.remoteJid!, id: k.id!, ...(k.participant ? { participant: k.participant } : {}) }))
 			if (readKeys.length) {
 				await client.readMessages(readKeys)
+			}
+		} else if (type === 'played') {
+			const playedKeys = keys
+				.filter(k => !k.fromMe && k.remoteJid && k.id)
+				.map(k => ({ remoteJid: k.remoteJid!, id: k.id!, ...(k.participant ? { participant: k.participant } : {}) }))
+			if (playedKeys.length) {
+				await client.markPlayed(playedKeys)
 			}
 		} else {
 			ctx.logger.debug(

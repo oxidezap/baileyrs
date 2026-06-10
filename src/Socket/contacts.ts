@@ -7,6 +7,8 @@ export type OnWhatsAppResult = {
 	/** PN counterpart, present when the server returned a LID as primary JID. */
 	pnJid?: string
 	isBusiness?: boolean
+	/** Verified business name (from usync `<business><verified_name>`), present for verified businesses. */
+	verifiedName?: string
 }
 
 export const makeContactMethods = (ctx: SocketContext) => ({
@@ -19,6 +21,7 @@ export const makeContactMethods = (ctx: SocketContext) => ({
 			const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
 			if (r.lid) out.lid = r.lid
 			if (r.pnJid) out.pnJid = r.pnJid
+			if (r.verifiedName) out.verifiedName = r.verifiedName
 			return out
 		})
 	},

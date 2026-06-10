@@ -389,7 +389,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			handleEvent,
 			bridgeStore,
 			fullConfig.cache ?? null,
-			fullConfig.version
+			fullConfig.version,
+			fullConfig.wantedPreKeyCount ?? null
 		)
 		// Make this client the fallback for standalone helpers like
 		// downloadContentFromMessage that have no socket reference.

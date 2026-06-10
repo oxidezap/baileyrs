@@ -20,6 +20,7 @@ import type {
 	WAPresence
 } from '../Types/index.ts'
 import { DisconnectReason, WAProto } from '../Types/index.ts'
+import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
 import { toNumber } from '../Utils/generics.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
@@ -501,6 +502,23 @@ const DISPATCHERS: DispatcherMap = {
 		// Mirrors upstream `chat-utils.ts:852`: read=true → unreadCount=0,
 		// read=false (mark as unread) → -1 sentinel.
 		ctx.ev.emit('chats.update', [{ id: evt.jid, unreadCount: evt.read ? 0 : -1 }]),
+	labelEdit: (evt, { ctx }) =>
+		// Upstream `labels.edit` carries a `Label`. A delete arrives with
+		// `deleted: true` (consumers remove it from their store).
+		ctx.ev.emit('labels.edit', {
+			id: evt.labelId,
+			name: evt.name,
+			color: evt.color,
+			deleted: evt.deleted,
+			predefinedId: evt.predefinedId
+		}),
+	labelAssociation: (evt, { ctx }) =>
+		// Inbound sync only ever carries chat associations (the bridge event
+		// has a `chat_jid`); message-label associations are a separate path.
+		ctx.ev.emit('labels.association', {
+			association: { type: LabelAssociationType.Chat, chatId: evt.chatJid, labelId: evt.labelId },
+			type: evt.labeled ? 'add' : 'remove'
+		}),
 
 	// ── Calls ──
 	incomingCall: (evt, { ctx }) => {
@@ -571,6 +589,7 @@ const DISPATCHERS: DispatcherMap = {
 		}
 	},
 	chatDelete: (evt, { ctx }) => ctx.ev.emit('chats.delete', [evt.jid]),
+	chatClear: (evt, { ctx }) => ctx.ev.emit('messages.delete', { jid: evt.jid, all: true }),
 	messageDelete: (evt, { ctx }) =>
 		// Upstream `chat-utils.ts:857` shape: `{ keys: WAMessageKey[] }` for
 		// per-message delete (not the `{ jid, all: true }` chat-clear case
