@@ -421,6 +421,16 @@ const ADAPTERS = {
 		const jid = asJidString(data.jid)
 		return jid ? { type: 'chatDelete', jid } : { type: 'noop', bridgeType: 'delete_chat_update' }
 	},
+	clear_chat_update: data => {
+		// Clear = drop all messages but keep the chat. Maps to upstream
+		// `messages.delete` `{ jid, all: true }` (the chat-clear surface noted in
+		// the messageDelete dispatcher), distinct from chatDelete (whole chat gone).
+		const jid = asJidString(data.jid)
+		return jid ? { type: 'chatClear', jid } : { type: 'noop', bridgeType: 'clear_chat_update' }
+	},
+	// Muting a contact's status (stories) updates. Forwarded for surface completeness,
+	// but noop'd: upstream Baileys has no status-mute event/chatModify to map it onto.
+	user_status_mute_update: () => ({ type: 'noop', bridgeType: 'user_status_mute_update' }),
 	delete_message_for_me_update: data => {
 		const chatJid = asJidString(data.chat_jid)
 		const messageId = asString(data.message_id)

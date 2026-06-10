@@ -475,6 +475,12 @@ export interface CanonicalChatDelete {
 	jid: string
 }
 
+/** A chat's messages were cleared (the chat itself is kept) via app-state sync. */
+export interface CanonicalChatClear {
+	type: 'chatClear'
+	jid: string
+}
+
 /** "Delete for me" of a single message via app-state sync. */
 export interface CanonicalMessageDelete {
 	type: 'messageDelete'
@@ -626,6 +632,7 @@ export type CanonicalEvent =
 	| CanonicalLidMappingUpdate
 	| CanonicalNewsletterLiveUpdate
 	| CanonicalChatDelete
+	| CanonicalChatClear
 	| CanonicalMessageDelete
 	| CanonicalDisappearingModeChanged
 	| CanonicalHistorySync

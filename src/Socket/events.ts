@@ -589,6 +589,7 @@ const DISPATCHERS: DispatcherMap = {
 		}
 	},
 	chatDelete: (evt, { ctx }) => ctx.ev.emit('chats.delete', [evt.jid]),
+	chatClear: (evt, { ctx }) => ctx.ev.emit('messages.delete', { jid: evt.jid, all: true }),
 	messageDelete: (evt, { ctx }) =>
 		// Upstream `chat-utils.ts:857` shape: `{ keys: WAMessageKey[] }` for
 		// per-message delete (not the `{ jid, all: true }` chat-clear case
