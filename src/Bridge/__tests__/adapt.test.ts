@@ -385,6 +385,91 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			expect(result).toEqual({ type: 'archiveUpdate', jid: '5511@s.whatsapp.net', archived: false })
 		})
 
+		it('label_edit_update maps to canonical labelEdit (predefinedId stringified)', () => {
+			const result = adaptBridgeEvent({
+				type: 'label_edit_update',
+				data: {
+					label_id: '7',
+					action: { name: 'Clientes', color: 3, deleted: false, predefinedId: 2 }
+				}
+			} as never)
+			expect(result).toEqual({
+				type: 'labelEdit',
+				labelId: '7',
+				name: 'Clientes',
+				color: 3,
+				deleted: false,
+				predefinedId: '2'
+			})
+		})
+
+		it('label_edit_update tolerates a sparse action (typed defaults, no undefined leaks)', () => {
+			const result = adaptBridgeEvent({
+				type: 'label_edit_update',
+				data: { label_id: '7', action: { deleted: true } }
+			} as never)
+			expect(result).toEqual({
+				type: 'labelEdit',
+				labelId: '7',
+				name: '',
+				color: 0,
+				deleted: true,
+				predefinedId: undefined
+			})
+		})
+
+		it('label_association_update maps add/remove from action.labeled', () => {
+			const add = adaptBridgeEvent({
+				type: 'label_association_update',
+				data: {
+					label_id: '7',
+					chat_jid: { user: '5511', server: 's.whatsapp.net' },
+					action: { labeled: true }
+				}
+			} as never)
+			expect(add).toEqual({
+				type: 'labelAssociation',
+				labelId: '7',
+				chatJid: '5511@s.whatsapp.net',
+				labeled: true
+			})
+
+			const remove = adaptBridgeEvent({
+				type: 'label_association_update',
+				data: {
+					label_id: '7',
+					chat_jid: { user: '5511', server: 's.whatsapp.net' },
+					action: { labeled: false }
+				}
+			} as never)
+			expect(remove).toEqual({
+				type: 'labelAssociation',
+				labelId: '7',
+				chatJid: '5511@s.whatsapp.net',
+				labeled: false
+			})
+		})
+
+		it('clear_chat_update maps to chatClear (messages.delete all) and noops without a jid', () => {
+			expect(
+				adaptBridgeEvent({
+					type: 'clear_chat_update',
+					data: { jid: { user: '5511', server: 's.whatsapp.net' } }
+				} as never)
+			).toEqual({ type: 'chatClear', jid: '5511@s.whatsapp.net' })
+			expect(adaptBridgeEvent({ type: 'clear_chat_update', data: {} } as never)).toEqual({
+				type: 'noop',
+				bridgeType: 'clear_chat_update'
+			})
+		})
+
+		it('user_status_mute_update is a documented noop (no Baileys counterpart)', () => {
+			expect(adaptBridgeEvent({ type: 'user_status_mute_update', data: {} } as never)).toEqual({
+				type: 'noop',
+				bridgeType: 'user_status_mute_update'
+			})
+		})
+
 		it('star_update reads action.starred even when wrapped', () => {
 			const result = adaptBridgeEvent({
 				type: 'star_update',

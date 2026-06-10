@@ -297,7 +297,7 @@ const ADAPTERS = {
 		const action = extractAction(data)
 		// `predefinedId` is proto `predefined_id` (a number); upstream `Label`
 		// wants it as a string. Dual-read the spelling, then stringify.
-		const predefined = asNumber(action?.predefinedId ?? action?.predefined_id)
+		const predefined = asNumber(action?.predefinedId) ?? asNumber(action?.predefined_id)
 		return {
 			type: 'labelEdit',
 			labelId,
