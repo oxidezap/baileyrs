@@ -14,6 +14,7 @@
  *   - Optional fields use `?` (omitted) rather than `null`.
  */
 
+import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
@@ -265,6 +266,12 @@ export interface CanonicalChatPresence {
 export interface CanonicalGroupParticipant {
 	jid: string
 	phoneNumber?: string
+	lid?: string
+	username?: string
+	displayName?: string
+	joinTime?: number
+	/** Protocol role, before the Baileys `admin` field translation. */
+	role?: 'participant' | 'admin' | 'superadmin'
 }
 
 export type CanonicalGroupAction =
@@ -290,6 +297,22 @@ export type CanonicalGroupAction =
 	| { type: 'delete'; reason?: string }
 	| { type: 'link'; linkType: string }
 	| { type: 'unlink'; unlinkType: string; unlinkReason?: string }
+	| { type: 'linkedGroupPromote'; participants: CanonicalGroupParticipant[] }
+	| { type: 'linkedGroupDemote'; participants: CanonicalGroupParticipant[] }
+	| { type: 'suspended' }
+	| { type: 'unsuspended' }
+	| { type: 'autoAddDisabled' }
+	| { type: 'capiHostedGroup' }
+	| { type: 'groupSafetyCheck' }
+	| { type: 'limitSharingEnabled'; trigger?: number }
+	| { type: 'allowAdminReports' }
+	| { type: 'notAllowAdminReports' }
+	| { type: 'reports' }
+	| { type: 'allowNonAdminSubGroupCreation' }
+	| { type: 'notAllowNonAdminSubGroupCreation' }
+	| { type: 'createdSubGroupSuggestion' }
+	| { type: 'revokedSubGroupSuggestions' }
+	| { type: 'changeNumber'; newOwner?: string; subGroupSuggestions: string[] }
 	/**
 	 * Anti-spam: server temporarily restricted new joins until `expiration`.
 	 * `lockType` is the server's category (e.g. `'inviter_blocklisted'`).
@@ -326,8 +349,12 @@ export type CanonicalGroupAction =
 export interface CanonicalGroupUpdate {
 	type: 'groupUpdate'
 	groupJid: string
+	notificationId?: string
+	actionIndex: number
 	author?: string
 	authorPn?: string
+	authorUsername?: string
+	authorCountryCode?: string
 	timestamp: number
 	isLidAddressingMode: boolean
 	action: CanonicalGroupAction
@@ -411,11 +438,21 @@ export interface CanonicalLabelAssociation {
 
 // ── Calls ──
 
-export type CanonicalCallActionType = 'offer' | 'preAccept' | 'accept' | 'reject' | 'terminate'
+export type CanonicalCallActionType =
+	| 'offer'
+	| 'preaccept'
+	| 'transport'
+	| 'relaylatency'
+	| 'accept'
+	| 'reject'
+	| 'terminate'
+	| 'timeout'
 
 export interface CanonicalCallAction {
 	type: CanonicalCallActionType
 	callId: string
+	/** Address from the action's `call-creator`; independent from the stanza peer. */
+	callCreator?: string
 	/** Caller's phone number — present on `offer`. */
 	callerPn?: string
 	/** Caller's ISO country code from the bridge's offer payload. */
@@ -538,6 +575,7 @@ export interface CanonicalHistorySync {
 	syncType?: number
 	/** Progress 0-100, when the bridge passed it through. */
 	progress?: number
+	pastParticipants?: proto.IPastParticipants[] | null
 	/** Multi-chunk ordering — present when sync arrives in chunks. */
 	chunkOrder?: number
 	/** PDO session id, set on `ON_DEMAND` syncs answering a `fetchMessageHistory`. */
@@ -551,6 +589,18 @@ export interface CanonicalHistorySync {
 	batchIndex?: number
 	/** True on the last batch of a chunk (carries the tail: pushnames/mappings/…). */
 	isFinalBatch?: boolean
+}
+
+/** Offline backlog has been completely drained by the core. */
+export interface CanonicalOfflineSyncCompleted {
+	type: 'offlineSyncCompleted'
+	count: number
+}
+
+export interface CanonicalDirtyState {
+	type: 'dirtyState'
+	dirtyType: string
+	timestamp?: number
 }
 
 export interface CanonicalRawNode {
@@ -597,6 +647,22 @@ export interface CanonicalNoop {
 	detail?: string
 }
 
+/**
+ * Server acknowledgement for an outbound stanza.
+ *
+ * This remains an internal canonical event: the upstream-compatible public
+ * surfaces are the raw `CB:ack,...` websocket patterns and, for message
+ * NACKs, `messages.update` with status `ERROR`.
+ */
+export interface CanonicalServerAck {
+	type: 'serverAck'
+	id: string
+	class?: string
+	from?: string
+	timestamp?: number
+	error?: string
+}
+
 // ── Union ──
 
 export type CanonicalEvent =
@@ -636,7 +702,10 @@ export type CanonicalEvent =
 	| CanonicalMessageDelete
 	| CanonicalDisappearingModeChanged
 	| CanonicalHistorySync
+	| CanonicalOfflineSyncCompleted
+	| CanonicalDirtyState
 	| CanonicalRawNode
 	| CanonicalNotification
 	| CanonicalMexNotification
+	| CanonicalServerAck
 	| CanonicalNoop

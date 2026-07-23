@@ -1,3 +1,6 @@
+import { makeNumericEnum } from '../Compatibility/internal/numeric-enum.ts'
+import type { LabelColor as LabelColorType } from '../Compatibility/public-api/enum-types.ts'
+
 export interface Label {
 	/** Label uniq ID */
 	id: string
@@ -24,25 +27,28 @@ export interface LabelActionBody {
 }
 
 /** WhatsApp has 20 predefined colors */
-export enum LabelColor {
-	Color1 = 0,
-	Color2,
-	Color3,
-	Color4,
-	Color5,
-	Color6,
-	Color7,
-	Color8,
-	Color9,
-	Color10,
-	Color11,
-	Color12,
-	Color13,
-	Color14,
-	Color15,
-	Color16,
-	Color17,
-	Color18,
-	Color19,
-	Color20
-}
+const LabelColorValues = {
+	Color1: 0,
+	Color2: 1,
+	Color3: 2,
+	Color4: 3,
+	Color5: 4,
+	Color6: 5,
+	Color7: 6,
+	Color8: 7,
+	Color9: 8,
+	Color10: 9,
+	Color11: 10,
+	Color12: 11,
+	Color13: 12,
+	Color14: 13,
+	Color15: 14,
+	Color16: 15,
+	Color17: 16,
+	Color18: 17,
+	Color19: 18,
+	Color20: 19
+} as const
+
+export const LabelColor = makeNumericEnum(LabelColorValues) as unknown as typeof LabelColorType
+export type LabelColor = LabelColorType

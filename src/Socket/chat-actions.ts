@@ -89,18 +89,5 @@ export const makeChatActionMethods = (ctx: SocketContext) => ({
 	 */
 	resyncAppState: async (_collections?: readonly WAPatchName[], _isInitialSync?: boolean) => {
 		ctx.logger.info('resyncAppState: app state is synced automatically by the Rust bridge')
-	},
-
-	/**
-	 * Fetch disappearing message duration for contacts.
-	 *
-	 * Not yet supported — requires USyncQuery which is handled internally by the bridge.
-	 * Disappearing mode changes are emitted via the 'disappearing_mode_changed' event.
-	 */
-	fetchDisappearingDuration: async (..._jids: string[]) => {
-		ctx.logger.warn(
-			'fetchDisappearingDuration: not yet available in bridge mode — listen for disappearing_mode_changed events instead'
-		)
-		return undefined
 	}
 })

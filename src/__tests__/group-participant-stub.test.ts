@@ -65,11 +65,23 @@ const makeEvent = (type: 'add' | 'remove' | 'promote' | 'demote' | 'modify'): Wh
 		type: 'group_update',
 		data: {
 			group_jid: groupJid,
+			notification_id: `GP-${type}`,
+			action_index: 0,
 			participant: adminLid,
-			participant_pn: null,
+			participant_pn: { user: '5599000000001', server: 's.whatsapp.net' },
+			participant_username: 'admin-user',
 			timestamp: 1_734_000_000,
 			is_lid_addressing_mode: true,
-			action: { type, participants: [{ jid: targetLid, phone_number: null }] }
+			action: {
+				type,
+				participants: [
+					{
+						jid: targetLid,
+						phone_number: null,
+						type: type === 'promote' ? 'admin' : type === 'demote' ? 'participant' : undefined
+					}
+				]
+			}
 		}
 	}) as unknown as WhatsAppEvent
 
@@ -88,11 +100,15 @@ describe('events — participant stub message synthesis', () => {
 		const stubMsg = upsert0.messages[0]!
 		expect(stubMsg.messageStubType).toBe(STUB.GROUP_PARTICIPANT_PROMOTE)
 		expect(stubMsg.messageStubParameters).toHaveLength(1)
-		expectStubParticipant(stubMsg.messageStubParameters?.[0], { id: '271060335329480@lid' })
+		expectStubParticipant(stubMsg.messageStubParameters?.[0], { id: '271060335329480@lid', admin: 'admin' })
 		expect(stubMsg.key!.remoteJid).toBe('120363012345678901@g.us')
 		expect(stubMsg.key!.participant).toBe('550000000000001@lid')
+		expect(stubMsg.key!.participantAlt).toBe('5599000000001@s.whatsapp.net')
+		expect(stubMsg.key!.participantUsername).toBe('admin-user')
+		expect(stubMsg.key!.addressingMode).toBe('lid')
+		expect(stubMsg.key!.id).toBe('GP-promote')
 		expect(stubMsg.key!.fromMe).toBe(false)
-		expect(upsert0.type).toBe('notify')
+		expect(upsert0.type).toBe('append')
 		// stub messages must not carry a real body — sung treats anything with
 		// a `message` field as a real chat message
 		expect(stubMsg.message ?? null).toBe(null)
@@ -114,6 +130,48 @@ describe('events — participant stub message synthesis', () => {
 		}
 	})
 
+	it('preserves superadmin, LID/PN and username fields on both event surfaces', () => {
+		const { ctx, captured } = makeCtx()
+		makeEventHandler(ctx)({
+			type: 'group_update',
+			data: {
+				group_jid: groupJid,
+				notification_id: 'GP-SUPERADMIN',
+				action_index: 0,
+				participant: adminLid,
+				participant_pn: { user: '5599000000001', server: 's.whatsapp.net' },
+				participant_username: 'owner-user',
+				timestamp: 1_734_000_000,
+				is_lid_addressing_mode: true,
+				action: {
+					type: 'promote',
+					participants: [
+						{
+							jid: targetLid,
+							phone_number: { user: '5521972202744', server: 's.whatsapp.net' },
+							username: 'target-user',
+							type: 'superadmin'
+						}
+					]
+				}
+			}
+		} as unknown as WhatsAppEvent)
+
+		expect(captured.participantsUpdate[0]!.authorUsername).toBe('owner-user')
+		expect(captured.participantsUpdate[0]!.participants[0]).toEqual({
+			id: '271060335329480@lid',
+			phoneNumber: '5521972202744@s.whatsapp.net',
+			username: 'target-user',
+			admin: 'superadmin'
+		})
+		expectStubParticipant(captured.upsert[0]!.messages[0]!.messageStubParameters?.[0], {
+			id: '271060335329480@lid',
+			phoneNumber: '5521972202744@s.whatsapp.net',
+			username: 'target-user',
+			admin: 'superadmin'
+		})
+	})
+
 	it('marks fromMe=true when the bot itself is the actor', () => {
 		const { ctx, captured } = makeCtx({ id: '5511999990000@s.whatsapp.net', lid: '550000000000001@lid' })
 		const handle = makeEventHandler(ctx)
@@ -121,7 +179,7 @@ describe('events — participant stub message synthesis', () => {
 		expect(captured.upsert[0]!.messages[0]!.key!.fromMe).toBe(true)
 	})
 
-	it('emits one stub message per affected participant in a single batch', () => {
+	it('emits one stub message whose parameters preserve all affected participants', () => {
 		const { ctx, captured } = makeCtx()
 		const handle = makeEventHandler(ctx)
 		handle({
@@ -144,14 +202,10 @@ describe('events — participant stub message synthesis', () => {
 
 		expect(captured.upsert).toHaveLength(1)
 		const msgs = captured.upsert[0]!.messages
-		expect(msgs).toHaveLength(2)
+		expect(msgs).toHaveLength(1)
+		expect(msgs[0]!.messageStubParameters).toHaveLength(2)
 		expectStubParticipant(msgs[0]!.messageStubParameters?.[0], { id: '111@lid' })
-		expectStubParticipant(msgs[1]!.messageStubParameters?.[0], { id: '222@lid' })
-		// IDs must be unique within the batch — sung's iniciar.js dedups
-		// `messages.upsert` by `key.id`, so duplicate ids would silently drop
-		// every participant after the first.
-		const ids = msgs.map(m => m.key!.id)
-		expect(new Set(ids).size).toBe(ids.length)
+		expectStubParticipant(msgs[0]!.messageStubParameters?.[1], { id: '222@lid' })
 	})
 
 	it('uses the event timestamp for messageTimestamp (sung filters >60s as old)', () => {
@@ -320,7 +374,7 @@ describe('events — participant stub message synthesis', () => {
 		expect(captured.participantsUpdate[0]!.action).toBe('demote')
 	})
 
-	it('does not emit a stub for actions without an upstream stub equivalent (e.g. ephemeral)', () => {
+	it('emits the upstream ephemeral-setting protocol message', () => {
 		const { ctx, captured } = makeCtx()
 		const handle = makeEventHandler(ctx)
 		handle({
@@ -334,6 +388,10 @@ describe('events — participant stub message synthesis', () => {
 				action: { type: 'ephemeral', expiration: 86400, trigger: null }
 			}
 		} as unknown as WhatsAppEvent)
-		expect(captured.upsert).toHaveLength(0)
+		expect(captured.upsert).toHaveLength(1)
+		const message = captured.upsert[0]!.messages[0]!
+		expect(message.message?.protocolMessage?.type).toBe(WAProto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING)
+		expect(message.message?.protocolMessage?.ephemeralExpiration).toBe(86400)
+		expect(message.messageStubType ?? null).toBe(null)
 	})
 })

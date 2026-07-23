@@ -45,6 +45,7 @@ declare module 'libsignal/src/session_record.js' {
 
 	export default class SessionRecord {
 		static deserialize(data: unknown): SessionRecord
+		serialize(): unknown
 		haveOpenSession(): boolean
 		getOpenSession(): SessionEntry | undefined
 		closeSession(session: SessionEntry): void
@@ -52,5 +53,68 @@ declare module 'libsignal/src/session_record.js' {
 		isClosed(session: SessionEntry): boolean
 		removeOldSessions(): void
 		deleteAllSessions(): void
+	}
+}
+
+declare module 'libsignal' {
+	import type { Buffer } from 'node:buffer'
+	import type SessionRecord from 'libsignal/src/session_record.js'
+
+	export interface KeyPair {
+		pubKey: Buffer
+		privKey: Buffer
+	}
+
+	export interface PreKeyBundle {
+		registrationId: number
+		identityKey: Buffer
+		signedPreKey: { keyId: number; publicKey: Buffer; signature: Buffer }
+		preKey?: { keyId: number; publicKey: Buffer }
+	}
+
+	export interface SignalStorage {
+		getOurIdentity(): KeyPair | Promise<KeyPair>
+		getOurRegistrationId(): number | Promise<number>
+		isTrustedIdentity(id: string, identityKey: Buffer): boolean | Promise<boolean>
+		loadSession(id: string): SessionRecord | undefined | Promise<SessionRecord | undefined>
+		storeSession(id: string, record: SessionRecord): void | Promise<void>
+		loadPreKey(id: number): KeyPair | undefined | Promise<KeyPair | undefined>
+		loadSignedPreKey(id: number): KeyPair | undefined | Promise<KeyPair | undefined>
+		removePreKey(id: number): void | Promise<void>
+	}
+
+	export class ProtocolAddress {
+		constructor(id: string, deviceId: number)
+		readonly id: string
+		readonly deviceId: number
+		toString(): string
+	}
+
+	export class SessionBuilder {
+		constructor(storage: SignalStorage, addr: ProtocolAddress)
+		initOutgoing(device: PreKeyBundle): Promise<void>
+	}
+
+	export interface EncryptedMessage {
+		type: number
+		body: Buffer
+		registrationId: number
+	}
+
+	export class SessionCipher {
+		constructor(storage: SignalStorage, addr: ProtocolAddress)
+		encrypt(data: Buffer): Promise<EncryptedMessage>
+		decryptWhisperMessage(data: Buffer): Promise<Buffer>
+		decryptPreKeyWhisperMessage(data: Buffer): Promise<Buffer>
+	}
+
+	export const keyhelper: {
+		generateIdentityKeyPair(): KeyPair
+		generateRegistrationId(): number
+		generateSignedPreKey(
+			identityKeyPair: KeyPair,
+			signedKeyId: number
+		): { keyId: number; keyPair: KeyPair; signature: Buffer }
+		generatePreKey(keyId: number): { keyId: number; keyPair: KeyPair }
 	}
 }

@@ -15,7 +15,7 @@
  */
 
 import type { makeWASocket } from '../../index.ts'
-import type { BaileysEventMap, proto } from '../../index.ts'
+import type { BaileysEventMap, WAMessage } from '../../index.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
 
@@ -53,9 +53,9 @@ export function waitForEvent<E extends keyof BaileysEventMap>(
  */
 export function waitForMessage(
 	sock: WASocket,
-	predicate: (msg: proto.IWebMessageInfo) => boolean,
+	predicate: (msg: WAMessage) => boolean,
 	timeoutMs = 10_000
-): Promise<proto.IWebMessageInfo> {
+): Promise<WAMessage> {
 	return new Promise((resolve, reject) => {
 		const cleanup = () => sock.ev.off('messages.upsert', listener)
 		const listener = (data: BaileysEventMap['messages.upsert']) => {

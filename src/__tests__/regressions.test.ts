@@ -4,15 +4,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
+import { encodeProto } from 'whatsapp-rust-bridge'
 import type { proto as protoTypes } from 'whatsapp-rust-bridge/proto-types'
 import { proto } from 'whatsapp-rust-bridge/proto-types'
 
 import { adaptBridgeEvent } from '../Bridge/adapt.ts'
-import type { CanonicalEvent } from '../Bridge/types.ts'
+import type { CanonicalEvent, CanonicalGroupAction } from '../Bridge/types.ts'
 import { buildGroupNotificationDomainEvent, buildGroupNotificationStubMessages } from '../Socket/group-notifications.ts'
-import { makeEventHandler } from '../Socket/events.ts'
+import { makeEventHandler, makeEventHandlers } from '../Socket/events.ts'
 import type { SocketContext } from '../Socket/types.ts'
-import type { BaileysEventMap } from '../Types/index.ts'
+import type { BaileysEventMap, BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { useBridgeStore } from '../Utils/use-bridge-store.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
@@ -45,6 +46,7 @@ const makeCtx = () => {
 		fullConfig: {} as never,
 		ws,
 		getUser: () => undefined,
+		getMe: () => undefined,
 		setUser: () => {},
 		getClient: () => Promise.reject(new Error('not used')),
 		getClientSync: () => {
@@ -97,6 +99,27 @@ const baseMessageInfo = {
 	push_name: 'Foo',
 	is_view_once: false
 }
+
+const baseMessageWireInfo = {
+	chat: '5511@s.whatsapp.net',
+	sender: '5511@s.whatsapp.net',
+	isGroup: false,
+	isFromMe: false,
+	id: 'MSG-1',
+	timestamp: 1_730_000_000,
+	pushName: 'Foo',
+	isViewOnce: false,
+	isOffline: false
+}
+
+const bridgeMessage = (
+	id: string,
+	message: Record<string, unknown> = { conversation: id },
+	info: Record<string, unknown> = {}
+) => ({
+	type: 'message',
+	data: { info: { ...baseMessageInfo, ...info, id }, message }
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bridge adapter — sync actions
@@ -238,6 +261,23 @@ describe('adapter: receipt', () => {
 		expect(adapt(evt('retry'), 'receipt').receiptType).toBe('retry')
 		expect(adapt(evt('enc_rekey_retry'), 'receipt').receiptType).toBe('enc-rekey-retry')
 	})
+
+	it('infers group source from @g.us when the bridge flag is false', () => {
+		const receipt = adapt(
+			{
+				type: 'receipt',
+				data: {
+					source: { chat: jid('120363', 'g.us'), sender: jid('5511'), is_group: false, is_from_me: false },
+					message_ids: ['GROUP-ACK'],
+					type: 'delivered',
+					timestamp: 1730000000
+				}
+			},
+			'receipt'
+		)
+		expect(receipt.isGroup).toBe(true)
+		expect(receipt.senderJid).toBe('5511@s.whatsapp.net')
+	})
 })
 
 describe('adapter: message info', () => {
@@ -357,6 +397,41 @@ describe('adapter: group_update actions', () => {
 		if (c.action.type !== 'revokedMembershipRequests') throw new Error('narrowing')
 		expect(c.action.participants.map(p => p.jid)).toEqual(['111@lid', '222@lid'])
 	})
+
+	it('retains every currently known official advanced action instead of collapsing to unknown', () => {
+		const cases: [Record<string, unknown>, CanonicalGroupAction['type']][] = [
+			[
+				{ type: 'linked_group_promote', participants: [{ jid: jid('111', 'lid'), type: 'superadmin' }] },
+				'linkedGroupPromote'
+			],
+			[{ type: 'linked_group_demote', participants: [{ jid: jid('111', 'lid') }] }, 'linkedGroupDemote'],
+			[{ type: 'suspended' }, 'suspended'],
+			[{ type: 'unsuspended' }, 'unsuspended'],
+			[{ type: 'auto_add_disabled' }, 'autoAddDisabled'],
+			[{ type: 'is_capi_hosted_group' }, 'capiHostedGroup'],
+			[{ type: 'group_safety_check' }, 'groupSafetyCheck'],
+			[{ type: 'limit_sharing_enabled', trigger: 7 }, 'limitSharingEnabled'],
+			[{ type: 'allow_admin_reports' }, 'allowAdminReports'],
+			[{ type: 'not_allow_admin_reports' }, 'notAllowAdminReports'],
+			[{ type: 'reports' }, 'reports'],
+			[{ type: 'allow_non_admin_sub_group_creation' }, 'allowNonAdminSubGroupCreation'],
+			[{ type: 'not_allow_non_admin_sub_group_creation' }, 'notAllowNonAdminSubGroupCreation'],
+			[{ type: 'created_sub_group_suggestion' }, 'createdSubGroupSuggestion'],
+			[{ type: 'revoked_sub_group_suggestions' }, 'revokedSubGroupSuggestions'],
+			[
+				{
+					type: 'change_number',
+					new_owner: jid('5511'),
+					sub_group_suggestions: [jid('1201', 'g.us'), jid('1202', 'g.us')]
+				},
+				'changeNumber'
+			]
+		]
+
+		for (const [action, expected] of cases) {
+			expect(adapt(groupEvt(action), 'groupUpdate').action.type).toBe(expected)
+		}
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -373,6 +448,7 @@ describe('adapter: history_sync', () => {
 			lidPnMappings: [],
 			syncType: undefined,
 			progress: undefined,
+			pastParticipants: undefined,
 			chunkOrder: undefined,
 			peerDataRequestSessionId: undefined,
 			// Batch markers: absent in the payload → defaults to a single final batch.
@@ -533,11 +609,123 @@ describe('dispatch: receipt fan-out', () => {
 	it('falls back to receiptTimestamp for delivered', () => {
 		expect(run('delivered', ['A'])[0]?.receipt.receiptTimestamp).toBe(1730000000)
 	})
+
+	it('attributes a group receipt to its acknowledging participant when is_group is false', () => {
+		const updates =
+			collect(
+				{
+					type: 'receipt',
+					data: {
+						source: {
+							chat: jid('120363', 'g.us'),
+							sender: jid('5511'),
+							is_group: false,
+							is_from_me: false
+						},
+						message_ids: ['GROUP-ACK'],
+						type: 'delivered',
+						timestamp: 1730000000
+					}
+				},
+				'message-receipt.update'
+			)[0] ?? []
+		expect(updates[0]?.key.participant).toBe('5511@s.whatsapp.net')
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher — messages (reactions, REVOKE, EDIT, undecryptable)
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('dispatch: typed bridge message batches', () => {
+	it('decodes protobuf-wire batches into the same ordered upsert', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		ev.on('messages.upsert', payload => upserts.push(payload))
+
+		const ids = ['WIRE-1', 'WIRE-2', 'WIRE-3']
+		const encoded = ids.map(id => encodeProto('Message', { conversation: id }))
+		const messageData = new Uint8Array(encoded.reduce((total, entry) => total + entry.length, 0))
+		const messageOffsets = new Uint32Array(encoded.length + 1)
+		for (let index = 0; index < encoded.length; index++) {
+			messageData.set(encoded[index]!, messageOffsets[index])
+			messageOffsets[index + 1] = messageOffsets[index]! + encoded[index]!.length
+		}
+
+		makeEventHandlers(ctx).onMessageBatch?.({
+			messageData,
+			messageOffsets,
+			infos: ids.map(id => ({ ...baseMessageWireInfo, id }))
+		})
+
+		expect(upserts.length).toBe(1)
+		expect(upserts[0]?.messages.map(message => message.key.id)).toEqual(ids)
+		expect(upserts[0]?.messages.map(message => message.message?.conversation)).toEqual(ids)
+	})
+
+	it('coalesces adjacent ordinary messages into one ordered upsert', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		ev.on('messages.upsert', payload => upserts.push(payload))
+
+		makeEventHandlers(ctx).onEventBatch?.([
+			bridgeMessage('BATCH-1'),
+			bridgeMessage('BATCH-2'),
+			bridgeMessage('BATCH-3')
+		] as never)
+
+		expect(upserts.length).toBe(1)
+		expect(upserts[0]?.type).toBe('notify')
+		expect(upserts[0]?.messages.map(message => message.key.id)).toEqual(['BATCH-1', 'BATCH-2', 'BATCH-3'])
+	})
+
+	it('starts a new upsert when delivery type or request id changes', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		ev.on('messages.upsert', payload => upserts.push(payload))
+
+		makeEventHandlers(ctx).onEventBatch?.([
+			bridgeMessage('LIVE'),
+			bridgeMessage('OFFLINE-1', undefined, { is_offline: true }),
+			bridgeMessage('OFFLINE-2', undefined, { is_offline: true }),
+			bridgeMessage('PDO', undefined, { is_offline: true, unavailable_request_id: 'REQUEST-1' })
+		] as never)
+
+		expect(
+			upserts.map(upsert => ({
+				ids: upsert.messages.map(message => message.key.id),
+				type: upsert.type,
+				requestId: upsert.requestId
+			}))
+		).toEqual([
+			{ ids: ['LIVE'], type: 'notify', requestId: undefined },
+			{ ids: ['OFFLINE-1', 'OFFLINE-2'], type: 'append', requestId: undefined },
+			{ ids: ['PDO'], type: 'append', requestId: 'REQUEST-1' }
+		])
+	})
+
+	it('flushes around side-effect messages and preserves observable order', () => {
+		const { ctx, ev } = makeCtx()
+		const observed: string[] = []
+		ev.on('messages.upsert', (payload: BaileysEventMap['messages.upsert']) => {
+			observed.push(`upsert:${payload.messages.map(message => message.key.id).join(',')}`)
+		})
+		ev.on('messages.reaction', () => observed.push('reaction'))
+
+		makeEventHandlers(ctx).onEventBatch?.([
+			bridgeMessage('BEFORE'),
+			bridgeMessage('REACTION', {
+				reactionMessage: {
+					key: { remoteJid: '5511@s.whatsapp.net', fromMe: false, id: 'TARGET' },
+					text: '👍'
+				}
+			}),
+			bridgeMessage('AFTER')
+		] as never)
+
+		expect(observed).toEqual(['upsert:BEFORE', 'upsert:REACTION', 'reaction', 'upsert:AFTER'])
+	})
+})
 
 describe('dispatch: messages.reaction', () => {
 	it('emits reaction with target key when proto carries reactionMessage', () => {
@@ -658,20 +846,115 @@ describe('dispatch: undecryptable_message', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('dispatch: group_update.create', () => {
-	it('does not emit groups.upsert (no metadata available)', () => {
-		const upserts = collect(
-			{
-				type: 'group_update',
-				data: {
-					group_jid: jid('120363', 'g.us'),
-					timestamp: 1,
-					is_lid_addressing_mode: false,
-					action: { type: 'create' }
-				}
-			},
-			'groups.upsert'
-		)
-		expect(upserts.length).toBe(0)
+	it('resolves metadata and emits chats, groups, then the create stub', async () => {
+		const { ctx, ev } = makeCtx()
+		const observed: string[] = []
+		const groups: BaileysEventMap['groups.upsert'][] = []
+		const messages: BaileysEventMap['messages.upsert'][] = []
+		ev.on('chats.upsert', () => observed.push('chats.upsert'))
+		ev.on('groups.upsert', payload => {
+			observed.push('groups.upsert')
+			groups.push(payload)
+		})
+		ev.on('messages.upsert', payload => {
+			observed.push('messages.upsert')
+			messages.push(payload)
+		})
+		ctx.getClient = async () =>
+			({
+				getGroupMetadata: async () => ({
+					id: '120363@g.us',
+					subject: 'Created group',
+					participants: [],
+					addressingMode: 'pn',
+					creator: '5511@s.whatsapp.net',
+					creationTime: 1730000000,
+					isLocked: false,
+					isAnnouncement: false,
+					membershipApproval: false,
+					isParentGroup: false,
+					isDefaultSubGroup: false,
+					isGeneralChat: false,
+					allowNonAdminSubGroupCreation: false,
+					noFrequentlyForwarded: false,
+					isSuspended: false,
+					allowAdminReports: false,
+					isHiddenGroup: false,
+					isIncognito: false,
+					hasGroupHistory: false,
+					isLimitSharingEnabled: false
+				})
+			}) as never
+
+		makeEventHandler(ctx)({
+			type: 'group_update',
+			data: {
+				group_jid: jid('120363', 'g.us'),
+				notification_id: 'CREATE-1',
+				action_index: 0,
+				participant: jid('236', 'lid'),
+				participant_username: 'creator-user',
+				timestamp: 1730000000,
+				is_lid_addressing_mode: false,
+				action: { type: 'create' }
+			}
+		} as never)
+		await new Promise(resolve => setImmediate(resolve))
+
+		expect(observed).toEqual(['chats.upsert', 'groups.upsert', 'messages.upsert'])
+		expect(groups[0]?.[0]).toMatchObject({
+			id: '120363@g.us',
+			subject: 'Created group',
+			author: '236@lid',
+			authorUsername: 'creator-user'
+		})
+		expect(messages[0]?.type).toBe('append')
+		expect(messages[0]?.messages[0]?.key.id).toBe('CREATE-1')
+		expect(messages[0]?.messages[0]?.messageStubType).toBe(StubType.GROUP_CREATE)
+		expect(messages[0]?.messages[0]?.messageStubParameters).toEqual(['Created group'])
+	})
+})
+
+describe('dispatch: advanced official group actions', () => {
+	it('does not invent public Baileys events for tags upstream currently ignores', () => {
+		const actions = [
+			{ type: 'linked_group_promote', participants: [{ jid: jid('111', 'lid') }] },
+			{ type: 'linked_group_demote', participants: [{ jid: jid('111', 'lid') }] },
+			{ type: 'suspended' },
+			{ type: 'unsuspended' },
+			{ type: 'auto_add_disabled' },
+			{ type: 'is_capi_hosted_group' },
+			{ type: 'group_safety_check' },
+			{ type: 'limit_sharing_enabled', trigger: 1 },
+			{ type: 'allow_admin_reports' },
+			{ type: 'not_allow_admin_reports' },
+			{ type: 'reports' },
+			{ type: 'allow_non_admin_sub_group_creation' },
+			{ type: 'not_allow_non_admin_sub_group_creation' },
+			{ type: 'created_sub_group_suggestion' },
+			{ type: 'revoked_sub_group_suggestions' },
+			{ type: 'change_number', new_owner: jid('5511'), sub_group_suggestions: [jid('1201', 'g.us')] }
+		]
+
+		for (const action of actions) {
+			const emitted = collectMany(
+				{
+					type: 'group_update',
+					data: {
+						group_jid: jid('120', 'g.us'),
+						participant: jid('236', 'lid'),
+						timestamp: 1730000000,
+						is_lid_addressing_mode: true,
+						action
+					}
+				},
+				'groups.update',
+				'group-participants.update',
+				'group.join-request',
+				'messages.upsert'
+			)
+			expect(Object.values(emitted).every(events => events.length === 0)).toBe(true)
+		}
 	})
 })
 
@@ -680,6 +963,7 @@ describe('dispatch: group-participants.update preserves phoneNumber', () => {
 		const domainEvent = buildGroupNotificationDomainEvent({
 			type: 'groupUpdate',
 			groupJid: '120@g.us',
+			actionIndex: 0,
 			author: '236@lid',
 			authorPn: '5599@s.whatsapp.net',
 			timestamp: 1,
@@ -692,6 +976,45 @@ describe('dispatch: group-participants.update preserves phoneNumber', () => {
 	})
 })
 
+describe('dispatch: group invite-link parity', () => {
+	const notification = {
+		type: 'groupUpdate' as const,
+		groupJid: '120@g.us',
+		notificationId: 'INVITE-1',
+		actionIndex: 0,
+		author: '236@lid',
+		authorPn: '5599@s.whatsapp.net',
+		timestamp: 1,
+		isLidAddressingMode: true,
+		action: { type: 'invite' as const, code: 'AbCdEf123' }
+	}
+
+	it('emits inviteCode and the matching GROUP_CHANGE_INVITE_LINK stub', () => {
+		const domain = buildGroupNotificationDomainEvent(notification)
+		expect(domain?.name).toBe('groups.update')
+		if (!domain || domain.name !== 'groups.update') throw new Error('expected groups.update')
+		expect(domain.payload).toEqual([
+			{
+				id: '120@g.us',
+				inviteCode: 'AbCdEf123',
+				author: '236@lid',
+				authorPn: '5599@s.whatsapp.net'
+			}
+		])
+
+		const [stub] = buildGroupNotificationStubMessages(notification, false)
+		expect(stub?.messageStubType).toBe(StubType.GROUP_CHANGE_INVITE_LINK)
+		expect(stub?.messageStubParameters).toEqual(['AbCdEf123'])
+		expect(stub?.key?.id).toBe('INVITE-1')
+	})
+
+	it('does not invent a revoke event or stub that upstream does not expose', () => {
+		const revoke = { ...notification, action: { type: 'revokeInvite' as const } }
+		expect(buildGroupNotificationDomainEvent(revoke)).toBe(null)
+		expect(buildGroupNotificationStubMessages(revoke, false)).toEqual([])
+	})
+})
+
 describe('dispatch: group.join-request fan-out', () => {
 	const collectJoinRequests = (action: Record<string, unknown>) =>
 		collect(
@@ -701,6 +1024,7 @@ describe('dispatch: group.join-request fan-out', () => {
 					group_jid: { user: '120', server: 'g.us', agent: 0, device: 0, integrator: 0 },
 					participant: jid('236', 'lid'),
 					participant_pn: jid('5599'),
+					participant_username: 'actor-user',
 					timestamp: 1730000000,
 					is_lid_addressing_mode: true,
 					action
@@ -734,18 +1058,74 @@ describe('dispatch: group.join-request fan-out', () => {
 		expect(requests.every(r => r.method === 'linked_group_join')).toBe(true)
 	})
 
-	it("revoked_membership_requests emits action='revoked' with no method", () => {
+	it('distinguishes requester cancellation from admin rejection', () => {
 		const requests = collectJoinRequests({
 			type: 'revoked_membership_requests',
-			participants: [jid('111', 'lid'), jid('222', 'lid')]
+			participants: [jid('236', 'lid'), jid('222', 'lid')]
 		})
-		expect(requests.map(r => r.action)).toEqual(['revoked', 'revoked'])
+		expect(requests.map(r => r.action)).toEqual(['revoked', 'rejected'])
+		expect(requests[0]?.authorUsername).toBe('actor-user')
 		expect(requests[0]?.method).toBeUndefined()
 	})
 
 	it('drops unknown request_method silently (server may grow new variants)', () => {
 		const requests = collectJoinRequests({ type: 'membership_approval_request', request_method: 'future_method' })
 		expect(requests[0]?.method).toBeUndefined()
+	})
+
+	it('encodes exact join-approval stub parameters for every affected participant', () => {
+		const base = {
+			type: 'groupUpdate' as const,
+			groupJid: '120@g.us',
+			notificationId: 'JOIN-1',
+			actionIndex: 2,
+			author: '236@lid',
+			authorPn: '5599@s.whatsapp.net',
+			timestamp: 1,
+			isLidAddressingMode: true
+		}
+		const created = buildGroupNotificationStubMessages(
+			{
+				...base,
+				action: {
+					type: 'createdMembershipRequests',
+					requestMethod: 'invite_link',
+					requests: [
+						{ jid: '111@lid', phoneNumber: '5511@s.whatsapp.net' },
+						{ jid: '222@lid', phoneNumber: '5522@s.whatsapp.net' }
+					]
+				}
+			},
+			false
+		)
+		expect(created).toHaveLength(2)
+		expect(created.map(message => message.messageStubParameters)).toEqual([
+			[JSON.stringify({ lid: '111@lid', pn: '5511@s.whatsapp.net' }), 'created', 'invite_link'],
+			[JSON.stringify({ lid: '222@lid', pn: '5522@s.whatsapp.net' }), 'created', 'invite_link']
+		])
+
+		const revoked = buildGroupNotificationStubMessages(
+			{
+				...base,
+				action: {
+					type: 'revokedMembershipRequests',
+					participants: [
+						{ jid: '236@lid', phoneNumber: '5599@s.whatsapp.net' },
+						{ jid: '222@lid', phoneNumber: '5522@s.whatsapp.net' }
+					]
+				}
+			},
+			false
+		)
+		expect(revoked.map(message => message.messageStubParameters)).toEqual([
+			[JSON.stringify({ lid: '236@lid', pn: '5599@s.whatsapp.net' }), 'revoked'],
+			[JSON.stringify({ lid: '222@lid', pn: '5522@s.whatsapp.net' }), 'rejected']
+		])
+		expect(
+			revoked.every(
+				message => message.messageStubType === StubType.GROUP_MEMBERSHIP_JOIN_APPROVAL_REQUEST_NON_ADMIN_ADD
+			)
+		).toBe(true)
 	})
 })
 
@@ -798,6 +1178,7 @@ const subjectNotif = (ts: number) =>
 	({
 		type: 'groupUpdate',
 		groupJid: '120@g.us',
+		actionIndex: 0,
 		timestamp: ts,
 		isLidAddressingMode: false,
 		action: { type: 'subject', subject: 'foo' }
@@ -814,6 +1195,13 @@ describe('dispatch: stub messages have unique ids', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatcher — connection lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('dispatch: offline_sync_completed', () => {
+	it('surfaces upstream receivedPendingNotifications readiness', () => {
+		const updates = collect({ type: 'offline_sync_completed', data: { count: 4 } }, 'connection.update')
+		expect(updates).toEqual([{ receivedPendingNotifications: true }])
+	})
+})
 
 describe('dispatch: connect_failure → DisconnectReason mapping', () => {
 	const closeStatusFor = (reason: number) => {
@@ -1015,6 +1403,91 @@ describe('dispatch: emitCBEvents emits all upstream patterns', () => {
 		expect(fired).toContain('CB:iq,type')
 		expect(fired).toContain('CB:iq,,pair-success')
 	})
+
+	it('uses the raw node as the single lossless CB source for server ACKs', () => {
+		const { ctx, ev, ws } = makeCtx()
+		const rawAcks: BinaryNode[] = []
+		const updates: BaileysEventMap['messages.update'][] = []
+		ws.on('CB:ack,class:message', node => rawAcks.push(node))
+		ev.on('messages.update', update => updates.push(update))
+
+		const rawAck: BinaryNode = {
+			tag: 'ack',
+			attrs: {
+				id: 'MSG-ACK-1',
+				class: 'message',
+				from: 'group@g.us',
+				participant: '5511999999999:7@s.whatsapp.net',
+				recipient: '5511888888888@s.whatsapp.net',
+				type: 'text',
+				t: '1734000000',
+				sync: '1',
+				phash: '2:abc+/def',
+				refresh_lid: 'true',
+				addressing_mode: 'lid',
+				count: '3'
+			}
+		}
+
+		const dispatch = makeEventHandler(ctx)
+		dispatch({ type: 'raw_node', data: rawAck } as never)
+		// The semantic event follows the same raw stanza in the core. It must not
+		// reconstruct a second, field-reduced public ACK.
+		dispatch({
+			type: 'server_ack',
+			data: {
+				id: rawAck.attrs.id,
+				class: rawAck.attrs.class,
+				from: jid('group', 'g.us'),
+				timestamp: 1_734_000_000,
+				error: null
+			}
+		} as never)
+
+		expect(rawAcks).toEqual([rawAck])
+		expect(updates).toHaveLength(0)
+	})
+
+	it('maps typed message NACKs to ERROR updates without synthesizing a raw ACK', () => {
+		const { ctx, ev, ws } = makeCtx()
+		const rawAcks: BinaryNode[] = []
+		const updates: BaileysEventMap['messages.update'][] = []
+		ws.on('CB:ack,class:message', node => rawAcks.push(node))
+		ev.on('messages.update', update => updates.push(update))
+
+		makeEventHandler(ctx)({
+			type: 'server_ack',
+			data: {
+				id: 'MSG-NACK-1',
+				class: 'message',
+				from: jid('group', 'g.us'),
+				timestamp: 1_734_000_000,
+				error: '479'
+			}
+		} as never)
+
+		expect(rawAcks).toHaveLength(0)
+		expect(updates).toHaveLength(1)
+		expect(updates[0]?.[0]?.key).toEqual({
+			remoteJid: 'group@g.us',
+			fromMe: true,
+			id: 'MSG-NACK-1'
+		})
+		expect(updates[0]?.[0]?.update.status).toBe(proto.WebMessageInfo.Status.ERROR)
+		expect(updates[0]?.[0]?.update.messageStubParameters).toEqual(['479'])
+	})
+})
+
+describe('dispatch: dirty_state uses the typed internal callback', () => {
+	it('does not require raw-node forwarding to refresh participating metadata', () => {
+		const { ctx } = makeCtx()
+		const dirtyTypes: string[] = []
+		makeEventHandler(ctx, {
+			onDirtyState: event => dirtyTypes.push(event.dirtyType)
+		})({ type: 'dirty_state', data: { dirty_type: 'groups', timestamp: 1_725_000_000 } } as never)
+
+		expect(dirtyTypes).toEqual(['groups'])
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1162,6 +1635,40 @@ describe('dispatch: history_sync → messaging-history.set', () => {
 		expect(sets[0]?.peerDataRequestSessionId).toBe('PDO-XYZ')
 	})
 
+	it('forwards pastParticipants from the decoded history proto', () => {
+		const pastParticipants = [{ groupJid: '120@g.us', pastParticipants: [{ userJid: '236@lid', leaveTs: 100 }] }]
+		const sets = runHistory({ syncType: HSType.RECENT, conversations: [], pastParticipants })
+		expect(sets[0]?.pastParticipants).toEqual(pastParticipants)
+	})
+
+	it('emits explicit history completion status once per INITIAL_BOOTSTRAP and RECENT phase', () => {
+		const { ctx, ev } = makeCtx()
+		const statuses: BaileysEventMap['messaging-history.status'][] = []
+		ev.on('messaging-history.status', value => statuses.push(value))
+		const handle = makeEventHandler(ctx)
+		handle({
+			type: 'history_sync',
+			data: { syncType: HSType.INITIAL_BOOTSTRAP, progress: 10, conversations: [] }
+		} as never)
+		handle({
+			type: 'history_sync',
+			data: { syncType: HSType.INITIAL_BOOTSTRAP, progress: 100, conversations: [] }
+		} as never)
+		handle({
+			type: 'history_sync',
+			data: { syncType: HSType.RECENT, progress: 50, conversations: [] }
+		} as never)
+		handle({
+			type: 'history_sync',
+			data: { syncType: HSType.RECENT, progress: 100, conversations: [] }
+		} as never)
+
+		expect(statuses).toEqual([
+			{ syncType: HSType.INITIAL_BOOTSTRAP, status: 'complete', explicit: true },
+			{ syncType: HSType.RECENT, status: 'complete', explicit: true }
+		])
+	})
+
 	it('omits peerDataRequestSessionId on server-pushed syncs', () => {
 		expect(
 			runHistory({ syncType: HSType.INITIAL_BOOTSTRAP, conversations: [] })[0]?.peerDataRequestSessionId
@@ -1211,6 +1718,33 @@ describe('dispatch: history_sync → messaging-history.set', () => {
 		)
 		expect(buckets['chats.upsert'].length).toBe(0)
 		expect(buckets['contacts.upsert'].length).toBe(1)
+	})
+})
+
+describe('dispatch: MessageCappingInfoNotification → message-capping.update', () => {
+	it('unwraps the neutral MEX response without renaming its public snake_case fields', () => {
+		const payload = {
+			total_quota: 100,
+			used_quota: 25,
+			cycle_start_timestamp: '1000',
+			cycle_end_timestamp: '2000',
+			server_sent_timestamp: '1500',
+			ote_status: 'ELIGIBLE',
+			mv_status: 'ACTIVE',
+			capping_status: 'FIRST_WARNING'
+		}
+		const updates = collect(
+			{
+				type: 'mex_notification',
+				data: {
+					op_name: 'MessageCappingInfoNotification',
+					offline: false,
+					payload: { data: { xwa2_notify_new_chat_messages_capping_info_update: payload } }
+				}
+			},
+			'message-capping.update'
+		)
+		expect(updates).toEqual([payload])
 	})
 })
 
@@ -1320,6 +1854,12 @@ describe('useMultiFileAuthState', () => {
 		await withTempStore(async folder => {
 			const ret = await useMultiFileAuthState(folder)
 			expect(ret.state).toBeDefined()
+			expect(ret.state.creds.registered).toBe(false)
+			expect(ret.state.creds.noiseKey.public.length).toBe(32)
+			expect(ret.state.creds.signedPreKey.signature.length).toBe(64)
+			expect(typeof ret.state.keys.get).toBe('function')
+			expect(typeof ret.state.keys.set).toBe('function')
+			expect(ret.state.store).toBeDefined()
 			expect(typeof ret.saveCreds).toBe('function')
 			await ret.saveCreds()
 		})

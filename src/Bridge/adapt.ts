@@ -11,7 +11,13 @@
 import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
 import type { ILogger } from '../Utils/logger.ts'
 import type { CanonicalEvent } from './types.ts'
-import { adaptBridgeEventViaSchema, KNOWN_BRIDGE_EVENT_TYPES as KNOWN_FROM_SCHEMA } from './schema.ts'
+import {
+	adaptBridgeEventViaSchema,
+	adaptBridgeMessageWire,
+	KNOWN_BRIDGE_EVENT_TYPES as KNOWN_FROM_SCHEMA
+} from './schema.ts'
+
+export { adaptBridgeMessageWire }
 
 /**
  * Set of bridge event types the adapter explicitly handles. The

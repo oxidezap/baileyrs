@@ -6,10 +6,11 @@
  * When the bridge ships a new event variant or removes an existing one, this
  * test fails with a precise diff — long before the missing handler shows up
  * as a silently-dropped event in production. Pair with
- * `bun run revalidate` so any bridge bump that changes the event surface is
+ * `npm test` so any bridge bump that changes the event surface is
  * caught before merge.
  */
 
+import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,7 +69,8 @@ function extractWhatsAppEventTypes(dts: string): string[] {
 }
 
 describe('Bridge .d.ts ↔ adapter drift', () => {
-	const bridgeTypes = extractWhatsAppEventTypes(loadBridgeDts())
+	const bridgeDts = loadBridgeDts()
+	const bridgeTypes = extractWhatsAppEventTypes(bridgeDts)
 
 	it('every bridge event type from .d.ts is handled by the adapter', () => {
 		const missing = bridgeTypes.filter(t => !KNOWN_BRIDGE_EVENT_TYPES.has(t))
@@ -90,5 +92,25 @@ describe('Bridge .d.ts ↔ adapter drift', () => {
 		// If this drops to 0/few, the regex broke against a `.d.ts` reformat
 		// and the two assertions above would silently pass.
 		expect(bridgeTypes.length).toBeGreaterThanOrEqual(20)
+	})
+
+	it('keeps the typed USync method connected to generated request and response declarations', () => {
+		assert.match(bridgeDts, /export interface UsyncQuery\s*\{/u)
+		assert.match(bridgeDts, /export interface UsyncResponse\s*\{/u)
+		assert.match(bridgeDts, /queryUsync\(query: UsyncQuery\): Promise<UsyncResponse>;/u)
+		assert.match(bridgeDts, /tc_token\?: Uint8Array \| null;/u)
+	})
+
+	it('keeps stanza response methods on the typed neutral node boundary', () => {
+		assert.match(bridgeDts, /export interface BinaryNode\s*\{/u)
+		assert.match(bridgeDts, /acknowledgeStanza\(stanza_js: BinaryNode\): Promise<void>;/u)
+		assert.match(
+			bridgeDts,
+			/rejectStanza\(stanza_js: BinaryNode, error_code: number, failure_reason\?: number \| null\): Promise<void>;/u
+		)
+		assert.match(
+			bridgeDts,
+			/requestMessageRetry\(stanza_js: BinaryNode, force_include_keys\?: boolean \| null\): Promise<void>;/u
+		)
 	})
 })

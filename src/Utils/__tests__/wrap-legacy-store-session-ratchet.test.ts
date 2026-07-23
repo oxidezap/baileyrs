@@ -105,7 +105,7 @@ function buildJsSession(opts: JsSessionOpts) {
 						pubKey: opts.senderRatchetPub.toString('base64'),
 						privKey: opts.senderRatchetPriv.toString('base64')
 					},
-					lastRemoteEphemeralKey: Buffer.alloc(0).toString('base64'),
+					lastRemoteEphemeralKey: baseKey.toString('base64'),
 					previousCounter: 0,
 					rootKey: Buffer.from(fill(32, 11)).toString('base64')
 				},

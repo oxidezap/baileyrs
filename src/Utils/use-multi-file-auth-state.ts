@@ -1,12 +1,16 @@
 import { mkdir, stat } from 'node:fs/promises'
 import type { AuthenticationState } from '../Types/index.ts'
+import { projectNativeStore } from '../Compatibility/legacy-store/native-projection.ts'
+import { initAuthCreds } from './generics.ts'
 import { useBridgeStore } from './use-bridge-store.ts'
 
 /**
  * Creates a file-based authentication state for the Rust bridge.
  *
- * All crypto keys, sessions, and identity are managed by the Rust engine
- * and persisted as `.bin` files via the bridge store. No `creds.json` needed.
+ * All effective crypto keys, sessions, and identity are managed by the Rust
+ * engine and persisted as `.bin` files via the bridge store. The returned
+ * `creds` and `keys` are complete upstream-compatible mirrors so unchanged
+ * application code can inspect them or clear legacy entries safely.
  *
  * Returns a `saveCreds` no-op for upstream-Baileys API parity. Upstream
  * bots wire `ev.on('creds.update', saveCreds)` as the persistence hook;
@@ -31,11 +35,15 @@ export const useMultiFileAuthState = async (
 	}
 
 	const store = await useBridgeStore(folder)
+	const creds = initAuthCreds()
+	const keys: AuthenticationState['keys'] = projectNativeStore(store, creds)
 
 	return {
-		state: { store },
+		state: { creds, keys, store },
 		saveCreds: async () => {
-			// no-op: bridge owns creds and writes them through `store.set('device', …)`.
+			// no-op: bridge owns effective creds and writes them through
+			// `store.set('device', …)`; the in-process mirror is merged before this
+			// hook runs.
 			// Kept on the surface so upstream-Baileys code paths keep type-checking.
 		}
 	}

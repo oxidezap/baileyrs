@@ -1,4 +1,4 @@
-import type { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { proto } from '../WAProto/runtime.ts'
 
 export type DayOfWeekBussines = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat'
 

@@ -1,5 +1,5 @@
 import P from 'pino'
-import { Boom, DisconnectReason, makeWASocket, useMemoryStore } from '../lib/index.js'
+import { type Boom, DisconnectReason, makeWASocket, useMemoryStore } from '../lib/index.js'
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 const TERMINAL_DISCONNECT_REASONS = [

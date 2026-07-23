@@ -1,6 +1,6 @@
 import readline from 'node:readline'
 import {
-	Boom,
+	type Boom,
 	DEFAULT_CONNECTION_CONFIG,
 	DisconnectReason,
 	fetchLatestWaWebVersion,
@@ -14,8 +14,9 @@ import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
 import P from 'pino'
 import process from 'node:process'
 
+const logLevel = process.env.LOG_LEVEL ?? 'trace'
 const logger = P({
-	level: 'trace',
+	level: logLevel,
 	transport: {
 		targets: [
 			{
@@ -31,7 +32,6 @@ const logger = P({
 		]
 	}
 })
-logger.level = 'trace'
 
 const usePairingCode = process.argv.includes('--use-pairing-code')
 const useLegacyStore = process.argv.includes('--use-legacy-store')
@@ -40,15 +40,26 @@ const useLegacyStore = process.argv.includes('--use-legacy-store')
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 const question = (text: string) => new Promise<string>(resolve => rl.question(text, resolve))
 
-const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MB'
+const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MiB'
 const numFmt = (v: number) => new Intl.NumberFormat('en').format(v)
+const byteFmt = (bytes: number) => {
+	const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+	let value = bytes
+	let unit = 0
+	while (Math.abs(value) >= 1024 && unit < units.length - 1) {
+		value /= 1024
+		unit++
+	}
+
+	return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
 
 // start a connection
 const startSock = async () => {
 	// Two auth modes:
 	// 1. Default: bridge-native binary store (useMultiFileAuthState)
 	// 2. Legacy: load an existing upstream Baileys session via wrapLegacyStore
-	//    Usage: npx ts-node example.ts --use-legacy-store /path/to/baileys_auth_info
+	//    Usage: node ./Example/example.ts --use-legacy-store /path/to/baileys_auth_info
 	let state: Awaited<ReturnType<typeof useMultiFileAuthState>>['state']
 	if (useLegacyStore) {
 		const legacyPath = process.argv[process.argv.indexOf('--use-legacy-store') + 1] || 'baileys_auth_info'
@@ -160,51 +171,55 @@ const startSock = async () => {
 							// Example: send a PIX payment button via relayMessage
 							// Demonstrates interactive native flow messages with auto-inferred <biz> node.
 							if (text === 'pix') {
-								const msgId = await sock.relayMessage(msg.key.remoteJid!, {
-									interactiveMessage: {
-										body: { text: 'Send a PIX payment using the button below.' },
-										nativeFlowMessage: {
-											buttons: [
-												{
-													name: 'payment_info',
-													buttonParamsJson: JSON.stringify({
-														currency: 'BRL',
-														total_amount: { value: 1000, offset: 100 },
-														reference_id: Math.random().toString(36).substring(2, 13).toUpperCase(),
-														type: 'physical-goods',
-														order: {
-															status: 'pending',
-															subtotal: { value: 1000, offset: 100 },
-															order_type: 'ORDER',
-															items: [
+								const msgId = await sock.relayMessage(
+									msg.key.remoteJid!,
+									{
+										interactiveMessage: {
+											body: { text: 'Send a PIX payment using the button below.' },
+											nativeFlowMessage: {
+												buttons: [
+													{
+														name: 'payment_info',
+														buttonParamsJson: JSON.stringify({
+															currency: 'BRL',
+															total_amount: { value: 1000, offset: 100 },
+															reference_id: Math.random().toString(36).substring(2, 13).toUpperCase(),
+															type: 'physical-goods',
+															order: {
+																status: 'pending',
+																subtotal: { value: 1000, offset: 100 },
+																order_type: 'ORDER',
+																items: [
+																	{
+																		name: 'PIX charge',
+																		amount: { value: 1000, offset: 100 },
+																		quantity: 1,
+																		sale_amount: { value: 1000, offset: 100 }
+																	}
+																]
+															},
+															payment_settings: [
 																{
-																	name: 'PIX charge',
-																	amount: { value: 1000, offset: 100 },
-																	quantity: 1,
-																	sale_amount: { value: 1000, offset: 100 }
+																	type: 'pix_static_code',
+																	pix_static_code: {
+																		merchant_name: 'Example Bot',
+																		key: '00000000-0000-0000-0000-000000000000',
+																		key_type: 'EVP'
+																	}
 																}
-															]
-														},
-														payment_settings: [
-															{
-																type: 'pix_static_code',
-																pix_static_code: {
-																	merchant_name: 'Example Bot',
-																	key: '00000000-0000-0000-0000-000000000000',
-																	key_type: 'EVP'
-																}
-															}
-														],
-														share_payment_status: false,
-														referral: 'chat_attachment'
-													})
-												}
-											],
-											messageParamsJson: '{}',
-											messageVersion: 1
+															],
+															share_payment_status: false,
+															referral: 'chat_attachment'
+														})
+													}
+												],
+												messageParamsJson: '{}',
+												messageVersion: 1
+											}
 										}
-									}
-								})
+									},
+									{}
+								)
 								logger.info({ msgId }, 'PIX payment button sent via relayMessage')
 							}
 
@@ -219,35 +234,45 @@ const startSock = async () => {
 									.toSorted((a, b) => b.space_used_size - a.space_used_size)
 								const wasm = getWasmMemoryBytes()
 								const diag = await sock.waClient!.getMemoryDiagnostics()
-								const wasmEntries = Object.entries(diag)
-									.filter(([, v]) => v > 0)
+								const diagnosticEntries = Object.entries(diag)
+									.filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0)
 									.toSorted(([, a], [, b]) => b - a)
+								const byteDiagnostics = diagnosticEntries.filter(([key]) => key.endsWith('Bytes'))
+								const counterDiagnostics = diagnosticEntries.filter(([key]) => !key.endsWith('Bytes'))
 
 								const report = [
 									'📊 Memory Report',
 									'',
-									`── Process (RSS: ${mb(mem.rss)}) ──`,
-									`  Heap Used:     ${mb(mem.heapUsed)} / ${mb(mem.heapTotal)}`,
-									`  External:      ${mb(mem.external)}`,
-									`  Array Buffers: ${mb(mem.arrayBuffers)}`,
+									`── Process Total (RSS: ${mib(mem.rss)}) ──`,
+									'  Breakdowns below overlap with RSS; do not add them.',
+									`  Heap Used:     ${mib(mem.heapUsed)} / ${mib(mem.heapTotal)}`,
+									`  External:      ${mib(mem.external)}`,
+									`  Array Buffers: ${mib(mem.arrayBuffers)} (included in External)`,
 									'',
 									`── V8 Heap Spaces ──`,
 									...spaces.map(
-										s => `  ${s.space_name.replace('_space', '').padEnd(20)} ${mb(s.space_used_size).padStart(10)}`
+										s => `  ${s.space_name.replace('_space', '').padEnd(20)} ${mib(s.space_used_size).padStart(10)}`
 									),
 									'',
 									`── V8 Stats ──`,
 									`  Native contexts:   ${heap.number_of_native_contexts}`,
 									`  Global handles:    ${numFmt(heap.used_global_handles_size)} / ${numFmt(heap.total_global_handles_size)}`,
-									`  Malloced:          ${mb(heap.malloced_memory)}`,
-									`  Peak malloced:     ${mb(heap.peak_malloced_memory)}`,
+									`  Malloced:          ${mib(heap.malloced_memory)}`,
+									`  Peak malloced:     ${mib(heap.peak_malloced_memory)}`,
 									'',
-									`── WASM (${mb(wasm)}) ──`,
-									...(wasmEntries.length
-										? wasmEntries.map(([k, v]) => `  ${k.padEnd(26)} ${numFmt(v).padStart(8)}`)
-										: ['  (all caches empty)']),
+									`── WASM Linear Capacity: ${mib(wasm)} ──`,
+									'  Included in RSS when resident; not additive.',
 									'',
-									`── Total: ${mb(mem.rss + wasm)} ──`
+									`── Rust Byte Metrics ──`,
+									'  Retained estimates, peaks, buffers and I/O; not additive.',
+									...(byteDiagnostics.length
+										? byteDiagnostics.map(([key, value]) => `  ${key.padEnd(34)} ${byteFmt(value).padStart(10)}`)
+										: ['  (no non-zero byte estimates)']),
+									'',
+									`── Rust Counters ──`,
+									...(counterDiagnostics.length
+										? counterDiagnostics.map(([key, value]) => `  ${key.padEnd(34)} ${numFmt(value).padStart(10)}`)
+										: ['  (all counters empty)'])
 								].join('\n')
 
 								console.log(report)

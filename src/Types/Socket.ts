@@ -1,6 +1,7 @@
+import type { Agent } from 'node:https'
 import type { URL } from 'url'
 import type { CacheConfig, DevicePropsInput } from 'whatsapp-rust-bridge'
-import type { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { proto } from '../WAProto/runtime.ts'
 
 export type {
 	DeviceAppVersion,
@@ -9,9 +10,10 @@ export type {
 	DevicePropsInput
 } from 'whatsapp-rust-bridge'
 import type { ILogger } from '../Utils/logger.ts'
-import type { AuthenticationState } from './Auth.ts'
+import type { AuthenticationState, LIDMapping, SignalAuthState } from './Auth.ts'
 import type { GroupMetadata } from './GroupMetadata.ts'
-import type { WAMessageContent, WAMessageKey } from './Message.ts'
+import type { MediaConnInfo, WAMessageKey } from './Message.ts'
+import type { SignalRepositoryWithLIDStore } from './Signal.ts'
 
 export type WAVersion = [number, number, number]
 export type WABrowserDescription = [string, string, string]
@@ -25,6 +27,13 @@ export type CacheStore = {
 	del(key: string): void | Promise<void> | number | boolean
 	/** flush all data */
 	flushAll(): void | Promise<void>
+	close?: () => void
+}
+
+export type PossiblyExtendedCacheStore = CacheStore & {
+	mget?: <T>(keys: string[]) => Promise<Record<string, T | undefined>>
+	mset?: <T>(entries: { key: string; value: T }[]) => Promise<void> | void | number | boolean
+	mdel?: (keys: string[]) => void | Promise<void> | number | boolean
 }
 
 export type PatchedMessageWithRecipientJID = proto.IMessage & { recipientJid?: string }
@@ -38,14 +47,24 @@ export type SocketConfig = {
 	defaultQueryTimeoutMs: number | undefined
 	/** ping-pong interval for WS connection */
 	keepAliveIntervalMs: number
+	/** @deprecated Mobile mode was removed upstream. */
+	mobile?: boolean
+	/** Proxy agent used by socket requests. */
+	agent?: Agent
 	/** logger */
 	logger: ILogger
 	/** version to connect with */
 	version: WAVersion
 	/** override browser config */
 	browser: WABrowserDescription
+	/** Initial push name sent in the registration payload before first pairing. */
+	pushName?: string
+	/** Agent used for media fetches. */
+	fetchAgent?: Agent
 	/** should events be emitted for actions done by this socket connection */
 	emitOwnEvents: boolean
+	/** Custom media upload hosts. */
+	customUploadHosts: MediaConnInfo['hosts']
 	/** provide an auth state object to maintain the auth state */
 	auth: AuthenticationState
 	/**
@@ -83,50 +102,69 @@ export type SocketConfig = {
 	wantedPreKeyCount?: number
 
 	// ─────────────────────────────────────────────────────────────────────
-	// Upstream-Baileys options accepted for type-level compatibility.
-	//
-	// All of the following are silently ignored by baileyrs because the Rust
-	// bridge handles the underlying behavior natively. They live here so that
-	// `makeWASocket({...upstreamConfig})` keeps type-checking against code
-	// migrated from `@whiskeysockets/baileys` without forcing the caller to
-	// strip fields. None of these have a runtime effect — passing them is a
-	// no-op, not an error.
+	// Compatibility options are either translated by the socket or owned by
+	// the native runtime. Keep their public declarations exact.
 	// ─────────────────────────────────────────────────────────────────────
 
 	/** @deprecated QR timeout is handled by the bridge connection state machine. */
 	qrTimeout?: number
-	/** @deprecated Message retries are managed by the bridge. */
-	maxMsgRetryCount?: number
-	/** @deprecated Retry backoff is handled by the bridge. */
-	retryRequestDelayMs?: number
-	/** @deprecated Link previews are not generated automatically; build via your own helper if needed. */
-	generateHighQualityLinkPreview?: boolean
-	/** @deprecated See `generateHighQualityLinkPreview`. */
-	linkPreviewImageThumbnailWidth?: number
-	/** @deprecated Session recreation is automatic via the bridge's signal layer. */
-	enableAutoSessionRecreation?: boolean
-	/** @deprecated The bridge keeps its own recent-message cache. */
-	enableRecentMessageCache?: boolean
-	/** @deprecated Use `sendPresenceUpdate('available')` after `connection: 'open'` instead. */
-	markOnlineOnConnect?: boolean
-	/** @deprecated Auth/key storage is owned by the bridge; transactions are an internal concern. */
-	transactionOpts?: { maxCommitRetries: number; delayBetweenTriesMs: number }
-	/** @deprecated History sync is driven by the bridge; see `messaging-history.set` events. */
-	syncFullHistory?: boolean
-	/** @deprecated Init queries are issued by the bridge on connect. */
-	fireInitQueries?: boolean
+	/** Maximum retry count. */
+	maxMsgRetryCount: number
+	/** Delay between retry requests. */
+	retryRequestDelayMs: number
+	/** Generate high-quality link previews. */
+	generateHighQualityLinkPreview: boolean
+	/** Width used for link-preview images. */
+	linkPreviewImageThumbnailWidth: number
+	/** Enable automatic session recreation for failed messages. */
+	enableAutoSessionRecreation: boolean
+	/** Enable the recent-message retry cache. */
+	enableRecentMessageCache: boolean
+	/** Mark the client online after connecting. */
+	markOnlineOnConnect: boolean
+	/** Retry policy for compatibility key-store transactions. */
+	transactionOpts: { maxCommitRetries: number; delayBetweenTriesMs: number }
+	/** Request full history synchronization. */
+	syncFullHistory: boolean
+	/** Fire initialization queries automatically. */
+	fireInitQueries: boolean
+	/** Alphanumeric country code used for number parsing. */
+	countryCode: string
 	/** @deprecated History download policy lives in the bridge. */
 	downloadHistory?: boolean
-	/** @deprecated See `syncFullHistory`. */
-	shouldSyncHistoryMessage?: (msg: proto.Message.IHistorySyncNotification) => boolean
+	/** Decide whether a history notification should be processed. */
+	shouldSyncHistoryMessage: (msg: proto.Message.IHistorySyncNotification) => boolean
 	/** @deprecated QR rendering is the caller's responsibility — listen on `connection.update` for the QR string. */
 	printQRInTerminal?: boolean
 	/** @deprecated Offline-message handling is built into the bridge event stream. */
 	ignoreOfflineMessages?: boolean
-	/** @deprecated Retry counters are kept inside the bridge. */
+	/** Optional media cache. */
+	mediaCache?: CacheStore
+	/** Optional retry-counter cache. */
 	msgRetryCounterCache?: CacheStore
-	/** @deprecated The bridge maintains its own group-metadata cache (see `cache.group`). */
-	cachedGroupMetadata?: (jid: string) => Promise<GroupMetadata | undefined>
-	/** @deprecated Decryption retries are handled by the bridge using its message store. */
-	getMessage?: (key: WAMessageKey) => Promise<WAMessageContent | undefined>
+	/** Optional user-device cache. */
+	userDevicesCache?: PossiblyExtendedCacheStore
+	/** Optional call-offer cache. */
+	callOfferCache?: CacheStore
+	/** Optional placeholder-resend cache. */
+	placeholderResendCache?: CacheStore
+	/** Patch a message before it is sent. */
+	patchMessageBeforeSending: (
+		msg: proto.IMessage,
+		recipientJids?: string[]
+	) =>
+		| Promise<PatchedMessageWithRecipientJID[] | PatchedMessageWithRecipientJID>
+		| PatchedMessageWithRecipientJID[]
+		| PatchedMessageWithRecipientJID
+	/** App-state MAC verification policy. */
+	appStateMacVerification: { patch: boolean; snapshot: boolean }
+	/** Resolve a message from the caller's store for retries. */
+	getMessage: (key: WAMessageKey) => Promise<proto.IMessage | undefined>
+	/** Resolve cached group metadata. */
+	cachedGroupMetadata: (jid: string) => Promise<GroupMetadata | undefined>
+	makeSignalRepository: (
+		auth: SignalAuthState,
+		logger: ILogger,
+		pnToLIDFunc?: (jids: string[]) => Promise<LIDMapping[] | undefined>
+	) => SignalRepositoryWithLIDStore
 }

@@ -7,9 +7,18 @@
  * is a compile error.
  */
 
-import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
+import { decodeProtoBatch } from 'whatsapp-rust-bridge'
+import type {
+	HistorySyncWireBatch,
+	MessageWireBatch,
+	WhatsAppEvent,
+	WhatsAppEventCallbacks
+} from 'whatsapp-rust-bridge'
 import type { CanonicalEvent, CanonicalMessage } from '../Bridge/index.ts'
-import { adaptBridgeEvent } from '../Bridge/index.ts'
+import { adaptBridgeEvent, adaptBridgeMessageWire } from '../Bridge/index.ts'
+import { decodeHistorySyncWireBatch } from '../Bridge/history-sync-wire.ts'
+import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
+import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX, HISTORY_SYNC_PAUSED_TIMEOUT_MS } from '../Defaults/index.ts'
 import type {
 	BaileysEventMap,
 	BinaryNode,
@@ -19,21 +28,29 @@ import type {
 	WAMessage,
 	WAPresence
 } from '../Types/index.ts'
-import { DisconnectReason, WAProto } from '../Types/index.ts'
+import { DisconnectReason, WAMessageStatus, WAProto } from '../Types/index.ts'
 import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
 import { toNumber } from '../Utils/generics.ts'
+import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
 import {
+	buildGroupCreateStubMessage,
 	buildGroupJoinRequestEvents,
+	buildGroupNotificationChatUpdates,
 	buildGroupNotificationDomainEvent,
 	buildGroupNotificationStubMessages
-} from './group-notifications.ts'
+} from '../Compatibility/group-notifications.ts'
+import { emitMessageUpsert, type MessageUpsertMetadata } from '../Compatibility/message-upsert.ts'
+import { extractMessageCappingPayload } from './message-capping.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import type { SocketContext } from './types.ts'
 
-const DEF_CALLBACK_PREFIX = 'CB:'
-const DEF_TAG_PREFIX = 'TAG:'
+const CANONICAL_MESSAGE_EVENT = 'message'
+const MESSAGE_UPSERT_APPEND = 'append'
+const MESSAGE_UPSERT_NOTIFY = 'notify'
+const MESSAGE_PROTO_TYPE = 'Message'
+const MESSAGE_WIRE_OFFSET_SENTINEL_COUNT = 1
 
 /** Emit CB: pattern events on the ws EventEmitter for retrocompat. */
 const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
@@ -89,17 +106,46 @@ const canonicalMessageToWAMessage = (m: CanonicalMessage): WAMessage => {
 	return wm
 }
 
+interface PendingMessageUpsert extends MessageUpsertMetadata {
+	messages: WAMessage[]
+}
+
+const messageUpsertMetadata = (message: CanonicalMessage): MessageUpsertMetadata => ({
+	type: message.isOffline ? MESSAGE_UPSERT_APPEND : MESSAGE_UPSERT_NOTIFY,
+	requestId: message.unavailableRequestId
+})
+
+const hasMessageSideEffects = (message: CanonicalMessage) =>
+	message.messageProto.reactionMessage != null || message.messageProto.protocolMessage != null
+
+const hasSameUpsertMetadata = (left: MessageUpsertMetadata, right: MessageUpsertMetadata) =>
+	left.type === right.type && left.requestId === right.requestId
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatch table — one entry per CanonicalEvent variant.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface EventCallbacks {
 	onPairSuccess?: (data: { platform?: string; businessName?: string }) => void | Promise<void>
+	onIncomingCall?: (event: Extract<CanonicalEvent, { type: 'incomingCall' }>) => void
+	onDirtyState?: (event: Extract<CanonicalEvent, { type: 'dirtyState' }>) => void
 }
 
 interface DispatchCtx {
 	ctx: SocketContext
 	callbacks?: EventCallbacks
+	historySync: HistorySyncStatusState
+}
+
+interface HistorySyncStatusState {
+	initialBootstrapComplete: boolean
+	recentSyncComplete: boolean
+	pausedTimeout?: ReturnType<typeof setTimeout>
+}
+
+const clearHistorySyncPausedTimeout = (state: HistorySyncStatusState) => {
+	if (state.pausedTimeout) clearTimeout(state.pausedTimeout)
+	state.pausedTimeout = undefined
 }
 
 /** Narrow `CanonicalEvent` by its `type` discriminator. */
@@ -182,7 +228,14 @@ const emitConnectionUpdate = (ctx: SocketContext, update: Partial<ConnectionStat
 const DISPATCHERS: DispatcherMap = {
 	// ── Connection lifecycle ──
 	connected: (_, { ctx }) => emitConnectionUpdate(ctx, { connection: 'open' }),
-	disconnected: (_, { ctx }) => emitClose(ctx, 'Connection closed', DisconnectReason.connectionClosed),
+	offlineSyncCompleted: (_, { ctx }) =>
+		emitConnectionUpdate(ctx, {
+			receivedPendingNotifications: true
+		}),
+	disconnected: (_, { ctx, historySync }) => {
+		clearHistorySyncPausedTimeout(historySync)
+		emitClose(ctx, 'Connection closed', DisconnectReason.connectionClosed)
+	},
 	qr: (evt, { ctx }) => emitConnectionUpdate(ctx, { qr: evt.code }),
 	pairSuccess: (evt, { ctx, callbacks }) => {
 		const { id, lid, businessName, platform } = evt
@@ -249,12 +302,7 @@ const DISPATCHERS: DispatcherMap = {
 		// succeeds, not to drop inbound `fromMe` messages from other linked
 		// devices.
 		const waMsg = canonicalMessageToWAMessage(evt)
-		const upsertPayload: BaileysEventMap['messages.upsert'] = {
-			messages: [waMsg],
-			type: evt.isOffline ? 'append' : 'notify'
-		}
-		if (evt.unavailableRequestId) upsertPayload.requestId = evt.unavailableRequestId
-		ctx.ev.emit('messages.upsert', upsertPayload)
+		emitMessageUpsert(ctx, [waMsg], messageUpsertMetadata(evt))
 
 		// Mirror upstream `process-message.ts:523-533`: when the inbound
 		// proto carries a `reactionMessage`, surface it on the dedicated
@@ -447,6 +495,43 @@ const DISPATCHERS: DispatcherMap = {
 		const user = ctx.getUser()
 		const fromMe = !!(evt.author && (evt.author === user?.id || evt.author === user?.lid))
 
+		if (evt.action.type === 'create') {
+			// The neutral bridge marker intentionally carries no Baileys-shaped
+			// metadata. Resolve it here, at the compatibility boundary, then emit
+			// the same complete lifecycle and ordering as upstream.
+			void (async () => {
+				try {
+					const bridgeMetadata = await (await ctx.getClient()).getGroupMetadata(evt.groupJid)
+					const metadata = bridgeGroupMetadataToBaileys(bridgeMetadata)
+					ctx.ev.emit('chats.upsert', [
+						{ id: metadata.id, name: metadata.subject, conversationTimestamp: metadata.creation }
+					])
+					ctx.ev.emit('groups.upsert', [
+						{
+							...metadata,
+							author: evt.author,
+							authorPn: evt.authorPn,
+							authorUsername: evt.authorUsername
+						}
+					])
+					ctx.ev.emit('messages.upsert', {
+						messages: [buildGroupCreateStubMessage(evt, metadata, fromMe)],
+						type: 'append'
+					})
+				} catch (err) {
+					ctx.logger.warn({ err, groupJid: evt.groupJid }, 'group create notification: metadata resolution failed')
+				}
+			})()
+			return
+		}
+
+		// Upstream upserts the synthesized notification message before
+		// process-message derives high-level group/chat events from it.
+		const stubMessages = buildGroupNotificationStubMessages(evt, fromMe)
+		if (stubMessages.length > 0) {
+			ctx.ev.emit('messages.upsert', { messages: stubMessages, type: 'append' })
+		}
+
 		// Dispatch via discriminator instead of `as never` so TS validates
 		// payload ↔ event-name pairing.
 		const domainEvent = buildGroupNotificationDomainEvent(evt)
@@ -455,16 +540,6 @@ const DISPATCHERS: DispatcherMap = {
 			else ctx.ev.emit('group-participants.update', domainEvent.payload)
 		}
 
-		// `groups.upsert` is intentionally NOT emitted from `<create>`. The
-		// bridge gives us only the creation marker — `participants` /
-		// `subject` / `creation` are unknown without an extra IQ. Upstream
-		// emits this only AFTER `groupMetadata` resolves (`messages-recv.ts:661`),
-		// so emitting `[{ id }]` here would feed consumers a broken
-		// `GroupMetadata` (participants undefined → `metadata.participants.map`
-		// throws). Bots that want the metadata should call
-		// `sock.groupMetadata(evt.groupJid)` from a `groups.update` listener
-		// or after the matching `messages.upsert` stub.
-
 		// Fan out `group.join-request` for membership_approval_request /
 		// created_membership_requests / revoked_membership_requests.
 		// Upstream emits one event per affected participant.
@@ -472,10 +547,8 @@ const DISPATCHERS: DispatcherMap = {
 			ctx.ev.emit('group.join-request', joinReq)
 		}
 
-		const stubMessages = buildGroupNotificationStubMessages(evt, fromMe)
-		if (stubMessages.length > 0) {
-			ctx.ev.emit('messages.upsert', { messages: stubMessages, type: 'notify' } as BaileysEventMap['messages.upsert'])
-		}
+		const chatUpdates = buildGroupNotificationChatUpdates(evt)
+		if (chatUpdates.length > 0) ctx.ev.emit('chats.update', chatUpdates)
 	},
 
 	// ── Chat state ──
@@ -521,15 +594,16 @@ const DISPATCHERS: DispatcherMap = {
 		}),
 
 	// ── Calls ──
-	incomingCall: (evt, { ctx }) => {
+	incomingCall: (evt, { ctx, callbacks }) => {
+		callbacks?.onIncomingCall?.(evt)
 		const isGroup = isJidGroup(evt.from)
-		// Map the canonical action onto upstream Baileys' WACallUpdateType.
-		// `preAccept` is upstream's `ringing`. `timeout` has no bridge
-		// counterpart yet (upstream synthesizes it from a separate signal).
-		const status: WACallUpdateType = evt.action.type === 'preAccept' ? 'ringing' : (evt.action.type as WACallUpdateType)
+		// Canonical call actions use the exact public Baileys status spelling;
+		// missed-call notifications are normalized to `timeout` by the adapter.
+		const status: WACallUpdateType = evt.action.type
 		const callEvt: WACallEvent = {
 			chatId: evt.from,
-			from: evt.from,
+			from: evt.action.callCreator ?? evt.from,
+			...(evt.action.callCreator ? { callCreator: evt.action.callCreator } : {}),
 			id: evt.action.callId,
 			date: new Date(evt.timestamp * 1000),
 			status,
@@ -558,6 +632,7 @@ const DISPATCHERS: DispatcherMap = {
 	},
 
 	// ── Raw passthrough ──
+	dirtyState: (evt, { callbacks }) => callbacks?.onDirtyState?.(evt),
 	rawNode: (evt, { ctx }) => emitCBEvents(ctx, evt.node),
 	notification: (evt, { ctx }) =>
 		ctx.logger.trace({ tag: evt.tag, attrs: evt.attrs }, 'bridge generic notification (no Baileys mapping)'),
@@ -570,9 +645,41 @@ const DISPATCHERS: DispatcherMap = {
 			else ctx.logger.warn({ payload: evt.payload }, 'reachout-timelock push: payload missing expected fields')
 			return
 		}
+		if (evt.opName === 'MessageCappingInfoNotification') {
+			const payload = extractMessageCappingPayload(evt.payload)
+			if (payload) ctx.ev.emit('message-capping.update', payload)
+			else ctx.logger.warn({ payload: evt.payload }, 'message-capping push: payload missing expected fields')
+			return
+		}
 		ctx.logger.trace(
 			{ opName: evt.opName, offline: evt.offline },
 			'bridge mex notification with no Baileys mapping (drop)'
+		)
+	},
+	serverAck: (evt, { ctx }) => {
+		// The public CB surface comes exclusively from Event::RawNode. Rebuilding
+		// an ACK from this semantic event would drop optional wire attributes and
+		// emit the same stanza twice whenever raw forwarding is enabled.
+		if (evt.class === 'message' && evt.error) {
+			ctx.logger.warn(
+				{ msgId: evt.id, from: evt.from, error: evt.error },
+				'outgoing message was rejected by the server'
+			)
+			ctx.ev.emit('messages.update', [
+				{
+					key: { remoteJid: evt.from, fromMe: true, id: evt.id },
+					update: {
+						status: WAMessageStatus.ERROR,
+						messageStubParameters: [evt.error]
+					}
+				}
+			])
+			return
+		}
+
+		ctx.logger.debug(
+			{ msgId: evt.id, class: evt.class, from: evt.from, timestamp: evt.timestamp },
+			'server acknowledged outgoing stanza'
 		)
 	},
 	noop: (evt, { ctx }) =>
@@ -636,7 +743,7 @@ const DISPATCHERS: DispatcherMap = {
 			}
 		]),
 
-	historySync: (evt, { ctx }) => {
+	historySync: (evt, { ctx, historySync }) => {
 		// 1:1 with upstream `process-message.ts:371-376`. `isLatest` is true
 		// when this is the first history sync the bot has seen since
 		// pairing — upstream tracks it in `creds.processedHistoryMessages`,
@@ -651,6 +758,34 @@ const DISPATCHERS: DispatcherMap = {
 		// data. A non-batched bridge omits the flag → `!== false` keeps the old
 		// single-event behavior.
 		const isFinalBatch = evt.isFinalBatch !== false
+		if (isFinalBatch && isInitial && !historySync.initialBootstrapComplete) {
+			historySync.initialBootstrapComplete = true
+			ctx.ev.emit('messaging-history.status', {
+				syncType: HSType.INITIAL_BOOTSTRAP,
+				status: 'complete',
+				explicit: true
+			})
+		}
+		if (isFinalBatch && evt.syncType === HSType.RECENT && !historySync.recentSyncComplete) {
+			clearHistorySyncPausedTimeout(historySync)
+			if (evt.progress === 100) {
+				historySync.recentSyncComplete = true
+				ctx.ev.emit('messaging-history.status', { syncType: HSType.RECENT, status: 'complete', explicit: true })
+			} else {
+				historySync.pausedTimeout = setTimeout(() => {
+					if (!historySync.recentSyncComplete) {
+						historySync.recentSyncComplete = true
+						ctx.ev.emit('messaging-history.status', {
+							syncType: HSType.RECENT,
+							status: 'paused',
+							explicit: false
+						})
+					}
+					historySync.pausedTimeout = undefined
+				}, HISTORY_SYNC_PAUSED_TIMEOUT_MS)
+				historySync.pausedTimeout.unref?.()
+			}
+		}
 		const payload: BaileysEventMap['messaging-history.set'] = {
 			chats: evt.chats,
 			contacts: evt.contacts,
@@ -658,6 +793,7 @@ const DISPATCHERS: DispatcherMap = {
 			isLatest: evt.syncType === HSType.ON_DEMAND ? undefined : isInitial && isFinalBatch,
 			progress: isFinalBatch ? evt.progress : undefined,
 			syncType: evt.syncType,
+			pastParticipants: evt.pastParticipants,
 			chunkOrder: evt.chunkOrder,
 			peerDataRequestSessionId: evt.peerDataRequestSessionId,
 			lidPnMappings: evt.lidPnMappings.length > 0 ? evt.lidPnMappings : undefined
@@ -674,28 +810,130 @@ const DISPATCHERS: DispatcherMap = {
 	}
 }
 
-/**
- * Create the event handler that translates canonical events into Baileys
- * events on `ctx.ev`. The handler does NO bridge-shape inspection — that's
- * the schema's job. Field-access here references canonical types
- * exclusively, so a downstream rename surfaces as a `tsc` failure.
- */
-export const makeEventHandler = (ctx: SocketContext, callbacks?: EventCallbacks) => {
-	const dispatchCtx: DispatchCtx = { ctx, callbacks }
-
-	return (event: WhatsAppEvent) => {
-		const canonical = adaptBridgeEvent(event, ctx.logger)
-		if (!canonical) return
-		// Type-safe table lookup. The runtime cast through `DispatcherFn`
-		// is a no-op TS-wise (the table is exhaustively typed) — needed
-		// only because TS can't follow the discriminator across the
-		// indexed-access into the mapped type.
-		const dispatcher = DISPATCHERS[canonical.type] as DispatcherFn<typeof canonical.type>
-		try {
-			dispatcher(canonical, dispatchCtx)
-		} catch (err) {
-			// One bad event must not poison the rest of the pipeline.
-			ctx.logger.error({ err, type: canonical.type }, 'dispatcher threw — dropping event')
-		}
+const dispatchCanonicalEvent = (canonical: CanonicalEvent, dispatchCtx: DispatchCtx) => {
+	// Type-safe table lookup. The runtime cast through `DispatcherFn` is a
+	// no-op TS-wise (the table is exhaustively typed) — needed only because TS
+	// cannot follow the discriminator across an indexed mapped type.
+	const dispatcher = DISPATCHERS[canonical.type] as DispatcherFn<typeof canonical.type>
+	try {
+		dispatcher(canonical, dispatchCtx)
+	} catch (err) {
+		// One bad event must not poison the rest of the pipeline.
+		dispatchCtx.ctx.logger.error({ err, type: canonical.type }, 'dispatcher threw — dropping event')
 	}
 }
+
+type CanonicalAt = (index: number) => CanonicalEvent | null
+
+/** Aggregate adjacent ordinary messages while preserving every side-effecting
+ * event boundary. Both bridge object events and protobuf-wire batches enter
+ * through this single state machine. */
+const dispatchCanonicalBatch = (
+	ctx: SocketContext,
+	dispatchCtx: DispatchCtx,
+	count: number,
+	canonicalAt: CanonicalAt
+) => {
+	let pending: PendingMessageUpsert | undefined
+
+	for (let index = 0; index < count; index++) {
+		const canonical = canonicalAt(index)
+		if (!canonical) continue
+
+		// Only ordinary messages can share one messages.upsert emission.
+		// Flush before every other event or a message with secondary
+		// channels (reaction, revoke, edit, member-label) to preserve the
+		// exact observable order of those side effects.
+		if (canonical.type !== CANONICAL_MESSAGE_EVENT || hasMessageSideEffects(canonical)) {
+			if (pending) {
+				emitMessageUpsert(ctx, pending.messages, pending)
+				pending = undefined
+			}
+			dispatchCanonicalEvent(canonical, dispatchCtx)
+			continue
+		}
+
+		if (ctx.fullConfig.shouldIgnoreJid?.(canonical.chatJid)) continue
+
+		try {
+			const metadata = messageUpsertMetadata(canonical)
+			const message = canonicalMessageToWAMessage(canonical)
+			if (pending && hasSameUpsertMetadata(pending, metadata)) {
+				pending.messages.push(message)
+			} else {
+				if (pending) emitMessageUpsert(ctx, pending.messages, pending)
+				pending = { ...metadata, messages: [message] }
+			}
+		} catch (err) {
+			ctx.logger.error({ err, type: CANONICAL_MESSAGE_EVENT }, 'dispatcher threw — dropping event')
+		}
+	}
+
+	if (pending) emitMessageUpsert(ctx, pending.messages, pending)
+}
+
+/**
+ * Create typed single and batch handlers for the bridge. The bridge only uses
+ * the batch capability when adjacent messages are already queued, while this
+ * layer owns all Baileys-specific translation and EventEmitter aggregation.
+ */
+export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks): WhatsAppEventCallbacks => {
+	const dispatchCtx: DispatchCtx = {
+		ctx,
+		callbacks,
+		historySync: { initialBootstrapComplete: false, recentSyncComplete: false }
+	}
+
+	const onEvent = (event: WhatsAppEvent) => {
+		const canonical = adaptBridgeEvent(event, ctx.logger)
+		if (canonical) dispatchCanonicalEvent(canonical, dispatchCtx)
+	}
+
+	const onEventBatch = (events: readonly WhatsAppEvent[]) => {
+		dispatchCanonicalBatch(ctx, dispatchCtx, events.length, index => adaptBridgeEvent(events[index]!, ctx.logger))
+	}
+
+	const onMessageBatch = (batch: MessageWireBatch) => {
+		if (batch.messageOffsets.length < MESSAGE_WIRE_OFFSET_SENTINEL_COUNT) {
+			ctx.logger.error('message wire batch is missing its leading offset')
+			return
+		}
+		const messageCount = batch.messageOffsets.length - MESSAGE_WIRE_OFFSET_SENTINEL_COUNT
+		if (batch.infos.length !== messageCount) {
+			ctx.logger.error(
+				{ infoCount: batch.infos.length, messageCount },
+				'message wire batch metadata count does not match its payload count'
+			)
+			return
+		}
+
+		let messages: unknown[]
+		try {
+			messages = decodeProtoBatch(MESSAGE_PROTO_TYPE, batch.messageData, batch.messageOffsets)
+		} catch (err) {
+			ctx.logger.error({ err }, 'failed to decode message wire batch')
+			return
+		}
+		dispatchCanonicalBatch(ctx, dispatchCtx, messageCount, index =>
+			adaptBridgeMessageWire(messages[index], batch.infos[index]!, ctx.logger)
+		)
+	}
+
+	const onHistorySyncBatch = (batch: HistorySyncWireBatch) => {
+		const decoded = decodeHistorySyncWireBatch(batch, ctx.logger)
+		onEvent(decoded.event)
+		return decoded.skippedConversations
+	}
+
+	return {
+		onEvent,
+		onEventBatch,
+		onMessageBatch,
+		onHistorySyncBatch,
+		historySyncConversationTypes: CONVERSATION_HISTORY_SYNC_TYPES
+	}
+}
+
+/** Legacy single-event helper retained for direct consumers and tests. */
+export const makeEventHandler = (ctx: SocketContext, callbacks?: EventCallbacks) =>
+	makeEventHandlers(ctx, callbacks).onEvent

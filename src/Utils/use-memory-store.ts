@@ -1,37 +1,60 @@
 import type { AuthenticationState } from '../Types/index.ts'
+import { markNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
 
-const cacheKey = (store: string, key: string) => `${store}\0${key}`
+type StoreBucket = Map<string, Uint8Array>
 
 /**
- * Creates a purely in-memory store for the WASM bridge.
+ * Creates a purely in-memory authentication store.
  *
- * All state lives in a Map and is lost when the process exits.
- * Useful for benchmarks, tests, and ephemeral sessions.
+ * By default, a reusable host Map owns the bytes. `{ native: true }` instead
+ * selects the socket-local in-memory backend already owned by the core, avoiding
+ * host/WASM storage crossings. Native state is intentionally ephemeral and is
+ * not reusable by a later socket instance.
  */
-export function useMemoryStore(): NonNullable<AuthenticationState['store']> {
-	const data = new Map<string, Uint8Array>()
+export function useMemoryStore(options: { native?: boolean } = {}): NonNullable<AuthenticationState['store']> {
+	const stores = new Map<string, StoreBucket>()
 
-	return {
+	const bucketForWrite = (store: string): StoreBucket => {
+		let bucket = stores.get(store)
+		if (!bucket) {
+			bucket = new Map()
+			stores.set(store, bucket)
+		}
+		return bucket
+	}
+
+	const deleteEmptyBucket = (store: string, bucket: StoreBucket): void => {
+		if (bucket.size === 0) stores.delete(store)
+	}
+
+	const memoryStore: NonNullable<AuthenticationState['store']> = {
 		async get(store: string, key: string): Promise<Uint8Array | null> {
-			return data.get(cacheKey(store, key)) ?? null
+			return stores.get(store)?.get(key) ?? null
 		},
 
 		async set(store: string, key: string, value: Uint8Array): Promise<void> {
-			data.set(cacheKey(store, key), value)
+			bucketForWrite(store).set(key, value)
 		},
 
 		async delete(store: string, key: string): Promise<void> {
-			data.delete(cacheKey(store, key))
+			const bucket = stores.get(store)
+			if (!bucket) return
+			bucket.delete(key)
+			deleteEmptyBucket(store, bucket)
 		},
 
 		async setMany(store: string, entries: [key: string, value: Uint8Array][]): Promise<void> {
-			for (const [key, value] of entries) data.set(cacheKey(store, key), value)
+			if (entries.length === 0) return
+			const bucket = bucketForWrite(store)
+			for (const [key, value] of entries) bucket.set(key, value)
 		},
 
 		async getMany(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]> {
+			const bucket = stores.get(store)
+			if (!bucket) return []
 			const out: [string, Uint8Array][] = []
 			for (const key of keys) {
-				const value = data.get(cacheKey(store, key))
+				const value = bucket.get(key)
 				if (value !== undefined) out.push([key, value])
 			}
 
@@ -39,17 +62,17 @@ export function useMemoryStore(): NonNullable<AuthenticationState['store']> {
 		},
 
 		async deleteMany(store: string, keys: string[]): Promise<void> {
-			for (const key of keys) data.delete(cacheKey(store, key))
+			const bucket = stores.get(store)
+			if (!bucket) return
+			for (const key of keys) bucket.delete(key)
+			deleteEmptyBucket(store, bucket)
 		},
 
-		// Enumerate keys in one namespace. The Map is keyed `${store}\0${key}`,
-		// so we filter by that prefix and strip it back to the bare key.
 		async listKeys(store: string, prefix?: string): Promise<string[]> {
-			const namespace = `${store}\0`
+			const bucket = stores.get(store)
+			if (!bucket) return []
 			const out: string[] = []
-			for (const composite of data.keys()) {
-				if (!composite.startsWith(namespace)) continue
-				const key = composite.slice(namespace.length)
+			for (const key of bucket.keys()) {
 				if (prefix && !key.startsWith(prefix)) continue
 				out.push(key)
 			}
@@ -58,25 +81,25 @@ export function useMemoryStore(): NonNullable<AuthenticationState['store']> {
 		},
 
 		async deletePrefix(store: string, prefix: string): Promise<number> {
-			const namespace = `${store}\0${prefix}`
-			// Collect matches first, then delete — avoids mutating the Map mid-iteration.
-			const toDelete: string[] = []
-			for (const composite of data.keys()) {
-				if (composite.startsWith(namespace)) toDelete.push(composite)
+			const bucket = stores.get(store)
+			if (!bucket) return 0
+			let deleted = 0
+			for (const key of bucket.keys()) {
+				if (!key.startsWith(prefix)) continue
+				bucket.delete(key)
+				deleted += 1
 			}
-			for (const composite of toDelete) data.delete(composite)
-
-			return toDelete.length
+			deleteEmptyBucket(store, bucket)
+			return deleted
 		},
 
 		// Declares the optional primitives the bridge may use. An in-memory Map
 		// can do everything; enumeration lets the core drop its meta-indexes.
-		// `writeBack`: this store is ephemeral (lost on process exit), so there
-		// is no durability to lose — let the bridge buffer per-message Signal
-		// state in WASM and cross to this Map only on flush (disconnect). That
-		// keeps the hot path off the JS↔WASM boundary.
-		capabilities: { batch: true, enumerate: true, prefixDelete: true, writeBack: true },
+		capabilities: { batch: true, enumerate: true, prefixDelete: true },
 
 		async flush() {}
 	}
+
+	if (options.native) markNativeMemoryStore(memoryStore)
+	return memoryStore
 }

@@ -6,6 +6,7 @@
     "suspicious": "error"
   },
   "rules": {
+    "no-underscore-dangle": "off",
     "typescript/no-explicit-any": ["error", { "ignoreRestArgs": true }],
     "typescript/no-unused-vars": [
       "error",
@@ -16,6 +17,8 @@
       }
     ],
     "typescript/no-inferrable-types": "warn",
+    "typescript/consistent-type-imports": "error",
+    "unicorn/consistent-function-scoping": "off",
     "import/extensions": ["error", "always", { "ignorePackages": true }]
   },
   "ignorePatterns": [

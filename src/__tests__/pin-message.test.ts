@@ -129,8 +129,10 @@ describe('stripContextInfoForBridge — actual send-path behaviour', () => {
 			messageAddOnDurationInSecs: 999
 		}
 		stripContextInfoForBridge(m)
-		// After strip the JS object has no contextInfo at all → encoder will not emit the field.
-		expect((m as { messageContextInfo?: unknown }).messageContextInfo).toBeUndefined()
+		// The own field is gone, so the encoder will not emit it. A generated
+		// protobuf class still exposes upstream's inherited `null` default.
+		expect(Object.hasOwn(m, 'messageContextInfo')).toBe(false)
+		expect((m as { messageContextInfo?: unknown }).messageContextInfo).toBe(null)
 
 		// Sanity: the rest of the message still encodes/decodes.
 		const decoded = decodeProto(

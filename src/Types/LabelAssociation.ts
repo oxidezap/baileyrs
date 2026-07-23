@@ -1,21 +1,24 @@
+import type { LabelAssociationType as LabelAssociationTypeType } from '../Compatibility/public-api/enum-types.ts'
+
 /** Association type */
-export enum LabelAssociationType {
-	Chat = 'label_jid',
-	Message = 'label_message'
-}
+export const LabelAssociationType = Object.freeze({
+	Chat: 'label_jid',
+	Message: 'label_message'
+} as const) as unknown as typeof LabelAssociationTypeType
+export type LabelAssociationType = LabelAssociationTypeType
 
 export type LabelAssociationTypes = `${LabelAssociationType}`
 
 /** Association for chat */
 export interface ChatLabelAssociation {
-	type: LabelAssociationType.Chat
+	type: typeof LabelAssociationType.Chat
 	chatId: string
 	labelId: string
 }
 
 /** Association for message */
 export interface MessageLabelAssociation {
-	type: LabelAssociationType.Message
+	type: typeof LabelAssociationType.Message
 	chatId: string
 	messageId: string
 	labelId: string

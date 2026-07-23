@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
-import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
-import { adaptBridgeEvent } from '../adapt.ts'
+import type { MessageWireInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
+import { adaptBridgeEvent, adaptBridgeMessageWire } from '../adapt.ts'
 import { expect } from '../../__tests__/expect.ts'
 import {
 	groupAnnouncementWireFixture,
@@ -35,6 +35,30 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			})
 		})
 
+		it('new pairing lifecycle events are acknowledged explicitly', () => {
+			expect(adaptBridgeEvent({ type: 'pairing_code_refresh', data: { force_manual: true } } as never)).toEqual({
+				type: 'noop',
+				bridgeType: 'pairing_code_refresh',
+				detail: 'force_manual'
+			})
+			expect(adaptBridgeEvent({ type: 'pair_passkey_request', data: { request_options_json: '{}' } } as never)).toEqual(
+				{ type: 'noop', bridgeType: 'pair_passkey_request' }
+			)
+			expect(
+				adaptBridgeEvent({
+					type: 'pair_passkey_confirmation',
+					data: { code: 'ABCD-EFGH', skip_handoff_ux: false }
+				} as never)
+			).toEqual({
+				type: 'noop',
+				bridgeType: 'pair_passkey_confirmation',
+				detail: 'confirmation_required'
+			})
+			expect(
+				adaptBridgeEvent({ type: 'pair_passkey_error', data: { error: 'denied', continuation: false } } as never)
+			).toEqual({ type: 'noop', bridgeType: 'pair_passkey_error', detail: 'denied' })
+		})
+
 		it('pair_success normalizes snake_case to camelCase fields', () => {
 			const result = adaptBridgeEvent({
 				type: 'pair_success',
@@ -47,6 +71,21 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 				businessName: 'Acme',
 				platform: 'android'
 			})
+		})
+	})
+
+	describe('dirty state', () => {
+		it('normalizes the typed dirty marker', () => {
+			expect(
+				adaptBridgeEvent({
+					type: 'dirty_state',
+					data: { dirty_type: 'groups', timestamp: 1_725_000_000 }
+				} as never)
+			).toEqual({ type: 'dirtyState', dirtyType: 'groups', timestamp: 1_725_000_000 })
+		})
+
+		it('rejects a dirty marker without a type', () => {
+			expect(adaptBridgeEvent({ type: 'dirty_state', data: { dirty_type: '' } } as never)).toBe(null)
 		})
 	})
 
@@ -217,6 +256,64 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 	})
 
 	describe('messages & receipts', () => {
+		it('maps the compact wire envelope without changing message semantics', () => {
+			const info: MessageWireInfo = {
+				chat: '120@g.us',
+				sender: '5511@s.whatsapp.net',
+				senderAlt: '999@lid',
+				isFromMe: false,
+				isGroup: true,
+				id: 'WIRE1',
+				timestamp: 1_734_000_000,
+				pushName: 'alice',
+				isViewOnce: true,
+				isOffline: true,
+				unavailableRequestId: 'PDO-1',
+				edit: '1'
+			}
+			const result = adaptBridgeMessageWire({ conversation: 'hi' }, info)
+			expect(result).toEqual({
+				type: 'message',
+				chatJid: '120@g.us',
+				senderJid: '5511@s.whatsapp.net',
+				isGroup: true,
+				isFromMe: false,
+				id: 'WIRE1',
+				timestamp: 1_734_000_000,
+				pushName: 'alice',
+				participantAlt: '999@lid',
+				remoteJidAlt: undefined,
+				isViewOnce: true,
+				isOffline: true,
+				unavailableRequestId: 'PDO-1',
+				editAttribute: '1',
+				messageProto: { conversation: 'hi' }
+			})
+		})
+
+		it('maps compact outgoing DM recipient alternates to remoteJidAlt', () => {
+			const result = adaptBridgeMessageWire(
+				{ conversation: 'hi' },
+				{
+					chat: '5511@s.whatsapp.net',
+					sender: '111@lid',
+					recipientAlt: '222@lid',
+					isFromMe: true,
+					isGroup: false,
+					id: 'WIRE2',
+					timestamp: 1_734_000_000,
+					pushName: '',
+					isViewOnce: false,
+					isOffline: false
+				}
+			)
+			expect(result?.senderJid).toBeUndefined()
+			expect(result?.participantAlt).toBeUndefined()
+			expect(result?.remoteJidAlt).toBe('222@lid')
+			expect(result?.isViewOnce).toBeUndefined()
+			expect(result?.isOffline).toBeUndefined()
+		})
+
 		it('coerces ISO MessageInfo.timestamp to unix seconds', () => {
 			const result = adaptBridgeEvent({
 				type: 'message',
@@ -366,6 +463,25 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			expect(result.isGroup).toBe(true)
 			expect(result.timestamp).toBe(Math.floor(Date.parse('2026-04-18T05:00:00Z') / 1000))
 		})
+
+		it('infers a group receipt from its canonical group JID when is_group is stale', () => {
+			const result = adaptBridgeEvent({
+				type: 'receipt',
+				data: {
+					message_ids: ['GROUP-ACK'],
+					timestamp: 1_734_000_000,
+					source: {
+						chat: { user: '120', server: 'g.us' },
+						sender: { user: '5511', server: 's.whatsapp.net' },
+						is_from_me: false,
+						is_group: false
+					}
+				}
+			} as never)
+			if (result?.type !== 'receipt') throw new Error('narrowing')
+			expect(result.isGroup).toBe(true)
+			expect(result.senderJid).toBe('5511@s.whatsapp.net')
+		})
 	})
 
 	describe('chat state', () => {
@@ -492,20 +608,50 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 	})
 
 	describe('calls', () => {
-		it('pre_accept normalizes to camelCase preAccept', () => {
+		it('pre_accept normalizes to the upstream preaccept status', () => {
 			const result = adaptBridgeEvent({
 				type: 'incoming_call',
 				data: {
-					from: { user: '5511', server: 's.whatsapp.net' },
+					from: { user: '5511', server: 's.whatsapp.net', device: 7 },
 					stanza_id: 'STZ',
 					timestamp: 1_734_000_000,
 					offline: false,
-					action: { type: 'pre_accept', call_id: 'CID', call_creator: { user: '5511', server: 's.whatsapp.net' } }
+					action: {
+						type: 'pre_accept',
+						call_id: 'CID',
+						call_creator: { user: '5522', server: 's.whatsapp.net', device: 3 }
+					}
 				}
 			} as never)
 			if (result?.type !== 'incomingCall') throw new Error('narrowing')
-			expect(result.action.type).toBe('preAccept')
+			expect(result.action.type).toBe('preaccept')
 			expect(result.action.callId).toBe('CID')
+			expect(result.from).toBe('5511:7@s.whatsapp.net')
+			expect(result.action.callCreator).toBe('5522:3@s.whatsapp.net')
+		})
+
+		it('preserves transport and relay-latency signaling statuses', () => {
+			for (const [bridgeType, expected] of [
+				['transport', 'transport'],
+				['relay_latency', 'relaylatency']
+			] as const) {
+				const result = adaptBridgeEvent({
+					type: 'incoming_call',
+					data: {
+						from: { user: '5511', server: 's.whatsapp.net' },
+						stanza_id: 'STZ',
+						timestamp: 1_734_000_000,
+						offline: false,
+						action: {
+							type: bridgeType,
+							call_id: 'CID-SIGNAL',
+							call_creator: { user: '5511', server: 's.whatsapp.net' }
+						}
+					}
+				} as never)
+				if (result?.type !== 'incomingCall') throw new Error('narrowing')
+				expect(result.action.type).toBe(expected)
+			}
 		})
 
 		it('offer carries callerPn + isVideo', () => {
@@ -531,9 +677,67 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			expect(result.action.callerPn).toBe('5522@s.whatsapp.net')
 			expect(result.action.isVideo).toBe(true)
 		})
+
+		it('missed_call maps to the Baileys timeout call status', () => {
+			const result = adaptBridgeEvent({
+				type: 'missed_call',
+				data: {
+					from: { user: '5511', server: 's.whatsapp.net' },
+					call_id: 'MISSED-1',
+					timestamp: 1_734_000_000,
+					reason: 'offline'
+				}
+			} as never)
+			if (result?.type !== 'incomingCall') throw new Error('narrowing')
+			expect(result.offline).toBe(true)
+			expect(result.action).toEqual({ type: 'timeout', callId: 'MISSED-1' })
+		})
+
+		it('call_ended_elsewhere maps its terminal outcome', () => {
+			const result = adaptBridgeEvent({
+				type: 'call_ended_elsewhere',
+				data: {
+					from: { user: '5511', server: 's.whatsapp.net' },
+					call_id: 'ELSEWHERE-1',
+					timestamp: 1_734_000_000,
+					outcome: 'accepted'
+				}
+			} as never)
+			if (result?.type !== 'incomingCall') throw new Error('narrowing')
+			expect(result.action).toEqual({ type: 'accept', callId: 'ELSEWHERE-1' })
+		})
 	})
 
 	describe('noop / passthrough', () => {
+		it('offline_sync_completed preserves the drained item count', () => {
+			expect(adaptBridgeEvent({ type: 'offline_sync_completed', data: { count: 17 } } as never)).toEqual({
+				type: 'offlineSyncCompleted',
+				count: 17
+			})
+		})
+
+		it('server_ack preserves the typed fields needed by the internal ACK handler', () => {
+			expect(
+				adaptBridgeEvent({
+					type: 'server_ack',
+					data: {
+						id: 'ACK-1',
+						class: 'message',
+						from: { user: '5511', server: 's.whatsapp.net' },
+						timestamp: 1_734_000_000,
+						error: '479'
+					}
+				} as never)
+			).toEqual({
+				type: 'serverAck',
+				id: 'ACK-1',
+				class: 'message',
+				from: '5511@s.whatsapp.net',
+				timestamp: 1_734_000_000,
+				error: '479'
+			})
+		})
+
 		it('history_sync with empty payload yields an empty historySync canonical', () => {
 			// Bridge change moved this off the noop path. With an empty
 			// proto we still produce a CanonicalHistorySync with empty
@@ -546,6 +750,7 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 				lidPnMappings: [],
 				syncType: undefined,
 				progress: undefined,
+				pastParticipants: undefined,
 				chunkOrder: undefined,
 				peerDataRequestSessionId: undefined,
 				batchIndex: undefined,

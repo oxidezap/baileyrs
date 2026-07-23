@@ -27,6 +27,16 @@ import {
 	fill,
 	makeWrapped
 } from './_legacy-store-fixtures.ts'
+import { LegacySession, SignalKeyLength, TimeValue } from '../../Compatibility/legacy-store/constants.ts'
+
+const legacyChain = (seed: number, chainType: number, counter = TimeValue.UNKNOWN_SECONDS) => ({
+	chainKey: {
+		counter,
+		key: Buffer.alloc(SignalKeyLength.CURVE_PRIVATE, seed).toString('base64')
+	},
+	chainType,
+	messageKeys: {}
+})
 
 describe('wrap-legacy-store: session key-name translation', () => {
 	test('LID → upstream `_1.deviceId`', async () => {
@@ -89,12 +99,12 @@ describe('wrap-legacy-store: session value-byte translation', () => {
 
 	test('upstream JS object → bridge GET produces valid proto with same fields', async () => {
 		const { wrapped, keys } = await makeWrapped()
-		const baseKey = Buffer.alloc(33, 0xa0)
+		const baseKey = Buffer.from(fill(33, 0xa0))
 		const rootKey = Buffer.alloc(32, 0xb0)
-		const remoteIdent = Buffer.alloc(33, 0xc0)
-		const ephPub = Buffer.alloc(33, 0xd0)
+		const remoteIdent = Buffer.from(fill(33, 0xc0))
+		const ephPub = Buffer.from(fill(33, 0xd0))
 		const ephPriv = Buffer.alloc(32, 0xe0)
-		const lastRemoteEph = Buffer.alloc(33, 0xf0)
+		const lastRemoteEph = Buffer.from(fill(33, 0xf0))
 
 		keys.raw['session'] = {
 			[UPSTREAM_SESSION_KEY_LID]: {
@@ -115,7 +125,9 @@ describe('wrap-legacy-store: session value-byte translation', () => {
 							created: Date.now(),
 							remoteIdentityKey: remoteIdent.toString('base64')
 						},
-						_chains: {}
+						_chains: {
+							[ephPub.toString('base64')]: legacyChain(0x44, LegacySession.CHAIN_SENDING)
+						}
 					}
 				},
 				version: 'v1'
@@ -134,9 +146,129 @@ describe('wrap-legacy-store: session value-byte translation', () => {
 		expect(Buffer.from(cs.senderChain!.senderRatchetKeyPrivate!).equals(ephPriv)).toBe(true)
 	})
 
+	// Upstream's own converter applies Math.max(previousCounter, 0), so a
+	// never-used sending chain persists -1; the core owns the floor to 0.
+	test('never-used sending chain (previousCounter=-1) imports as canonical 0', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		const baseKey = Buffer.from(fill(33, 0x61))
+		const ephPub = Buffer.from(fill(33, 0x62))
+
+		keys.raw['session'] = {
+			[UPSTREAM_SESSION_KEY_LID]: {
+				_sessions: {
+					[baseKey.toString('base64')]: {
+						registrationId: 4242,
+						currentRatchet: {
+							ephemeralKeyPair: {
+								pubKey: ephPub.toString('base64'),
+								privKey: Buffer.alloc(32, 0x63).toString('base64')
+							},
+							lastRemoteEphemeralKey: baseKey.toString('base64'),
+							previousCounter: -1,
+							rootKey: Buffer.alloc(32, 0x64).toString('base64')
+						},
+						indexInfo: {
+							baseKey: baseKey.toString('base64'),
+							baseKeyType: LegacySession.BASE_KEY_THEIRS,
+							closed: LegacySession.OPEN,
+							used: TimeValue.UNKNOWN_MILLISECONDS,
+							created: TimeValue.UNKNOWN_MILLISECONDS,
+							remoteIdentityKey: Buffer.from(fill(33, 0x65)).toString('base64')
+						},
+						_chains: {
+							[ephPub.toString('base64')]: legacyChain(0x66, LegacySession.CHAIN_SENDING)
+						}
+					}
+				},
+				version: LegacySession.VERSION
+			}
+		}
+
+		const protoOut = (await wrapped.get('session', BRIDGE_SESSION_KEY_LID)) as Uint8Array
+		const decoded = bridgeProto.RecordStructure.decode(protoOut)
+		expect(decoded.currentSession!.previousCounter).toBe(0)
+	})
+
+	test('previousCounter below -1 fails with the typed core range error', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		const baseKey = Buffer.from(fill(33, 0x71))
+		const ephPub = Buffer.from(fill(33, 0x72))
+
+		keys.raw['session'] = {
+			[UPSTREAM_SESSION_KEY_LID]: {
+				_sessions: {
+					[baseKey.toString('base64')]: {
+						registrationId: 42,
+						currentRatchet: {
+							ephemeralKeyPair: {
+								pubKey: ephPub.toString('base64'),
+								privKey: Buffer.alloc(32, 0x73).toString('base64')
+							},
+							lastRemoteEphemeralKey: baseKey.toString('base64'),
+							previousCounter: -2,
+							rootKey: Buffer.alloc(32, 0x74).toString('base64')
+						},
+						indexInfo: {
+							baseKey: baseKey.toString('base64'),
+							baseKeyType: LegacySession.BASE_KEY_THEIRS,
+							closed: LegacySession.OPEN,
+							used: TimeValue.UNKNOWN_MILLISECONDS,
+							created: TimeValue.UNKNOWN_MILLISECONDS,
+							remoteIdentityKey: Buffer.from(fill(33, 0x75)).toString('base64')
+						},
+						_chains: {
+							[ephPub.toString('base64')]: legacyChain(0x76, LegacySession.CHAIN_SENDING)
+						}
+					}
+				},
+				version: LegacySession.VERSION
+			}
+		}
+
+		await expect(wrapped.get('session', BRIDGE_SESSION_KEY_LID)).rejects.toThrow(/legacy chain counter -2/)
+	})
+
+	test('rejects a legacy session whose current ratchet has no matching sender chain', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		const baseKey = Buffer.from(fill(33, 0x31))
+		const senderRatchet = Buffer.from(fill(33, 0x32))
+		keys.raw['session'] = {
+			[UPSTREAM_SESSION_KEY_LID]: {
+				_sessions: {
+					[baseKey.toString('base64')]: {
+						registrationId: 42,
+						currentRatchet: {
+							ephemeralKeyPair: {
+								pubKey: senderRatchet.toString('base64'),
+								privKey: Buffer.alloc(32, 0x33).toString('base64')
+							},
+							lastRemoteEphemeralKey: Buffer.from(fill(33, 0x34)).toString('base64'),
+							previousCounter: 0,
+							rootKey: Buffer.alloc(32, 0x35).toString('base64')
+						},
+						indexInfo: {
+							baseKey: baseKey.toString('base64'),
+							baseKeyType: LegacySession.BASE_KEY_THEIRS,
+							closed: LegacySession.OPEN,
+							used: TimeValue.UNKNOWN_MILLISECONDS,
+							created: TimeValue.UNKNOWN_MILLISECONDS,
+							remoteIdentityKey: Buffer.from(fill(33, 0x36)).toString('base64')
+						},
+						_chains: {}
+					}
+				},
+				version: LegacySession.VERSION
+			}
+		}
+
+		await expect(wrapped.get('session', BRIDGE_SESSION_KEY_LID)).rejects.toThrow(
+			/legacy session 0 has no sending chain/
+		)
+	})
+
 	test('round-trip: bridge SET → upstream loadSession → still open + same identity', async () => {
 		const { wrapped, keys } = await makeWrapped()
-		const remoteIdentity = Buffer.alloc(33, 0x11)
+		const remoteIdentity = Buffer.from(fill(33, 0x11))
 		await wrapped.set(
 			'session',
 			BRIDGE_SESSION_KEY_PN,
@@ -150,6 +282,16 @@ describe('wrap-legacy-store: session value-byte translation', () => {
 })
 
 describe('wrap-legacy-store: session edge cases', () => {
+	test('accepts the canonical empty private-key sentinel on receiver chains', async () => {
+		const { wrapped, keys } = await makeWrapped()
+
+		await wrapped.set('session', BRIDGE_SESSION_KEY_LID, buildBridgeSessionBytes())
+
+		const stored = keys.raw['session']?.[UPSTREAM_SESSION_KEY_LID]
+		const record = SessionRecord.deserialize(stored)
+		expect(record.haveOpenSession()).toBe(true)
+	})
+
 	test('lastRemoteEphemeralKey does NOT collide with senderRatchetKey when receiverChains empty', async () => {
 		// Regression: the converter previously used senderRatchetKey as a
 		// placeholder, which made upstream's `maybeStepRatchet` close the
@@ -162,6 +304,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 			bridgeProto.RecordStructure.create({
 				currentSession: bridgeProto.SessionStructure.create({
 					sessionVersion: 3,
+					localIdentityPublic: fill(33, 9),
 					rootKey: fill(32, 1),
 					previousCounter: 0,
 					senderChain: {
@@ -189,6 +332,65 @@ describe('wrap-legacy-store: session edge cases', () => {
 		expect(entry.currentRatchet.lastRemoteEphemeralKey).not.toBe(Buffer.from(senderRatchetPub).toString('base64'))
 	})
 
+	test('legacy import preserves receiver-chain chronology instead of sorting ratchet keys', async () => {
+		// Rust libsignal appends receiver chains and evicts from the front.
+		// Choose keys whose lexical order is the inverse of their insertion
+		// order so this catches an accidental canonical sort in the codec.
+		const { wrapped, keys } = await makeWrapped()
+		const curveKey = (value: number): Buffer =>
+			Buffer.concat([
+				Buffer.from([SignalKeyLength.CURVE_PUBLIC_PREFIX]),
+				Buffer.alloc(SignalKeyLength.CURVE_PRIVATE, value)
+			])
+		const senderRatchet = curveKey(0x10)
+		const olderReceiver = curveKey(0x40)
+		const activeReceiver = curveKey(0x20)
+		const olderKey = olderReceiver.toString('base64')
+		const activeKey = activeReceiver.toString('base64')
+		expect(olderKey.localeCompare(activeKey)).toBeGreaterThan(0)
+
+		const baseKey = curveKey(0x50)
+		keys.raw['session'] = {
+			[UPSTREAM_SESSION_KEY_LID]: {
+				_sessions: {
+					[baseKey.toString('base64')]: {
+						registrationId: 42,
+						currentRatchet: {
+							ephemeralKeyPair: {
+								pubKey: senderRatchet.toString('base64'),
+								privKey: Buffer.alloc(SignalKeyLength.CURVE_PRIVATE, 0x60).toString('base64')
+							},
+							lastRemoteEphemeralKey: activeKey,
+							previousCounter: TimeValue.UNKNOWN_SECONDS,
+							rootKey: Buffer.alloc(SignalKeyLength.CURVE_PRIVATE, 0x70).toString('base64')
+						},
+						indexInfo: {
+							baseKey: baseKey.toString('base64'),
+							baseKeyType: LegacySession.BASE_KEY_THEIRS,
+							closed: LegacySession.OPEN,
+							used: TimeValue.UNKNOWN_MILLISECONDS,
+							created: TimeValue.UNKNOWN_MILLISECONDS,
+							remoteIdentityKey: curveKey(0x80).toString('base64')
+						},
+						_chains: {
+							[senderRatchet.toString('base64')]: legacyChain(0x01, LegacySession.CHAIN_SENDING),
+							[olderKey]: legacyChain(0x02, LegacySession.CHAIN_RECEIVING),
+							[activeKey]: legacyChain(0x03, LegacySession.CHAIN_RECEIVING)
+						}
+					}
+				},
+				version: LegacySession.VERSION
+			}
+		}
+
+		const protoOut = (await wrapped.get('session', BRIDGE_SESSION_KEY_LID)) as Uint8Array
+		const decoded = bridgeProto.RecordStructure.decode(protoOut)
+		const receiverOrder = (decoded.currentSession?.receiverChains ?? []).map(receiver =>
+			Buffer.from(receiver.senderRatchetKey ?? []).toString('base64')
+		)
+		expect(receiverOrder).toEqual([olderKey, activeKey])
+	})
+
 	test('baseKeyType: pendingPreKey present → OURS (alice), absent → THEIRS (bob)', async () => {
 		// Regression: previously set OURS whenever aliceBaseKey existed
 		// (always), making upstream `getSession(byBaseKey)` throw.
@@ -197,6 +399,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 			const aliceBaseKey = fill(33, 7)
 			const session = bridgeProto.SessionStructure.create({
 				sessionVersion: 3,
+				localIdentityPublic: fill(33, 9),
 				rootKey: fill(32, 1),
 				previousCounter: 0,
 				senderChain: {
@@ -216,6 +419,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 						],
 				remoteIdentityPublic: fill(33, 8),
 				remoteRegistrationId: 1,
+				localRegistrationId: 2,
 				aliceBaseKey,
 				...(withPendingPreKey ? { pendingPreKey: { preKeyId: 1, signedPreKeyId: 2, baseKey: aliceBaseKey } } : {})
 			})
@@ -241,6 +445,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 		const mkSession = (rootSeed: number, baseKeySeed: number) =>
 			bridgeProto.SessionStructure.create({
 				sessionVersion: 3,
+				localIdentityPublic: fill(33, 9),
 				rootKey: fill(32, rootSeed),
 				previousCounter: 0,
 				senderChain: {
@@ -258,6 +463,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 				],
 				remoteIdentityPublic: fill(33, 8),
 				remoteRegistrationId: 1,
+				localRegistrationId: 2,
 				aliceBaseKey: fill(33, baseKeySeed)
 			})
 
@@ -301,6 +507,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 				bridgeProto.RecordStructure.create({
 					currentSession: bridgeProto.SessionStructure.create({
 						sessionVersion: 3,
+						localIdentityPublic: fill(33, 9),
 						rootKey: fill(32, 1),
 						previousCounter: 0,
 						senderChain: {
@@ -312,6 +519,7 @@ describe('wrap-legacy-store: session edge cases', () => {
 						receiverChains: [],
 						remoteIdentityPublic: fill(33, 8),
 						remoteRegistrationId: 1,
+						localRegistrationId: 2,
 						aliceBaseKey,
 						pendingPreKey: { preKeyId: 314, signedPreKeyId: 271, baseKey: aliceBaseKey }
 					}),
@@ -338,7 +546,8 @@ describe('wrap-legacy-store: session edge cases', () => {
 		// breaking Rust's `find_matching_previous_session_index` lookup on
 		// subsequent PreKeySignal arrivals.
 		const { wrapped, keys } = await makeWrapped()
-		const baseKey = Buffer.alloc(33, 0xa0)
+		const baseKey = Buffer.from(fill(33, 0xa0))
+		const senderRatchet = Buffer.from(fill(33, 0xd0))
 		keys.raw['session'] = {
 			[UPSTREAM_SESSION_KEY_LID]: {
 				_sessions: {
@@ -346,10 +555,10 @@ describe('wrap-legacy-store: session edge cases', () => {
 						registrationId: 4242,
 						currentRatchet: {
 							ephemeralKeyPair: {
-								pubKey: Buffer.alloc(33, 0xd0).toString('base64'),
+								pubKey: senderRatchet.toString('base64'),
 								privKey: Buffer.alloc(32, 0xe0).toString('base64')
 							},
-							lastRemoteEphemeralKey: Buffer.alloc(33, 0xf0).toString('base64'),
+							lastRemoteEphemeralKey: Buffer.from(fill(33, 0xf0)).toString('base64'),
 							previousCounter: 0,
 							rootKey: Buffer.alloc(32, 0xb0).toString('base64')
 						},
@@ -359,9 +568,11 @@ describe('wrap-legacy-store: session edge cases', () => {
 							closed: -1,
 							used: Date.now(),
 							created: Date.now(),
-							remoteIdentityKey: Buffer.alloc(33, 0xc0).toString('base64')
+							remoteIdentityKey: Buffer.from(fill(33, 0xc0)).toString('base64')
 						},
-						_chains: {}
+						_chains: {
+							[senderRatchet.toString('base64')]: legacyChain(0x33, LegacySession.CHAIN_SENDING)
+						}
 					}
 				},
 				version: 'v1'

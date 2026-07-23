@@ -10,7 +10,11 @@ export * from './Socket.ts'
 export * from './Events.ts'
 export * from './Call.ts'
 export * from './Newsletter.ts'
+export * from './Product.ts'
+export * from './Signal.ts'
 
+import { makeNumericEnum } from '../Compatibility/internal/numeric-enum.ts'
+import type { DisconnectReason as DisconnectReasonType } from '../Compatibility/public-api/enum-types.ts'
 import type { AuthenticationState } from './Auth.ts'
 import type { SocketConfig } from './Socket.ts'
 
@@ -25,24 +29,22 @@ export type BrowsersMap = {
 	appropriate(browser: string): [string, string, string]
 }
 
-// `connectionLost` and `timedOut` deliberately share status code 408 — both
-// are surfaced to callers as upstream Baileys does, even though the wire-level
-// distinction collapses to the same HTTP-style code. Keep the values aligned
-// with `@whiskeysockets/baileys`.
-/* eslint-disable typescript-eslint/no-duplicate-enum-values */
-export enum DisconnectReason {
-	connectionClosed = 428,
-	connectionLost = 408,
-	connectionReplaced = 440,
-	timedOut = 408,
-	loggedOut = 401,
-	badSession = 500,
-	restartRequired = 515,
-	multideviceMismatch = 411,
-	forbidden = 403,
-	unavailableService = 503
-}
-/* eslint-enable typescript-eslint/no-duplicate-enum-values */
+// The numeric-enum builder preserves reverse-map behavior, including the
+// shared 408 value where the later `timedOut` member wins.
+const DisconnectReasonValues = {
+	connectionClosed: 428,
+	connectionLost: 408,
+	connectionReplaced: 440,
+	timedOut: 408,
+	loggedOut: 401,
+	badSession: 500,
+	restartRequired: 515,
+	multideviceMismatch: 411,
+	forbidden: 403,
+	unavailableService: 503
+} as const
+export const DisconnectReason = makeNumericEnum(DisconnectReasonValues) as unknown as typeof DisconnectReasonType
+export type DisconnectReason = DisconnectReasonType
 
 export type WAInitResponse = {
 	ref: string
@@ -70,3 +72,5 @@ export type WABusinessProfile = {
 	wid?: string
 	address?: string
 }
+
+export type CurveKeyPair = { private: Uint8Array; public: Uint8Array }

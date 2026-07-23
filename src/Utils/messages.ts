@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
 import type { UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { toBridgeMediaType } from '../Compatibility/media-type.ts'
 import {
 	CALL_AUDIO_PREFIX,
 	CALL_VIDEO_PREFIX,
@@ -17,16 +17,20 @@ import type {
 	MessageContentGenerationOptions,
 	MessageGenerationOptions,
 	MessageGenerationOptionsFromContent,
+	MessageUserReceipt,
 	MessageWithContextInfo,
 	WAMediaUpload,
 	WAMessage,
 	WAMessageContent,
+	WAMessageKey,
 	WATextMessage
 } from '../Types/index.ts'
 import { WAMessageStatus, WAProto } from '../Types/index.ts'
+import { proto } from '../WAProto/runtime.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
 import { Boom } from './boom.ts'
-import { toNumber, unixTimestampSeconds } from './generics.ts'
+import { sha256 } from './crypto.ts'
+import { getKeyAuthor, toNumber, unixTimestampSeconds } from './generics.ts'
 import type { ILogger } from './logger.ts'
 import {
 	generateThumbnail,
@@ -182,13 +186,14 @@ export const prepareWAMessageMedia = async (
 	const buffer = await toBuffer(stream)
 
 	const effectiveMediaType = options.mediaTypeOverride || mediaType
+	const bridgeMediaType = toBridgeMediaType(effectiveMediaType)
 
 	// Run upload + metadata extraction in parallel
 	let uploadResult: UploadMediaResult
 
 	if (options.processMedia) {
 		// User-provided processing pipeline (streaming encrypt, custom thumbnails, etc.)
-		const { upload, metadata } = await options.processMedia(buffer, effectiveMediaType, options.waClient)
+		const { upload, metadata } = await options.processMedia(buffer, bridgeMediaType, options.waClient)
 		uploadResult = upload
 		if (metadata) {
 			if (metadata.jpegThumbnail !== undefined) uploadData.jpegThumbnail = metadata.jpegThumbnail
@@ -208,7 +213,7 @@ export const prepareWAMessageMedia = async (
 	} else {
 		// Default: in-memory encrypt + upload via Rust, built-in metadata extraction
 		const [result] = await Promise.all([
-			options.waClient.uploadMedia(buffer, effectiveMediaType),
+			options.waClient.uploadMedia(buffer, bridgeMediaType),
 			extractBuiltInMetadata(buffer, mediaType, uploadData, options)
 		])
 		uploadResult = result
@@ -618,12 +623,6 @@ export const generateWAMessageFromContent = (
 	message: WAMessageContent,
 	options: MessageGenerationOptionsFromContent
 ) => {
-	// set timestamp to now
-	// if not specified
-	if (!options.timestamp) {
-		options.timestamp = new Date()
-	}
-
 	const innerMessage = normalizeMessageContent(message)!
 	const key = getContentType(innerMessage)! as Exclude<keyof proto.IMessage, 'conversation'>
 	const timestamp = unixTimestampSeconds(options.timestamp)
@@ -698,9 +697,11 @@ export const generateWAMessageFromContent = (
 }
 
 export const generateWAMessage = async (jid: string, content: AnyMessageContent, options: MessageGenerationOptions) => {
-	options.logger = options?.logger?.child({ msgId: options.messageId })
-	;(options as MessageContentGenerationOptions).jid = jid
-	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, options), options)
+	const contentOptions =
+		options.messageId && options.logger
+			? { ...options, logger: options.logger.child({ msgId: options.messageId }) }
+			: options
+	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, contentOptions), options)
 }
 
 /** Get the key to access the true type of content */
@@ -855,7 +856,7 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 			mediaObj.fileSha256,
 			mediaObj.fileEncSha256,
 			toNumber(mediaObj.fileLength ?? 0),
-			mediaType
+			toBridgeMediaType(mediaType)
 		] as const
 
 		if (type === 'buffer') {
@@ -941,6 +942,19 @@ export const downloadContentFromMessage = async (
 
 type Long = { low: number; high: number; unsigned: boolean }
 type VoteAggregation = { name: string; voters: string[] }
+type ResponseAggregation = { response: string; responders: string[] }
+
+/** Infer the originating client family from WhatsApp's message-id format. */
+export const getDevice = (id: string) =>
+	/^3A.{18}$/.test(id)
+		? 'ios'
+		: /^3E.{20}$/.test(id)
+			? 'web'
+			: /^(.{21}|.{32})$/.test(id)
+				? 'android'
+				: /^(3F|.{18}$)/.test(id)
+					? 'desktop'
+					: 'unknown'
 
 /**
  * Aggregate votes from a poll message.
@@ -977,37 +991,106 @@ export function getAggregateVotesInPollMessage(
 		message?.pollCreationMessageV3?.options ||
 		[]
 
-	// Build hash→name lookup: SHA-256(optionName) hex → optionName
-	// Use synchronous hash via crypto.subtle is async, so we pre-build
-	// using the raw bytes from selectedOptions and match by position.
 	const voteHashMap: Record<string, VoteAggregation> = {}
 	for (const opt of opts) {
 		const name = opt.optionName || ''
-		voteHashMap[name] = { name, voters: [] }
+		voteHashMap[sha256(Buffer.from(name)).toString()] = { name, voters: [] }
 	}
 
 	for (const update of pollUpdates || []) {
 		const { vote } = update
 		if (!vote?.selectedOptions?.length) continue
 
-		const voter = update.pollUpdateMessageKey ? getKeyAuthor(update.pollUpdateMessageKey, meId) : 'unknown'
-
 		for (const optionHash of vote.selectedOptions) {
-			const hashHex = Buffer.from(optionHash).toString('hex')
-
-			// Try to find the matching option name
-			if (!voteHashMap[hashHex]) {
-				voteHashMap[hashHex] = { name: hashHex, voters: [] }
-			}
-
-			voteHashMap[hashHex].voters.push(voter)
+			const hash = Buffer.from(optionHash).toString()
+			let aggregate = voteHashMap[hash]
+			if (!aggregate) aggregate = voteHashMap[hash] = { name: 'Unknown', voters: [] }
+			aggregate.voters.push(getKeyAuthor(update.pollUpdateMessageKey, meId))
 		}
 	}
 
 	return Object.values(voteHashMap)
 }
 
-/** Get the author of a message key */
-function getKeyAuthor(key: proto.IMessageKey, meId?: string): string {
-	return (key.fromMe ? meId : key.participant || key.remoteJid) || 'unknown'
+export function getAggregateResponsesInEventMessage(
+	{ eventResponses }: Pick<WAMessage, 'eventResponses'>,
+	meId?: string
+): ResponseAggregation[] {
+	const responseMap: Record<string, ResponseAggregation> = {}
+	for (const response of ['GOING', 'NOT_GOING', 'MAYBE']) {
+		responseMap[response] = { response, responders: [] }
+	}
+	for (const update of eventResponses || []) {
+		// Decrypted event responses carry this convenience field at runtime;
+		// it is intentionally not part of the wire protobuf interface.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const responseType = (update as any).eventResponse || 'UNKNOWN'
+		if (responseType !== 'UNKNOWN' && responseMap[responseType]) {
+			responseMap[responseType].responders.push(getKeyAuthor(update.eventResponseMessageKey, meId))
+		}
+	}
+	return Object.values(responseMap)
+}
+
+/** Group non-self message keys by chat and participant for bulk receipts. */
+export const aggregateMessageKeysNotFromMe = (keys: WAMessageKey[]) => {
+	const keyMap: Record<string, { jid: string; participant: string | undefined; messageIds: string[] }> = {}
+	for (const { remoteJid, id, participant, fromMe } of keys) {
+		if (fromMe) continue
+		const uniqueKey = `${remoteJid}:${participant || ''}`
+		keyMap[uniqueKey] ||= { jid: remoteJid!, participant: participant!, messageIds: [] }
+		keyMap[uniqueKey].messageIds.push(id!)
+	}
+	return Object.values(keyMap)
+}
+
+/** Upsert one receipt into a message's `userReceipt` collection. */
+export const updateMessageWithReceipt = (msg: Pick<WAMessage, 'userReceipt'>, receipt: MessageUserReceipt): void => {
+	msg.userReceipt = msg.userReceipt || []
+	const existing = msg.userReceipt.find(item => item.userJid === receipt.userJid)
+	if (existing) Object.assign(existing, receipt)
+	else msg.userReceipt.push(receipt)
+}
+
+/** Replace the previous reaction from the same author, then append the latest. */
+export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, reaction: proto.IReaction): void => {
+	const author = getKeyAuthor(reaction.key || {})
+	const reactions = (msg.reactions || []).filter(item => getKeyAuthor(item.key || {}) !== author)
+	reaction.text = reaction.text || ''
+	reactions.push(reaction)
+	msg.reactions = reactions
+}
+
+/** Replace the previous poll update from the same author. Empty votes remove it. */
+export const updateMessageWithPollUpdate = (msg: Pick<WAMessage, 'pollUpdates'>, update: proto.IPollUpdate): void => {
+	const author = getKeyAuthor(update.pollUpdateMessageKey)
+	const pollUpdates = (msg.pollUpdates || []).filter(item => getKeyAuthor(item.pollUpdateMessageKey) !== author)
+	if (update.vote?.selectedOptions?.length) pollUpdates.push(update)
+	msg.pollUpdates = pollUpdates
+}
+
+/** Replace the previous event response from the same author. */
+export const updateMessageWithEventResponse = (
+	msg: Pick<WAMessage, 'eventResponses'>,
+	update: proto.IEventResponse
+): void => {
+	const author = getKeyAuthor(update.eventResponseMessageKey)
+	const responses = (msg.eventResponses || []).filter(item => getKeyAuthor(item.eventResponseMessageKey) !== author)
+	responses.push(update)
+	msg.eventResponses = responses
+}
+
+/** Checks whether the message contains one of the upstream media payloads. */
+export const assertMediaContent = (content: proto.IMessage | null | undefined) => {
+	content = extractMessageContent(content)
+	const mediaContent =
+		content?.documentMessage ||
+		content?.imageMessage ||
+		content?.videoMessage ||
+		content?.audioMessage ||
+		content?.stickerMessage
+	if (!mediaContent) {
+		throw new Boom('given message is not a media message', { statusCode: 400, data: content })
+	}
+	return mediaContent
 }

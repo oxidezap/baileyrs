@@ -7,8 +7,3 @@ export type BinaryNode = {
 
 export type BinaryNodeAttributes = BinaryNode['attrs']
 export type BinaryNodeData = BinaryNode['content']
-
-export type JidWithDevice = {
-	user: string
-	device?: number
-}

@@ -58,6 +58,22 @@ export const asJidString = (x: unknown): string | undefined => {
 	return j ? bridgeJidToString(j) : undefined
 }
 
+/** Preserve the addressable-device portion when a JID is used for signaling. */
+export const bridgeJidToAddressString = (j: BridgeJid): string => {
+	if (!j.user) return j.server
+	const rendersAgent =
+		j.server !== 's.whatsapp.net' && j.server !== 'lid' && j.server !== 'hosted' && j.server !== 'hosted.lid'
+	const agent = rendersAgent && Number.isInteger(j.agent) && (j.agent ?? 0) > 0 ? `.${j.agent}` : ''
+	const device = Number.isInteger(j.device) && (j.device ?? 0) > 0 ? `:${j.device}` : ''
+	return `${j.user}${agent}${device}@${j.server}`
+}
+
+/** Validate and stringify a signaling JID without discarding its device. */
+export const asJidAddressString = (x: unknown): string | undefined => {
+	const j = asBridgeJid(x)
+	return j ? bridgeJidToAddressString(j) : undefined
+}
+
 /**
  * Coerce a timestamp value into unix seconds. Accepts both numbers and ISO
  * strings — the bridge serializes `DateTime<Utc>` as ISO unless explicitly

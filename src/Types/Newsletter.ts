@@ -1,31 +1,42 @@
-export enum XWAPaths {
-	xwa2_newsletter_create = 'xwa2_newsletter_create',
-	xwa2_newsletter_subscribers = 'xwa2_newsletter_subscribers',
-	xwa2_newsletter_view = 'xwa2_newsletter_view',
-	xwa2_newsletter_metadata = 'xwa2_newsletter',
-	xwa2_newsletter_admin_count = 'xwa2_newsletter_admin',
-	xwa2_newsletter_mute_v2 = 'xwa2_newsletter_mute_v2',
-	xwa2_newsletter_unmute_v2 = 'xwa2_newsletter_unmute_v2',
-	xwa2_newsletter_follow = 'xwa2_newsletter_follow',
-	xwa2_newsletter_unfollow = 'xwa2_newsletter_unfollow',
-	xwa2_newsletter_change_owner = 'xwa2_newsletter_change_owner',
-	xwa2_newsletter_demote = 'xwa2_newsletter_demote',
-	xwa2_newsletter_delete_v2 = 'xwa2_newsletter_delete_v2'
-}
-export enum QueryIds {
-	CREATE = '8823471724422422',
-	UPDATE_METADATA = '24250201037901610',
-	METADATA = '6563316087068696',
-	SUBSCRIBERS = '9783111038412085',
-	FOLLOW = '7871414976211147',
-	UNFOLLOW = '7238632346214362',
-	MUTE = '29766401636284406',
-	UNMUTE = '9864994326891137',
-	ADMIN_COUNT = '7130823597031706',
-	CHANGE_OWNER = '7341777602580933',
-	DEMOTE = '6551828931592903',
-	DELETE = '30062808666639665'
-}
+import type { QueryIds as QueryIdsType, XWAPaths as XWAPathsType } from '../Compatibility/public-api/enum-types.ts'
+
+export const XWAPaths = Object.freeze({
+	xwa2_newsletter_create: 'xwa2_newsletter_create',
+	xwa2_newsletter_subscribers: 'xwa2_newsletter_subscribers',
+	xwa2_newsletter_view: 'xwa2_newsletter_view',
+	xwa2_newsletter_metadata: 'xwa2_newsletter',
+	xwa2_newsletter_admin_count: 'xwa2_newsletter_admin',
+	xwa2_newsletter_mute_v2: 'xwa2_newsletter_mute_v2',
+	xwa2_newsletter_unmute_v2: 'xwa2_newsletter_unmute_v2',
+	xwa2_newsletter_follow: 'xwa2_newsletter_follow',
+	xwa2_newsletter_unfollow: 'xwa2_newsletter_unfollow',
+	xwa2_newsletter_join_v2: 'xwa2_newsletter_join_v2',
+	xwa2_newsletter_leave_v2: 'xwa2_newsletter_leave_v2',
+	xwa2_newsletter_change_owner: 'xwa2_newsletter_change_owner',
+	xwa2_newsletter_demote: 'xwa2_newsletter_demote',
+	xwa2_newsletter_delete_v2: 'xwa2_newsletter_delete_v2',
+	xwa2_fetch_account_reachout_timelock: 'xwa2_fetch_account_reachout_timelock',
+	xwa2_message_capping_info: 'xwa2_message_capping_info'
+} as const) as unknown as typeof XWAPathsType
+export type XWAPaths = XWAPathsType
+
+export const QueryIds = Object.freeze({
+	CREATE: '8823471724422422',
+	UPDATE_METADATA: '24250201037901610',
+	METADATA: '6563316087068696',
+	SUBSCRIBERS: '9783111038412085',
+	FOLLOW: '24404358912487870',
+	UNFOLLOW: '9767147403369991',
+	MUTE: '29766401636284406',
+	UNMUTE: '9864994326891137',
+	ADMIN_COUNT: '7130823597031706',
+	CHANGE_OWNER: '7341777602580933',
+	DEMOTE: '6551828931592903',
+	DELETE: '30062808666639665',
+	REACHOUT_TIMELOCK: '23983697327930364',
+	MESSAGE_CAPPING_INFO: '24503548349331633'
+} as const) as unknown as typeof QueryIdsType
+export type QueryIds = QueryIdsType
 export type NewsletterUpdate = {
 	name?: string
 	description?: string

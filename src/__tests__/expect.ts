@@ -94,6 +94,15 @@ export function expectStubParticipant(raw: string | null | undefined, expected: 
 	if (expected.phoneNumber !== undefined) {
 		assert.strictEqual(decoded.phoneNumber, expected.phoneNumber, 'stub participant phoneNumber mismatch')
 	}
+	if (expected.lid !== undefined) {
+		assert.strictEqual(decoded.lid, expected.lid, 'stub participant lid mismatch')
+	}
+	if (expected.username !== undefined) {
+		assert.strictEqual(decoded.username, expected.username, 'stub participant username mismatch')
+	}
+	if (expected.admin !== undefined) {
+		assert.strictEqual(decoded.admin, expected.admin, 'stub participant admin mismatch')
+	}
 }
 
 export function expect<T>(actual: T): Expect<T> {
