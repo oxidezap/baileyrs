@@ -53,7 +53,7 @@ That writes the alias to your `package.json`:
 ```jsonc
 {
   "dependencies": {
-    "@whiskeysockets/baileys": "npm:@oxidezap/baileyrs@^0.0.8"
+    "@whiskeysockets/baileys": "npm:@oxidezap/baileyrs@^0.0.27"
   }
 }
 ```
