@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'node:test'
+import { isNativeMemoryStore } from '../../Compatibility/internal/native-memory-store.ts'
 import { useMemoryStore } from '../use-memory-store.ts'
 
 const enc = (s: string) => new TextEncoder().encode(s)
@@ -8,7 +9,16 @@ const dec = (u: Uint8Array | null) => (u ? new TextDecoder().decode(u) : null)
 describe('useMemoryStore — batch + enumeration', () => {
 	it('declares full capabilities', () => {
 		const store = useMemoryStore()
-		assert.deepEqual(store.capabilities, { batch: true, enumerate: true, prefixDelete: true, writeBack: true })
+		assert.deepEqual(store.capabilities, { batch: true, enumerate: true, prefixDelete: true })
+	})
+
+	it('marks native mode without changing the callback shape or default behavior', () => {
+		const hostStore = useMemoryStore()
+		const nativeStore = useMemoryStore({ native: true })
+
+		assert.equal(isNativeMemoryStore(hostStore), false)
+		assert.equal(isNativeMemoryStore(nativeStore), true)
+		assert.deepEqual(Object.keys(nativeStore).toSorted(), Object.keys(hostStore).toSorted())
 	})
 
 	it('setMany writes every entry; get reads them back', async () => {
@@ -53,6 +63,15 @@ describe('useMemoryStore — batch + enumeration', () => {
 		assert.deepEqual((await store.listKeys!('s1')).toSorted(), ['lid:1', 'lid:2', 'pn:9'])
 		assert.deepEqual((await store.listKeys!('s1', 'lid:')).toSorted(), ['lid:1', 'lid:2'])
 		assert.deepEqual(await store.listKeys!('s2'), ['lid:1'])
+	})
+
+	it('keeps namespace and key identity separate even when either contains a NUL', async () => {
+		const store = useMemoryStore()
+		await store.set('a', 'b\0c', enc('first'))
+		await store.set('a\0b', 'c', enc('second'))
+
+		assert.equal(dec(await store.get('a', 'b\0c')), 'first')
+		assert.equal(dec(await store.get('a\0b', 'c')), 'second')
 	})
 
 	it('deleteMany removes the given keys only', async () => {

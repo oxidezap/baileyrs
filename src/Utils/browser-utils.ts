@@ -1,5 +1,6 @@
 import { platform, release } from 'node:os'
 import type { BrowsersMap } from '../Types/index.ts'
+import { proto } from '../WAProto/runtime.ts'
 
 const PLATFORM_MAP = {
 	aix: 'AIX',
@@ -22,4 +23,11 @@ export const Browsers: BrowsersMap = {
 	windows: browser => ['Windows', browser, '10.0.22631'],
 	android: osVersion => [osVersion, 'Android', ''],
 	appropriate: browser => [PLATFORM_MAP[platform()] || 'Ubuntu', browser, release()]
+}
+
+export const getPlatformId = (browser: string): string => {
+	// Generated enum objects support reverse name lookup at runtime.
+	const platformType =
+		proto.DeviceProps.PlatformType[browser.toUpperCase() as keyof typeof proto.DeviceProps.PlatformType]
+	return platformType ? platformType.toString() : '1'
 }

@@ -1,3 +1,4 @@
+import { bridgeBlocklistToBaileys } from '../Compatibility/socket-results.ts'
 import type { SocketContext } from './types.ts'
 
 export const makeBlockingMethods = (ctx: SocketContext) => ({
@@ -5,7 +6,7 @@ export const makeBlockingMethods = (ctx: SocketContext) => ({
 		await (await ctx.getClient()).updateBlockStatus(jid, action)
 	},
 
-	fetchBlocklist: async () => {
-		return await (await ctx.getClient()).fetchBlocklist()
+	fetchBlocklist: async (): Promise<Array<string | undefined>> => {
+		return bridgeBlocklistToBaileys(await (await ctx.getClient()).fetchBlocklist())
 	}
 })

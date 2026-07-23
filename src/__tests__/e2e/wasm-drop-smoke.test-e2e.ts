@@ -104,6 +104,16 @@ function makeFastStore(): JsStoreCallbacks {
 	}
 }
 
+type RuntimeWithGc = typeof globalThis & {
+	gc?: () => void
+}
+
+const runtimeWithGc = globalThis as RuntimeWithGc
+const forceGc = runtimeWithGc.gc
+const FINALIZATION_ROUNDS = 6
+const GC_PASSES_PER_ROUND = 5
+const FINALIZER_DISPATCH_DELAY_MS = 20
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -189,12 +199,9 @@ describe('WasmWhatsAppClient Drop fix — smoke (no mock server needed)', { time
 
 	test(
 		'SMOKE-3: GC-triggered free via FinalizationRegistry',
-		{ skip: !(globalThis as { gc?: () => void }).gc },
+		{ skip: forceGc ? false : 'runtime does not expose an explicit GC hook' },
 		async () => {
-			const gc = (globalThis as { gc: () => void }).gc
-
-			const ROUNDS = 6
-			for (let r = 0; r < ROUNDS; r++) {
+			for (let r = 0; r < FINALIZATION_ROUNDS; r++) {
 				let client: WasmWhatsAppClient | undefined = await createWhatsAppClient(
 					makeStuckTransport(),
 					makeStuckHttp(),
@@ -210,14 +217,14 @@ describe('WasmWhatsAppClient Drop fix — smoke (no mock server needed)', { time
 				// should fire `__wbg_wasmwhatsappclient_free` — production path
 				// when user code loses the sock reference.
 				client = undefined
-				for (let g = 0; g < 5; g++) {
-					gc()
+				for (let g = 0; g < GC_PASSES_PER_ROUND; g++) {
+					forceGc!()
 					await quiesce()
 					// Sleep a hair to give V8 time to dispatch finalizers between
 					// gc() calls. Not strictly event-driven because there's no JS
 					// API to subscribe to "FR callbacks dispatched"; this is the
 					// minimum we can do without a poll loop.
-					await delay(20)
+					await delay(FINALIZER_DISPATCH_DELAY_MS)
 				}
 
 				if (currentCrashes().some(c => isWasmOobCrash(c.err))) {

@@ -8,6 +8,11 @@ interface TransportConfig {
 	options?: RequestInit
 }
 
+const asWebSocketPayload = (data: Uint8Array): Uint8Array<ArrayBuffer> =>
+	data.buffer instanceof ArrayBuffer
+		? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+		: new Uint8Array(data)
+
 export const makeTransport = (config: TransportConfig): JsTransportCallbacks => {
 	const { waWebSocketUrl, logger } = config
 	let ws: WebSocket | undefined
@@ -96,7 +101,16 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 		},
 		send(data: Uint8Array) {
 			if (ws?.readyState === WebSocket.OPEN) {
-				ws.send(data)
+				ws.send(asWebSocketPayload(data))
+			}
+		},
+		// Zero-copy bridge capability for ArrayBuffer-backed views. SharedArrayBuffer
+		// views are copied because the WebSocket BufferSource contract excludes them.
+		// `WebSocket.send()` snapshots/enqueues synchronously; never retain this
+		// WASM-backed view or cross an async boundary with it.
+		sendBorrowed(data: Uint8Array) {
+			if (ws?.readyState === WebSocket.OPEN) {
+				ws.send(asWebSocketPayload(data))
 			}
 		},
 		async disconnect() {

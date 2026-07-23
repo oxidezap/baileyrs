@@ -1,4 +1,6 @@
 import { encodeProto } from 'whatsapp-rust-bridge'
+import { planMessageRelay } from '../Compatibility/message-relay.ts'
+import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
 import type {
 	AnyMessageContent,
 	BaileysEventMap,
@@ -11,7 +13,6 @@ import type {
 } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
-import { unixTimestampSeconds } from '../Utils/generics.ts'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
 import { jidNormalizedUser } from '../WABinary/index.ts'
 import type { SocketContext } from './types.ts'
@@ -47,6 +48,21 @@ export function stripContextInfoForBridge(msg: WAMessageContent): void {
 	}
 }
 
+type NormalizedUserJid = { userId: string; jid: string }
+const normalizedUserJids = new WeakMap<SocketContext, NormalizedUserJid>()
+
+const getNormalizedUserJid = (ctx: SocketContext): string | undefined => {
+	const userId = ctx.getUser()?.id
+	if (!userId) return undefined
+
+	const cached = normalizedUserJids.get(ctx)
+	if (cached?.userId === userId) return cached.jid
+
+	const jid = jidNormalizedUser(userId)
+	normalizedUserJids.set(ctx, { userId, jid })
+	return jid
+}
+
 export const makeMessageMethods = (ctx: SocketContext) => ({
 	sendMessage: async (
 		jid: string,
@@ -54,16 +70,21 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		options?: Omit<MessageGenerationOptions, 'waClient' | 'logger' | 'userJid' | 'mediaInNote'>
 	): Promise<WAMessage> => {
 		const client = await ctx.getClient()
-		const user = ctx.getUser()
-		const userJid = user?.id ? jidNormalizedUser(user.id) : ''
+		const userJid = getNormalizedUserJid(ctx) ?? ''
 
-		const fullMsg = await generateWAMessage(jid, content, {
-			...ctx.fullConfig,
+		// SocketConfig contains transport/auth/cache state that message
+		// generation neither reads nor owns. Copying all of it here retained a
+		// large object graph and repeated dozens of property writes per send.
+		// `options` is the one generation default shared with the socket; every
+		// other generation knob belongs to this call's typed options.
+		const generationOptions: MessageGenerationOptions = {
 			...options,
+			options: options?.options ?? ctx.fullConfig.options,
 			logger: ctx.logger,
 			userJid,
 			waClient: client
-		})
+		}
+		const fullMsg = await generateWAMessage(jid, content, generationOptions)
 
 		const msg = normalizeMessageContent(fullMsg.message)
 		if (!msg) throw new Boom('Failed to generate message content', { statusCode: 400 })
@@ -166,54 +187,65 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 * over the message ID. Use `sendMessage` for the high-level API that handles
 	 * media upload, message generation, link previews, etc.
 	 *
-	 * Returns a {@link WAMessage} envelope (matching upstream Baileys' shape) so
-	 * callers can do `const msg = await relayMessage(...)` and forward `msg.key`
-	 * to subsequent operations. The returned `key.id` is the server-assigned id.
+	 * Returns the message ID used on the wire.
 	 *
 	 * @param jid Recipient JID
 	 * @param message Raw protobuf Message (snake_case keys)
-	 * @param options Relay options (messageId, statusJidList)
+	 * @param options Relay options
 	 */
-	relayMessage: async (
-		jid: string,
-		message: WAProto.IMessage,
-		{ messageId, statusJidList }: MessageRelayOptions = {}
-	): Promise<WAMessage> => {
+	relayMessage: async (jid: string, message: WAProto.IMessage, options: MessageRelayOptions): Promise<string> => {
 		const client = await ctx.getClient()
-		const user = ctx.getUser()
-		const userJid = user?.id ? jidNormalizedUser(user.id) : undefined
+		const plan = planMessageRelay(jid, options, ctx.getUser())
+		ctx.logger.debug(
+			{
+				jid,
+				kind: plan.kind,
+				messageId: plan.messageId,
+				extraNodes: plan.kind === 'retransmission' ? 0 : plan.nodes.length
+			},
+			'relayMessage compatibility plan'
+		)
 
 		stripContextInfoForBridge(message as WAMessageContent)
 
 		const bytes = encodeProto('Message', message)
-		const id =
-			jid === 'status@broadcast' && statusJidList?.length
-				? await client.sendStatusMessageBytes(bytes, statusJidList)
-				: await client.relayMessageBytes(jid, bytes, messageId ?? null)
+		if (plan.kind === 'retransmission') {
+			await client.retransmitMessageBytes(jid, bytes, plan.input)
+			return plan.messageId
+		}
 
-		return {
-			key: {
-				id,
-				remoteJid: jid,
-				fromMe: true,
-				...(userJid ? { participant: userJid } : {})
-			},
-			message,
-			messageTimestamp: unixTimestampSeconds()
-		} as WAMessage
+		if (plan.kind === 'status') {
+			return client.sendStatusMessageBytesWithOptions(
+				bytes,
+				plan.recipients,
+				plan.messageId,
+				plan.nodes,
+				plan.refreshDevices
+			)
+		}
+
+		return client.relayMessageBytesWithOptions(
+			jid,
+			bytes,
+			plan.messageId,
+			plan.nodes,
+			plan.refreshGroupMetadata,
+			plan.refreshDevices
+		)
 	},
 
-	readMessages: async (keys: { remoteJid: string; id: string; participant?: string }[]) => {
-		await (await ctx.getClient()).readMessages(keys)
+	readMessages: async (keys: WAMessageKey[]) => {
+		const receiptKeys = receiptMessageKeys(keys)
+		if (receiptKeys.length) await (await ctx.getClient()).readMessages(receiptKeys)
 	},
 
 	/**
 	 * Send a receipt for messages. The bridge handles most receipt types automatically
 	 * (delivered, sender). Use `readMessages` for the common case of sending read receipts.
 	 *
-	 * Supported types via bridge: 'read', 'read-self'
+	 * Supported types via bridge: 'read', 'read-self', 'played'
 	 * Auto-handled by bridge: 'sender', 'inactive', undefined (delivered)
-	 * Not supported: 'played', 'hist_sync', 'peer_msg' (logged as warning)
+	 * Not supported: 'hist_sync', 'peer_msg' (logged as warning)
 	 */
 	sendReceipt: async (jid: string, participant: string | undefined, messageIds: string[], type: MessageReceiptType) => {
 		if (!messageIds.length) return
@@ -225,9 +257,20 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				...(participant ? { participant } : {})
 			}))
 			await (await ctx.getClient()).readMessages(keys)
+		} else if (type === 'played') {
+			// Voice/video-note played receipts. The bridge (and core) pick the wire
+			// type (`played` vs `played-self` for newsletters) and the `participant`
+			// attr from the chat jid, so we just hand over the keys — same shape as
+			// readMessages.
+			const keys = messageIds.map(id => ({
+				remoteJid: jid,
+				id,
+				...(participant ? { participant } : {})
+			}))
+			await (await ctx.getClient()).markPlayed(keys)
 		} else {
 			// delivered/sender/inactive receipts are sent automatically by the Rust bridge
-			// played/hist_sync/peer_msg require bridge-side support
+			// hist_sync/peer_msg require bridge-side support
 			ctx.logger.debug(
 				{ type, jid, count: messageIds.length },
 				'sendReceipt: type handled automatically by bridge or not yet supported'
@@ -240,13 +283,15 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 */
 	sendReceipts: async (keys: WAMessageKey[], type: MessageReceiptType) => {
 		const client = await ctx.getClient()
+		const receiptKeys = receiptMessageKeys(keys)
 
 		if (type === 'read' || type === 'read-self') {
-			const readKeys = keys
-				.filter(k => !k.fromMe && k.remoteJid && k.id)
-				.map(k => ({ remoteJid: k.remoteJid!, id: k.id!, ...(k.participant ? { participant: k.participant } : {}) }))
-			if (readKeys.length) {
-				await client.readMessages(readKeys)
+			if (receiptKeys.length) {
+				await client.readMessages(receiptKeys)
+			}
+		} else if (type === 'played') {
+			if (receiptKeys.length) {
+				await client.markPlayed(receiptKeys)
 			}
 		} else {
 			ctx.logger.debug(
@@ -262,8 +307,9 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 */
 	requestPlaceholderResend: async (
 		messageKey: WAMessageKey,
-		_msgData?: Partial<WAMessage>
+		msgData?: Partial<WAMessage>
 	): Promise<string | undefined> => {
+		void msgData
 		const message: WAProto.IMessage = {
 			protocolMessage: {
 				peerDataOperationRequestMessage: {

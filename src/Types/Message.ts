@@ -1,25 +1,31 @@
 import type { Readable } from 'stream'
 import type { URL } from 'url'
-import type { UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { MediaType as BridgeMediaType, UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WAMessageAddressingMode as WAMessageAddressingModeType } from '../Compatibility/public-api/enum-types.ts'
+import { proto } from '../WAProto/runtime.ts'
 import type { MediaType } from '../Defaults/index.ts'
+import type { BinaryNode } from './BinaryNode.ts'
 import type { GroupMetadata } from './GroupMetadata.ts'
 import type { CacheStore } from './Socket.ts'
 
 // export the WAMessage Prototypes
 export { proto as WAProto }
-export type WAMessage = proto.IWebMessageInfo & {
+export type WAMessage = Omit<proto.IWebMessageInfo, 'messageStubParameters'> & {
 	key: WAMessageKey
-	messageStubParameters?: string[]
 	category?: string
 	retryCount?: number
+	// Kept deliberately broad by upstream Baileys for legacy stub payloads.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	messageStubParameters?: any
 }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
 export type WAContactsArrayMessage = proto.Message.IContactsArrayMessage
 export type WAMessageKey = proto.IMessageKey & {
 	remoteJidAlt?: string
+	remoteJidUsername?: string
 	participantAlt?: string
+	participantUsername?: string
 	server_id?: string
 	addressingMode?: string
 	isViewOnce?: boolean // TODO: remove out of the message key, place in WebMessageInfo
@@ -35,18 +41,20 @@ export type WAGenericMediaMessage =
 	| proto.Message.IStickerMessage
 export const WAMessageStubType = proto.WebMessageInfo.StubType
 export const WAMessageStatus = proto.WebMessageInfo.Status
-import { Buffer } from 'node:buffer'
+import type { Buffer } from 'node:buffer'
 import type { ILogger } from '../Utils/logger.ts'
 export type WAMediaPayloadURL = { url: URL | string }
 export type WAMediaPayloadStream = { stream: Readable }
 export type WAMediaUpload = Buffer | WAMediaPayloadStream | WAMediaPayloadURL
+export type DownloadableMessage = { mediaKey?: Uint8Array | null; directPath?: string | null; url?: string | null }
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
 
-export enum WAMessageAddressingMode {
-	PN = 'pn',
-	LID = 'lid'
-}
+export const WAMessageAddressingMode = Object.freeze({
+	PN: 'pn',
+	LID: 'lid'
+} as const) as unknown as typeof WAMessageAddressingModeType
+export type WAMessageAddressingMode = WAMessageAddressingModeType
 
 export type MessageWithContextInfo =
 	| 'imageMessage'
@@ -148,6 +156,12 @@ export type EventMessageOptions = {
 	isCancelled?: boolean
 	isScheduleCall?: boolean
 	extraGuestsAllowed?: boolean
+	messageSecret?: Uint8Array<ArrayBufferLike>
+}
+
+export type AlbumMessageOptions = {
+	expectedImageCount?: number
+	expectedVideoCount?: number
 }
 
 type SharePhoneNumber = {
@@ -295,6 +309,11 @@ type MinimalRelayOptions = {
 export type MessageRelayOptions = MinimalRelayOptions & {
 	/** only send to a specific participant; used when a message decryption fails for a single user */
 	participant?: { jid: string; count: number }
+	/** additional attributes to add to the WA binary node */
+	additionalAttributes?: { [_: string]: string }
+	additionalNodes?: BinaryNode[]
+	/** should we use the devices cache, or fetch afresh from the server; default assumed to be "true" */
+	useUserDevicesCache?: boolean
 	/** jid list of participants for status@broadcast */
 	statusJidList?: string[]
 }
@@ -356,7 +375,7 @@ export type MediaGenerationOptions = {
 	 */
 	processMedia?: (
 		media: Buffer,
-		mediaType: MediaType,
+		mediaType: BridgeMediaType,
 		waClient: MediaGenerationOptions['waClient']
 	) => Promise<{
 		upload: UploadMediaResult
@@ -377,6 +396,11 @@ export type MediaGenerationOptions = {
 	 */
 	upload?: (media: Buffer, opts: { mediaType: MediaType }) => Promise<UploadMediaResult>
 }
+
+export type WAMediaUploadFunction = (
+	encFilePath: string,
+	opts: { fileEncSha256B64: string; mediaType: MediaType; timeoutMs?: number }
+) => Promise<{ mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number }>
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
 	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
 	getProfilePicUrl?: (jid: string, type: 'image' | 'preview') => Promise<string | undefined>
@@ -399,5 +423,11 @@ export type WAMessageUpdate = { update: Partial<WAMessage>; key: WAMessageKey }
 export type WAMessageCursor = { before: WAMessageKey | undefined } | { after: WAMessageKey | undefined }
 
 export type MessageUserReceiptUpdate = { key: WAMessageKey; receipt: MessageUserReceipt }
+
+export type MediaDecryptionKeyInfo = {
+	iv: Uint8Array
+	cipherKey: Uint8Array
+	macKey?: Uint8Array
+}
 
 export type MinimalMessage = Pick<WAMessage, 'key' | 'messageTimestamp'>

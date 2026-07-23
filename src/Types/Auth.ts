@@ -1,7 +1,8 @@
-import { Buffer } from 'node:buffer'
+import type { Buffer } from 'node:buffer'
 import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
-import type { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { proto } from '../WAProto/runtime.ts'
 import type { Contact } from './Contact.ts'
+import type { MinimalMessage } from './Message.ts'
 
 export type KeyPair = { public: Uint8Array; private: Uint8Array }
 export type SignedKeyPair = {
@@ -33,6 +34,12 @@ export type LTHashState = {
 	}
 }
 
+export type SignalCreds = {
+	readonly signedIdentityKey: KeyPair
+	readonly signedPreKey: SignedKeyPair
+	readonly registrationId: number
+}
+
 export type AccountSettings = {
 	/** unarchive chats when a new message is received */
 	unarchiveChats: boolean
@@ -48,7 +55,7 @@ export type AccountSettings = {
  * The remaining fields exist for backward compatibility with user code that
  * may reference them.
  */
-export type AuthenticationCreds = {
+export type AuthenticationCreds = SignalCreds & {
 	/** Paired user identity — set on pair_success, cleared on logout. */
 	me?: Contact
 	/** Whether the client has completed pairing. */
@@ -57,25 +64,23 @@ export type AuthenticationCreds = {
 	platform?: string
 
 	// ── Legacy fields (managed by Rust, kept for backward compat) ──────
-	noiseKey?: KeyPair
-	pairingEphemeralKeyPair?: KeyPair
-	signedIdentityKey?: KeyPair
-	signedPreKey?: SignedKeyPair
-	registrationId?: number
-	advSecretKey?: string
-	account?: proto.IAdvSignedDeviceIdentity
+	readonly noiseKey: KeyPair
+	readonly pairingEphemeralKeyPair: KeyPair
+	advSecretKey: string
+	account?: proto.IADVSignedDeviceIdentity
 	signalIdentities?: SignalIdentity[]
 	myAppStateKeyId?: string
-	firstUnuploadedPreKeyId?: number
-	nextPreKeyId?: number
+	firstUnuploadedPreKeyId: number
+	nextPreKeyId: number
 	lastAccountSyncTimestamp?: number
-	processedHistoryMessages?: Array<{ key: { remoteJid?: string; id?: string }; messageTimestamp?: number }>
-	accountSyncCounter?: number
-	accountSettings?: AccountSettings
-	pairingCode?: string
-	lastPropHash?: string
-	routingInfo?: Buffer
-	additionalData?: Record<string, unknown>
+	processedHistoryMessages: MinimalMessage[]
+	accountSyncCounter: number
+	accountSettings: AccountSettings
+	pairingCode: string | undefined
+	lastPropHash: string | undefined
+	routingInfo: Buffer | undefined
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	additionalData?: any
 }
 
 /** @deprecated Signal keys are managed by the Rust bridge. */
@@ -88,7 +93,7 @@ export type SignalDataTypeMap = {
 	'app-state-sync-version': LTHashState
 	'lid-mapping': string
 	'device-list': string[]
-	tctoken: { token: Buffer; timestamp?: string }
+	tctoken: { token: Buffer; timestamp?: string; senderTimestamp?: number }
 	'identity-key': Uint8Array
 }
 
@@ -119,15 +124,15 @@ export type TransactionCapabilityOptions = {
 
 /** @deprecated Signal keys are managed by the Rust bridge. */
 export type SignalAuthState = {
-	creds: AuthenticationCreds
+	creds: SignalCreds
 	keys: SignalKeyStore | SignalKeyStoreWithTransaction
 }
 
 export type AuthenticationState = {
-	/** @deprecated All credentials are managed by the Rust bridge. This field is ignored. */
-	creds?: AuthenticationCreds
-	/** @deprecated Signal keys are managed by the Rust bridge. This field is unused. */
-	keys?: SignalKeyStore
+	/** Compatibility mirror; cryptographic state remains managed by the Rust bridge. */
+	creds: AuthenticationCreds
+	/** Compatibility facade for upstream code that reads or clears Signal keys. */
+	keys: SignalKeyStore
 	/** Bridge storage for persistent WASM state. Auto-created by useMultiFileAuthState. */
 	store?: JsStoreCallbacks & {
 		/** Flush all pending debounced writes to disk. Called automatically on disconnect. */

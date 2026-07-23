@@ -6,7 +6,7 @@ import P from 'pino'
 import {
 	downloadMediaMessage,
 	type DownloadMediaMessageContext,
-	makeWASocket,
+	type makeWASocket,
 	proto,
 	type WAMessage
 } from '../../index.ts'
@@ -24,11 +24,11 @@ const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
 
 function waitForMessage(
 	sock: WASocket,
-	predicate: (msg: proto.IWebMessageInfo) => boolean,
+	predicate: (msg: WAMessage) => boolean,
 	timeoutMs = 15_000
-): Promise<proto.IWebMessageInfo> {
+): Promise<WAMessage> {
 	return new Promise((resolve, reject) => {
-		const listener = (data: { messages: proto.IWebMessageInfo[] }) => {
+		const listener = (data: { messages: WAMessage[] }) => {
 			const msg = data.messages.find(predicate)
 			if (msg) {
 				sock.ev.off('messages.upsert', listener)
@@ -45,8 +45,19 @@ function waitForMessage(
 	})
 }
 
-function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
+function getTextContent(msg: WAMessage): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
+}
+
+/**
+ * LID-addressed DMs match current upstream Baileys: `remoteJid` is the LID
+ * and `remoteJidAlt` is the PN. Older/mock PN-addressed traffic has the same
+ * identities in the opposite slots, so compare the pair rather than assuming
+ * one addressing mode.
+ */
+function expectRemoteIdentity(msg: WAMessage, expectedJid: string): void {
+	const key = msg.key as (proto.IMessageKey & { remoteJidAlt?: string | null }) | null | undefined
+	expect(key?.remoteJid === expectedJid || key?.remoteJidAlt === expectedJid).toBe(true)
 }
 
 function downloadCtx(sock: WASocket): DownloadMediaMessageContext {
@@ -91,7 +102,7 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 		// Receiver side: correct text, not fromMe, remoteJid matches sender
 		expect(getTextContent(received)).toBe(text)
 		expect(received.key?.fromMe).toBe(false)
-		expect(received.key?.remoteJid).toBe(alice.jid)
+		expectRemoteIdentity(received, alice.jid)
 
 		// Message ID should match between sender and receiver
 		expect(received.key?.id).toBe(sent!.key.id)
@@ -107,7 +118,7 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 
 		expect(getTextContent(received)).toBe(text)
 		expect(received.key?.fromMe).toBe(false)
-		expect(received.key?.remoteJid).toBe(bob.jid)
+		expectRemoteIdentity(received, bob.jid)
 		expect(received.key?.id).toBe(sent!.key.id)
 	})
 
@@ -410,7 +421,7 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 		// Different message ID (it's a new message, not the same one)
 		expect(forwarded.key!.id).not.toBe(sent!.key.id)
 		// Sender is Alice
-		expect(forwarded.key?.remoteJid).toBe(alice.jid)
+		expectRemoteIdentity(forwarded, alice.jid)
 	})
 
 	// ── Contact card ──
@@ -430,6 +441,6 @@ describe('E2E: Two-user messaging', { timeout: 60_000 }, () => {
 		expect(received.message?.contactMessage?.vcard).toContain('FN:Test Contact')
 		expect(received.message?.contactMessage?.vcard).toContain('+1234567890')
 		expect(received.key?.fromMe).toBe(false)
-		expect(received.key?.remoteJid).toBe(alice.jid)
+		expectRemoteIdentity(received, alice.jid)
 	})
 })

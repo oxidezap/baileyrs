@@ -43,6 +43,16 @@ describe('wrap-legacy-store: setMany / deleteMany batching', () => {
 		expect(keys.raw['bridge-sent-message']?.['chatB:m3']).toBeDefined()
 	})
 
+	test('msg_secret uses the bridge-only raw binary route', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		const value = enc('timestamp-prefix-and-secret')
+
+		await wrapped.setMany!('msg_secret', [['chat:sender:message', value]])
+
+		expect(keys.raw['bridge-msg-secret']?.['chat:sender:message']).toBeDefined()
+		expect(Array.from((await wrapped.get('msg_secret', 'chat:sender:message')) ?? [])).toEqual(Array.from(value))
+	})
+
 	test('deleteMany collapses tombstones into ONE keyStore.set call', async () => {
 		const { wrapped, keys } = await makeWrapped()
 		await wrapped.setMany!('sent_message', [

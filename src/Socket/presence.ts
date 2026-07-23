@@ -5,8 +5,8 @@ export const makePresenceMethods = (ctx: SocketContext) => ({
 		await (await ctx.getClient()).sendPresence(status)
 	},
 
-	presenceSubscribe: async (jid: string) => {
-		await (await ctx.getClient()).presenceSubscribe(jid)
+	presenceSubscribe: async (toJid: string) => {
+		await (await ctx.getClient()).presenceSubscribe(toJid)
 	},
 
 	sendChatState: async (jid: string, state: 'composing' | 'recording' | 'paused') => {

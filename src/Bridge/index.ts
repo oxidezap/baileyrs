@@ -7,7 +7,7 @@
  * three-stage pipeline.
  */
 
-export { adaptBridgeEvent, KNOWN_BRIDGE_EVENT_TYPES } from './adapt.ts'
+export { adaptBridgeEvent, adaptBridgeMessageWire, KNOWN_BRIDGE_EVENT_TYPES } from './adapt.ts'
 export * from './types.ts'
 export {
 	asBool,

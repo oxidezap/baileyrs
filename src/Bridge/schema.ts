@@ -23,24 +23,26 @@
  * everywhere.
  */
 
-import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
+import type { MessageWireInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
 import type { proto } from 'whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
 import { processHistoryMessage } from '../Utils/process-history-message.ts'
+import { isJidGroup } from '../WABinary/jid-utils.ts'
 import type {
 	CanonicalCallAction,
 	CanonicalCallActionType,
 	CanonicalEvent,
 	CanonicalGroupAction,
-	CanonicalGroupParticipant
+	CanonicalGroupParticipant,
+	CanonicalMessage,
+	CanonicalReceipt
 } from './types.ts'
 import {
 	asBoolOr,
+	asJidAddressString,
 	asJidString,
 	asNumber,
 	asString,
-	bridgeJidToString,
-	isBridgeJid,
 	isObject,
 	normalizeDiscriminator,
 	toUnixSeconds
@@ -72,38 +74,31 @@ type AdapterMap = { [K in BridgeEventType]: AdapterFn<K> }
 const extractAction = (data: { action?: unknown }): Record<string, unknown> | undefined =>
 	isObject(data.action) ? data.action : undefined
 
-/**
- * Resolve the `key.participantAlt` / `key.remoteJidAlt` pair from a bridge
- * `MessageSource`. These mirror upstream Baileys' LID↔PN alternate addressing,
- * but the bridge exposes the alternates as `sender_alt` (the message author's
- * other address) and `recipient_alt` (the recipient's other address).
- *
- * Mapping:
- *  - **Group:** the author is the participant, so `participantAlt = sender_alt`.
- *    `remoteJidAlt` is left undefined (the group JID has no alternate).
- *  - **DM:** the chat *is* the other party. For an **incoming** DM the other
- *    party is the author, so its alternate lives in `sender_alt`; for an
- *    **outgoing** (`fromMe`) DM the other party is the recipient, so it lives in
- *    `recipient_alt`. Either way it surfaces as `remoteJidAlt`.
- *
- * This fixes the long-standing gap where DM `remoteJidAlt` was always read from
- * `recipient_alt` — which the core only ever populates for outgoing messages —
- * so incoming DMs (the common case) never got a `remoteJidAlt`.
- */
-const resolveAltAddressing = (
-	src: Record<string, unknown>,
+/** A group JID is authoritative when an older producer leaves `is_group` false. */
+const resolveIsGroup = (wireValue: unknown, chatJid: string): boolean =>
+	asBoolOr(wireValue, false) || isJidGroup(chatJid) === true
+
+const resolveParticipantAlt = (senderAlt: string | undefined, isGroup: boolean): string | undefined =>
+	isGroup ? senderAlt : undefined
+
+const resolveRemoteJidAlt = (
+	senderAlt: string | undefined,
+	recipientAlt: string | undefined,
 	isGroup: boolean,
 	isFromMe: boolean
-): { participantAlt: string | undefined; remoteJidAlt: string | undefined } => {
-	const senderAlt = isBridgeJid(src.sender_alt) ? bridgeJidToString(src.sender_alt) : undefined
-	const recipientAlt = isBridgeJid(src.recipient_alt) ? bridgeJidToString(src.recipient_alt) : undefined
+): string | undefined => (isGroup ? undefined : isFromMe ? recipientAlt : senderAlt)
 
-	if (isGroup) {
-		return { participantAlt: senderAlt, remoteJidAlt: undefined }
+const parseEditAttribute = (value: unknown): CanonicalMessage['editAttribute'] => {
+	switch (value) {
+		case '1':
+		case '2':
+		case '3':
+		case '7':
+		case '8':
+			return value
+		default:
+			return undefined
 	}
-	// DM: the partner's alternate is the author's (sender_alt) for incoming, or
-	// the recipient's (recipient_alt) for outgoing.
-	return { participantAlt: undefined, remoteJidAlt: isFromMe ? recipientAlt : senderAlt }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,6 +125,22 @@ const ADAPTERS = {
 
 	qr: data => (data.code ? { type: 'qr', code: data.code } : null),
 	pairing_code: data => (data.code ? { type: 'qr', code: data.code } : null),
+	pairing_code_refresh: data => ({
+		type: 'noop',
+		bridgeType: 'pairing_code_refresh',
+		detail: data.force_manual ? 'force_manual' : 'automatic'
+	}),
+	pair_passkey_request: () => ({ type: 'noop', bridgeType: 'pair_passkey_request' }),
+	pair_passkey_confirmation: data => ({
+		type: 'noop',
+		bridgeType: 'pair_passkey_confirmation',
+		detail: data.skip_handoff_ux ? 'handoff_verified' : 'confirmation_required'
+	}),
+	pair_passkey_error: data => ({
+		type: 'noop',
+		bridgeType: 'pair_passkey_error',
+		detail: asString(data.error)
+	}),
 
 	pair_success: data => {
 		// `id` and `lid` come typed as `Jid` in the bridge .d.ts, but the
@@ -165,6 +176,22 @@ const ADAPTERS = {
 	// ── Messages ──
 	message: (data, logger) => adaptMessage(data, logger),
 	receipt: (data, logger) => adaptReceipt(data, logger),
+	// Upstream consumes message ACKs internally through
+	// `CB:ack,class:message`: successful ACKs stay off the public event bus,
+	// while NACKs become `messages.update` with status ERROR. Preserve every
+	// typed field here so the dispatcher can reproduce both surfaces.
+	server_ack: data => {
+		const id = asString(data.id)
+		if (!id) return null
+		return {
+			type: 'serverAck',
+			id,
+			class: asString(data.class),
+			from: asJidString(data.from),
+			timestamp: asNumber(data.timestamp),
+			error: asString(data.error)
+		}
+	},
 	undecryptable_message: data => {
 		// Bridge ships `{ info: MessageInfo, is_unavailable, unavailable_type,
 		// decrypt_fail_mode }` — same MessageInfo shape as the regular
@@ -178,9 +205,10 @@ const ADAPTERS = {
 		const chat = src && asJidString(src.chat)
 		const id = asString(info.id)
 		if (!src || !chat || !id) return null
-		const isGroup = asBoolOr(src.is_group, false)
+		const isGroup = resolveIsGroup(src.is_group, chat)
 		const isFromMe = asBoolOr(src.is_from_me, false)
-		const { participantAlt, remoteJidAlt } = resolveAltAddressing(src, isGroup, isFromMe)
+		const senderAlt = asJidString(src.sender_alt)
+		const recipientAlt = asJidString(src.recipient_alt)
 		return {
 			type: 'undecryptableMessage',
 			chatJid: chat,
@@ -190,8 +218,8 @@ const ADAPTERS = {
 			isFromMe,
 			isGroup,
 			pushName: asString(info.push_name),
-			participantAlt,
-			remoteJidAlt,
+			participantAlt: resolveParticipantAlt(senderAlt, isGroup),
+			remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
 			isUnavailable: asBoolOr(data.is_unavailable, false),
 			unavailableType: asString(data.unavailable_type),
 			decryptFailMode: asString(data.decrypt_fail_mode),
@@ -291,9 +319,56 @@ const ADAPTERS = {
 		if (!jid) return null
 		return { type: 'markChatAsReadUpdate', jid, read: asBoolOr(extractAction(data)?.read, true) }
 	},
+	label_edit_update: data => {
+		const labelId = asString(data.label_id)
+		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }
+		const action = extractAction(data)
+		// `predefinedId` is proto `predefined_id` (a number); upstream `Label`
+		// wants it as a string. Dual-read the spelling, then stringify.
+		const predefined = asNumber(action?.predefinedId) ?? asNumber(action?.predefined_id)
+		return {
+			type: 'labelEdit',
+			labelId,
+			name: asString(action?.name) ?? '',
+			color: asNumber(action?.color) ?? 0,
+			deleted: asBoolOr(action?.deleted, false),
+			predefinedId: predefined != null ? String(predefined) : undefined
+		}
+	},
+	label_association_update: data => {
+		const labelId = asString(data.label_id)
+		const chatJid = asJidString(data.chat_jid)
+		if (!labelId || !chatJid) return { type: 'noop', bridgeType: 'label_association_update' }
+		// `action.labeled === true` → label added to the chat, else removed.
+		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
+	},
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
+	missed_call: data => {
+		const from = asJidString(data.from)
+		const callId = asString(data.call_id)
+		if (!from || !callId) return null
+		return {
+			type: 'incomingCall',
+			from,
+			timestamp: toUnixSeconds(data.timestamp),
+			offline: data.reason === 'offline',
+			action: { type: 'timeout', callId }
+		}
+	},
+	call_ended_elsewhere: data => {
+		const from = asJidString(data.from)
+		const callId = asString(data.call_id)
+		if (!from || !callId) return null
+		return {
+			type: 'incomingCall',
+			from,
+			timestamp: toUnixSeconds(data.timestamp),
+			offline: false,
+			action: { type: data.outcome === 'accepted' ? 'accept' : 'reject', callId }
+		}
+	},
 
 	// ── History sync — fully decoded by the bridge, normalized 1:1 with upstream ──
 	history_sync: data => {
@@ -323,8 +398,9 @@ const ADAPTERS = {
 			contacts: processed.contacts,
 			messages: processed.messages,
 			lidPnMappings: processed.lidPnMappings,
-			syncType: metaSyncType ?? processed.syncType,
-			progress: metaProgress ?? processed.progress,
+			syncType: metaSyncType ?? processed.syncType ?? undefined,
+			progress: metaProgress ?? processed.progress ?? undefined,
+			pastParticipants: processed.pastParticipants,
 			chunkOrder: metaChunkOrder,
 			peerDataRequestSessionId,
 			batchIndex,
@@ -334,8 +410,16 @@ const ADAPTERS = {
 
 	// ── Acknowledged but no Baileys equivalent (noop) ──
 	self_push_name_updated: () => ({ type: 'noop', bridgeType: 'self_push_name_updated' }),
-	offline_sync_completed: () => ({ type: 'noop', bridgeType: 'offline_sync_completed' }),
+	offline_sync_completed: data => ({
+		type: 'offlineSyncCompleted',
+		count: asNumber(data.count) ?? 0
+	}),
 	offline_sync_preview: () => ({ type: 'noop', bridgeType: 'offline_sync_preview' }),
+	dirty_state: data => {
+		const dirtyType = asString(data.dirty_type)
+		if (!dirtyType) return null
+		return { type: 'dirtyState', dirtyType, timestamp: asNumber(data.timestamp) }
+	},
 	device_list_update: () => ({ type: 'noop', bridgeType: 'device_list_update' }),
 	identity_change: () => ({ type: 'noop', bridgeType: 'identity_change' }),
 	disappearing_mode_changed: data => {
@@ -398,6 +482,16 @@ const ADAPTERS = {
 		const jid = asJidString(data.jid)
 		return jid ? { type: 'chatDelete', jid } : { type: 'noop', bridgeType: 'delete_chat_update' }
 	},
+	clear_chat_update: data => {
+		// Clear = drop all messages but keep the chat. Maps to upstream
+		// `messages.delete` `{ jid, all: true }` (the chat-clear surface noted in
+		// the messageDelete dispatcher), distinct from chatDelete (whole chat gone).
+		const jid = asJidString(data.jid)
+		return jid ? { type: 'chatClear', jid } : { type: 'noop', bridgeType: 'clear_chat_update' }
+	},
+	// Muting a contact's status (stories) updates. Forwarded for surface completeness,
+	// but noop'd: upstream Baileys has no status-mute event/chatModify to map it onto.
+	user_status_mute_update: () => ({ type: 'noop', bridgeType: 'user_status_mute_update' }),
 	delete_message_for_me_update: data => {
 		const chatJid = asJidString(data.chat_jid)
 		const messageId = asString(data.message_id)
@@ -482,7 +576,56 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 	const info = isObject(data.info) ? data.info : undefined
 	const messageProto = isObject(data.message) ? data.message : undefined
 	if (!info || !messageProto) return null
+	return adaptMessageParts(info, messageProto, logger)
+}
 
+/**
+ * Adapt the protobuf-wire capability without manufacturing a synthetic bridge
+ * event object. Both message transports converge on the same validated mapping
+ * below, so metadata semantics cannot drift between the compatibility and hot
+ * paths.
+ */
+export const adaptBridgeMessageWire = (
+	messageProto: unknown,
+	info: MessageWireInfo,
+	logger?: ILogger
+): CanonicalMessage | null => {
+	if (!isObject(messageProto)) return null
+	const chat = asString(info.chat)
+	const id = asString(info.id)
+	if (!chat || !id) {
+		logger?.debug({ info }, 'message wire adapter: missing chat/id')
+		return null
+	}
+
+	const isGroup = resolveIsGroup(info.isGroup, chat)
+	const isFromMe = asBoolOr(info.isFromMe, false)
+	const senderAlt = asString(info.senderAlt)
+	const recipientAlt = asString(info.recipientAlt)
+	return {
+		type: 'message',
+		chatJid: chat,
+		senderJid: isGroup ? asString(info.sender) : undefined,
+		isGroup,
+		isFromMe,
+		id,
+		timestamp: asNumber(info.timestamp) ?? 0,
+		pushName: asString(info.pushName),
+		participantAlt: resolveParticipantAlt(senderAlt, isGroup),
+		remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
+		isViewOnce: info.isViewOnce === true ? true : undefined,
+		isOffline: info.isOffline === true ? true : undefined,
+		unavailableRequestId: asString(info.unavailableRequestId),
+		editAttribute: parseEditAttribute(info.edit),
+		messageProto: messageProto as never
+	}
+}
+
+const adaptMessageParts = (
+	info: Record<string, unknown>,
+	messageProto: Record<string, unknown>,
+	logger?: ILogger
+): CanonicalMessage | null => {
 	const src = isObject(info.source) ? info.source : undefined
 	const chat = src && asJidString(src.chat)
 	const id = asString(info.id)
@@ -491,24 +634,12 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 		return null
 	}
 
-	const isGroup = asBoolOr(src.is_group, false)
+	const isGroup = resolveIsGroup(src.is_group, chat)
 	const isFromMe = asBoolOr(src.is_from_me, false)
 	const senderRaw = src.sender
 	const senderJid = isGroup ? asJidString(senderRaw) : undefined
-	const { participantAlt, remoteJidAlt } = resolveAltAddressing(src, isGroup, isFromMe)
-
-	// Bridge `EditAttribute` is one of "1"|"2"|"3"|"7"|"8" or "" (none) — narrow
-	// to the literal set so consumers can switch exhaustively without
-	// re-parsing.
-	const editAttributeRaw = asString(info.edit)
-	const editAttribute: '1' | '2' | '3' | '7' | '8' | undefined =
-		editAttributeRaw === '1' ||
-		editAttributeRaw === '2' ||
-		editAttributeRaw === '3' ||
-		editAttributeRaw === '7' ||
-		editAttributeRaw === '8'
-			? editAttributeRaw
-			: undefined
+	const senderAlt = asJidString(src.sender_alt)
+	const recipientAlt = asJidString(src.recipient_alt)
 	return {
 		type: 'message',
 		chatJid: chat,
@@ -518,12 +649,12 @@ const adaptMessage = (data: BridgeData<'message'>, logger?: ILogger): CanonicalE
 		id,
 		timestamp: toUnixSeconds(info.timestamp),
 		pushName: asString(info.push_name),
-		participantAlt,
-		remoteJidAlt,
+		participantAlt: resolveParticipantAlt(senderAlt, isGroup),
+		remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
 		isViewOnce: info.is_view_once === true ? true : undefined,
 		isOffline: asBoolOr(info.is_offline, false) ? true : undefined,
 		unavailableRequestId: asString(info.unavailable_request_id),
-		editAttribute,
+		editAttribute: parseEditAttribute(info.edit),
 		messageProto: messageProto as never
 	}
 }
@@ -538,7 +669,7 @@ const adaptReceipt = (data: BridgeData<'receipt'>, logger?: ILogger): CanonicalE
 		logger?.debug({ data }, 'receipt adapter: missing chat or message_ids')
 		return null
 	}
-	const isGroup = asBoolOr(src.is_group, false)
+	const isGroup = resolveIsGroup(src.is_group, chat)
 	return {
 		type: 'receipt',
 		chatJid: chat,
@@ -577,8 +708,9 @@ const adaptContactUpdate = (data: unknown): CanonicalEvent | null => {
  * Keep both spellings here so a future bridge bump that re-introduces
  * the snake_case wire form keeps working.
  */
-const RECEIPT_TYPE_MAP: Record<string, NonNullable<import('./types.ts').CanonicalReceipt['receiptType']>> = {
+const RECEIPT_TYPE_MAP: Record<string, NonNullable<CanonicalReceipt['receiptType']>> = {
 	Delivered: 'delivered',
+	Sent: 'sent',
 	Sender: 'sender',
 	Retry: 'retry',
 	EncRekeyRetry: 'enc-rekey-retry',
@@ -591,6 +723,7 @@ const RECEIPT_TYPE_MAP: Record<string, NonNullable<import('./types.ts').Canonica
 	HistorySync: 'history-sync',
 	ServerError: 'server-error',
 	delivered: 'delivered',
+	sent: 'sent',
 	sender: 'sender',
 	retry: 'retry',
 	enc_rekey_retry: 'enc-rekey-retry',
@@ -604,7 +737,7 @@ const RECEIPT_TYPE_MAP: Record<string, NonNullable<import('./types.ts').Canonica
 	server_error: 'server-error'
 }
 
-const parseReceiptType = (raw: unknown): import('./types.ts').CanonicalReceipt['receiptType'] => {
+const parseReceiptType = (raw: unknown): CanonicalReceipt['receiptType'] => {
 	const norm = typeof raw === 'string' ? raw : isObject(raw) && typeof raw.type === 'string' ? raw.type : undefined
 	if (norm == null) return undefined
 	return RECEIPT_TYPE_MAP[norm] ?? 'other'
@@ -641,7 +774,11 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 		return null
 	}
 
-	const canonicalAction: CanonicalCallAction = { type: actionType, callId }
+	const canonicalAction: CanonicalCallAction = {
+		type: actionType,
+		callId,
+		callCreator: asJidAddressString(action.call_creator)
+	}
 	// The bridge `CallAction` union narrows variant-specific fields only
 	// on the matching variant. We've already validated `action.type` via
 	// `parseCallActionType`, so a runtime cast through the action's own
@@ -665,7 +802,7 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 
 	return {
 		type: 'incomingCall',
-		from,
+		from: asJidAddressString(data.from) ?? from,
 		timestamp: toUnixSeconds(data.timestamp),
 		offline: asBoolOr(data.offline, false),
 		stanzaId: asString(data.stanza_id),
@@ -683,7 +820,12 @@ const parseCallActionType = (raw: unknown): CanonicalCallActionType | undefined 
 			return 'offer'
 		case 'pre_accept':
 		case 'preaccept':
-			return 'preAccept'
+			return 'preaccept'
+		case 'transport':
+			return 'transport'
+		case 'relay_latency':
+		case 'relaylatency':
+			return 'relaylatency'
 		case 'accept':
 			return 'accept'
 		case 'reject':
@@ -701,7 +843,19 @@ const adaptGroupParticipant = (raw: unknown): CanonicalGroupParticipant | null =
 	if (!isObject(raw)) return null
 	const jid = asJidString(raw.jid)
 	if (!jid) return null
-	return { jid, phoneNumber: asJidString(raw.phone_number) }
+	const rawRole = asString(raw.type)
+	const role = rawRole === 'participant' || rawRole === 'admin' || rawRole === 'superadmin' ? rawRole : undefined
+	const participant: CanonicalGroupParticipant = { jid, phoneNumber: asJidString(raw.phone_number) }
+	const lid = asJidString(raw.lid)
+	const username = asString(raw.username)
+	const displayName = asString(raw.display_name)
+	const joinTime = asNumber(raw.join_time)
+	if (lid) participant.lid = lid
+	if (username) participant.username = username
+	if (displayName) participant.displayName = displayName
+	if (joinTime !== undefined) participant.joinTime = joinTime
+	if (role) participant.role = role
+	return participant
 }
 
 const adaptGroupParticipants = (raw: unknown): CanonicalGroupParticipant[] => {
@@ -785,6 +939,44 @@ const adaptGroupAction = (raw: unknown): CanonicalGroupAction | null => {
 				unlinkType: asString(raw.unlink_type) ?? '',
 				unlinkReason: asString(raw.unlink_reason)
 			}
+		case 'linked_group_promote':
+			return { type: 'linkedGroupPromote', participants: adaptGroupParticipants(raw.participants) }
+		case 'linked_group_demote':
+			return { type: 'linkedGroupDemote', participants: adaptGroupParticipants(raw.participants) }
+		case 'suspended':
+			return { type: 'suspended' }
+		case 'unsuspended':
+			return { type: 'unsuspended' }
+		case 'auto_add_disabled':
+			return { type: 'autoAddDisabled' }
+		case 'is_capi_hosted_group':
+			return { type: 'capiHostedGroup' }
+		case 'group_safety_check':
+			return { type: 'groupSafetyCheck' }
+		case 'limit_sharing_enabled':
+			return { type: 'limitSharingEnabled', trigger: asNumber(raw.trigger) }
+		case 'allow_admin_reports':
+			return { type: 'allowAdminReports' }
+		case 'not_allow_admin_reports':
+			return { type: 'notAllowAdminReports' }
+		case 'reports':
+			return { type: 'reports' }
+		case 'allow_non_admin_sub_group_creation':
+			return { type: 'allowNonAdminSubGroupCreation' }
+		case 'not_allow_non_admin_sub_group_creation':
+			return { type: 'notAllowNonAdminSubGroupCreation' }
+		case 'created_sub_group_suggestion':
+			return { type: 'createdSubGroupSuggestion' }
+		case 'revoked_sub_group_suggestions':
+			return { type: 'revokedSubGroupSuggestions' }
+		case 'change_number':
+			return {
+				type: 'changeNumber',
+				newOwner: asJidString(raw.new_owner),
+				subGroupSuggestions: Array.isArray(raw.sub_group_suggestions)
+					? raw.sub_group_suggestions.map(asJidString).filter((jid): jid is string => jid !== undefined)
+					: []
+			}
 		case 'growth_locked':
 		case 'growthlocked': {
 			const expiration = asNumber(raw.expiration)
@@ -839,8 +1031,12 @@ const adaptGroupUpdate = (data: BridgeData<'group_update'>, logger?: ILogger): C
 	return {
 		type: 'groupUpdate',
 		groupJid,
+		notificationId: asString(data.notification_id),
+		actionIndex: asNumber(data.action_index) ?? 0,
 		author: asJidString(data.participant),
 		authorPn: asJidString(data.participant_pn),
+		authorUsername: asString(data.participant_username),
+		authorCountryCode: asString(data.participant_country_code),
 		timestamp: toUnixSeconds(data.timestamp),
 		isLidAddressingMode: asBoolOr(data.is_lid_addressing_mode, false),
 		action

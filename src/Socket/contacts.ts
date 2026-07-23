@@ -7,24 +7,27 @@ export type OnWhatsAppResult = {
 	/** PN counterpart, present when the server returned a LID as primary JID. */
 	pnJid?: string
 	isBusiness?: boolean
+	/** Verified business name (from usync `<business><verified_name>`), present for verified businesses. */
+	verifiedName?: string
 }
 
 export const makeContactMethods = (ctx: SocketContext) => ({
-	onWhatsApp: async (...jids: string[]): Promise<OnWhatsAppResult[]> => {
+	onWhatsApp: async (...phoneNumber: string[]): Promise<OnWhatsAppResult[] | undefined> => {
 		const client = await ctx.getClient()
 		// Single batched usync — the bridge splits PN/LID inputs internally and
 		// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
-		const results = await client.isOnWhatsApp(jids)
+		const results = await client.isOnWhatsApp(phoneNumber)
 		return results.map(r => {
 			const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
 			if (r.lid) out.lid = r.lid
 			if (r.pnJid) out.pnJid = r.pnJid
+			if (r.verifiedName) out.verifiedName = r.verifiedName
 			return out
 		})
 	},
 
-	profilePictureUrl: async (jid: string, type: 'preview' | 'image' = 'preview') => {
-		const result = await (await ctx.getClient()).profilePictureUrl(jid, type)
+	profilePictureUrl: async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
+		const result = await (await ctx.getClient()).profilePictureUrl(jid, type, timeoutMs)
 		return result?.url
 	},
 

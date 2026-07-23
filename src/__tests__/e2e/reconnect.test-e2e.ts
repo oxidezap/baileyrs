@@ -12,14 +12,14 @@
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
-import { jidNormalizedUser, type proto } from '../../index.ts'
+import { jidNormalizedUser, type WAMessage } from '../../index.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { waitForMessage } from './wait.ts'
 
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
 
-function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
+function getTextContent(msg: WAMessage): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
 }
 
@@ -60,7 +60,7 @@ describe('E2E: Reconnect with persisted auth', { timeout: 90_000 }, () => {
 
 	test('disconnect → re-create with same auth folder preserves alice.user.id', async () => {
 		alice.sock.setAutoReconnect(false)
-		await alice.sock.end()
+		await alice.sock.end(undefined)
 
 		const reborn = await createTestClient({
 			label: 'alice',

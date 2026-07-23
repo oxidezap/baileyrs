@@ -20,14 +20,14 @@
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
-import { type proto, WAMessageStubType } from '../../index.ts'
+import { type WAMessage, WAMessageStubType } from '../../index.ts'
 import { expect, expectStubParticipant } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
 
-function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
+function getTextContent(msg: WAMessage): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
 }
 
@@ -65,18 +65,18 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 		await Promise.all([destroyTestClient(alice), destroyTestClient(bob), destroyTestClient(charlie)])
 	})
 
-	test('Alice creates the group with bob+charlie → all three see the create notification (groups.update + GROUP_CREATE stub)', async () => {
+	test('Alice creates the group with bob+charlie → all three see groups.upsert + GROUP_CREATE stub', async () => {
 		const subject = `Trio ${Date.now()}`
 
 		// Mock-server (and real WhatsApp) fan a single `<notification
 		// type="w:gp2"><create>...` to every member, including the creator.
 		// There is no `<add>` action for a brand-new group — the existing
-		// members got nothing because there were none. So we wait for
-		// `groups.update` (which our `case 'create'` produces, id-only) and
+		// members got nothing because there were none. Upstream resolves the
+		// embedded metadata and emits `groups.upsert` (not `groups.update`), plus
 		// the synthesized `GROUP_CREATE` stub on every client.
-		const aliceGroupsUpdate = waitForEvent(alice.sock, 'groups.update')
-		const bobGroupsUpdate = waitForEvent(bob.sock, 'groups.update')
-		const charlieGroupsUpdate = waitForEvent(charlie.sock, 'groups.update')
+		const aliceGroupsUpsert = waitForEvent(alice.sock, 'groups.upsert')
+		const bobGroupsUpsert = waitForEvent(bob.sock, 'groups.upsert')
+		const charlieGroupsUpsert = waitForEvent(charlie.sock, 'groups.upsert')
 		const aliceStubCreate = waitForMessage(alice.sock, m => m.messageStubType === WAMessageStubType.GROUP_CREATE)
 		const bobStubCreate = waitForMessage(bob.sock, m => m.messageStubType === WAMessageStubType.GROUP_CREATE)
 		const charlieStubCreate = waitForMessage(charlie.sock, m => m.messageStubType === WAMessageStubType.GROUP_CREATE)
@@ -87,15 +87,16 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 		expect(result.subject).toBe(subject)
 		groupJid = result.id
 
-		const [aliceUpdate, bobUpdate, charlieUpdate] = await Promise.all([
-			aliceGroupsUpdate,
-			bobGroupsUpdate,
-			charlieGroupsUpdate
+		const [aliceUpsert, bobUpsert, charlieUpsert] = await Promise.all([
+			aliceGroupsUpsert,
+			bobGroupsUpsert,
+			charlieGroupsUpsert
 		])
-		// Each client gets exactly one groups.update with the new group's id.
-		expect(aliceUpdate[0]?.id).toBe(groupJid)
-		expect(bobUpdate[0]?.id).toBe(groupJid)
-		expect(charlieUpdate[0]?.id).toBe(groupJid)
+		for (const [metadata] of [aliceUpsert, bobUpsert, charlieUpsert]) {
+			expect(metadata?.id).toBe(groupJid)
+			expect(metadata?.subject).toBe(subject)
+			expect(metadata?.participants.length).toBeGreaterThanOrEqual(3)
+		}
 
 		const [aliceStub, bobStub, charlieStub] = await Promise.all([aliceStubCreate, bobStubCreate, charlieStubCreate])
 		// Synthesized stub body — what upstream-Baileys consumers (sung's
@@ -149,7 +150,20 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 		expect(getTextContent(cMsg)).toBe(text)
 	})
 
-	test('Alice promotes bob → all three see promote (event + stub with admin=admin)', async () => {
+	test('Charlie → group → alice+bob both receive the text', async () => {
+		const text = `Reply from charlie ${Date.now()}`
+		const aliceGets = waitForMessage(alice.sock, m => getTextContent(m) === text && !m.key?.fromMe)
+		const bobGets = waitForMessage(bob.sock, m => getTextContent(m) === text && !m.key?.fromMe)
+
+		const sent = await charlie.sock.sendMessage(groupJid, { text })
+		expect(sent!.key.remoteJid).toBe(groupJid)
+
+		const [aMsg, bMsg] = await Promise.all([aliceGets, bobGets])
+		expect(getTextContent(aMsg)).toBe(text)
+		expect(getTextContent(bMsg)).toBe(text)
+	})
+
+	test('Alice promotes bob → notification preserves absent role and metadata confirms admin', async () => {
 		const aliceSeesPromote = waitForEvent(alice.sock, 'group-participants.update', u => u.action === 'promote')
 		const bobSeesPromote = waitForEvent(bob.sock, 'group-participants.update', u => u.action === 'promote')
 		const charlieSeesPromote = waitForEvent(charlie.sock, 'group-participants.update', u => u.action === 'promote')
@@ -162,27 +176,31 @@ describe('E2E: Group lifecycle (create → message → promote → demote → ki
 			m => m.messageStubType === WAMessageStubType.GROUP_PARTICIPANT_PROMOTE
 		)
 
-		// Bridge's `groupParticipantsUpdate` returns `[]` for promote/demote
-		// (the IQ response carries per-participant status, but the core's
-		// `promote_participants` discards it — see whatsapp-rust-bridge
-		// `wasm_client.rs:1066-1082`). Verify the side effect via the
-		// notification fan-out instead of the immediate return value.
+		// Verify the side effect through the notification fan-out and an
+		// authoritative metadata query instead of inferring state from the IQ.
 		await alice.sock.groupParticipantsUpdate(groupJid, [bob.jid], 'promote')
 
 		const [aliceEvt, bobEvt, charlieEvt] = await Promise.all([aliceSeesPromote, bobSeesPromote, charlieSeesPromote])
-		// Domain event carries the new role inferred from the action.
+		// This mock notification deliberately omits `<participant type>`. Upstream
+		// preserves that absence as `admin: null`; the compatibility layer must
+		// not invent `admin` merely from the action name.
 		for (const evt of [aliceEvt, bobEvt, charlieEvt]) {
 			expect(evt.action).toBe('promote')
 			expect(evt.participants.length).toBe(1)
-			expect(evt.participants[0]!.admin).toBe('admin')
+			expect(evt.participants[0]!.admin).toBe(null)
 			// Bob's LID should be the promoted participant.
 			expect(evt.participants[0]!.id).toBe(lidJid(bob))
 		}
 
 		// Stub message — what sung's anti-system handler reads from.
 		const [bobStub, charlieStub] = await Promise.all([bobStubPromote, charlieStubPromote])
-		expectStubParticipant(bobStub.messageStubParameters?.[0], { id: lidJid(bob) })
-		expectStubParticipant(charlieStub.messageStubParameters?.[0], { id: lidJid(bob) })
+		expectStubParticipant(bobStub.messageStubParameters?.[0], { id: lidJid(bob), admin: null })
+		expectStubParticipant(charlieStub.messageStubParameters?.[0], { id: lidJid(bob), admin: null })
+
+		const metadata = await alice.sock.groupMetadata(groupJid)
+		const promoted = metadata.participants.find(participant => participant.id === lidJid(bob))
+		expect(promoted).toBeDefined()
+		expect(promoted?.admin).toBe('admin')
 	})
 
 	test('Bob (now admin) sends to group → alice+charlie receive', async () => {

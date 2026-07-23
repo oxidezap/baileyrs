@@ -1,4 +1,4 @@
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { proto } from '../WAProto/runtime.ts'
 import type { Boom } from '../Utils/boom.ts'
 import type { AuthenticationCreds, LIDMapping } from './Auth.ts'
 import type { WACallEvent } from './Call.ts'
@@ -20,7 +20,7 @@ import type {
 	WAMessageKey,
 	WAMessageUpdate
 } from './Message.ts'
-import type { ConnectionState } from './State.ts'
+import type { ConnectionState, NewChatMessageCapInfo } from './State.ts'
 
 export type BaileysEventMap = {
 	/** connection state has been updated -- WS closed, opened, connecting etc. */
@@ -36,9 +36,16 @@ export type BaileysEventMap = {
 		isLatest?: boolean
 		progress?: number | null
 		syncType?: proto.HistorySync.HistorySyncType | null
+		pastParticipants?: proto.IPastParticipants[] | null
 		/** Multi-chunk ordering — present when sync arrives in chunks. */
 		chunkOrder?: number | null
 		peerDataRequestSessionId?: string | null
+	}
+	/** signals history sync milestones (completion or stall) per sync type */
+	'messaging-history.status': {
+		syncType: proto.HistorySync.HistorySyncType
+		status: 'complete' | 'paused'
+		explicit: boolean
 	}
 	/** upsert chats */
 	'chats.upsert': Chat[]
@@ -55,7 +62,11 @@ export type BaileysEventMap = {
 
 	'messages.delete': { keys: WAMessageKey[] } | { jid: string; all: true }
 	'messages.update': WAMessageUpdate[]
-	'messages.media-update': { key: WAMessageKey; media?: { ciphertext: Uint8Array; iv: Uint8Array }; error?: Boom }[]
+	'messages.media-update': {
+		key: WAMessageKey
+		media?: { ciphertext: Uint8Array; iv: Uint8Array }
+		error?: Boom
+	}[]
 	/**
 	 * add/update the given messages. If they were received while the connection was online,
 	 * the update will have type: "notify"
@@ -83,6 +94,7 @@ export type BaileysEventMap = {
 		author: string
 		/** PN counterpart of `author` when the group is LID-addressed. baileyrs-only extension. */
 		authorPn?: string
+		authorUsername?: string
 		participants: GroupParticipant[]
 		action: ParticipantAction
 	}
@@ -90,6 +102,7 @@ export type BaileysEventMap = {
 		id: string
 		author: string
 		authorPn?: string
+		authorUsername?: string
 		participant: string
 		participantPn?: string
 		action: RequestJoinAction
@@ -120,7 +133,9 @@ export type BaileysEventMap = {
 	}
 	'newsletter.view': { id: string; server_id: string; count: number }
 	'newsletter-participants.update': { id: string; author: string; user: string; new_role: string; action: string }
-	'newsletter-settings.update': { id: string; update: Record<string, unknown> }
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	'newsletter-settings.update': { id: string; update: any }
+	'message-capping.update': NewChatMessageCapInfo
 
 	/** Settings and actions sync events */
 	'chats.lock': { id: string; locked: boolean }
@@ -150,6 +165,8 @@ export type BufferedEventData = {
 		isLatest: boolean
 		progress?: number | null
 		syncType?: proto.HistorySync.HistorySyncType
+		pastParticipants?: proto.IPastParticipants[]
+		chunkOrder?: number | null
 		peerDataRequestSessionId?: string
 	}
 	chatUpserts: { [jid: string]: Chat }
@@ -165,11 +182,11 @@ export type BufferedEventData = {
 	groupUpdates: { [jid: string]: Partial<GroupMetadata> }
 }
 
+export type BaileysEvent = keyof BaileysEventMap
+
 export interface BaileysEventEmitter {
 	on<T extends keyof BaileysEventMap>(event: T, listener: (arg: BaileysEventMap[T]) => void): void
 	off<T extends keyof BaileysEventMap>(event: T, listener: (arg: BaileysEventMap[T]) => void): void
 	removeAllListeners<T extends keyof BaileysEventMap>(event: T): void
 	emit<T extends keyof BaileysEventMap>(event: T, arg: BaileysEventMap[T]): boolean
-	/** Process events in a batched callback. Each event fires individually (no buffering in bridge mode). */
-	process(handler: (events: Partial<BaileysEventMap>) => void | Promise<void>): void
 }

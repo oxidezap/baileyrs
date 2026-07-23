@@ -56,7 +56,11 @@ export async function makeWrapped() {
 
 /** Deterministic byte-pattern generator. Distinct `(n, base)` pairs yield
  *  distinct buffers, so we can pinpoint which field round-tripped wrong. */
-export const fill = (n: number, base: number) => new Uint8Array(n).map((_, i) => (i * base + base) & 0xff)
+export const fill = (n: number, base: number) => {
+	const value = new Uint8Array(n).map((_, index) => (index * base + base) & 0xff)
+	if (n === 33) value[0] = 0x05
+	return value
+}
 
 // ── Common LID/PN sample pairs ──
 export const SAMPLE_GROUP = '120363012345678900@g.us'
@@ -162,6 +166,11 @@ export function buildBridgeSessionBytes(opts: BuildSessionOpts = {}): Uint8Array
 				receiverChains: [
 					{
 						senderRatchetKey: receiverRatchetPub,
+						// The core's canonical persisted representation writes the
+						// receiver-only private-key field as a present, empty byte slice.
+						// Keep that exact wire sentinel in the shared fixture so every
+						// session projection test exercises the real storage shape.
+						senderRatchetKeyPrivate: new Uint8Array(),
 						chainKey: { index: receiverChainIndex, key: receiverChainKey },
 						messageKeys: []
 					}

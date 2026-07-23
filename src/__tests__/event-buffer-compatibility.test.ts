@@ -1,0 +1,128 @@
+import { describe, it } from 'node:test'
+import type { BaileysEventMap } from '../Types/index.ts'
+import { makeEventBuffer } from '../Utils/event-buffer.ts'
+import logger from '../Utils/logger.ts'
+import { expect } from './expect.ts'
+
+describe('event buffer — upstream process() contract', () => {
+	it('observes every event without a hand-maintained allow-list', () => {
+		const ev = makeEventBuffer(logger)
+		const processed: (keyof BaileysEventMap)[] = []
+		ev.process(events => {
+			processed.push(...(Object.keys(events) as (keyof BaileysEventMap)[]))
+		})
+
+		ev.emit('group.join-request', {
+			id: '120@g.us',
+			author: '1@lid',
+			participant: '2@lid',
+			action: 'created',
+			method: 'invite_link'
+		})
+		ev.emit('group.member-tag.update', {
+			groupId: '120@g.us',
+			participant: '2@lid',
+			label: 'mod'
+		})
+
+		expect(processed).toEqual(['group.join-request', 'group.member-tag.update'])
+	})
+
+	it('returns an unsubscribe function and stops delivery after cleanup', () => {
+		const ev = makeEventBuffer(logger)
+		let calls = 0
+		const unsubscribe = ev.process(() => {
+			calls += 1
+		})
+
+		expect(typeof unsubscribe).toBe('function')
+		ev.emit('groups.update', [{ id: '120@g.us' }])
+		unsubscribe()
+		ev.emit('groups.update', [{ id: '120@g.us', subject: 'ignored' }])
+		expect(calls).toBe(1)
+	})
+
+	it('delivers direct listeners before the process map, like upstream', () => {
+		const ev = makeEventBuffer(logger)
+		const order: string[] = []
+		ev.on('groups.update', () => {
+			order.push('direct')
+		})
+		ev.process(() => {
+			order.push('process')
+		})
+		ev.emit('groups.update', [{ id: '120@g.us' }])
+		expect(order).toEqual(['direct', 'process'])
+	})
+
+	it('defers and consolidates bufferable events until flush', () => {
+		const ev = makeEventBuffer(logger)
+		const direct: BaileysEventMap['groups.update'][] = []
+		const processed: Partial<BaileysEventMap>[] = []
+		ev.on('groups.update', update => direct.push(update))
+		ev.process(events => {
+			processed.push(events)
+		})
+
+		ev.buffer()
+		expect(ev.isBuffering()).toBe(true)
+		ev.emit('groups.update', [{ id: '120@g.us', subject: 'A' }])
+		ev.emit('groups.update', [{ id: '120@g.us', restrict: true }])
+		expect(direct).toEqual([])
+		expect(processed).toEqual([])
+
+		expect(ev.flush()).toBe(true)
+		expect(ev.flush()).toBe(false)
+		expect(direct).toEqual([[{ id: '120@g.us', subject: 'A', restrict: true }]])
+		expect(processed).toHaveLength(1)
+		expect(processed[0]?.['groups.update']).toEqual([{ id: '120@g.us', subject: 'A', restrict: true }])
+	})
+
+	it('createBufferedFunction owns the buffer lifecycle and destroy clears listeners', async () => {
+		const ev = makeEventBuffer(logger)
+		let calls = 0
+		ev.on('chats.upsert', () => {
+			calls += 1
+		})
+		const work = ev.createBufferedFunction(async (id: string) => {
+			expect(ev.isBuffering()).toBe(true)
+			ev.emit('chats.upsert', [{ id }])
+			return id
+		})
+
+		expect(await work('5511@s.whatsapp.net')).toBe('5511@s.whatsapp.net')
+		expect(calls).toBe(0)
+		expect(ev.flush()).toBe(true)
+		expect(calls).toBe(1)
+		ev.destroy()
+		expect(ev.isBuffering()).toBe(false)
+		ev.emit('chats.upsert', [{ id: 'ignored@s.whatsapp.net' }])
+		expect(calls).toBe(1)
+	})
+
+	it('merges past-participant history entries without duplicates', () => {
+		const ev = makeEventBuffer(logger)
+		const sets: BaileysEventMap['messaging-history.set'][] = []
+		ev.on('messaging-history.set', data => sets.push(data))
+		ev.buffer()
+		const empty = { chats: [], contacts: [], messages: [] }
+		ev.emit('messaging-history.set', {
+			...empty,
+			pastParticipants: [{ groupJid: '120@g.us', pastParticipants: [{ userJid: '1@lid', leaveTs: 10 }] }]
+		})
+		ev.emit('messaging-history.set', {
+			...empty,
+			pastParticipants: [
+				{
+					groupJid: '120@g.us',
+					pastParticipants: [
+						{ userJid: '1@lid', leaveTs: 10 },
+						{ userJid: '2@lid', leaveTs: 20 }
+					]
+				}
+			]
+		})
+		ev.flush()
+		expect(sets[0]?.pastParticipants?.[0]?.pastParticipants?.map(item => item.userJid)).toEqual(['1@lid', '2@lid'])
+	})
+})

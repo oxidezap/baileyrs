@@ -8,7 +8,7 @@
 import process from 'node:process'
 import { after, before, describe, mock, test } from 'node:test'
 import P from 'pino'
-import { type BinaryNode, Boom, DisconnectReason } from '../../index.ts'
+import { type BinaryNode, type Boom, DisconnectReason, jidNormalizedUser } from '../../index.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient } from './test-client.ts'
 
@@ -72,6 +72,47 @@ describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
 
 	test('ws.isOpen is true when connected', () => {
 		expect((alice.sock.ws as unknown as { isOpen: boolean }).isOpen).toBe(true)
+	})
+
+	test('message ACK reaches CB listeners once with its original wire attributes', async () => {
+		const messageId = `ACKPARITY${Date.now()}`
+		const observed: BinaryNode[] = []
+		let timeout: NodeJS.Timeout | undefined
+		let handler: ((node: BinaryNode) => void) | undefined
+		const received = new Promise<BinaryNode>((resolve, reject) => {
+			timeout = setTimeout(() => reject(new Error(`Timed out waiting for ACK ${messageId}`)), 5_000)
+			handler = node => {
+				if (node.attrs.id !== messageId) return
+				observed.push(node)
+				if (observed.length === 1) resolve(node)
+			}
+			alice.sock.ws.on('CB:ack,class:message', handler)
+		})
+
+		try {
+			const relayedId = await alice.sock.relayMessage(
+				bob.jid,
+				{ conversation: `ack-parity-${Date.now()}` },
+				{ messageId }
+			)
+			expect(relayedId).toBe(messageId)
+
+			const ack = await received
+			// RawNode and ServerAck are dispatched back-to-back for one stanza.
+			// Yield one event-loop turn to expose an accidental duplicate without
+			// introducing a timing-based readiness delay.
+			await new Promise<void>(resolve => setImmediate(resolve))
+
+			expect(observed).toHaveLength(1)
+			expect(ack.tag).toBe('ack')
+			expect(ack.attrs.id).toBe(messageId)
+			expect(ack.attrs.class).toBe('message')
+			expect(ack.attrs.from).toBe(jidNormalizedUser(bob.lid ?? bob.jid))
+			expect(/^\d+$/.test(ack.attrs.t ?? '')).toBe(true)
+		} finally {
+			if (timeout) clearTimeout(timeout)
+			if (handler) alice.sock.ws.off('CB:ack,class:message', handler)
+		}
 	})
 
 	// -- CB: events between users --
@@ -152,12 +193,14 @@ describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
 		expect(addr.length).toBeGreaterThan(0)
 	})
 
-	test('signalRepository.processSenderKeyDistributionMessage is no-op', async () => {
-		await expect(alice.sock.signalRepository.processSenderKeyDistributionMessage()).resolves.toBeUndefined()
+	test('signalRepository.processSenderKeyDistributionMessage validates its payload', async () => {
+		await expect(
+			alice.sock.signalRepository.processSenderKeyDistributionMessage({ item: {}, authorJid: bob.jid })
+		).rejects.toThrow(/Group ID is required/)
 	})
 
-	test('signalRepository.migrateSession returns zeros', async () => {
-		const result = await alice.sock.signalRepository.migrateSession()
+	test('signalRepository.migrateSession preserves empty-input semantics', async () => {
+		const result = await alice.sock.signalRepository.migrateSession('', '')
 		expect(result).toEqual({ migrated: 0, skipped: 0, total: 0 })
 	})
 

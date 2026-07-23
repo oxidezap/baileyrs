@@ -1,4 +1,7 @@
-import { isJidGroup, jidNormalizedUser } from '../WABinary/index.ts'
+import type { WAMediaUpload } from '../Types/index.ts'
+import { Boom } from '../Utils/boom.ts'
+import { generateProfilePicture } from '../Utils/messages-media.ts'
+import { isJidGroup } from '../WABinary/index.ts'
 import type { SocketContext } from './types.ts'
 
 export const makeProfileMethods = (ctx: SocketContext) => {
@@ -28,36 +31,37 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 			return await (await ctx.getClient()).getLid()
 		},
 
-		/**
-		 * Update a profile picture. When `jid` is a group jid the bridge routes
-		 * to the group set-picture IQ (admin only); otherwise the IQ targets
-		 * the logged-in user's own profile (the `jid` argument is informational
-		 * — own-profile updates can't be set on someone else's behalf).
-		 */
-		updateProfilePicture: async (jid: string, imgData: Uint8Array) => {
-			const client = await ctx.getClient()
-			if (isJidGroup(jid)) {
-				return client.setGroupProfilePicture(jid, imgData)
-			}
-
-			const selfJid = ctx.getUser()?.id
-			if (selfJid && jidNormalizedUser(jid) !== jidNormalizedUser(selfJid)) {
-				ctx.logger.warn(
-					{ jid, selfJid },
-					'updateProfilePicture: only own profile or group avatars can be changed; falling back to self'
+		updateProfilePicture: async (
+			jid: string,
+			content: WAMediaUpload,
+			dimensions?: { width: number; height: number }
+		): Promise<void> => {
+			if (!jid) {
+				throw new Boom(
+					'Illegal no-jid profile update. Please specify either your ID or the ID of the chat you wish to update'
 				)
 			}
-
-			return client.updateProfilePicture(imgData)
+			const { img } = await generateProfilePicture(content, dimensions)
+			const client = await ctx.getClient()
+			if (isJidGroup(jid)) {
+				await client.setGroupProfilePicture(jid, img)
+				return
+			}
+			await client.updateProfilePicture(img)
 		},
 
-		removeProfilePicture: async (jid?: string) => {
-			const client = await ctx.getClient()
-			if (jid && isJidGroup(jid)) {
-				return client.removeGroupProfilePicture(jid)
+		removeProfilePicture: async (jid: string): Promise<void> => {
+			if (!jid) {
+				throw new Boom(
+					'Illegal no-jid profile update. Please specify either your ID or the ID of the chat you wish to update'
+				)
 			}
-
-			return client.removeProfilePicture()
+			const client = await ctx.getClient()
+			if (isJidGroup(jid)) {
+				await client.removeGroupProfilePicture(jid)
+				return
+			}
+			await client.removeProfilePicture()
 		},
 
 		updateProfileStatus: async (status: string) => {

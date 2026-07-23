@@ -13,6 +13,7 @@ import { SenderKeyRecord } from 'baileys/lib/Signal/Group/sender-key-record.js'
 import { SenderChainKey } from 'baileys/lib/Signal/Group/sender-chain-key.js'
 import { proto as bridgeProto } from 'whatsapp-rust-bridge/proto-types'
 import { expect } from '../../__tests__/expect.ts'
+import { wrapLegacyStore } from '../wrap-legacy-store.ts'
 import {
 	BRIDGE_SK_KEY_LID,
 	BRIDGE_SK_KEY_PN_DEV,
@@ -103,7 +104,7 @@ describe('wrap-legacy-store: sender_key value-byte translation', () => {
 		const keyId = 99
 		const iteration = 4
 		const chainSeed = Buffer.alloc(32, 0xab)
-		const signPub = Buffer.alloc(33, 0xcd)
+		const signPub = Buffer.from(fill(33, 0xcd))
 		const signPriv = Buffer.alloc(32, 0xef)
 
 		const upstreamBytes = Buffer.from(
@@ -139,7 +140,7 @@ describe('wrap-legacy-store: sender_key value-byte translation', () => {
 	})
 
 	test('iteration bump survives bridge SET → upstream advance → bridge GET', async () => {
-		const { wrapped, keys } = await makeWrapped()
+		const { wrapped, keys, creds } = await makeWrapped()
 		await wrapped.set('sender_key', BRIDGE_SK_KEY_LID, buildBridgeSenderKeyBytes({ keyId: 5, iteration: 1 }))
 
 		const onDisk = keys.raw['sender-key']?.[UPSTREAM_SK_KEY_LID] as Buffer
@@ -155,7 +156,11 @@ describe('wrap-legacy-store: sender_key value-byte translation', () => {
 		})
 		keys.raw['sender-key']![UPSTREAM_SK_KEY_LID] = Buffer.from(newJson, 'utf-8')
 
-		const bytesOut = (await wrapped.get('sender_key', BRIDGE_SK_KEY_LID)) as Uint8Array
+		// Ownership moved to upstream for the mutation above. A bridge taking
+		// ownership again creates a fresh adapter (and therefore a fresh exact-
+		// bytes cache) over the same durable state.
+		const rewrapped = await wrapLegacyStore({ creds, keys } as never, async () => {})
+		const bytesOut = (await rewrapped.get('sender_key', BRIDGE_SK_KEY_LID)) as Uint8Array
 		const decoded = bridgeProto.SenderKeyRecordStructure.decode(bytesOut)
 		expect(decoded.senderKeyStates![0]!.senderChainKey?.iteration).toBe(6)
 	})

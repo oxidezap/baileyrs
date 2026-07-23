@@ -17,13 +17,15 @@
  *      format is JSON the JS side can read directly. baileyrs auto-wraps
  *      the resulting `{creds, keys}` via `wrapLegacyStore`.
  *
- *   2. **1:1 phase** — Alice ↔ Bob exchange messages. Establishes pairwise
- *      Signal sessions on disk (PreKey signal → ratchet step on both sides).
- *
- *   3. **Group phase** — Alice creates a group with Bob + Charlie. All three
+ *   2. **Group phase** — Alice creates a group with Bob + Charlie. All three
  *      send into it. This populates **sender keys** on every member: each
  *      one stores its OWN sending sender key + RECEIVING sender keys for
  *      the two peers.
+ *
+ *   3. **1:1 phase** — Alice ↔ Bob exchange messages. Establishes pairwise
+ *      Signal sessions on disk (PreKey signal → ratchet step on both sides).
+ *      Group and pairwise bootstrap are intentionally independent here: this
+ *      suite tests persisted byte-format handoff, not mock-server routing.
  *
  *   4. **Swap** — Disconnect Bob and reconstruct him with **upstream
  *      baileys** pointing at the same auth folder. Re-connect against the
@@ -48,12 +50,12 @@
 
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import * as upstreamBaileys from 'baileys'
 import P from 'pino'
-import { Boom, DisconnectReason, jidNormalizedUser, makeWASocket, type proto } from '../../index.ts'
+import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket } from '../../index.ts'
 import { expect } from '../expect.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
@@ -84,9 +86,9 @@ interface UpstreamClient {
 
 type AnyClient = BridgeClient | UpstreamClient
 
-/** Mock-server JIDs include a device suffix `phone:N@s.whatsapp.net`; strip it. */
+/** Normalize mock JIDs to their device/agent-free `user@server` identity. */
 function plainPnJid(jid: string): string {
-	return jid.replace(/:\d+@/, '@')
+	return jidNormalizedUser(jid)
 }
 
 /**
@@ -99,30 +101,43 @@ function lidJid(client: AnyClient): string {
 	return plainPnJid(client.lid)
 }
 
-/** Drill into messages.upsert (upstream-baileys flavour) for the swapped
- * client. The upstream `WAMessage` type comes from a different proto build,
- * so we widen to `proto.IWebMessageInfo` (the bridge's flavour) at the
- * predicate boundary — both shapes have the fields the test predicates read. */
+/**
+ * Small structural contract shared by both public WAMessage types. Keeping
+ * the handoff assertions on fields they actually consume avoids coupling the
+ * test to either library's generated protobuf implementation.
+ */
+interface DeliveryMessage {
+	key?: {
+		id?: string | null
+		remoteJid?: string | null
+		remoteJidAlt?: string | null
+		participant?: string | null
+		fromMe?: boolean | null
+	} | null
+	message?: {
+		conversation?: string | null
+		extendedTextMessage?: { text?: string | null } | null
+	} | null
+}
+
+/** Drill into messages.upsert (upstream-baileys flavour) for the swapped client. */
 function waitForUpstreamMessage(
 	sock: UpstreamSocket,
-	predicate: (msg: proto.IWebMessageInfo) => boolean,
+	predicate: (msg: DeliveryMessage) => boolean,
 	timeoutMs = 15_000
-): Promise<proto.IWebMessageInfo> {
+): Promise<DeliveryMessage> {
 	return new Promise((resolve, reject) => {
-		const listener = (data: { messages: proto.IWebMessageInfo[] }) => {
+		const listener = (data: upstreamBaileys.BaileysEventMap['messages.upsert']) => {
 			const msg = data.messages.find(predicate)
 			if (!msg) return
-			// @ts-expect-error -- listener type mismatch (WAMessage vs proto.IWebMessageInfo); same wire shape
 			sock.ev.off('messages.upsert', listener)
 			clearTimeout(tid)
 			resolve(msg)
 		}
 		const tid = setTimeout(() => {
-			// @ts-expect-error -- same nominal mismatch as above
 			sock.ev.off('messages.upsert', listener)
 			reject(new Error('Timed out waiting for upstream messages.upsert match'))
 		}, timeoutMs)
-		// @ts-expect-error -- listener type mismatch (WAMessage vs proto.IWebMessageInfo); same wire shape
 		sock.ev.on('messages.upsert', listener)
 	})
 }
@@ -142,6 +157,10 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 		// exist in both.
 		// @ts-expect-error -- nominal mismatch between two forked WAProto builds
 		auth: state,
+		// A unique initial push name follows whatsapp-rust's E2E isolation
+		// discipline and gives Barback a deterministic, protocol-valid first
+		// companion slot instead of deriving one from random Noise key bytes.
+		pushName: basename(folder),
 		waWebSocketUrl: socketUrl,
 		logger: logger.child({ user: label, impl: 'bridge' })
 	})
@@ -218,7 +237,7 @@ async function destroyClient(client: AnyClient, removeFolder: boolean) {
 	try {
 		if (client.kind === 'bridge') {
 			client.sock.setAutoReconnect(false)
-			await client.sock.end()
+			await client.sock.end(undefined)
 		} else {
 			// Upstream's `end()` is void and its background workers
 			// (`commitWithRetry`) keep firing after teardown. Wait for the
@@ -253,14 +272,12 @@ async function destroyClient(client: AnyClient, removeFolder: boolean) {
 	}
 }
 
-function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
+function getTextContent(msg: DeliveryMessage): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
 }
 
-/** Strip the device suffix (`:DEVICE@`) so we compare LID/PN identities by
- * `user@server` only. Bridge keeps the device, upstream drops it — same
- * identity, different surface representation. */
-const stripDeviceSuffix = (jid: string | undefined) => jid?.replace(/:\d+@/, '@')
+/** Normalize device (`:N`) and agent/domain (`_N`) surface suffixes. */
+const stripDeviceSuffix = (jid: string | undefined) => (jid ? jidNormalizedUser(jid) : undefined)
 
 /**
  * Read every `session-*.json` in `authFolder`, parse, and return a map
@@ -337,10 +354,10 @@ async function assertDelivery(opts: {
 	sender: AnyClient
 	to: string
 	text: string
-	recvWaiter: (predicate: (m: proto.IWebMessageInfo) => boolean) => Promise<proto.IWebMessageInfo>
+	recvWaiter: (predicate: (m: DeliveryMessage) => boolean) => Promise<DeliveryMessage>
 	expectedRemoteJid: string
 	expectedParticipant?: string
-}): Promise<proto.IWebMessageInfo> {
+}): Promise<DeliveryMessage> {
 	const { sender, to, text, recvWaiter, expectedRemoteJid, expectedParticipant } = opts
 
 	const recvPromise = recvWaiter(m => getTextContent(m) === text && !m.key?.fromMe)
@@ -365,7 +382,11 @@ async function assertDelivery(opts: {
 
 	// Routing — for 1:1 the recipient sees the sender's JID; for groups the
 	// recipient sees the group JID.
-	expect(received.key?.remoteJid).toBe(expectedRemoteJid)
+	// Current LID-addressed DMs place the LID in `remoteJid` and the PN in
+	// `remoteJidAlt`, matching upstream Baileys. Accept either addressing mode
+	// while still requiring the expected peer identity to be present.
+	const key = received.key
+	expect(key?.remoteJid === expectedRemoteJid || key?.remoteJidAlt === expectedRemoteJid).toBe(true)
 
 	if (expectedParticipant !== undefined) {
 		// In a group the recipient also sees `participant` set to the
@@ -402,51 +423,30 @@ describe(
 			await Promise.all([destroyClient(alice, true), destroyClient(bob, true), destroyClient(charlie, true)])
 		})
 
-		// ── Pre-swap: 1:1 ────────────────────────────────────────────────────────
-
-		test('Phase 1 — pre-swap 1:1: alice ↔ bob exchange establishes pairwise Signal sessions on disk', async () => {
-			// Forward (alice → bob) — first send forces the PreKey signal handshake.
-			await assertDelivery({
-				sender: alice,
-				to: bob.jid,
-				text: `phase1-a2b-${Date.now()}`,
-				recvWaiter: pred => waitForMessage((bob as BridgeClient).sock, pred),
-				expectedRemoteJid: alice.jid
-			})
-
-			// Reverse (bob → alice) — completes the handshake and advances both
-			// ratchet states so the next disk write contains real chain keys.
-			await assertDelivery({
-				sender: bob,
-				to: alice.jid,
-				text: `phase1-b2a-${Date.now()}`,
-				recvWaiter: pred => waitForMessage(alice.sock, pred),
-				expectedRemoteJid: bob.jid
-			})
-		})
-
 		// ── Pre-swap: Group (sender keys) ────────────────────────────────────────
 
-		test('Phase 2 — pre-swap group setup: alice creates group with bob+charlie', async () => {
+		test('Phase 1 — pre-swap group setup: alice creates group with bob+charlie', async () => {
 			// Register waiters BEFORE groupCreate — the mock fans the create
 			// notification immediately on accept, racing any post-await wiring.
 			const subject = `Handoff trio ${Date.now()}`
-			const aliceUpdate = waitForEvent(alice.sock, 'groups.update')
-			const bobUpdate = waitForEvent((bob as BridgeClient).sock, 'groups.update')
-			const charlieUpdate = waitForEvent(charlie.sock, 'groups.update')
+			const aliceUpsert = waitForEvent(alice.sock, 'groups.upsert')
+			const bobUpsert = waitForEvent((bob as BridgeClient).sock, 'groups.upsert')
+			const charlieUpsert = waitForEvent(charlie.sock, 'groups.upsert')
 
 			const result = await alice.sock.groupCreate(subject, [bob.jid, charlie.jid])
 			expect(result).toBeDefined()
 			expect(result.id.endsWith('@g.us')).toBe(true)
 			groupJid = result.id
 
-			const [a, b, c] = await Promise.all([aliceUpdate, bobUpdate, charlieUpdate])
-			expect(a[0]?.id).toBe(groupJid)
-			expect(b[0]?.id).toBe(groupJid)
-			expect(c[0]?.id).toBe(groupJid)
+			const [a, b, c] = await Promise.all([aliceUpsert, bobUpsert, charlieUpsert])
+			for (const [metadata] of [a, b, c]) {
+				expect(metadata?.id).toBe(groupJid)
+				expect(metadata?.subject).toBe(subject)
+				expect(metadata?.participants.length).toBeGreaterThanOrEqual(3)
+			}
 		})
 
-		test('Phase 3 — pre-swap group: every member sends → other two receive (populates 3 sender keys per client)', async () => {
+		test('Phase 2 — pre-swap group: every member sends → other two receive (populates 3 sender keys per client)', async () => {
 			// alice → group: populates bob's + charlie's "alice receive" sender key
 			const t1 = `phase3-a-${Date.now()}`
 			const bobGetsT1 = waitForMessage((bob as BridgeClient).sock, m => getTextContent(m) === t1 && !m.key?.fromMe)
@@ -490,8 +490,8 @@ describe(
 			expect(bobMsg3.key?.participant).toBe(lidJid(charlie))
 		})
 
-		test('Phase 4 — second alice → group send: cached sender key path (no SKDM resend) — bridge-only baseline', async () => {
-			// Why this exists: in Phase 6 we'll do the same thing again, but with
+		test('Phase 3 — second alice → group send: cached sender key path (no SKDM resend) — bridge-only baseline', async () => {
+			// Why this exists: in Phase 9 we'll do the same thing again, but with
 			// bob on upstream. If THAT phase fails while THIS one succeeds, we
 			// know the regression is specifically in the cross-impl read of
 			// sender-key bytes — not in the cached-send codepath itself.
@@ -502,6 +502,29 @@ describe(
 				recvWaiter: pred => waitForMessage((bob as BridgeClient).sock, pred),
 				expectedRemoteJid: groupJid,
 				expectedParticipant: lidJid(alice)
+			})
+		})
+
+		// ── Pre-swap: 1:1 ────────────────────────────────────────────────────────
+
+		test('Phase 4 — pre-swap 1:1: alice ↔ bob exchange establishes pairwise Signal sessions on disk', async () => {
+			// Forward (alice → bob) — first send forces the PreKey signal handshake.
+			await assertDelivery({
+				sender: alice,
+				to: bob.jid,
+				text: `phase4-a2b-${Date.now()}`,
+				recvWaiter: pred => waitForMessage((bob as BridgeClient).sock, pred),
+				expectedRemoteJid: alice.jid
+			})
+
+			// Reverse (bob → alice) — completes the handshake and advances both
+			// ratchet states so the next disk write contains real chain keys.
+			await assertDelivery({
+				sender: bob,
+				to: alice.jid,
+				text: `phase4-b2a-${Date.now()}`,
+				recvWaiter: pred => waitForMessage(alice.sock, pred),
+				expectedRemoteJid: bob.jid
 			})
 		})
 
@@ -745,6 +768,45 @@ describe(
 			const [bobM2, charlieM2] = await Promise.all([bobGetsT2, charlieGetsT2])
 			expect(getTextContent(bobM2)).toBe(t2)
 			expect(getTextContent(charlieM2)).toBe(t2)
+		})
+
+		test('Phase 13 — upstream raw message ACK baseline preserves the original node once', async () => {
+			const upstream = (bob as UpstreamClient).sock
+			const messageId = `UPSTREAM-ACK-${Date.now()}`
+			const observed: upstreamBaileys.BinaryNode[] = []
+			let timeout: NodeJS.Timeout | undefined
+			let handler: ((node: upstreamBaileys.BinaryNode) => void) | undefined
+
+			const ackPromise = new Promise<upstreamBaileys.BinaryNode>((resolve, reject) => {
+				timeout = setTimeout(() => reject(new Error(`Timed out waiting for upstream ACK ${messageId}`)), 5_000)
+				handler = node => {
+					if (node.attrs.id !== messageId) return
+					observed.push(node)
+					if (observed.length === 1) resolve(node)
+				}
+				upstream.ws.on('CB:ack,class:message', handler)
+			})
+			try {
+				const relayedId = await upstream.relayMessage(
+					alice.jid,
+					{ conversation: `upstream-ack-baseline-${Date.now()}` },
+					{ messageId }
+				)
+				expect(relayedId).toBe(messageId)
+
+				const ack = await ackPromise
+				await new Promise<void>(resolve => setImmediate(resolve))
+
+				expect(observed).toHaveLength(1)
+				expect(ack.tag).toBe('ack')
+				expect(ack.attrs.id).toBe(messageId)
+				expect(ack.attrs.class).toBe('message')
+				expect(ack.attrs.from).toBe(jidNormalizedUser(alice.jid))
+				expect(/^\d+$/.test(ack.attrs.t ?? '')).toBe(true)
+			} finally {
+				if (timeout) clearTimeout(timeout)
+				if (handler) upstream.ws.off('CB:ack,class:message', handler)
+			}
 		})
 	}
 )

@@ -13,11 +13,12 @@
 
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import process from 'node:process'
 import P from 'pino'
-import { Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
+import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
+import { waitForEvent } from './wait.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
 
@@ -45,9 +46,9 @@ export interface TestClient {
 	label: string
 }
 
-/** Pair a fresh bridge client and wait until `connection.update` resolves
- * `connection === 'open'`. Auto-attaches the QR autoresponder so the
- * mock-server's scan-driven pairing flow can complete. */
+/** Pair a fresh bridge client and wait for both `connection === 'open'` and
+ * `receivedPendingNotifications === true`. Auto-attaches the QR autoresponder
+ * so the mock-server's scan-driven pairing flow can complete. */
 export async function createTestClient(opts: CreateTestClientOptions): Promise<TestClient> {
 	const folderPrefix = opts.folderPrefix ?? 'baileys-e2e'
 	const folder = opts.authFolder ?? mkdtempSync(join(tmpdir(), `${folderPrefix}-${opts.label}-`))
@@ -58,13 +59,20 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 
 	const sock = makeWASocket({
 		auth: state,
+		pushName: basename(folder),
 		waWebSocketUrl: url,
 		logger: defaultLogger.child({ user: opts.label })
 	})
 
 	attachQrAutoresponder(sock, url)
+	const startupSync = waitForEvent(
+		sock,
+		'connection.update',
+		update => update.receivedPendingNotifications === true,
+		timeoutMs
+	)
 
-	const jid = await new Promise<string>((resolve, reject) => {
+	const connected = new Promise<string>((resolve, reject) => {
 		const tid = setTimeout(() => reject(new Error(`${opts.label}: connect timeout`)), timeoutMs)
 		sock.ev.on('connection.update', update => {
 			if (update.connection === 'open') {
@@ -79,6 +87,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 			}
 		})
 	})
+	const [jid] = await Promise.all([connected, startupSync])
 
 	return { sock, jid, lid: sock.user?.lid, authFolder: folder, label: opts.label }
 }
@@ -88,7 +97,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 export async function destroyTestClient(client: { sock: WASocket; authFolder: string }): Promise<void> {
 	try {
 		client.sock.setAutoReconnect(false)
-		await client.sock.end()
+		await client.sock.end(undefined)
 	} catch {
 		/* ignore */
 	}

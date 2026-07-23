@@ -1,165 +1,179 @@
-import type { GroupMetadataResult } from 'whatsapp-rust-bridge'
-import type { GroupMetadata } from '../Types/index.ts'
+import {
+	bridgeInviteLinkToCode,
+	bridgeMembershipRequestsToBaileys,
+	bridgeMembershipRequestUpdatesToBaileys,
+	bridgeParticipantChangesToBaileys
+} from '../Compatibility/socket-results.ts'
+import { emitMessageUpsert } from '../Compatibility/message-upsert.ts'
+import { WAMessageStubType, type GroupMetadata, type ParticipantAction, type WAMessageKey } from '../Types/index.ts'
+import { generateMessageIDV2, unixTimestampSeconds } from '../Utils/generics.ts'
+import { proto } from '../WAProto/runtime.ts'
+import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import type { SocketContext } from './types.ts'
 
-/**
- * Verbs accepted by upstream Baileys' single-arg `groupSettingUpdate(jid, verb)`:
- * `'announcement' | 'not_announcement' | 'locked' | 'unlocked'`. Native
- * settings (`'announce' | 'membership_approval'`) flow through the
- * two-arg form with an explicit boolean value.
- */
-type GroupSettingArg = 'announce' | 'membership_approval' | 'locked' | 'unlocked' | 'announcement' | 'not_announcement'
-type GroupSettingResolved = { setting: 'locked' | 'announce' | 'membership_approval'; value: boolean }
-const GROUP_SETTING_ALIASES: Partial<Record<GroupSettingArg, GroupSettingResolved>> = {
+type GroupSetting = 'announcement' | 'not_announcement' | 'locked' | 'unlocked'
+
+const GROUP_SETTING_ALIASES: Record<GroupSetting, { setting: 'locked' | 'announce'; value: boolean }> = {
 	announcement: { setting: 'announce', value: true },
 	not_announcement: { setting: 'announce', value: false },
 	locked: { setting: 'locked', value: true },
 	unlocked: { setting: 'locked', value: false }
 }
 
-/** Convert bridge GroupMetadataResult to Baileys GroupMetadata */
-function bridgeGroupToMetadata(g: GroupMetadataResult): GroupMetadata {
+const inviteExpirationNumber = (value: number | { toNumber(): number } | null | undefined): number =>
+	typeof value === 'number' ? value : (value?.toNumber() ?? 0)
+
+export const makeGroupMethods = (ctx: SocketContext) => {
+	const groupMetadata = async (jid: string): Promise<GroupMetadata> => {
+		const metadata = await (await ctx.getClient()).getGroupMetadata(jid)
+		return bridgeGroupMetadataToBaileys(metadata)
+	}
+
+	const groupSettingUpdate = async (jid: string, setting: GroupSetting): Promise<void> => {
+		const mapped = GROUP_SETTING_ALIASES[setting]
+		await (await ctx.getClient()).groupSettingUpdate(jid, mapped.setting, mapped.value)
+	}
+
+	const groupAcceptInviteV4 = ctx.ev.createBufferedFunction(
+		async (
+			key: string | WAMessageKey,
+			inviteMessage: proto.Message.IGroupInviteMessage
+			// oxlint-disable-next-line typescript/no-explicit-any -- the established public contract returns Promise<any>.
+		): Promise<any> => {
+			const messageKey = typeof key === 'string' ? { remoteJid: key } : key
+			if (!inviteMessage.groupJid || !inviteMessage.inviteCode || !messageKey.remoteJid) {
+				throw new TypeError('groupAcceptInviteV4 requires groupJid, inviteCode and inviter JID')
+			}
+
+			const joinedJid = await (
+				await ctx.getClient()
+			).groupAcceptInviteV4(
+				inviteMessage.groupJid,
+				inviteMessage.inviteCode,
+				inviteExpirationNumber(inviteMessage.inviteExpiration),
+				messageKey.remoteJid
+			)
+
+			if (messageKey.id) {
+				const expiredInvite = proto.Message.GroupInviteMessage.fromObject(inviteMessage)
+				expiredInvite.inviteExpiration = 0
+				expiredInvite.inviteCode = ''
+				ctx.ev.emit('messages.update', [
+					{
+						key: messageKey,
+						update: { message: { groupInviteMessage: expiredInvite } }
+					}
+				])
+			}
+
+			emitMessageUpsert(
+				ctx,
+				[
+					{
+						key: {
+							remoteJid: inviteMessage.groupJid,
+							id: generateMessageIDV2(ctx.getUser()?.id),
+							fromMe: false,
+							participant: messageKey.remoteJid
+						},
+						messageStubType: WAMessageStubType.GROUP_PARTICIPANT_ADD,
+						messageStubParameters: [JSON.stringify(ctx.getMe())!],
+						participant: messageKey.remoteJid,
+						messageTimestamp: unixTimestampSeconds()
+					}
+				],
+				{ type: 'notify' }
+			)
+
+			return joinedJid
+		}
+	)
+
 	return {
-		id: g.id,
-		subject: g.subject,
-		addressingMode: g.addressingMode as GroupMetadata['addressingMode'],
-		owner: g.creator,
-		creation: g.creationTime,
-		desc: g.description,
-		descId: g.descriptionId,
-		restrict: g.isLocked,
-		announce: g.isAnnouncement,
-		memberAddMode: g.memberAddMode === 'all_member_add',
-		joinApprovalMode: g.membershipApproval,
-		isCommunity: g.isParentGroup,
-		linkedParent: g.parentGroupJid,
-		size: g.size,
-		// Bridge doesn't distinguish superadmin from admin
-		participants: g.participants.map(p => ({
-			id: p.jid,
-			isAdmin: p.isAdmin,
-			admin: p.isAdmin ? ('admin' as const) : null
-		})),
-		ephemeralDuration: g.ephemeralExpiration,
-		subjectOwner: g.subjectOwner,
-		subjectTime: g.subjectTime
+		groupMetadata,
+
+		groupCreate: async (subject: string, participants: string[]): Promise<GroupMetadata> => {
+			const metadata = await (await ctx.getClient()).createGroup(subject, participants)
+			return bridgeGroupMetadataToBaileys(metadata)
+		},
+
+		groupLeave: async (id: string): Promise<void> => {
+			await (await ctx.getClient()).groupLeave(id)
+		},
+
+		groupUpdateSubject: async (jid: string, subject: string): Promise<void> => {
+			await (await ctx.getClient()).groupUpdateSubject(jid, subject)
+		},
+
+		groupRequestParticipantsList: async (jid: string): Promise<Array<Record<string, string>>> => {
+			return bridgeMembershipRequestsToBaileys(await (await ctx.getClient()).groupRequestParticipantsList(jid))
+		},
+
+		groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: 'approve' | 'reject') => {
+			return bridgeMembershipRequestUpdatesToBaileys(
+				await (await ctx.getClient()).groupRequestParticipantsUpdate(jid, participants, action)
+			)
+		},
+
+		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
+			return bridgeParticipantChangesToBaileys(
+				await (await ctx.getClient()).groupParticipantsUpdate(jid, participants, action)
+			)
+		},
+
+		groupUpdateDescription: async (jid: string, description?: string): Promise<void> => {
+			await (await ctx.getClient()).groupUpdateDescription(jid, description)
+		},
+
+		groupInviteCode: async (jid: string): Promise<string | undefined> => {
+			return bridgeInviteLinkToCode(await (await ctx.getClient()).groupInviteCode(jid))
+		},
+
+		groupRevokeInvite: async (jid: string): Promise<string | undefined> => {
+			return bridgeInviteLinkToCode(await (await ctx.getClient()).groupRevokeInvite(jid))
+		},
+
+		groupAcceptInvite: async (code: string): Promise<string | undefined> => {
+			return (await ctx.getClient()).groupAcceptInvite(code)
+		},
+
+		groupRevokeInviteV4: async (groupJid: string, invitedJid: string): Promise<boolean> => {
+			return (await ctx.getClient()).groupRevokeInviteV4(groupJid, invitedJid)
+		},
+
+		groupAcceptInviteV4,
+
+		groupGetInviteInfo: async (code: string): Promise<GroupMetadata> => {
+			return bridgeGroupMetadataToBaileys(await (await ctx.getClient()).groupGetInviteInfo(code))
+		},
+
+		groupToggleEphemeral: async (jid: string, ephemeralExpiration: number): Promise<void> => {
+			await (await ctx.getClient()).groupToggleEphemeral(jid, ephemeralExpiration)
+		},
+
+		groupSettingUpdate,
+
+		groupMemberAddMode: async (jid: string, mode: 'admin_add' | 'all_member_add'): Promise<void> => {
+			await (await ctx.getClient()).groupMemberAddMode(jid, mode)
+		},
+
+		groupJoinApprovalMode: async (jid: string, mode: 'on' | 'off'): Promise<void> => {
+			await (await ctx.getClient()).groupSettingUpdate(jid, 'membership_approval', mode === 'on')
+		},
+
+		groupFetchAllParticipating: async (): Promise<Record<string, GroupMetadata>> => {
+			const bridgeGroups = await (await ctx.getClient()).groupFetchAllParticipating()
+			const result: Record<string, GroupMetadata> = {}
+			for (const [groupJid, metadata] of Object.entries(bridgeGroups)) {
+				result[groupJid] = bridgeGroupMetadataToBaileys(metadata)
+			}
+
+			ctx.ev.emit('groups.update', Object.values(result))
+			return result
+		},
+
+		updateMemberLabel: async (jid: string, memberLabel: string): Promise<string> => {
+			return (await ctx.getClient()).updateMemberLabel(jid, memberLabel.slice(0, 30))
+		}
 	}
 }
-
-export const makeGroupMethods = (ctx: SocketContext) => ({
-	groupMetadata: async (jid: string): Promise<GroupMetadata> => {
-		const g = await (await ctx.getClient()).getGroupMetadata(jid)
-		return bridgeGroupToMetadata(g)
-	},
-
-	groupCreate: async (subject: string, participants: string[]): Promise<GroupMetadata> => {
-		// Bridge's `createGroup` parses the full `<group>` node from the
-		// server's create response and returns the same `GroupMetadataResult`
-		// shape as `getGroupMetadata` — single round-trip, matches upstream
-		// Baileys' `extractGroupMetadata(result)` flow.
-		const metadata = await (await ctx.getClient()).createGroup(subject, participants)
-		return bridgeGroupToMetadata(metadata)
-	},
-
-	groupLeave: async (jid: string) => {
-		await (await ctx.getClient()).groupLeave(jid)
-	},
-
-	groupUpdateSubject: async (jid: string, subject: string) => {
-		await (await ctx.getClient()).groupUpdateSubject(jid, subject)
-	},
-
-	groupUpdateDescription: async (jid: string, description?: string) => {
-		await (await ctx.getClient()).groupUpdateDescription(jid, description)
-	},
-
-	groupParticipantsUpdate: async (
-		jid: string,
-		participants: string[],
-		action: 'add' | 'remove' | 'promote' | 'demote'
-	) => {
-		return await (await ctx.getClient()).groupParticipantsUpdate(jid, participants, action)
-	},
-
-	groupFetchAllParticipating: async (): Promise<Record<string, GroupMetadata>> => {
-		const bridgeGroups = await (await ctx.getClient()).groupFetchAllParticipating()
-		const result: Record<string, GroupMetadata> = {}
-		for (const [groupJid, g] of Object.entries(bridgeGroups)) {
-			result[groupJid] = bridgeGroupToMetadata(g)
-		}
-
-		return result
-	},
-
-	groupInviteCode: async (jid: string): Promise<string> => {
-		return await (await ctx.getClient()).groupInviteCode(jid)
-	},
-
-	groupRevokeInvite: async (jid: string): Promise<string> => {
-		return await (await ctx.getClient()).groupRevokeInvite(jid)
-	},
-
-	groupSettingUpdate: async (jid: string, setting: GroupSettingArg, value?: boolean) => {
-		// Map upstream-Baileys legacy single-arg verbs onto the bridge's
-		// (setting, boolean) contract via GROUP_SETTING_ALIASES. Native
-		// settings ('locked' / 'announce' / 'membership_approval') require
-		// an explicit `value` — silently defaulting to `false` masks a
-		// caller bug as a successful "turn off" call.
-		const alias = GROUP_SETTING_ALIASES[setting]
-		if (alias) {
-			await (await ctx.getClient()).groupSettingUpdate(jid, alias.setting, alias.value)
-			return
-		}
-		if (value === undefined) {
-			throw new TypeError(`groupSettingUpdate: setting "${setting}" requires an explicit boolean value`)
-		}
-		await (await ctx.getClient()).groupSettingUpdate(jid, setting as GroupSettingResolved['setting'], value)
-	},
-
-	groupToggleEphemeral: async (jid: string, expiration: number) => {
-		await (await ctx.getClient()).groupToggleEphemeral(jid, expiration)
-	},
-
-	groupAcceptInvite: async (code: string): Promise<string | undefined> => {
-		return await (await ctx.getClient()).groupAcceptInvite(code)
-	},
-
-	/** Join a group via a GroupInviteMessage (V4 invite). */
-	groupAcceptInviteV4: async (
-		key: { remoteJid?: string | null },
-		msg: { inviteCode?: string | null; inviteExpiration?: number | null; groupJid?: string | null }
-	): Promise<string | undefined> => {
-		if (!msg.inviteCode || !msg.groupJid) return undefined
-		const adminJid = key.remoteJid || ''
-		return await (
-			await ctx.getClient()
-		).groupAcceptInviteV4(msg.groupJid, msg.inviteCode, msg.inviteExpiration || 0, adminJid)
-	},
-
-	groupGetInviteInfo: async (code: string): Promise<GroupMetadata> => {
-		const g = await (await ctx.getClient()).groupGetInviteInfo(code)
-		return bridgeGroupToMetadata(g)
-	},
-
-	groupRequestParticipantsList: async (jid: string) => {
-		return await (await ctx.getClient()).groupRequestParticipantsList(jid)
-	},
-
-	groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: 'approve' | 'reject') => {
-		return await (await ctx.getClient()).groupRequestParticipantsUpdate(jid, participants, action)
-	},
-
-	/**
-	 * Set or clear the bot's per-group "member label" — the small tag rendered
-	 * under the bot's display name inside that group's UI. Empty `label`
-	 * clears it. Sent as a `ProtocolMessage` over the regular message path
-	 * (matching WA Web's wire format), not as an IQ.
-	 *
-	 * Self-applied only — WhatsApp's protocol does not let admins change
-	 * other members' labels even with admin privileges; the same restriction
-	 * applies in the official mobile app.
-	 */
-	updateMemberLabel: async (jid: string, label: string): Promise<void> => {
-		await (await ctx.getClient()).updateMemberLabel(jid, label)
-	}
-})

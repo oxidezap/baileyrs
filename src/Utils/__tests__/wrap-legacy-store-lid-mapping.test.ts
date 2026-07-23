@@ -8,6 +8,7 @@
 import { Buffer } from 'node:buffer'
 import { describe, test } from 'node:test'
 import { expect } from '../../__tests__/expect.ts'
+import { LidMapping, TimeValue } from '../../Compatibility/legacy-store/constants.ts'
 import { makeWrapped } from './_legacy-store-fixtures.ts'
 
 const PN_USER = '559980000003'
@@ -79,8 +80,9 @@ describe('wrap-legacy-store: lid_mapping value-byte translation', () => {
 		}
 		expect(parsed.lid).toBe(LID_USER)
 		expect(parsed.phone_number).toBe(PN_USER)
-		expect(parsed.learning_source).toBe('wrap-legacy-store')
-		expect(parsed.created_at).toBeGreaterThan(0)
+		expect(parsed.learning_source).toBe(LidMapping.IMPORT_SOURCE)
+		expect(parsed.created_at).toBe(TimeValue.UNKNOWN_SECONDS)
+		expect(parsed.updated_at).toBe(parsed.created_at)
 	})
 
 	test('round-trip: bridge SET both directions → read both back', async () => {

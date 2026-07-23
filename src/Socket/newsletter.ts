@@ -19,5 +19,13 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 
 	newsletterReactMessage: async (jid: string, serverId: string, reaction?: string) => {
 		await (await ctx.getClient()).newsletterReactMessage(jid, serverId, reaction ?? null)
+	},
+
+	/**
+	 * Mute or unmute a newsletter (channel) — silences its follower-activity
+	 * notifications, the mute a subscriber toggles. `mute = true` silences.
+	 */
+	newsletterMute: async (jid: string, mute: boolean) => {
+		await (await ctx.getClient()).newsletterMute(jid, mute)
 	}
 })

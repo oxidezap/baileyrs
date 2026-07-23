@@ -1,13 +1,28 @@
 import type { IAudioMetadata } from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { createReadStream, promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
-import type { WAMediaUpload } from '../Types/index.ts'
+import { MEDIA_HKDF_KEY_MAPPING, type MediaType } from '../Defaults/index.ts'
+import type {
+	BaileysEventMap,
+	BinaryNode,
+	MediaDecryptionKeyInfo,
+	MessageType,
+	WAGenericMediaMessage,
+	WAMediaUpload,
+	WAMessageContent,
+	WAMessageKey
+} from '../Types/index.ts'
+import { proto } from '../WAProto/runtime.ts'
+import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generic-utils.ts'
+import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
+import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto.ts'
 import type { ILogger } from './logger.ts'
 
 const randomId = () => globalThis.crypto.randomUUID()
@@ -27,6 +42,22 @@ const getImageProcessingLibrary = async () => {
 	}
 
 	throw new Boom('No image processing library available')
+}
+
+export const hkdfInfoKey = (type: MediaType): string => `WhatsApp ${MEDIA_HKDF_KEY_MAPPING[type]} Keys`
+
+export async function getMediaKeys(
+	buffer: Uint8Array | string | null | undefined,
+	mediaType: MediaType
+): Promise<MediaDecryptionKeyInfo> {
+	if (!buffer) throw new Boom('Cannot derive from empty media key')
+	if (typeof buffer === 'string') buffer = Buffer.from(buffer.replace('data:;base64,', ''), 'base64')
+	const expandedMediaKey = hkdf(buffer, 112, { info: hkdfInfoKey(mediaType) })
+	return {
+		iv: expandedMediaKey.slice(0, 16),
+		cipherKey: expandedMediaKey.slice(16, 48),
+		macKey: expandedMediaKey.slice(48, 80)
+	}
 }
 
 /** Extracts video thumb using FFMPEG */
@@ -93,6 +124,38 @@ export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | st
 	} else {
 		throw new Boom('No image processing library available')
 	}
+}
+
+export const encodeBase64EncodedStringForUpload = (b64: string): string =>
+	encodeURIComponent(b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''))
+
+export const generateProfilePicture = async (
+	mediaUpload: WAMediaUpload,
+	dimensions?: { width: number; height: number }
+): Promise<{ img: Buffer }> => {
+	const buffer = Buffer.isBuffer(mediaUpload) ? mediaUpload : await toBuffer((await getStream(mediaUpload)).stream)
+	const { width = 640, height = 640 } = dimensions || {}
+	const lib = await getImageProcessingLibrary()
+	if ('sharp' in lib && typeof lib.sharp?.default === 'function') {
+		return { img: await lib.sharp.default(buffer).resize(width, height).jpeg({ quality: 50 }).toBuffer() }
+	}
+	if ('jimp' in lib && typeof lib.jimp?.Jimp === 'function') {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const jimp = await (lib.jimp.Jimp as any).read(buffer)
+		const min = Math.min(jimp.width, jimp.height)
+		const cropped = jimp.crop({ x: 0, y: 0, w: min, h: min })
+		return {
+			img: await cropped
+				.resize({ w: width, h: height, mode: lib.jimp.ResizeStrategy.BILINEAR })
+				.getBuffer('image/jpeg', { quality: 50 })
+		}
+	}
+	throw new Boom('No image processing library available')
+}
+
+export const mediaMessageSHA256B64 = (message: WAMessageContent): string | null | undefined => {
+	const media = Object.values(message)[0] as WAGenericMediaMessage
+	return media?.fileSha256 && Buffer.from(media.fileSha256).toString('base64')
 }
 
 /** Returns audio duration in seconds, parsed via `music-metadata`. */
@@ -273,3 +336,94 @@ export const getHttpStream = async (url: string | URL, options: RequestInit & { 
 export type MediaDownloadOptions = {
 	options?: RequestInit
 }
+
+export const DEF_MEDIA_HOST = 'mmg.whatsapp.net'
+
+export const getUrlFromDirectPath = (directPath: string, host: string = DEF_MEDIA_HOST): string =>
+	`https://${host}${directPath}`
+
+export function extensionForMediaMessage(message: WAMessageContent): string {
+	const getExtension = (mimetype: string) => mimetype.split(';')[0]?.split('/')[1]
+	const type = Object.keys(message)[0] as Exclude<MessageType, 'toJSON'>
+	if (type === 'locationMessage' || type === 'liveLocationMessage' || type === 'productMessage') return '.jpeg'
+	return getExtension((message[type] as WAGenericMediaMessage).mimetype!)!
+}
+
+const getMediaRetryKey = (mediaKey: Buffer | Uint8Array) =>
+	hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
+
+export const encryptMediaRetryRequest = (
+	key: WAMessageKey,
+	mediaKey: Buffer | Uint8Array,
+	meId: string
+): BinaryNode => {
+	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
+	const iv = randomBytes(12)
+	const ciphertext = aesEncryptGCM(receiptBuffer, getMediaRetryKey(mediaKey), iv, Buffer.from(key.id!))
+	return {
+		tag: 'receipt',
+		attrs: { id: key.id!, to: jidNormalizedUser(meId), type: 'server-error' },
+		content: [
+			{
+				tag: 'encrypt',
+				attrs: {},
+				content: [
+					{ tag: 'enc_p', attrs: {}, content: ciphertext },
+					{ tag: 'enc_iv', attrs: {}, content: iv }
+				]
+			},
+			{
+				tag: 'rmr',
+				attrs: {
+					jid: key.remoteJid!,
+					from_me: (!!key.fromMe).toString(),
+					...(key.participant ? { participant: key.participant } : {})
+				}
+			}
+		]
+	}
+}
+
+const MEDIA_RETRY_STATUS_MAP = {
+	[proto.MediaRetryNotification.ResultType.SUCCESS]: 200,
+	[proto.MediaRetryNotification.ResultType.DECRYPTION_ERROR]: 412,
+	[proto.MediaRetryNotification.ResultType.NOT_FOUND]: 404,
+	[proto.MediaRetryNotification.ResultType.GENERAL_ERROR]: 418
+} as const
+
+export const getStatusCodeForMediaRetry = (code: number): 200 | 412 | 404 | 418 =>
+	MEDIA_RETRY_STATUS_MAP[code as keyof typeof MEDIA_RETRY_STATUS_MAP]
+
+export const decodeMediaRetryNode = (node: BinaryNode): BaileysEventMap['messages.media-update'][number] => {
+	const retryNode = getBinaryNodeChild(node, 'rmr')!
+	const event: BaileysEventMap['messages.media-update'][number] = {
+		key: {
+			id: node.attrs.id,
+			remoteJid: retryNode.attrs.jid,
+			fromMe: retryNode.attrs.from_me === 'true',
+			participant: retryNode.attrs.participant
+		}
+	}
+	const errorNode = getBinaryNodeChild(node, 'error')
+	if (errorNode) {
+		const errorCode = +errorNode.attrs.code!
+		event.error = new Boom(`Failed to re-upload media (${errorCode})`, {
+			data: errorNode.attrs,
+			statusCode: getStatusCodeForMediaRetry(errorCode)
+		})
+	} else {
+		const encryptedInfoNode = getBinaryNodeChild(node, 'encrypt')
+		const ciphertext = getBinaryNodeChildBuffer(encryptedInfoNode, 'enc_p')
+		const iv = getBinaryNodeChildBuffer(encryptedInfoNode, 'enc_iv')
+		if (ciphertext && iv) event.media = { ciphertext, iv }
+		else event.error = new Boom('Failed to re-upload media (missing ciphertext)', { statusCode: 404 })
+	}
+	return event
+}
+
+export const decryptMediaRetryData = (
+	{ ciphertext, iv }: { ciphertext: Uint8Array; iv: Uint8Array },
+	mediaKey: Uint8Array,
+	msgId: string
+): proto.MediaRetryNotification =>
+	proto.MediaRetryNotification.decode(aesDecryptGCM(ciphertext, getMediaRetryKey(mediaKey), iv, Buffer.from(msgId)))

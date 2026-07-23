@@ -1,0 +1,64 @@
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { describe, it } from 'node:test'
+import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import { makeGroupMethods } from '../Socket/groups.ts'
+import type { SocketContext } from '../Socket/types.ts'
+import { WAMessageStubType } from '../Types/index.ts'
+
+describe('group operation compatibility', () => {
+	it('accepts V4 invites and emits the complete buffered lifecycle', async () => {
+		const ev = Object.assign(new EventEmitter(), {
+			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
+		})
+		const updates: unknown[] = []
+		const upserts: unknown[] = []
+		ev.on('messages.update', value => updates.push(value))
+		ev.on('messages.upsert', value => upserts.push(value))
+		const calls: unknown[][] = []
+		const client = {
+			groupAcceptInviteV4: async (...args: unknown[]) => {
+				calls.push(args)
+				return 'parent@g.us'
+			}
+		} as unknown as WasmWhatsAppClient
+		const ctx = {
+			ev,
+			getClient: async () => client,
+			getUser: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid' }),
+			getMe: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid', name: 'Bot' })
+		} as unknown as SocketContext
+
+		const result = await makeGroupMethods(ctx).groupAcceptInviteV4(
+			{ remoteJid: 'inviter@lid', id: 'invite-message-id', fromMe: false },
+			{ groupJid: 'parent@g.us', inviteCode: 'INVITE', inviteExpiration: 1_800_000_000 }
+		)
+
+		assert.equal(result, 'parent@g.us')
+		assert.deepEqual(calls, [['parent@g.us', 'INVITE', 1_800_000_000, 'inviter@lid']])
+		assert.equal(updates.length, 1)
+		const update = updates[0] as Array<{
+			update: { message: { groupInviteMessage: { inviteCode?: string | null; inviteExpiration?: number | null } } }
+		}>
+		assert.equal(update[0]?.update.message.groupInviteMessage.inviteCode, '')
+		assert.equal(update[0]?.update.message.groupInviteMessage.inviteExpiration, 0)
+
+		assert.equal(upserts.length, 1)
+		const upsert = upserts[0] as {
+			type: string
+			messages: Array<{
+				key: { remoteJid?: string | null; participant?: string | null; fromMe?: boolean | null }
+				messageStubType?: number | null
+				messageStubParameters?: string[] | null
+			}>
+		}
+		assert.equal(upsert.type, 'notify')
+		assert.equal(upsert.messages[0]?.key.remoteJid, 'parent@g.us')
+		assert.equal(upsert.messages[0]?.key.participant, 'inviter@lid')
+		assert.equal(upsert.messages[0]?.key.fromMe, false)
+		assert.equal(upsert.messages[0]?.messageStubType, WAMessageStubType.GROUP_PARTICIPANT_ADD)
+		assert.deepEqual(upsert.messages[0]?.messageStubParameters, [
+			JSON.stringify({ id: 'bot@s.whatsapp.net', lid: 'bot@lid', name: 'Bot' })
+		])
+	})
+})

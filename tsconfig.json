@@ -8,6 +8,7 @@
     "sourceMap": true,
     "declarationMap": true,
     "moduleDetection": "force",
+    "erasableSyntaxOnly": true,
 
     "lib": ["ES2023", "ESNext.Array", "DOM"],
     "rootDir": "./src",

@@ -17,31 +17,30 @@
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import P from 'pino'
-import { type proto, WAMessageStubType } from '../../index.ts'
+import { type WAMessage, WAMessageStubType } from '../../index.ts'
+import { toNumber } from '../../Utils/generics.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
 const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
 
-function getTextContent(msg: proto.IWebMessageInfo): string | undefined {
+function getTextContent(msg: WAMessage): string | undefined {
 	return msg.message?.extendedTextMessage?.text || msg.message?.conversation || undefined
 }
 
-describe('E2E: Receipts (delivery + read, 1:1 + group)', { timeout: 60_000 }, () => {
+describe('E2E: Receipts (delivery + read, 1:1)', { timeout: 60_000 }, () => {
 	let alice: TestClient
 	let bob: TestClient
-	let charlie: TestClient
 
 	before(async () => {
-		alice = await createTestClient({ label: 'alice', folderPrefix: 'baileys-e2e-rcpt' })
-		bob = await createTestClient({ label: 'bob', folderPrefix: 'baileys-e2e-rcpt' })
-		charlie = await createTestClient({ label: 'charlie', folderPrefix: 'baileys-e2e-rcpt' })
-		logger.info({ alice: alice.jid, bob: bob.jid, charlie: charlie.jid }, 'paired')
+		alice = await createTestClient({ label: 'alice', folderPrefix: 'baileys-e2e-rcpt-direct' })
+		bob = await createTestClient({ label: 'bob', folderPrefix: 'baileys-e2e-rcpt-direct' })
+		logger.info({ alice: alice.jid, bob: bob.jid }, 'paired direct-receipt clients')
 	})
 
 	after(async () => {
-		await Promise.all([destroyTestClient(alice), destroyTestClient(bob), destroyTestClient(charlie)])
+		await Promise.all([destroyTestClient(alice), destroyTestClient(bob)])
 	})
 
 	test('1:1 delivery receipt: Alice sends → Bob auto-acks → Alice gets receiptTimestamp', async () => {
@@ -86,8 +85,31 @@ describe('E2E: Receipts (delivery + read, 1:1 + group)', { timeout: 60_000 }, ()
 		expect(readMatching).toBeDefined()
 		expect(readMatching!.receipt.readTimestamp).toBeGreaterThan(0)
 	})
+})
 
-	test('group delivery receipt: per-participant fanout carries key.participant', async () => {
+/**
+ * Group receipts use a dedicated cryptographic fixture. Sender-key distribution
+ * and pairwise ratchets are independent protocol contracts; sharing clients
+ * with the direct-receipt tests makes a mock server's device-routing state an
+ * accidental ordering dependency of this assertion.
+ */
+describe('E2E: Receipts (group delivery)', { timeout: 60_000 }, () => {
+	let alice: TestClient
+	let bob: TestClient
+	let charlie: TestClient
+
+	before(async () => {
+		alice = await createTestClient({ label: 'alice', folderPrefix: 'baileys-e2e-rcpt-group' })
+		bob = await createTestClient({ label: 'bob', folderPrefix: 'baileys-e2e-rcpt-group' })
+		charlie = await createTestClient({ label: 'charlie', folderPrefix: 'baileys-e2e-rcpt-group' })
+		logger.info({ alice: alice.jid, bob: bob.jid, charlie: charlie.jid }, 'paired group-receipt clients')
+	})
+
+	after(async () => {
+		await Promise.all([destroyTestClient(alice), destroyTestClient(bob), destroyTestClient(charlie)])
+	})
+
+	test('per-participant fanout emits a group delivery receipt', async () => {
 		// Register the GROUP_CREATE waiters BEFORE calling groupCreate — the
 		// notification fires synchronously after the bridge IQ result and
 		// can race a post-call subscribe.
@@ -106,7 +128,7 @@ describe('E2E: Receipts (delivery + read, 1:1 + group)', { timeout: 60_000 }, ()
 		// the message-arrival promises rather than after sendMessage.
 		let sentId = ''
 		const groupReceiptArrives = waitForEvent(alice.sock, 'message-receipt.update', updates =>
-			updates.some(u => sentId !== '' && u.key.id === sentId && (u.receipt.receiptTimestamp ?? 0) > 0)
+			updates.some(u => sentId !== '' && u.key.id === sentId && toNumber(u.receipt.receiptTimestamp) > 0)
 		)
 
 		const sent = await alice.sock.sendMessage(groupJid, { text })
@@ -114,15 +136,13 @@ describe('E2E: Receipts (delivery + read, 1:1 + group)', { timeout: 60_000 }, ()
 
 		await Promise.all([bobReceives, charlieReceives])
 
-		// Group sender sees at least one delivery receipt for the message.
-		// Per-participant `key.participant` would require the bridge to set
-		// `MessageSource.is_group = true` on the receipt event — currently
-		// it defaults to false, so this test asserts only the receipt
-		// arrival. Tighten to `participant != null` once that bridge gap
-		// is closed.
+		// Group sender sees at least one delivery receipt attributed to the
+		// member that acknowledged it; a missing participant would collapse
+		// multiple group acknowledgements into an ambiguous 1:1-shaped event.
 		const update = await groupReceiptArrives
 		const groupReceipt = update.find(u => u.key.id === sentId)
 		expect(groupReceipt).toBeDefined()
 		expect(groupReceipt!.receipt.receiptTimestamp).toBeGreaterThan(0)
+		expect(groupReceipt!.key.participant).toBeDefined()
 	})
 })
