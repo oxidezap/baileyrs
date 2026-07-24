@@ -54,8 +54,7 @@ export const decodeHistorySyncWireBatch = (
 	// instead of merged — that also keeps the proto side's `| null` field types
 	// out of the event contract.
 	const { conversationData: _wireData, conversationOffsets: _wireOffsets, remainderData, ...metadata } = batch
-	let remainderFields: Partial<Omit<WAProto.HistorySync, 'syncType' | 'chunkOrder' | 'progress' | 'conversations'>> =
-		{}
+	let remainderFields: Partial<Omit<WAProto.HistorySync, 'syncType' | 'chunkOrder' | 'progress' | 'conversations'>> = {}
 	if (remainderData && remainderData.length > 0) {
 		try {
 			const {

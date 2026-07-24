@@ -669,9 +669,7 @@ describe('dispatch: typed bridge message batches', () => {
 		const upserts: BaileysEventMap['messages.upsert'][] = []
 		ev.on('messages.upsert', payload => upserts.push(payload))
 
-		makeEventHandlers(ctx).onMessageBatch?.(
-			wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }, { id: 'BATCH-3' }])
-		)
+		makeEventHandlers(ctx).onMessageBatch?.(wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }, { id: 'BATCH-3' }]))
 
 		expect(upserts.length).toBe(1)
 		expect(upserts[0]?.type).toBe('notify')
