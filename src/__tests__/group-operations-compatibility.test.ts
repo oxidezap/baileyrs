@@ -92,4 +92,41 @@ describe('group operation compatibility', () => {
 			['120363000000000002@g.us', 'community description']
 		])
 	})
+
+	// The bridge classifies a server rejection as `kind: 'server'` with the
+	// code on it. That only reaches a bot if this layer rethrows the error
+	// untouched instead of wrapping or flattening it.
+	it('propagates a server rejection without masking its code', async () => {
+		const rejection = Object.assign(new Error('server error 409: conflict'), {
+			name: 'WhatsAppError',
+			kind: 'server',
+			serverCode: 409,
+			serverText: 'conflict'
+		})
+		const client = {
+			groupUpdateDescription: async () => {
+				throw rejection
+			}
+		} as unknown as WasmWhatsAppClient
+		const ev = Object.assign(new EventEmitter(), {
+			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
+		})
+		const ctx = { ev, getClient: async () => client } as unknown as SocketContext
+		const groups = makeGroupMethods(ctx)
+
+		const thrown = await groups
+			.groupUpdateDescription('120363000000000001@g.us', 'texto')
+			.then(() => undefined)
+			.catch((err: unknown) => err)
+
+		assert.equal(thrown, rejection, 'the original error object must survive')
+		assert.equal((thrown as { serverCode?: number }).serverCode, 409)
+
+		const fromCommunity = await makeCommunityMethods(ctx, groups)
+			.communityUpdateDescription('120363000000000002@g.us', 'texto')
+			.then(() => undefined)
+			.catch((err: unknown) => err)
+
+		assert.equal(fromCommunity, rejection)
+	})
 })

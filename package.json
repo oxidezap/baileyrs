@@ -78,7 +78,7 @@
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5",
-    "whatsapp-rust-bridge": "0.6.0-alpha.40"
+    "whatsapp-rust-bridge": "0.6.0-alpha.41"
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
