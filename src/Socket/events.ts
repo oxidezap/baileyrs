@@ -908,7 +908,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		// and reallocating the whole tree — the dominant per-message allocation
 		// cost on the hot path. Lenient like the history-sync decoder: one
 		// malformed payload is skipped, not fatal to the batch.
-		const messages: unknown[] = new Array(messageCount)
+		const messages: unknown[] = Array.from({ length: messageCount })
 		const reader = new BinaryReader(batch.messageData)
 		for (let index = 0; index < messageCount; index++) {
 			try {

@@ -45,6 +45,7 @@
   },
   "files": [
     "lib/**/*",
+    "!lib/**/*.map",
     "!lib/**/__tests__/**",
     "!lib/**/*.test.*",
     "!lib/**/*.test-e2e.*"
@@ -65,7 +66,7 @@
     "format:check": "oxfmt --check src Example",
     "lint": "tsc && oxlint",
     "lint:fix": "oxlint --fix && oxfmt src Example",
-    "prepack": "npm run build",
+    "prepack": "npm run build && node scripts/check-pack.ts",
     "prepare": "npm run build",
     "test": "node --test",
     "test:compat-auditor": "node --test scripts/compatibility/__tests__/audit.test.ts",
@@ -77,7 +78,7 @@
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5",
-    "whatsapp-rust-bridge": "0.6.0-alpha.38"
+    "whatsapp-rust-bridge": "0.6.0-alpha.39"
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
