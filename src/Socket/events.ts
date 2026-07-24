@@ -7,7 +7,7 @@
  * is a compile error.
  */
 
-import { decodeProtoBatch } from 'whatsapp-rust-bridge'
+import { BinaryReader } from 'whatsapp-rust-bridge'
 import type {
 	HistorySyncWireBatch,
 	MessageWireBatch,
@@ -49,7 +49,6 @@ import type { SocketContext } from './types.ts'
 const CANONICAL_MESSAGE_EVENT = 'message'
 const MESSAGE_UPSERT_APPEND = 'append'
 const MESSAGE_UPSERT_NOTIFY = 'notify'
-const MESSAGE_PROTO_TYPE = 'Message'
 const MESSAGE_WIRE_OFFSET_SENTINEL_COUNT = 1
 
 /** Emit CB: pattern events on the ws EventEmitter for retrocompat. */
@@ -889,10 +888,6 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		if (canonical) dispatchCanonicalEvent(canonical, dispatchCtx)
 	}
 
-	const onEventBatch = (events: readonly WhatsAppEvent[]) => {
-		dispatchCanonicalBatch(ctx, dispatchCtx, events.length, index => adaptBridgeEvent(events[index]!, ctx.logger))
-	}
-
 	const onMessageBatch = (batch: MessageWireBatch) => {
 		if (batch.messageOffsets.length < MESSAGE_WIRE_OFFSET_SENTINEL_COUNT) {
 			ctx.logger.error('message wire batch is missing its leading offset')
@@ -907,12 +902,24 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 			return
 		}
 
-		let messages: unknown[]
-		try {
-			messages = decodeProtoBatch(MESSAGE_PROTO_TYPE, batch.messageData, batch.messageOffsets)
-		} catch (err) {
-			ctx.logger.error({ err }, 'failed to decode message wire batch')
-			return
+		// Decode through the runtime facade so each payload materializes as a
+		// hydrated runtime instance: `WebMessageInfo.fromObject` then keeps the
+		// message subtree via its instanceof short-circuit instead of walking
+		// and reallocating the whole tree — the dominant per-message allocation
+		// cost on the hot path. Lenient like the history-sync decoder: one
+		// malformed payload is skipped, not fatal to the batch.
+		const messages: unknown[] = new Array(messageCount)
+		const reader = new BinaryReader(batch.messageData)
+		for (let index = 0; index < messageCount; index++) {
+			try {
+				const start = batch.messageOffsets[index]!
+				const end = batch.messageOffsets[index + 1]!
+				reader.pos = start
+				messages[index] = WAProto.Message.decode(reader, end - start)
+			} catch (err) {
+				messages[index] = null
+				ctx.logger.warn({ err, index }, 'skipping malformed wire message')
+			}
 		}
 		dispatchCanonicalBatch(ctx, dispatchCtx, messageCount, index =>
 			adaptBridgeMessageWire(messages[index], batch.infos[index]!, ctx.logger)
@@ -927,7 +934,6 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 
 	return {
 		onEvent,
-		onEventBatch,
 		onMessageBatch,
 		onHistorySyncBatch,
 		historySyncConversationTypes: CONVERSATION_HISTORY_SYNC_TYPES

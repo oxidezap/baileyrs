@@ -1,7 +1,7 @@
 {
   "name": "@oxidezap/baileyrs",
   "type": "module",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "description": "A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API",
   "keywords": [
     "whatsapp",
@@ -50,16 +50,16 @@
     "!lib/**/*.test-e2e.*"
   ],
   "scripts": {
-    "build": "node scripts/compatibility/waproto-facade.mjs --check && node scripts/clean-build.mjs && tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js && node scripts/compatibility/waproto-facade.mjs --copy-build",
+    "build": "node scripts/compatibility/waproto-facade.ts --check && node scripts/clean-build.ts && tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js && node scripts/compatibility/waproto-facade.ts --copy-build",
     "benchmark": "node ./Example/benchmark.ts",
     "compat:audit": "npm run build --silent && node scripts/compatibility/audit.ts --details",
     "compat:audit:json": "npm run build --silent && node scripts/compatibility/audit.ts --format=json",
     "compat:audit:missing": "npm run build --silent && node scripts/compatibility/audit.ts --only-missing",
     "compat:audit:proto": "node scripts/compatibility/proto-runtime-audit.ts --details --strict",
     "compat:audit:strict": "npm run build --silent && node scripts/compatibility/audit.ts --strict --only-missing",
-    "compat:sync-waproto": "node scripts/compatibility/waproto-facade.mjs --sync",
-    "compat:check-waproto": "node scripts/compatibility/waproto-facade.mjs --check",
-    "compat:layers": "node scripts/compatibility/check-layer-boundaries.mjs",
+    "compat:sync-waproto": "node scripts/compatibility/waproto-facade.ts --sync",
+    "compat:check-waproto": "node scripts/compatibility/waproto-facade.ts --check",
+    "compat:layers": "node scripts/compatibility/check-layer-boundaries.ts",
     "example": "node ./Example/example.ts",
     "format": "oxfmt src Example",
     "format:check": "oxfmt --check src Example",
@@ -77,7 +77,7 @@
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5",
-    "whatsapp-rust-bridge": "0.6.0-alpha.37"
+    "whatsapp-rust-bridge": "0.6.0-alpha.38"
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
@@ -119,6 +119,6 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }

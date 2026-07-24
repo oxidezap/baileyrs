@@ -47,8 +47,30 @@ export const decodeHistorySyncWireBatch = (
 	}
 	conversations.length = decodedConversations
 
-	const { conversationData: _wireData, conversationOffsets: _wireOffsets, ...data } = batch
-	data.conversations = conversations
+	// The non-conversation remainder (pushnames, mappings, settings, ...)
+	// crosses as one encoded proto.HistorySync payload. The bridge's metadata
+	// envelope owns the canonical syncType/chunkOrder/progress values, so those
+	// (and the conversations decoded above) are dropped from the remainder
+	// instead of merged — that also keeps the proto side's `| null` field types
+	// out of the event contract.
+	const { conversationData: _wireData, conversationOffsets: _wireOffsets, remainderData, ...metadata } = batch
+	let remainderFields: Partial<Omit<WAProto.HistorySync, 'syncType' | 'chunkOrder' | 'progress' | 'conversations'>> =
+		{}
+	if (remainderData && remainderData.length > 0) {
+		try {
+			const {
+				syncType: _syncType,
+				chunkOrder: _chunkOrder,
+				progress: _progress,
+				conversations: _conversations,
+				...rest
+			} = WAProto.HistorySync.decode(remainderData)
+			remainderFields = rest
+		} catch (err) {
+			logger.warn({ err }, 'skipping undecodable history-sync remainder')
+		}
+	}
+	const data = { ...remainderFields, ...metadata, conversations }
 	return {
 		event: { type: HISTORY_SYNC_EVENT_TYPE, data },
 		skippedConversations

@@ -5,5 +5,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["./**/*.ts", "./__tests__/fixtures/*.d.ts"]
+  "include": ["./**/*.ts", "./__tests__/fixtures/*.d.ts", "../clean-build.ts"]
 }

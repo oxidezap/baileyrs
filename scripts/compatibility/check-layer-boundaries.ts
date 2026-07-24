@@ -6,9 +6,11 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const coreRoot = resolve(projectRoot, '../whatsapp-rust')
 const bridgeRoot = resolve(projectRoot, '../whatsapp-rust-bridge')
 
-const sourceFiles = async (root, extensions) => {
-	const files = []
-	const visit = async directory => {
+type ForbiddenPattern = { label: string; pattern: RegExp }
+
+const sourceFiles = async (root: string, extensions: Set<string>): Promise<string[]> => {
+	const files: string[] = []
+	const visit = async (directory: string): Promise<void> => {
 		for (const entry of await readdir(directory, { withFileTypes: true })) {
 			if (entry.name === 'target' || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'pkg') {
 				continue
@@ -22,8 +24,8 @@ const sourceFiles = async (root, extensions) => {
 	return files
 }
 
-const violations = []
-const inspect = async (root, files, forbidden) => {
+const violations: string[] = []
+const inspect = async (root: string, files: string[], forbidden: readonly ForbiddenPattern[]): Promise<void> => {
 	for (const file of files) {
 		const lines = (await readFile(file, 'utf8')).split(/\r?\n/u)
 		for (const [index, line] of lines.entries()) {
@@ -80,7 +82,10 @@ await inspect(
 	]
 )
 
-const bridgePackage = JSON.parse(await readFile(resolve(bridgeRoot, 'package.json'), 'utf8'))
+const bridgePackage = JSON.parse(await readFile(resolve(bridgeRoot, 'package.json'), 'utf8')) as Record<
+	string,
+	Record<string, string> | undefined
+>
 for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
 	for (const name of Object.keys(bridgePackage[section] ?? {})) {
 		if (/baileys/iu.test(name))

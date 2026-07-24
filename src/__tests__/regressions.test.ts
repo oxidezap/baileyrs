@@ -112,14 +112,27 @@ const baseMessageWireInfo = {
 	isOffline: false
 }
 
-const bridgeMessage = (
-	id: string,
-	message: Record<string, unknown> = { conversation: id },
-	info: Record<string, unknown> = {}
-) => ({
-	type: 'message',
-	data: { info: { ...baseMessageInfo, ...info, id }, message }
-})
+/**
+ * Build a `MessageWireBatch` the way the bridge does: concatenated encoded
+ * `proto.Message` payloads, an offset table with the leading sentinel, and one
+ * camelCase metadata envelope per payload.
+ */
+const wireMessageBatch = (
+	entries: ReadonlyArray<{ id: string; message?: Record<string, unknown>; info?: Record<string, unknown> }>
+) => {
+	const encoded = entries.map(entry => encodeProto('Message', entry.message ?? { conversation: entry.id }))
+	const messageData = new Uint8Array(encoded.reduce((total, part) => total + part.length, 0))
+	const messageOffsets = new Uint32Array(encoded.length + 1)
+	for (let index = 0; index < encoded.length; index++) {
+		messageData.set(encoded[index]!, messageOffsets[index])
+		messageOffsets[index + 1] = messageOffsets[index]! + encoded[index]!.length
+	}
+	return {
+		messageData,
+		messageOffsets,
+		infos: entries.map(entry => ({ ...baseMessageWireInfo, ...entry.info, id: entry.id }))
+	}
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bridge adapter — sync actions
@@ -644,19 +657,7 @@ describe('dispatch: typed bridge message batches', () => {
 		ev.on('messages.upsert', payload => upserts.push(payload))
 
 		const ids = ['WIRE-1', 'WIRE-2', 'WIRE-3']
-		const encoded = ids.map(id => encodeProto('Message', { conversation: id }))
-		const messageData = new Uint8Array(encoded.reduce((total, entry) => total + entry.length, 0))
-		const messageOffsets = new Uint32Array(encoded.length + 1)
-		for (let index = 0; index < encoded.length; index++) {
-			messageData.set(encoded[index]!, messageOffsets[index])
-			messageOffsets[index + 1] = messageOffsets[index]! + encoded[index]!.length
-		}
-
-		makeEventHandlers(ctx).onMessageBatch?.({
-			messageData,
-			messageOffsets,
-			infos: ids.map(id => ({ ...baseMessageWireInfo, id }))
-		})
+		makeEventHandlers(ctx).onMessageBatch?.(wireMessageBatch(ids.map(id => ({ id }))))
 
 		expect(upserts.length).toBe(1)
 		expect(upserts[0]?.messages.map(message => message.key.id)).toEqual(ids)
@@ -668,11 +669,9 @@ describe('dispatch: typed bridge message batches', () => {
 		const upserts: BaileysEventMap['messages.upsert'][] = []
 		ev.on('messages.upsert', payload => upserts.push(payload))
 
-		makeEventHandlers(ctx).onEventBatch?.([
-			bridgeMessage('BATCH-1'),
-			bridgeMessage('BATCH-2'),
-			bridgeMessage('BATCH-3')
-		] as never)
+		makeEventHandlers(ctx).onMessageBatch?.(
+			wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }, { id: 'BATCH-3' }])
+		)
 
 		expect(upserts.length).toBe(1)
 		expect(upserts[0]?.type).toBe('notify')
@@ -684,12 +683,14 @@ describe('dispatch: typed bridge message batches', () => {
 		const upserts: BaileysEventMap['messages.upsert'][] = []
 		ev.on('messages.upsert', payload => upserts.push(payload))
 
-		makeEventHandlers(ctx).onEventBatch?.([
-			bridgeMessage('LIVE'),
-			bridgeMessage('OFFLINE-1', undefined, { is_offline: true }),
-			bridgeMessage('OFFLINE-2', undefined, { is_offline: true }),
-			bridgeMessage('PDO', undefined, { is_offline: true, unavailable_request_id: 'REQUEST-1' })
-		] as never)
+		makeEventHandlers(ctx).onMessageBatch?.(
+			wireMessageBatch([
+				{ id: 'LIVE' },
+				{ id: 'OFFLINE-1', info: { isOffline: true } },
+				{ id: 'OFFLINE-2', info: { isOffline: true } },
+				{ id: 'PDO', info: { isOffline: true, unavailableRequestId: 'REQUEST-1' } }
+			])
+		)
 
 		expect(
 			upserts.map(upsert => ({
@@ -712,16 +713,21 @@ describe('dispatch: typed bridge message batches', () => {
 		})
 		ev.on('messages.reaction', () => observed.push('reaction'))
 
-		makeEventHandlers(ctx).onEventBatch?.([
-			bridgeMessage('BEFORE'),
-			bridgeMessage('REACTION', {
-				reactionMessage: {
-					key: { remoteJid: '5511@s.whatsapp.net', fromMe: false, id: 'TARGET' },
-					text: '👍'
-				}
-			}),
-			bridgeMessage('AFTER')
-		] as never)
+		makeEventHandlers(ctx).onMessageBatch?.(
+			wireMessageBatch([
+				{ id: 'BEFORE' },
+				{
+					id: 'REACTION',
+					message: {
+						reactionMessage: {
+							key: { remoteJid: '5511@s.whatsapp.net', fromMe: false, id: 'TARGET' },
+							text: '👍'
+						}
+					}
+				},
+				{ id: 'AFTER' }
+			])
+		)
 
 		expect(observed).toEqual(['upsert:BEFORE', 'upsert:REACTION', 'reaction', 'upsert:AFTER'])
 	})
