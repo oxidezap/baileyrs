@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
-import { decodeProto, encodeProto } from 'whatsapp-rust-bridge'
+import { decodeProto, encodeMessageWireInfos, encodeProto } from 'whatsapp-rust-bridge'
 import { proto } from 'whatsapp-rust-bridge/proto-types'
 
 import { makeEventHandlers } from '../Socket/events.ts'
@@ -74,7 +74,7 @@ describe('quoted media enum regression', () => {
 		makeEventHandlers(ctx).onMessageBatch?.({
 			messageData: incomingBytes,
 			messageOffsets: new Uint32Array([0, incomingBytes.length]),
-			infos: [
+			...encodeMessageWireInfos([
 				{
 					chat: 'fixture-group@g.us',
 					sender: 'fixture-member@lid',
@@ -86,7 +86,7 @@ describe('quoted media enum regression', () => {
 					isViewOnce: false,
 					isOffline: false
 				}
-			]
+			])
 		})
 
 		expect(quoted).toBeDefined()

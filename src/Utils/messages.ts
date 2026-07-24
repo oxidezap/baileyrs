@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import LongRuntime from 'long'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
 import type { UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
@@ -375,7 +376,10 @@ export const generateWAMessageContent = async (
 		const extContent = { text: message.text } as WATextMessage
 
 		let urlInfo = message.linkPreview
-		if (typeof urlInfo === 'undefined') {
+		// Gate on the resolver before awaiting: without one the helper resolves
+		// to undefined anyway, and every plain text send would still pay for a
+		// promise plus a microtask turn.
+		if (typeof urlInfo === 'undefined' && options.getUrlInfo) {
 			urlInfo = await generateLinkPreviewIfRequired(message.text, options.getUrlInfo, options.logger)
 		}
 
@@ -679,21 +683,31 @@ export const generateWAMessageFromContent = (
 		}
 	}
 
-	message = WAProto.Message.create(message)
+	// `create` copies into a fresh instance; content built by
+	// `generateWAMessageContent` already is one, and the branches above mutate
+	// it in place regardless, so copying it again only duplicates the tree.
+	if (!(message instanceof WAProto.Message)) message = WAProto.Message.create(message)
 
-	const messageJSON = {
-		key: {
-			remoteJid: jid,
-			fromMe: true,
-			id: options?.messageId || '' // Rust generates the real message ID
-		},
-		message: message,
-		messageTimestamp: timestamp,
-		messageStubParameters: [],
-		participant: isJidGroup(jid) || isJidStatusBroadcast(jid) ? userJid : undefined, // TODO: Add support for LIDs
-		status: WAMessageStatus.PENDING
-	}
-	return WAProto.WebMessageInfo.fromObject(messageJSON) as WAMessage
+	// Direct construction instead of a `WebMessageInfo.fromObject` envelope:
+	// every value is already in its runtime type (`message` came from
+	// `Message.create` above), so the schema walk would only re-derive them.
+	// `new` keeps protobufjs parity, including the constructor's own
+	// `messageStubParameters` array. The `Long` cast mirrors the published
+	// facade shape for 64-bit fields (source-side WAProto types them as plain
+	// numbers via the bridge shapes).
+	const messageKey = new WAProto.MessageKey() as WAMessage['key']
+	messageKey.remoteJid = jid
+	messageKey.fromMe = true
+	messageKey.id = options?.messageId || '' // Rust generates the real message ID
+	const wm = new WAProto.WebMessageInfo() as WAMessage
+	wm.key = messageKey
+	wm.message = message
+	wm.messageTimestamp = LongRuntime.fromValue(timestamp) as unknown as WAMessage['messageTimestamp']
+	// TODO: Add support for LIDs
+	const participant = isJidGroup(jid) || isJidStatusBroadcast(jid) ? userJid : undefined
+	if (participant !== undefined) wm.participant = participant
+	wm.status = WAMessageStatus.PENDING
+	return wm
 }
 
 export const generateWAMessage = async (jid: string, content: AnyMessageContent, options: MessageGenerationOptions) => {

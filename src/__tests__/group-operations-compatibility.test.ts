@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import { makeCommunityMethods } from '../Socket/communities.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import { WAMessageStubType } from '../Types/index.ts'
@@ -59,6 +60,36 @@ describe('group operation compatibility', () => {
 		assert.equal(upsert.messages[0]?.messageStubType, WAMessageStubType.GROUP_PARTICIPANT_ADD)
 		assert.deepEqual(upsert.messages[0]?.messageStubParameters, [
 			JSON.stringify({ id: 'bot@s.whatsapp.net', lid: 'bot@lid', name: 'Bot' })
+		])
+	})
+
+	// The `prev` conflict token that makes an update of an existing description
+	// work is resolved by the core; this side only has to hand the description
+	// over untouched, including the `undefined` that means "delete".
+	it('forwards description updates and deletions to the same operation', async () => {
+		const calls: unknown[][] = []
+		const client = {
+			groupUpdateDescription: async (...args: unknown[]) => {
+				calls.push(args)
+			}
+		} as unknown as WasmWhatsAppClient
+		const ev = Object.assign(new EventEmitter(), {
+			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
+		})
+		const ctx = { ev, getClient: async () => client } as unknown as SocketContext
+		const groups = makeGroupMethods(ctx)
+
+		await groups.groupUpdateDescription('120363000000000001@g.us', 'new description')
+		await groups.groupUpdateDescription('120363000000000001@g.us')
+		await makeCommunityMethods(ctx, groups).communityUpdateDescription(
+			'120363000000000002@g.us',
+			'community description'
+		)
+
+		assert.deepEqual(calls, [
+			['120363000000000001@g.us', 'new description'],
+			['120363000000000001@g.us', undefined],
+			['120363000000000002@g.us', 'community description']
 		])
 	})
 })

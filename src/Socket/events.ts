@@ -7,10 +7,21 @@
  * is a compile error.
  */
 
-import { BinaryReader } from 'whatsapp-rust-bridge'
+import Long from 'long'
+import {
+	BinaryReader,
+	decodeMessageWireInfos,
+	decodeReceiptWireBatch,
+	decodeServerAckWireBatch
+} from 'whatsapp-rust-bridge'
 import type {
 	HistorySyncWireBatch,
 	MessageWireBatch,
+	MessageWireInfo,
+	ReceiptWireBatch,
+	ReceiptWireData,
+	ServerAckWireBatch,
+	ServerAckWireData,
 	WhatsAppEvent,
 	WhatsAppEventCallbacks
 } from 'whatsapp-rust-bridge'
@@ -82,18 +93,26 @@ const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
  * bridge → canonical → Baileys pipeline. Adapters never reach for the proto.
  */
 const canonicalMessageToWAMessage = (m: CanonicalMessage): WAMessage => {
-	const wm = WAProto.WebMessageInfo.fromObject({
-		key: {
-			remoteJid: m.chatJid,
-			fromMe: m.isFromMe,
-			id: m.id,
-			participant: m.senderJid
-		},
-		message: m.messageProto,
-		messageTimestamp: m.timestamp,
-		pushName: m.pushName,
-		status: WAProto.WebMessageInfo.Status.SERVER_ACK
-	}) as WAMessage
+	// Direct construction instead of a `WebMessageInfo.fromObject` envelope:
+	// every input is already in its wire-correct runtime type, so the schema
+	// walk would only re-derive them field by field on the hottest path. `new`
+	// keeps protobufjs parity (instanceof, prototype defaults and own
+	// repeated/map fields), and `Message.fromObject` still normalizes the
+	// payload while short-circuiting the already-decoded runtime instances.
+	const key = new WAProto.MessageKey() as WAMessage['key']
+	key.remoteJid = m.chatJid
+	key.fromMe = m.isFromMe
+	key.id = m.id
+	if (m.senderJid !== undefined) key.participant = m.senderJid
+	const wm = new WAProto.WebMessageInfo() as WAMessage
+	wm.key = key
+	if (m.messageProto !== undefined) wm.message = WAProto.Message.fromObject(m.messageProto)
+	// Source-side WAProto types 64-bit fields via the bridge shapes (plain
+	// number); the published facade and the previous fromObject path both
+	// carry a protobufjs `Long` here, so keep that runtime shape.
+	wm.messageTimestamp = Long.fromValue(m.timestamp) as unknown as WAMessage['messageTimestamp']
+	if (m.pushName !== undefined) wm.pushName = m.pushName
+	wm.status = WAProto.WebMessageInfo.Status.SERVER_ACK
 	if (m.participantAlt) wm.key.participantAlt = m.participantAlt
 	if (m.remoteJidAlt) wm.key.remoteJidAlt = m.remoteJidAlt
 	if (m.isViewOnce) wm.key.isViewOnce = true
@@ -894,9 +913,16 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 			return
 		}
 		const messageCount = batch.messageOffsets.length - MESSAGE_WIRE_OFFSET_SENTINEL_COUNT
-		if (batch.infos.length !== messageCount) {
+		let infos: MessageWireInfo[]
+		try {
+			infos = decodeMessageWireInfos(batch)
+		} catch (err) {
+			ctx.logger.error({ err }, 'failed to decode message wire metadata records')
+			return
+		}
+		if (infos.length !== messageCount) {
 			ctx.logger.error(
-				{ infoCount: batch.infos.length, messageCount },
+				{ infoCount: infos.length, messageCount },
 				'message wire batch metadata count does not match its payload count'
 			)
 			return
@@ -922,7 +948,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 			}
 		}
 		dispatchCanonicalBatch(ctx, dispatchCtx, messageCount, index =>
-			adaptBridgeMessageWire(messages[index], batch.infos[index]!, ctx.logger)
+			adaptBridgeMessageWire(messages[index], infos[index]!, ctx.logger)
 		)
 	}
 
@@ -932,10 +958,38 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		return decoded.skippedConversations
 	}
 
+	// Packed receipt/ack batches reconstruct the single-event wire shape and
+	// reuse the same adapter path, so transport is the only thing that changes.
+	const onReceiptBatch = (batch: ReceiptWireBatch) => {
+		let receipts: ReceiptWireData[]
+		try {
+			receipts = decodeReceiptWireBatch(batch)
+		} catch (err) {
+			ctx.logger.error({ err }, 'failed to decode receipt wire batch')
+			return
+		}
+		// The decoded payload matches the single-event wire shape; the union's
+		// declared type is narrower than the adapter's tolerance.
+		for (const data of receipts) onEvent({ type: 'receipt', data } as unknown as WhatsAppEvent)
+	}
+
+	const onServerAckBatch = (batch: ServerAckWireBatch) => {
+		let acks: ServerAckWireData[]
+		try {
+			acks = decodeServerAckWireBatch(batch)
+		} catch (err) {
+			ctx.logger.error({ err }, 'failed to decode server-ack wire batch')
+			return
+		}
+		for (const data of acks) onEvent({ type: 'server_ack', data } as unknown as WhatsAppEvent)
+	}
+
 	return {
 		onEvent,
 		onMessageBatch,
 		onHistorySyncBatch,
+		onReceiptBatch,
+		onServerAckBatch,
 		historySyncConversationTypes: CONVERSATION_HISTORY_SYNC_TYPES
 	}
 }

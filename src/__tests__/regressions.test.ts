@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { encodeProto } from 'whatsapp-rust-bridge'
+import { encodeMessageWireInfos, encodeProto, encodeReceiptWireBatch } from 'whatsapp-rust-bridge'
 import type { proto as protoTypes } from 'whatsapp-rust-bridge/proto-types'
 import { proto } from 'whatsapp-rust-bridge/proto-types'
 
@@ -114,8 +114,8 @@ const baseMessageWireInfo = {
 
 /**
  * Build a `MessageWireBatch` the way the bridge does: concatenated encoded
- * `proto.Message` payloads, an offset table with the leading sentinel, and one
- * camelCase metadata envelope per payload.
+ * `proto.Message` payloads, an offset table with the leading sentinel, and the
+ * packed metadata records with their string table.
  */
 const wireMessageBatch = (
 	entries: ReadonlyArray<{ id: string; message?: Record<string, unknown>; info?: Record<string, unknown> }>
@@ -130,7 +130,7 @@ const wireMessageBatch = (
 	return {
 		messageData,
 		messageOffsets,
-		infos: entries.map(entry => ({ ...baseMessageWireInfo, ...entry.info, id: entry.id }))
+		...encodeMessageWireInfos(entries.map(entry => ({ ...baseMessageWireInfo, ...entry.info, id: entry.id })))
 	}
 }
 
@@ -609,6 +609,36 @@ describe('dispatch: receipt fan-out', () => {
 	it('emits one update per messageId', () => {
 		const updates = run('read', ['A', 'B', 'C'])
 		expect(updates.map(u => u.key.id)).toEqual(['A', 'B', 'C'])
+	})
+
+	it('dispatches a packed receipt batch identically to single events', () => {
+		const { ctx, ev } = makeCtx()
+		const updates: BaileysEventMap['message-receipt.update'][] = []
+		ev.on('message-receipt.update', payload => updates.push(payload))
+
+		makeEventHandlers(ctx).onReceiptBatch?.(
+			encodeReceiptWireBatch([
+				{
+					source: { chat: jid('5511'), sender: jid('5511'), is_group: false, is_from_me: false },
+					message_ids: ['A', 'B'],
+					timestamp: 1730000000,
+					type: 'Read',
+					offline: false
+				},
+				{
+					source: { chat: jid('5522'), sender: jid('5522'), is_group: false, is_from_me: false },
+					message_ids: ['C'],
+					timestamp: 1730000001,
+					type: 'Played',
+					offline: true
+				}
+			])
+		)
+
+		expect(updates.length).toBe(2)
+		expect(updates[0]?.map(u => u.key.id)).toEqual(['A', 'B'])
+		expect(updates[0]?.[0]?.receipt.readTimestamp).toBe(1730000000)
+		expect(updates[1]?.[0]?.receipt.playedTimestamp).toBe(1730000001)
 	})
 
 	it('routes type=read into receipt.readTimestamp', () => {

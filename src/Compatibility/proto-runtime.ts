@@ -295,13 +295,19 @@ class ProtoCompatibilityRuntime {
 	): ProtoConstructor {
 		const convertToObject = (message: DynamicObject): DynamicObject => this.toObject(schemaId, message, JSON_OPTIONS)
 		const path = PROTO_MESSAGE_SCHEMAS[schemaId]![0]
+		// Indexed loops: these run for every constructed instance and stay on
+		// the megamorphic path at runtime, where V8 does not elide for..of
+		// iterator allocations.
 		const constructor = function (this: DynamicObject, properties?: DynamicObject | null): void {
-			for (const field of fields) {
+			for (let i = 0; i < fields.length; i++) {
+				const field = fields[i]!
 				if (field[3] & PROTO_FIELD_FLAG.repeated) this[field[0]] = []
 				else if (field[3] & PROTO_FIELD_FLAG.map) this[field[0]] = {}
 			}
 			if (properties) {
-				for (const key of Object.keys(properties)) {
+				const keys = Object.keys(properties)
+				for (let i = 0; i < keys.length; i++) {
+					const key = keys[i]!
 					const value = properties[key]
 					if (value !== null && value !== undefined) this[key] = value
 				}
@@ -399,7 +405,12 @@ class ProtoCompatibilityRuntime {
 		if (input instanceof constructor) return input
 		const data = input as DynamicObject
 		const instance = new constructor()
-		for (const field of PROTO_MESSAGE_SCHEMAS[schemaId]![1]) {
+		// Indexed loop: this walks the full schema per converted node on the
+		// megamorphic path, where V8 does not elide for..of iterator
+		// allocations (~90 iterator results per WebMessageInfo envelope).
+		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		for (let i = 0; i < fields.length; i++) {
+			const field = fields[i]!
 			const value = data[field[0]]
 			if (value === null || value === undefined) continue
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
