@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { encodeMessageWireInfos, encodeProto, encodeReceiptWireBatch } from 'whatsapp-rust-bridge'
+import { encodeMessageWireBatch, encodeProto, encodeReceiptWireBatch } from 'whatsapp-rust-bridge'
 import type { proto as protoTypes } from 'whatsapp-rust-bridge/proto-types'
 import { proto } from 'whatsapp-rust-bridge/proto-types'
 
@@ -112,27 +112,16 @@ const baseMessageWireInfo = {
 	isOffline: false
 }
 
-/**
- * Build a `MessageWireBatch` the way the bridge does: concatenated encoded
- * `proto.Message` payloads, an offset table with the leading sentinel, and the
- * packed metadata records with their string table.
- */
+/** Build a `MessageWireBatch` exactly as the bridge writes it. */
 const wireMessageBatch = (
 	entries: ReadonlyArray<{ id: string; message?: Record<string, unknown>; info?: Record<string, unknown> }>
-) => {
-	const encoded = entries.map(entry => encodeProto('Message', entry.message ?? { conversation: entry.id }))
-	const messageData = new Uint8Array(encoded.reduce((total, part) => total + part.length, 0))
-	const messageOffsets = new Uint32Array(encoded.length + 1)
-	for (let index = 0; index < encoded.length; index++) {
-		messageData.set(encoded[index]!, messageOffsets[index])
-		messageOffsets[index + 1] = messageOffsets[index]! + encoded[index]!.length
-	}
-	return {
-		messageData,
-		messageOffsets,
-		...encodeMessageWireInfos(entries.map(entry => ({ ...baseMessageWireInfo, ...entry.info, id: entry.id })))
-	}
-}
+) =>
+	encodeMessageWireBatch(
+		entries.map(entry => ({
+			payload: encodeProto('Message', entry.message ?? { conversation: entry.id }),
+			info: { ...baseMessageWireInfo, ...entry.info, id: entry.id }
+		}))
+	)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bridge adapter — sync actions

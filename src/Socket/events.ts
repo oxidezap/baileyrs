@@ -10,14 +10,14 @@
 import Long from 'long'
 import {
 	BinaryReader,
-	decodeMessageWireInfos,
+	decodeMessageWireBatch,
 	decodeReceiptWireBatch,
 	decodeServerAckWireBatch
 } from 'whatsapp-rust-bridge'
 import type {
 	HistorySyncWireBatch,
 	MessageWireBatch,
-	MessageWireInfo,
+	MessageWireBatchView,
 	ReceiptWireBatch,
 	ReceiptWireData,
 	ServerAckWireBatch,
@@ -60,7 +60,6 @@ import type { SocketContext } from './types.ts'
 const CANONICAL_MESSAGE_EVENT = 'message'
 const MESSAGE_UPSERT_APPEND = 'append'
 const MESSAGE_UPSERT_NOTIFY = 'notify'
-const MESSAGE_WIRE_OFFSET_SENTINEL_COUNT = 1
 
 /** Emit CB: pattern events on the ws EventEmitter for retrocompat. */
 const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
@@ -908,25 +907,17 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 	}
 
 	const onMessageBatch = (batch: MessageWireBatch) => {
-		if (batch.messageOffsets.length < MESSAGE_WIRE_OFFSET_SENTINEL_COUNT) {
-			ctx.logger.error('message wire batch is missing its leading offset')
-			return
-		}
-		const messageCount = batch.messageOffsets.length - MESSAGE_WIRE_OFFSET_SENTINEL_COUNT
-		let infos: MessageWireInfo[]
+		// The batch crosses as one buffer; the decoder validates its header and
+		// returns views over it, so payload count and metadata count agree by
+		// construction.
+		let view: MessageWireBatchView
 		try {
-			infos = decodeMessageWireInfos(batch)
+			view = decodeMessageWireBatch(batch)
 		} catch (err) {
-			ctx.logger.error({ err }, 'failed to decode message wire metadata records')
+			ctx.logger.error({ err }, 'failed to decode the message wire batch')
 			return
 		}
-		if (infos.length !== messageCount) {
-			ctx.logger.error(
-				{ infoCount: infos.length, messageCount },
-				'message wire batch metadata count does not match its payload count'
-			)
-			return
-		}
+		const { messageData, messageOffsets, infos } = view
 
 		// Decode through the runtime facade so each payload materializes as a
 		// hydrated runtime instance: `WebMessageInfo.fromObject` then keeps the
@@ -934,12 +925,12 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		// and reallocating the whole tree — the dominant per-message allocation
 		// cost on the hot path. Lenient like the history-sync decoder: one
 		// malformed payload is skipped, not fatal to the batch.
-		const messages: unknown[] = Array.from({ length: messageCount })
-		const reader = new BinaryReader(batch.messageData)
-		for (let index = 0; index < messageCount; index++) {
+		const messages: unknown[] = Array.from({ length: infos.length })
+		const reader = new BinaryReader(messageData)
+		for (let index = 0; index < infos.length; index++) {
 			try {
-				const start = batch.messageOffsets[index]!
-				const end = batch.messageOffsets[index + 1]!
+				const start = messageOffsets[index]!
+				const end = messageOffsets[index + 1]!
 				reader.pos = start
 				messages[index] = WAProto.Message.decode(reader, end - start)
 			} catch (err) {
@@ -947,7 +938,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 				ctx.logger.warn({ err, index }, 'skipping malformed wire message')
 			}
 		}
-		dispatchCanonicalBatch(ctx, dispatchCtx, messageCount, index =>
+		dispatchCanonicalBatch(ctx, dispatchCtx, infos.length, index =>
 			adaptBridgeMessageWire(messages[index], infos[index]!, ctx.logger)
 		)
 	}

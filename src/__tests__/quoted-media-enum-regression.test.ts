@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
-import { decodeProto, encodeMessageWireInfos, encodeProto } from 'whatsapp-rust-bridge'
+import { decodeProto, encodeMessageWireBatch, encodeProto } from 'whatsapp-rust-bridge'
 import { proto } from 'whatsapp-rust-bridge/proto-types'
 
 import { makeEventHandlers } from '../Socket/events.ts'
@@ -71,23 +71,24 @@ describe('quoted media enum regression', () => {
 			quoted = upsert.messages[0]
 		})
 
-		makeEventHandlers(ctx).onMessageBatch?.({
-			messageData: incomingBytes,
-			messageOffsets: new Uint32Array([0, incomingBytes.length]),
-			...encodeMessageWireInfos([
+		makeEventHandlers(ctx).onMessageBatch?.(
+			encodeMessageWireBatch([
 				{
-					chat: 'fixture-group@g.us',
-					sender: 'fixture-member@lid',
-					isGroup: true,
-					isFromMe: false,
-					id: 'TOIMG-COMMAND',
-					timestamp: 1_750_000_000,
-					pushName: 'Fixture member',
-					isViewOnce: false,
-					isOffline: false
+					payload: incomingBytes,
+					info: {
+						chat: 'fixture-group@g.us',
+						sender: 'fixture-member@lid',
+						isGroup: true,
+						isFromMe: false,
+						id: 'TOIMG-COMMAND',
+						timestamp: 1_750_000_000,
+						pushName: 'Fixture member',
+						isViewOnce: false,
+						isOffline: false
+					}
 				}
 			])
-		})
+		)
 
 		expect(quoted).toBeDefined()
 		expect(quoted?.message?.extendedTextMessage?.previewType).toBe(previewType)
