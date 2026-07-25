@@ -12,7 +12,10 @@ const facade = createProtoCompatibilityFacade(bridgeProto)
 // Re-exporting the original namespace alias preserves its generated type
 // namespace for internal `proto.IMessage` references. The facade already
 // captured every neutral codec before these top-level values are replaced.
-Object.assign(bridgeProto, facade.proto)
+//
+// Descriptors, not values: the facade's entries are lazy getters, and
+// Object.assign would read — and therefore build — every one of them.
+Object.defineProperties(bridgeProto, Object.getOwnPropertyDescriptors(facade.proto))
 
 export { bridgeProto as proto }
 
