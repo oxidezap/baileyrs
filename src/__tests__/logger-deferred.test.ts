@@ -96,11 +96,35 @@ describe('deferred logger', () => {
 		// the assignment would keep calling the silent one.
 		const silent = logger.info
 		logger.level = 'info'
+		let lines: string[] = []
 		try {
 			expect(logger.info).not.toBe(silent)
+			lines = captureStdout(() => logger.info('re-enabled'))
 		} finally {
 			logger.level = 'silent'
 		}
+		expect(lines).toHaveLength(1)
+	})
+
+	it('keeps a stable child function and honours child options', () => {
+		expect(logger.child).toBe(logger.child)
+		const child = logger.child({ e: 5 }, { level: 'debug' })
+		expect(child.level).toBe('debug')
+		const lines = captureStdout(() => child.debug('from child options'))
+		expect(lines).toHaveLength(1)
+		expect(JSON.parse(lines[0]!)).toMatchObject({ level: 20, e: 5, msg: 'from child options' })
+	})
+
+	it('forwards defineProperty to the resolved logger', () => {
+		Object.defineProperty(logger, 'customMarker', {
+			configurable: true,
+			enumerable: true,
+			value: 42,
+			writable: true
+		})
+		expect((logger as unknown as { customMarker: number }).customMarker).toBe(42)
+		expect(Object.keys(logger)).toContain('customMarker')
+		delete (logger as unknown as { customMarker?: number }).customMarker
 	})
 
 	it('emits from a child at a level assigned to an unresolved parent', async () => {

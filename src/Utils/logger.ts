@@ -1,4 +1,4 @@
-import type { Logger, pino as PinoFactory } from 'pino'
+import type { ChildLoggerOptions, Logger, pino as PinoFactory } from 'pino'
 import { createRequire } from 'node:module'
 
 export interface ILogger {
@@ -79,7 +79,11 @@ interface DeferredParent {
 	resolve: () => Logger
 }
 
-const createDeferredLogger = (bindings?: Record<string, unknown>, parent?: DeferredParent): Logger => {
+const createDeferredLogger = (
+	bindings?: Record<string, unknown>,
+	parent?: DeferredParent,
+	childOptions?: ChildLoggerOptions
+): Logger => {
 	let resolved: Logger | undefined
 	let pendingLevel: string | undefined
 	const members = new Map<PropertyKey, unknown>()
@@ -87,23 +91,29 @@ const createDeferredLogger = (bindings?: Record<string, unknown>, parent?: Defer
 	const resolve = (): Logger => {
 		if (!resolved) {
 			const source = parent ? parent.resolve() : resolveRootLogger()
-			resolved = bindings ? source.child(bindings) : source
+			resolved = bindings ? source.child(bindings, childOptions) : source
 			if (pendingLevel !== undefined) resolved.level = pendingLevel
 		}
 		return resolved
 	}
 	const peekLevel = (): string =>
-		resolved?.level ?? pendingLevel ?? parent?.level() ?? process.env.BAILEYRS_LOG_LEVEL ?? DEFAULT_LEVEL
+		resolved?.level ??
+		pendingLevel ??
+		childOptions?.level ??
+		parent?.level() ??
+		process.env.BAILEYRS_LOG_LEVEL ??
+		DEFAULT_LEVEL
 	const self: DeferredParent = { level: peekLevel, resolve }
+	// Hoisted so `logger.child` keeps the stable identity a plain property has.
+	const child = (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger =>
+		createDeferredLogger(extra, self, options)
 
 	// Typed as pino's Logger, not ILogger: narrowing would reject `logger.fatal(...)`
 	// at compile time even though the proxy forwards it.
 	const target = {} as Logger
 	return new Proxy(target, {
 		get(_target, property) {
-			if (property === 'child') {
-				return (extra: Record<string, unknown>): Logger => createDeferredLogger(extra, self)
-			}
+			if (property === 'child') return child
 			if (property === 'level' && !resolved) return peekLevel()
 			const cached = members.get(property)
 			if (cached !== undefined) return cached
@@ -132,6 +142,12 @@ const createDeferredLogger = (bindings?: Record<string, unknown>, parent?: Defer
 			members.delete(property)
 			delete (resolve() as unknown as Record<PropertyKey, unknown>)[property]
 			return true
+		},
+		defineProperty(_target, property, descriptor) {
+			// Forwarded, or the definition would land on the empty target while
+			// every other trap kept answering from the resolved logger.
+			members.clear()
+			return Reflect.defineProperty(resolve(), property, descriptor)
 		},
 		ownKeys() {
 			return Reflect.ownKeys(resolve())
