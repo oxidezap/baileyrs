@@ -209,28 +209,81 @@ const lookupPath = (root: DynamicObject, path: string): unknown => {
 	return current
 }
 
-const installPath = (root: DynamicObject, path: string, value: unknown): void => {
-	const segments = path.split('.')
-	const leaf = segments.pop()
-	if (!leaf) throw new Error(`invalid protobuf path: ${path}`)
-	let current = root
-	for (const segment of segments) {
-		const next = current[segment]
-		if (!isObject(next) && typeof next !== 'function') current[segment] = {}
-		current = current[segment] as DynamicObject
-	}
-	current[leaf] = value
-}
-
 const isSourceCodec = (value: unknown): value is SourceCodec =>
 	(isObject(value) || typeof value === 'function') &&
 	typeof (value as DynamicObject).encode === 'function' &&
 	typeof (value as DynamicObject).decode === 'function'
 
-const schemaDepth = (path: string): number => path.split('.').length
+/**
+ * The namespace is installed from this tree rather than by walking string paths,
+ * because walking would have to *read* each container to reach its children —
+ * and reading is what the lazy properties avoid.
+ */
+interface SchemaNode {
+	children: Map<string, SchemaNode>
+	enumId?: number
+	messageId?: number
+	/** Memoized so every path to this node yields the same object. */
+	value?: unknown
+}
+
+const buildSchemaTree = (messagePaths: readonly string[], enumPaths: readonly string[]): Map<string, SchemaNode> => {
+	const roots = new Map<string, SchemaNode>()
+	const nodeFor = (path: string): SchemaNode => {
+		let level = roots
+		let node: SchemaNode | undefined
+		for (const segment of path.split('.')) {
+			node = level.get(segment)
+			if (!node) {
+				node = { children: new Map() }
+				level.set(segment, node)
+			}
+			level = node.children
+		}
+		if (!node) throw new Error(`invalid protobuf path: ${path}`)
+		return node
+	}
+	messagePaths.forEach((path, messageId) => {
+		nodeFor(path).messageId = messageId
+	})
+	enumPaths.forEach((path, enumId) => {
+		nodeFor(path).enumId = enumId
+	})
+	return roots
+}
+
+/**
+ * Self-replacing getter, so only the first read pays. It stays enumerable,
+ * writable and configurable so the entry behaves exactly like the eagerly
+ * installed value it replaced.
+ *
+ * The replacement targets the *receiver*, not `target`: these descriptors are
+ * also copied onto the exported namespace, so writing back to `target` would
+ * leave the object actually being read still holding an accessor and rebuild on
+ * every access — 7.4% of process CPU when this was wrong.
+ */
+const defineLazyValue = (target: DynamicObject, key: string, build: () => unknown): void => {
+	const settle = (receiver: unknown, value: unknown): void => {
+		const owner = (isObject(receiver) || typeof receiver === 'function' ? receiver : target) as DynamicObject
+		Object.defineProperty(owner, key, { configurable: true, enumerable: true, value, writable: true })
+	}
+	Object.defineProperty(target, key, {
+		configurable: true,
+		enumerable: true,
+		get(this: unknown): unknown {
+			const value = build()
+			settle(this, value)
+			return value
+		},
+		set(this: unknown, value: unknown): void {
+			settle(this, value)
+		}
+	})
+}
 
 class ProtoCompatibilityRuntime {
-	readonly constructors: ProtoConstructor[]
+	/** Sparse: filled by `constructorFor`, never by the constructor. */
+	readonly constructors: Array<ProtoConstructor | undefined>
 	readonly enums: EnumRuntime[]
 	readonly messageFields: readonly (readonly ProtoFieldSchema[])[]
 	readonly messageFieldsByName: readonly Readonly<Record<string, ProtoFieldSchema>>[]
@@ -253,24 +306,51 @@ class ProtoCompatibilityRuntime {
 			const candidate = lookupPath(sourceNamespace, path)
 			return isSourceCodec(candidate) ? candidate : undefined
 		})
-		this.constructors = PROTO_MESSAGE_SCHEMAS.map(([, fields], schemaId) =>
-			this.makeConstructor(schemaId, fields, this.sourceCodecs[schemaId])
-		)
+		// Building all 498 eagerly cost ~4.6 MB of RSS in every importing process
+		// while a full connection touches under a dozen. `Array.from` rather than
+		// `new Array(n)` keeps the array packed, so `constructorFor`'s indexed read
+		// stays on the fast element kind.
+		this.constructors = Array.from({ length: PROTO_MESSAGE_SCHEMAS.length })
 		this.unsupportedCodecs = Object.freeze(
 			PROTO_MESSAGE_SCHEMAS.flatMap(([path], schemaId) => (this.sourceCodecs[schemaId] ? [] : [path]))
 		)
 
-		const messageIds = PROTO_MESSAGE_SCHEMAS.map((_, index) => index).toSorted(
-			(left, right) => schemaDepth(PROTO_MESSAGE_SCHEMAS[left]![0]) - schemaDepth(PROTO_MESSAGE_SCHEMAS[right]![0])
+		const tree = buildSchemaTree(
+			PROTO_MESSAGE_SCHEMAS.map(([path]) => path),
+			PROTO_ENUM_SCHEMAS.map(([path]) => path)
 		)
-		for (const schemaId of messageIds) {
-			installPath(this.namespace, PROTO_MESSAGE_SCHEMAS[schemaId]![0], this.constructors[schemaId])
-		}
-		const enumIds = PROTO_ENUM_SCHEMAS.map((_, index) => index).toSorted(
-			(left, right) => schemaDepth(PROTO_ENUM_SCHEMAS[left]![0]) - schemaDepth(PROTO_ENUM_SCHEMAS[right]![0])
-		)
-		for (const enumId of enumIds)
-			installPath(this.namespace, PROTO_ENUM_SCHEMAS[enumId]![0], this.enums[enumId]!.publicValue)
+		for (const [name, node] of tree) this.installNode(this.namespace, name, node)
+	}
+
+	/**
+	 * Nested types are installed only once their container is read, so using a
+	 * container does not build what is nested inside it.
+	 */
+	private installNode(target: DynamicObject, name: string, node: SchemaNode): void {
+		defineLazyValue(target, name, () => {
+			// Build once: this getter is reachable from both this namespace and the
+			// exported copy, and a second build would reinstall accessors over
+			// entries a caller had already resolved.
+			if (node.value === undefined) {
+				const value: unknown =
+					node.messageId !== undefined
+						? this.constructorFor(node.messageId)
+						: node.enumId !== undefined
+							? this.enums[node.enumId]!.publicValue
+							: {}
+				node.value = value
+				for (const [childName, child] of node.children) this.installNode(value as DynamicObject, childName, child)
+			}
+			return node.value
+		})
+	}
+
+	private constructorFor(schemaId: number): ProtoConstructor {
+		return (this.constructors[schemaId] ??= this.makeConstructor(
+			schemaId,
+			PROTO_MESSAGE_SCHEMAS[schemaId]![1],
+			this.sourceCodecs[schemaId]
+		))
 	}
 
 	private makeEnum(entries: readonly (string | number)[]): EnumRuntime {
@@ -401,7 +481,7 @@ class ProtoCompatibilityRuntime {
 	}
 
 	private fromObject(schemaId: number, input: unknown): DynamicObject {
-		const constructor = this.constructors[schemaId]!
+		const constructor = this.constructorFor(schemaId)
 		if (input instanceof constructor) return input
 		const data = input as DynamicObject
 		const instance = new constructor()
@@ -591,7 +671,7 @@ class ProtoCompatibilityRuntime {
 			}
 		}
 		if (hasOwn(object, 'toJSON')) delete object.toJSON
-		Object.setPrototypeOf(object, this.constructors[schemaId]!.prototype)
+		Object.setPrototypeOf(object, this.constructorFor(schemaId).prototype)
 		return object
 	}
 
