@@ -942,9 +942,12 @@ export const downloadContentFromMessage = async (
 		)
 	}
 
+	// `url` is seeded because the media guard downstream keys off its presence,
+	// and content addressed only by `directPath` (history-sync notifications
+	// carry no `url` field at all) would otherwise be rejected as non-media.
 	const fakeMessage = {
 		key: {} as WAMessage['key'],
-		message: { [`${type}Message`]: mediaContent } as WAMessageContent
+		message: { [`${type}Message`]: { url: null, ...mediaContent } } as WAMessageContent
 	} as WAMessage
 
 	return downloadMediaMessage(fakeMessage, 'stream', opts, {
