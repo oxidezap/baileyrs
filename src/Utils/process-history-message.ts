@@ -11,9 +11,7 @@
  * keeping the WAProto namespace as our re-export.
  */
 
-import { pipeline } from 'node:stream/promises'
-import { promisify } from 'node:util'
-import { createInflate, inflate } from 'node:zlib'
+import { inflateZlib } from 'whatsapp-rust-bridge'
 import { proto } from '../WAProto/runtime.ts'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
@@ -25,7 +23,6 @@ import { downloadContentFromMessage, normalizeMessageContent } from './messages.
 import { createSparseArray } from './sparse-array.ts'
 
 const STUB = WAProto.WebMessageInfo.StubType
-const inflatePromise = promisify(inflate)
 
 const extractPnFromMessages = (messages: proto.IHistorySyncMsg[]): string | undefined => {
 	for (let index = 0; index < messages.length; index++) {
@@ -219,11 +216,9 @@ export const downloadHistory = async (
 	options: RequestInit
 ): Promise<proto.HistorySync> => {
 	const stream = await downloadContentFromMessage(msg, 'md-msg-hist', { options })
-	const inflater = createInflate()
-	const chunks: Buffer[] = []
-	inflater.on('data', (chunk: Buffer) => chunks.push(chunk))
-	await pipeline(stream, inflater)
-	return proto.HistorySync.decode(Buffer.concat(chunks))
+	const compressed: Buffer[] = []
+	for await (const chunk of stream) compressed.push(chunk as Buffer)
+	return proto.HistorySync.decode(inflateZlib(Buffer.concat(compressed)))
 }
 
 /** Resolve inline or external history-sync content and normalize its public payload. */
@@ -233,7 +228,7 @@ export const downloadAndProcessHistorySyncNotification = async (
 	logger?: ILogger
 ): Promise<ProcessedHistorySync> => {
 	const historyMsg = msg.initialHistBootstrapInlinePayload
-		? proto.HistorySync.decode(await inflatePromise(msg.initialHistBootstrapInlinePayload))
+		? proto.HistorySync.decode(inflateZlib(msg.initialHistBootstrapInlinePayload))
 		: await downloadHistory(msg, options)
 
 	return processHistoryMessage(historyMsg, logger)
