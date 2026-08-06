@@ -23,8 +23,8 @@
  * everywhere.
  */
 
-import type { MessageWireInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
-import type { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
+import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
 import { processHistoryMessage } from '../Utils/process-history-message.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
@@ -767,8 +767,16 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	const action = isObject(data.action) ? data.action : undefined
 	if (!action) return null
 
-	const actionType = parseCallActionType(action.type)
-	const callId = asString(action.call_id)
+	// The bridge `CallAction` union narrows variant-specific fields only on the
+	// matching variant, and its group-call variants (group updates, rekeys,
+	// waiting rooms) carry no `call_id` at all. `parseCallActionType` admits
+	// none of those, so a runtime read through the action's own shape is safe —
+	// and is the cheapest way around TS's inability to follow our
+	// string-normalized discriminator back into the bridge union.
+	const fields = action as Record<string, unknown>
+
+	const actionType = parseCallActionType(fields.type)
+	const callId = asString(fields.call_id)
 	if (!actionType || !callId) {
 		logger?.debug({ data }, 'incoming_call adapter: missing action.type/call_id')
 		return null
@@ -777,15 +785,8 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	const canonicalAction: CanonicalCallAction = {
 		type: actionType,
 		callId,
-		callCreator: asJidAddressString(action.call_creator)
+		callCreator: asJidAddressString(fields.call_creator)
 	}
-	// The bridge `CallAction` union narrows variant-specific fields only
-	// on the matching variant. We've already validated `action.type` via
-	// `parseCallActionType`, so a runtime cast through the action's own
-	// shape is safe — reading fields off `unknown` is the cheapest way
-	// around TS's inability to follow our string-normalized discriminator
-	// back into the bridge union.
-	const fields = action as Record<string, unknown>
 	if (actionType === 'offer') {
 		canonicalAction.callerPn = asJidString(fields.caller_pn)
 		canonicalAction.callerCountryCode = asString(fields.caller_country_code)

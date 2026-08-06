@@ -1,7 +1,7 @@
 import type { WAMessage, WAMessageKey } from '../Types/index.ts'
 import { WAMessageStubType } from '../Types/index.ts'
 import { proto } from '../WAProto/runtime.ts'
-import { decryptEventResponsePayload, decryptPollVotePayload } from 'whatsapp-rust-bridge'
+import { decryptEventResponsePayload, decryptPollVotePayload } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	areJidsSameUser,
 	isHostedLidUser,

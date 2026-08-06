@@ -1,5 +1,5 @@
 import type { Buffer } from 'node:buffer'
-import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
+import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '../WAProto/runtime.ts'
 import type { Contact } from './Contact.ts'
 import type { MinimalMessage } from './Message.ts'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import P from 'pino'
 import type { SignalAuthState } from '../../Types/index.ts'
 import {

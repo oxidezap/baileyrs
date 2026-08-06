@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
-import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
+import type { WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import { makeEventHandler } from '../Socket/events.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, WAMessage } from '../Types/index.ts'

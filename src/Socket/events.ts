@@ -13,7 +13,7 @@ import {
 	decodeMessageWireBatch,
 	decodeReceiptWireBatch,
 	decodeServerAckWireBatch
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import type {
 	HistorySyncWireBatch,
 	MessageWireBatch,
@@ -24,7 +24,7 @@ import type {
 	ServerAckWireData,
 	WhatsAppEvent,
 	WhatsAppEventCallbacks
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import type { CanonicalEvent, CanonicalMessage } from '../Bridge/index.ts'
 import { adaptBridgeEvent, adaptBridgeMessageWire } from '../Bridge/index.ts'
 import { decodeHistorySyncWireBatch } from '../Bridge/history-sync-wire.ts'

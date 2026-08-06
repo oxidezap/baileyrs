@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { createRequire } from 'node:module'
 import type Long from 'long'
-import { BinaryReader } from 'whatsapp-rust-bridge'
+import { BinaryReader } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	PROTO_ENUM_SCHEMAS,
 	PROTO_FIELD_FLAG,

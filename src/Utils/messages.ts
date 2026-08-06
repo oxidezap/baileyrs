@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import LongRuntime from 'long'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
-import type { UploadMediaResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { UploadMediaResult, WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
 import {
 	CALL_AUDIO_PREFIX,

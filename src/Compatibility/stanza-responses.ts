@@ -1,4 +1,4 @@
-import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode } from '../Types/index.ts'
 
 type StanzaResponseClient = Pick<WasmWhatsAppClient, 'acknowledgeStanza' | 'rejectStanza' | 'requestMessageRetry'>

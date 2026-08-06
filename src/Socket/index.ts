@@ -7,7 +7,7 @@ import {
 	initWasmEngine,
 	type UploadMediaResult,
 	type WasmWhatsAppClient
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'

@@ -33,7 +33,7 @@ import {
 	type JsStoreCallbacks,
 	type JsTransportCallbacks,
 	type WasmWhatsAppClient
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import { expect } from '../expect.ts'
 
 // ---------------------------------------------------------------------------

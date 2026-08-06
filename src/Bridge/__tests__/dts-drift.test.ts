@@ -23,9 +23,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** Resolve `whatsapp_rust_bridge.d.ts` from the installed package. */
 function loadBridgeDts(): string {
 	const candidates = [
-		path.resolve(__dirname, '../../../node_modules/whatsapp-rust-bridge/dist/whatsapp_rust_bridge.d.ts'),
+		path.resolve(__dirname, '../../../node_modules/@oxidezap/whatsapp-rust-bridge/dist/whatsapp_rust_bridge.d.ts'),
 		// Pre-0.6.0-alpha.39 packages shipped the declarations under pkg/.
-		path.resolve(__dirname, '../../../node_modules/whatsapp-rust-bridge/pkg/whatsapp_rust_bridge.d.ts'),
+		path.resolve(__dirname, '../../../node_modules/@oxidezap/whatsapp-rust-bridge/pkg/whatsapp_rust_bridge.d.ts'),
 		// Sibling checkout, for local development against an unpublished bridge.
 		path.resolve(__dirname, '../../../../whatsapp-rust-bridge/pkg/whatsapp_rust_bridge.d.ts')
 	]

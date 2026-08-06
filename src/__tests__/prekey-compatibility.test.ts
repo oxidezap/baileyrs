@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { ILogger } from '../Utils/logger.ts'
 import { makePreKeyMethods } from '../Socket/prekeys.ts'
 

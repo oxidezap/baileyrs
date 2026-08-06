@@ -7,7 +7,7 @@ import type {
 	GroupParticipant as UpstreamGroupParticipant
 } from 'baileys'
 import { extractGroupMetadata } from 'baileys/lib/Socket/groups.js'
-import type { GroupMetadataResult } from 'whatsapp-rust-bridge'
+import type { GroupMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'

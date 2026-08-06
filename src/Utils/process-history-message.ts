@@ -11,7 +11,7 @@
  * keeping the WAProto namespace as our re-export.
  */
 
-import { inflateZlib } from 'whatsapp-rust-bridge'
+import { inflateZlib } from '@oxidezap/whatsapp-rust-bridge'
 import { proto } from '../WAProto/runtime.ts'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'

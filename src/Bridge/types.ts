@@ -14,7 +14,7 @@
  *   - Optional fields use `?` (omitted) rather than `null`.
  */
 
-import type { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 

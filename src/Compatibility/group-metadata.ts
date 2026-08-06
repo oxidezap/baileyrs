@@ -1,4 +1,4 @@
-import type { GroupMetadataResult } from 'whatsapp-rust-bridge'
+import type { GroupMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 import type { GroupMetadata, GroupParticipant } from '../Types/GroupMetadata.ts'
 import { WAMessageAddressingMode } from '../Types/Message.ts'
 import { isLidUser, jidEncode, jidNormalizedUser } from '../WABinary/jid-utils.ts'

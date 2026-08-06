@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
-import type { GroupMetadataResult, WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { GroupMetadataResult, WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { makeCommunityMethods } from '../Socket/communities.ts'
 import type { SocketContext } from '../Socket/types.ts'
 

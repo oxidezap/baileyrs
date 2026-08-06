@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import { deflateSync } from 'node:zlib'
-import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { proto } from '../WAProto/runtime.ts'
 import { _registerActiveBridgeClient } from '../Utils/messages.ts'
 import { downloadAndProcessHistorySyncNotification, downloadHistory } from '../Utils/process-history-message.ts'

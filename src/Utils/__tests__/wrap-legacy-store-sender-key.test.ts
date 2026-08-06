@@ -11,7 +11,7 @@ import { Buffer } from 'node:buffer'
 import { describe, test } from 'node:test'
 import { SenderKeyRecord } from 'baileys/lib/Signal/Group/sender-key-record.js'
 import { SenderChainKey } from 'baileys/lib/Signal/Group/sender-chain-key.js'
-import { proto as bridgeProto } from 'whatsapp-rust-bridge/proto-types'
+import { proto as bridgeProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { expect } from '../../__tests__/expect.ts'
 import { wrapLegacyStore } from '../wrap-legacy-store.ts'
 import {

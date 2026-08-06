@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
-import { decodeProto, encodeMessageWireBatch, encodeProto } from 'whatsapp-rust-bridge'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { decodeProto, encodeMessageWireBatch, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 
 import { makeEventHandlers } from '../Socket/events.ts'
 import { stripContextInfoForBridge } from '../Socket/messages.ts'
