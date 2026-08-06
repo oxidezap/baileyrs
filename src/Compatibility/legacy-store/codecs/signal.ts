@@ -8,7 +8,7 @@ import {
 	type LegacySessionRecordV1 as CoreLegacySessionRecordV1,
 	type LegacySessionV1 as CoreLegacySessionV1,
 	type SenderKeyRecordComponents
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import { JsonByteEncoding, LegacySession, NativeStore, TimeValue } from '../constants.ts'
 import { EMPTY_BYTES } from '../common.ts'
 import { NATIVE_ONLY_PROJECTION, type LegacyCodec } from '../types.ts'
@@ -54,9 +54,18 @@ interface LegacySenderKeyState {
 	senderMessageKeys?: Array<{ iteration?: number; seed?: Uint8Array | Buffer }>
 }
 
+/**
+ * The two shapes order their states in opposite directions: the core keeps the
+ * current state at the front and prunes from the back, while the legacy record
+ * is read back-to-front — `getSenderKeyState()` takes the last entry and
+ * `addSenderKeyState` drops the first one on overflow. Both conversions below
+ * therefore reverse. Carrying an order through unchanged writes the record
+ * upside down: the old implementation would send under a stale key and evict
+ * the freshest state instead of the oldest.
+ */
 function senderKeyToLegacy(nativeBytes: Uint8Array): Buffer {
 	const record = decodeSenderKeyRecordComponents(nativeBytes)
-	const states: LegacySenderKeyState[] = record.states.map(state => ({
+	const states: LegacySenderKeyState[] = record.states.toReversed().map(state => ({
 		senderKeyId: state.keyId,
 		senderChainKey: {
 			iteration: state.chainKey.iteration,
@@ -81,6 +90,8 @@ function senderKeyFromLegacy(value: unknown): Uint8Array {
 	const parsed = JSON.parse(Buffer.from(value).toString(JsonByteEncoding.UTF8), BufferJSON.reviver) as unknown
 	if (!Array.isArray(parsed)) throw new TypeError('legacy sender-key record must contain an array')
 
+	// Indexed against the stored order so a validation error names the state the
+	// caller can find in the record; reversed afterwards. See `senderKeyToLegacy`.
 	const record: SenderKeyRecordComponents = {
 		states: (parsed as LegacySenderKeyState[]).map((state, stateIndex) => ({
 			keyId: integer(state.senderKeyId, `sender-key state ${stateIndex} id`),
@@ -98,6 +109,7 @@ function senderKeyFromLegacy(value: unknown): Uint8Array {
 			}))
 		}))
 	}
+	record.states.reverse()
 	return encodeSenderKeyRecordComponents(record)
 }
 
@@ -132,6 +144,12 @@ interface LegacySessionEntry {
 interface LegacySessionJsonRecord {
 	_sessions: Record<string, LegacySessionEntry>
 	version: typeof LegacySession.VERSION
+	/**
+	 * Pre-v1 records carry the id here rather than on each entry; libsignal's
+	 * own deserialize copies it down as a migration. Reading such a record
+	 * without that fallback imports every session under registration id 0.
+	 */
+	registrationId?: number
 }
 
 const messageKeyIndex = (value: string): number => {
@@ -154,14 +172,14 @@ function messageKeysToLegacy(messageKeys: CoreLegacySessionMessageKeyV1[]): Reco
 	return Object.fromEntries(messageKeys.map(messageKey => [messageKey.index, toBase64(messageKey.seed)]))
 }
 
-function legacyEntryToCore(entry: LegacySessionEntry): CoreLegacySessionV1 {
+function legacyEntryToCore(entry: LegacySessionEntry, recordRegistrationId?: number): CoreLegacySessionV1 {
 	const ratchet = entry.currentRatchet
 	if (!entry._chains || typeof entry._chains !== 'object') {
 		throw new TypeError('legacy session is missing its chain catalog')
 	}
 
 	return {
-		registrationId: entry.registrationId ?? TimeValue.UNKNOWN_SECONDS,
+		registrationId: entry.registrationId ?? recordRegistrationId ?? TimeValue.UNKNOWN_SECONDS,
 		ratchet: {
 			keyPair: {
 				public: fromBase64(ratchet.ephemeralKeyPair.pubKey, 'sender ratchet public key'),
@@ -208,7 +226,7 @@ function sessionFromLegacy(value: unknown, defaults: SignalRecordDefaults | unde
 	const decoded: CoreLegacySessionRecordV1 = {
 		sessions: Object.entries(record._sessions).map(([indexKey, entry]) => ({
 			indexKey: fromBase64(indexKey, 'legacy session index key'),
-			session: legacyEntryToCore(entry)
+			session: legacyEntryToCore(entry, record.registrationId)
 		}))
 	}
 	return importLegacySessionRecordV1(decoded, {
