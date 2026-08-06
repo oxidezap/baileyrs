@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer'
 import { createHmac } from 'node:crypto'
 import { describe, test } from 'node:test'
 import SessionRecord from 'libsignal/src/session_record.js'
-import { proto as bridgeProto } from 'whatsapp-rust-bridge/proto-types'
+import { proto as bridgeProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { expect } from '../../__tests__/expect.ts'
 import { fill, makeWrapped, BRIDGE_SESSION_KEY_LID, UPSTREAM_SESSION_KEY_LID } from './_legacy-store-fixtures.ts'
 

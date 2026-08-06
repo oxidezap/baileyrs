@@ -1,4 +1,4 @@
-import type { MediaType as BridgeMediaType } from 'whatsapp-rust-bridge'
+import type { MediaType as BridgeMediaType } from '@oxidezap/whatsapp-rust-bridge'
 import type { MediaType } from '../Defaults/index.ts'
 
 const DIRECT_BRIDGE_MEDIA_TYPES = new Set<MediaType>([

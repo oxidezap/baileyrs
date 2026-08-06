@@ -4,7 +4,7 @@ import type {
 	Jid as NativeJid,
 	UsyncQuery as NativeUsyncQuery,
 	UsyncResponse as NativeUsyncResponse
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode } from '../Types/index.ts'
 import type { USyncQueryProtocol } from '../Types/USync.ts'
 import { makeUSyncMethods } from '../Socket/usync.ts'

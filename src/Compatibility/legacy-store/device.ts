@@ -1,6 +1,6 @@
 // Device credential projection for legacy Baileys authentication states.
 import { Buffer } from 'node:buffer'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { WA_DEFAULT_VERSION } from '../../Defaults/index.ts'
 import type { AuthenticationCreds } from '../../Types/index.ts'
 import { jidDecode, jidEncode, type JidServer } from '../../WABinary/jid-utils.ts'

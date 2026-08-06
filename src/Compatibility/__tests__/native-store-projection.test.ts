@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
+import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import { projectNativeStore } from '../legacy-store/native-projection.ts'
 import { NativeStore } from '../legacy-store/constants.ts'
 import { legacyKey, nativeKey } from '../legacy-store/routing.ts'

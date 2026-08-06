@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { encodeMessageWireBatch, encodeProto, encodeReceiptWireBatch } from 'whatsapp-rust-bridge'
-import type { proto as protoTypes } from 'whatsapp-rust-bridge/proto-types'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { encodeMessageWireBatch, encodeProto, encodeReceiptWireBatch } from '@oxidezap/whatsapp-rust-bridge'
+import type { proto as protoTypes } from '@oxidezap/whatsapp-rust-bridge/proto-types'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 
 import { adaptBridgeEvent } from '../Bridge/adapt.ts'
 import type { CanonicalEvent, CanonicalGroupAction } from '../Bridge/types.ts'

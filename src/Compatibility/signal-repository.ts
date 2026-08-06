@@ -1,4 +1,4 @@
-import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { LIDMapping, SignalAuthState, SignalRepositoryWithLIDStore } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import {

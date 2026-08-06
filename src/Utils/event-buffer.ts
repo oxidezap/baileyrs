@@ -1,5 +1,5 @@
 import EventEmitter from 'node:events'
-import type { proto } from 'whatsapp-rust-bridge/proto-types'
+import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type {
 	BaileysEvent,
 	BaileysEventEmitter,

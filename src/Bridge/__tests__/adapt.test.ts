@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test'
-import type { MessageWireInfo, WhatsAppEvent } from 'whatsapp-rust-bridge'
+import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import { adaptBridgeEvent, adaptBridgeMessageWire } from '../adapt.ts'
 import { expect } from '../../__tests__/expect.ts'
 import {

@@ -1,5 +1,5 @@
 // Native byte-store projection onto the public legacy key-store contract.
-import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
+import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import type { SignalCreds, SignalDataSet, SignalDataTypeMap, SignalKeyStore } from '../../Types/index.ts'
 import { LegacyStore, type ProjectedStoreName } from './constants.ts'
 import { createLegacyCodecs } from './codecs/index.ts'

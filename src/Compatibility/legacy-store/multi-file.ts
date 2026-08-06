@@ -1,6 +1,6 @@
 import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../../Types/index.ts'
 import { BufferJSON } from '../../Utils/generics.ts'
 import { JsonByteEncoding, LegacyMultiFile, LegacyStore } from './constants.ts'

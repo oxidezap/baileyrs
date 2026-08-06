@@ -2,7 +2,7 @@ import type {
 	ReceiverSessionChainComponents,
 	SenderSessionChainComponents,
 	SessionComponents
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 
 declare const bytes: Uint8Array
 

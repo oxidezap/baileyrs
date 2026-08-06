@@ -4,7 +4,7 @@
  * compatibility layer below translates constructor/object semantics while the
  * bridge remains the single protobuf codec shipped by this package.
  */
-import { proto as bridgeProto } from 'whatsapp-rust-bridge/proto-types'
+import { proto as bridgeProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { createProtoCompatibilityFacade } from '../Compatibility/proto-runtime.ts'
 
 const facade = createProtoCompatibilityFacade(bridgeProto)

@@ -1,5 +1,5 @@
 import type { EventEmitter } from 'events'
-import type { WasmWhatsAppClient } from 'whatsapp-rust-bridge'
+import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { Contact, SocketConfig } from '../Types/index.ts'
 import type { makeEventBuffer } from '../Utils/event-buffer.ts'
 import type { ILogger } from '../Utils/logger.ts'

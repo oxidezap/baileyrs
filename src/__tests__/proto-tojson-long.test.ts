@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { toNumber } from '../Utils/generics.ts'
 import { expect } from './expect.ts'
 

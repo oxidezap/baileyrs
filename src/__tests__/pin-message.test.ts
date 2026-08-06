@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
-import { decodeProto, encodeProto } from 'whatsapp-rust-bridge'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { stripContextInfoForBridge } from '../Socket/messages.ts'
 import type { WAMessageContent } from '../Types/index.ts'
 import { generateWAMessageContent } from '../Utils/messages.ts'

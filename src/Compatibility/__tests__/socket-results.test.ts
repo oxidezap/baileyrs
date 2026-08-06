@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { BusinessProfileResult } from 'whatsapp-rust-bridge'
+import type { BusinessProfileResult } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	bridgeBlocklistToBaileys,
 	bridgeBusinessProfileToBaileys,

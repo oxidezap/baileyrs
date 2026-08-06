@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { Jid as NativeJid, UsyncResponse as NativeUsyncResponse } from 'whatsapp-rust-bridge'
+import type { Jid as NativeJid, UsyncResponse as NativeUsyncResponse } from '@oxidezap/whatsapp-rust-bridge'
 import { fromTypedUSyncResponse, toTypedUSyncQuery } from '../usync/adapter.ts'
 import type { BinaryNode } from '../../Types/index.ts'
 import { USyncQuery, USyncUser } from '../../WAUSync/index.ts'

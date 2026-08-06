@@ -5,7 +5,7 @@ import type {
 	UsyncResponse,
 	UsyncUser,
 	WasmWhatsAppClient
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import type { TypedUSyncQuery } from '../Compatibility/usync/adapter.ts'
 
 type Assert<Condition extends true> = Condition

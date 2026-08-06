@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { expect } from './expect.ts'
 
 /**
  * Smoke tests asserting that the runtime `proto` namespace (sourced from the
- * bridge's auto-assembled ts-proto wrapper at `whatsapp-rust-bridge/proto-types`)
+ * bridge's auto-assembled ts-proto wrapper at `@oxidezap/whatsapp-rust-bridge/proto-types`)
  * keeps matching the protobufjs-style surface its `.d.ts` declares to consumers.
  *
  * These guard against drift in two directions:

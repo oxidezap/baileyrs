@@ -8,7 +8,7 @@
  * etc.) without rippling through call sites.
  */
 
-import type { WhatsAppEvent } from 'whatsapp-rust-bridge'
+import type { WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import type { ILogger } from '../Utils/logger.ts'
 import type { CanonicalEvent } from './types.ts'
 import {

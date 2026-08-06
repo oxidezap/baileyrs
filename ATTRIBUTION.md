@@ -32,7 +32,7 @@ below as acknowledgment:
 
 The actual WhatsApp protocol implementation used by baileyrs lives in
 [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust), a Rust library
-distributed via the [whatsapp-rust-bridge](https://www.npmjs.com/package/whatsapp-rust-bridge)
+distributed via the [@oxidezap/whatsapp-rust-bridge](https://www.npmjs.com/package/@oxidezap/whatsapp-rust-bridge)
 npm package (Rust code compiled to WebAssembly).
 
 whatsapp-rust is itself inspired by prior art in the WhatsApp reverse-engineering

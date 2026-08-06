@@ -4,7 +4,7 @@
  * in-memory keys store + wrapped-store factory + byte-pattern generator.
  */
 
-import { proto as bridgeProto } from 'whatsapp-rust-bridge/proto-types'
+import { proto as bridgeProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { AuthenticationState, SignalKeyStore, SignalKeyStoreWithTransaction } from '../../Types/index.ts'
 import { initAuthCreds } from '../generics.ts'
 import { wrapLegacyStore } from '../wrap-legacy-store.ts'

@@ -7,7 +7,7 @@ import type {
 	UsyncResponse as NativeUsyncResponse,
 	UsyncSubprotocolError as NativeUsyncSubprotocolError,
 	UsyncUser as NativeUsyncUser
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode } from '../../Types/index.ts'
 import type { USyncQueryProtocol } from '../../Types/USync.ts'
 import { Boom } from '../../Utils/boom.ts'

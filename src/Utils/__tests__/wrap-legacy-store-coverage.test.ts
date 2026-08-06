@@ -10,7 +10,7 @@
 import { Buffer } from 'node:buffer'
 import { describe, test } from 'node:test'
 import SessionRecord from 'libsignal/src/session_record.js'
-import { proto as bridgeProto } from 'whatsapp-rust-bridge/proto-types'
+import { proto as bridgeProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { expect } from '../../__tests__/expect.ts'
 import {
 	BRIDGE_SESSION_KEY_LID,
@@ -249,17 +249,19 @@ describe('wrap-legacy-store: sender_key multi-state record', () => {
 		await wrapped.set('sender_key', bridgeKey, protoBytes)
 		const stored = keys.raw['sender-key']?.[upstreamKey] as Buffer
 		const json = JSON.parse(stored.toString('utf-8')) as Array<{ senderKeyId: number }>
+		// The two shapes order their states in opposite directions: the native
+		// record keeps the current state first, upstream reads the last entry as
+		// current. Writing the states out in the order they arrived would make the
+		// old implementation send under `100` — the state the bridge holds as the
+		// oldest. See `senderKeyToLegacy`.
 		expect(json.length).toBe(3)
-		expect(json[0]!.senderKeyId).toBe(100)
-		expect(json[1]!.senderKeyId).toBe(200)
-		expect(json[2]!.senderKeyId).toBe(300)
+		expect(json.map(state => state.senderKeyId)).toEqual([300, 200, 100])
 
-		// Read back via bridge GET — all 3 states preserved.
+		// Read back via bridge GET — all 3 states preserved, in the order the
+		// bridge handed them over, so the reversal above is symmetric.
 		const protoBack = (await wrapped.get('sender_key', bridgeKey)) as Uint8Array
 		const decoded = bridgeProto.SenderKeyRecordStructure.decode(protoBack)
-		expect(decoded.senderKeyStates!.length).toBe(3)
-		const ids = decoded.senderKeyStates!.map(s => s.senderKeyId).toSorted((a, b) => a! - b!)
-		expect(ids).toEqual([100, 200, 300])
+		expect(decoded.senderKeyStates!.map(state => state.senderKeyId)).toEqual([100, 200, 300])
 	})
 })
 

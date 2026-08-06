@@ -1,4 +1,4 @@
-import { encodeProto } from 'whatsapp-rust-bridge'
+import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { planMessageRelay } from '../Compatibility/message-relay.ts'
 import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
 import type {

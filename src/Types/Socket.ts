@@ -1,6 +1,6 @@
 import type { Agent } from 'node:https'
 import type { URL } from 'url'
-import type { CacheConfig, DevicePropsInput } from 'whatsapp-rust-bridge'
+import type { CacheConfig, DevicePropsInput } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '../WAProto/runtime.ts'
 
 export type {
@@ -8,7 +8,7 @@ export type {
 	DeviceHistorySyncConfig,
 	DevicePlatformType,
 	DevicePropsInput
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import type { ILogger } from '../Utils/logger.ts'
 import type { AuthenticationState, LIDMapping, SignalAuthState } from './Auth.ts'
 import type { GroupMetadata } from './GroupMetadata.ts'

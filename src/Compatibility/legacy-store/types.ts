@@ -1,5 +1,5 @@
 // Types private to the legacy-store compatibility adapter.
-import type { JsStoreCallbacks } from 'whatsapp-rust-bridge'
+import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import type { RouteKind } from './constants.ts'
 
 export type LegacyStoreLogger = {

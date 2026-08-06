@@ -24,7 +24,7 @@
  */
 
 import { after, before, describe, test } from 'node:test'
-import type { JsHttpClientConfig, JsStoreCallbacks, JsTransportCallbacks } from 'whatsapp-rust-bridge'
+import type { JsHttpClientConfig, JsStoreCallbacks, JsTransportCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import { expect } from '../expect.ts'
 import { type InstrumentedBridge, loadInstrumentedBridge } from './handle-probe.ts'
 

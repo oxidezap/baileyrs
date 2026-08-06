@@ -1,6 +1,6 @@
 // Basic value codecs for the Baileys legacy-store projection.
 import { Buffer } from 'node:buffer'
-import { proto } from 'whatsapp-rust-bridge/proto-types'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { LTHashState } from '../../../Types/index.ts'
 import { AppState, JsonByteEncoding, LidMapping, NativeStore, TimeValue } from '../constants.ts'
 import { bytesToNumbers, fromJsonBytes, toBytes, toJsonBytes } from '../common.ts'

@@ -10,7 +10,7 @@ import {
 	useMultiFileAuthState,
 	wrapLegacyStore
 } from '../lib/index.js'
-import { getWasmMemoryBytes } from 'whatsapp-rust-bridge'
+import { getWasmMemoryBytes } from '@oxidezap/whatsapp-rust-bridge'
 import P from 'pino'
 import process from 'node:process'
 

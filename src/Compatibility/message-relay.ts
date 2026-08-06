@@ -1,4 +1,4 @@
-import type { MessageRetransmissionInput } from 'whatsapp-rust-bridge'
+import type { MessageRetransmissionInput } from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode, MessageRelayOptions } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateMessageIDV2 } from '../Utils/generics.ts'

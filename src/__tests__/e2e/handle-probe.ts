@@ -88,7 +88,7 @@ function instrument(source: string): string {
 export async function loadInstrumentedBridge(): Promise<InstrumentedBridge> {
 	// The bridge is ESM-only, so resolution goes through `import.meta.resolve`
 	// rather than `createRequire`, which cannot see an import-only `exports` map.
-	const entry = fileURLToPath(await import.meta.resolve('whatsapp-rust-bridge'))
+	const entry = fileURLToPath(await import.meta.resolve('@oxidezap/whatsapp-rust-bridge'))
 	const dist = dirname(entry)
 	const dir = mkdtempSync(join(tmpdir(), 'baileyrs-handle-probe-'))
 

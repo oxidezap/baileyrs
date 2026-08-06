@@ -6,7 +6,7 @@ import {
 	hkdf,
 	md5,
 	verifySignature
-} from 'whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge'
 import { KEY_BUNDLE_TYPE } from '../Defaults/index.ts'
 import {
 	aesCbc256Decrypt,
@@ -18,7 +18,7 @@ import {
 import type { KeyPair } from '../Types/Auth.ts'
 
 export { hkdf, md5 }
-export type { HkdfInfo } from 'whatsapp-rust-bridge'
+export type { HkdfInfo } from '@oxidezap/whatsapp-rust-bridge'
 
 /** Prefix Signal's version byte when the public key is in raw 32-byte form. */
 export const generateSignalPubKey = (pubKey: Uint8Array | Buffer) =>

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
-import type { HistorySyncWireBatch } from 'whatsapp-rust-bridge'
-import { proto as WAProto } from 'whatsapp-rust-bridge/proto-types'
+import type { HistorySyncWireBatch } from '@oxidezap/whatsapp-rust-bridge'
+import { proto as WAProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../../Utils/logger.ts'
 import { expect } from '../../__tests__/expect.ts'
 import { decodeHistorySyncWireBatch } from '../history-sync-wire.ts'
