@@ -1,0 +1,152 @@
+name: Release
+
+# release-please keeps a release PR up to date with every conventional commit
+# landing on main. Merging that PR tags the release, which is the only thing
+# that triggers a publish — so the version bump stays reviewable instead of
+# firing on each merge.
+#
+# Commit types matter now: only feat/fix/perf produce a release. Bumps of the
+# bridge dependency used to land as `chore(deps): …`, and a chore-typed commit
+# releases nothing — the upgrade would sit on main until an unrelated commit
+# dragged it out. Commit those as `fix(deps): …` instead.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      # release-please labels the release PR, and PR labels go through the
+      # issues API. Only matters on the GITHUB_TOKEN fallback path — the App
+      # token below carries its own permissions.
+      issues: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # A pull request opened with GITHUB_TOKEN gets its checks queued in an
+      # approval-required state, so the release PR sits there until a maintainer
+      # clicks "Approve and run". An App installation token is the supported way
+      # out: it is minted per run and expires in an hour, unlike the PAT the
+      # same workaround used to require.
+      #
+      # Entirely optional — set the RELEASE_APP_CLIENT_ID variable and the
+      # RELEASE_APP_PRIVATE_KEY secret to switch it on. Without them this falls
+      # back to GITHUB_TOKEN and releases still work, they just need that click.
+      # The App needs Contents, Pull requests and Issues: read and write.
+      - id: app-token
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # Without these the token inherits everything the App installation
+          # holds, and job-level `permissions` do not constrain it. Scoping here
+          # keeps this token narrow even if the App is later granted more for
+          # some other purpose.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Split from publish on purpose: this is where dependency lifecycle scripts,
+  # the build and the test suite run, and none of it should be able to reach an
+  # OIDC token. The job below holds the publish rights and runs as little code
+  # as it can get away with.
+  verify:
+    name: Verify the tag
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # Whether or not the release PR got its checks approved, the tag faces the
+      # same bar as a normal pull request before anything reaches npm.
+      - run: npm run lint
+
+      - run: npm run format:check
+
+      - run: npm test
+
+  publish:
+    name: Publish to npm
+    needs: [release-please, verify]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Gate for the publish step: add required reviewers here to make releases
+    # need a second pair of eyes, and to scope the OIDC trust on npm.
+    environment: npm-publish
+    permissions:
+      contents: read
+      # Mints the short-lived OIDC token npm exchanges for publish rights. No
+      # long-lived NPM_TOKEN lives in this repo.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          # Nothing here talks to the remote after checkout, and the steps below
+          # run third-party install and build scripts in a job holding OIDC
+          # publish rights. Don't leave the token in .git/config for them.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      # Trusted publishing needs npm >= 11.5.1, above what some Node 24 releases
+      # bundle. Pinned rather than `@latest`: this binary performs the publish
+      # with the OIDC token, so it is part of the privileged path and a floating
+      # tag would put unreviewed code there.
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@11.19.0
+
+      # `--ignore-scripts` keeps dependency install hooks away from the token:
+      # anything they ran here could mint one and publish under this package's
+      # identity. It also skips `prepare`, so the build is invoked explicitly
+      # below, and `prepack` is skipped for the same reason at publish time.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run build
+
+      - run: node scripts/check-pack.ts
+
+      # No NODE_AUTH_TOKEN and no --provenance: trusted publishing authenticates
+      # over OIDC and attaches provenance on its own. Published from the package
+      # directory rather than a prebuilt tarball, which is the shape npm
+      # documents provenance against.
+      - run: npm publish --ignore-scripts
