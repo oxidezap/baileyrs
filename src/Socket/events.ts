@@ -160,6 +160,17 @@ interface EventCallbacks {
 	 */
 	onTerminalClose?: (error: Error, publish: () => void) => void
 	/**
+	 * Hand back a cleanup for anything the dispatcher armed that outlives a
+	 * single event — today the history-sync pause timer. The socket registers
+	 * it as an end handler, so a plain `sock.end()` or an `await using` scope
+	 * exiting cancels it too: only the terminal-close path goes through
+	 * `emitClose`, and a timer surviving disposal fires
+	 * `messaging-history.status: paused` from a socket that is already gone.
+	 *
+	 * Called once, during `makeEventHandlers`.
+	 */
+	onCleanup?: (cleanup: () => void) => void
+	/**
 	 * Whether `sock.setAutoReconnect(true)` is in effect. A plain drop is only
 	 * transient while the engine still intends to retry: with auto-reconnect
 	 * off, the run loop dispatches `Disconnected` and then breaks for good
@@ -1018,6 +1029,8 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		callbacks,
 		historySync: { initialBootstrapComplete: false, recentSyncComplete: false }
 	}
+
+	callbacks?.onCleanup?.(() => clearHistorySyncPausedTimeout(dispatchCtx.historySync))
 
 	const onEvent = (event: WhatsAppEvent) => {
 		const canonical = adaptBridgeEvent(event, ctx.logger)

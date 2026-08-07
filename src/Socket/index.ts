@@ -118,6 +118,30 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const socketEndHandlers: Array<(error: Error | undefined) => void | Promise<void>> = []
 
 	/**
+	 * Drain both auth stores, returning the FIRST failure rather than throwing
+	 * so the caller can finish the rest of its work and still report it.
+	 *
+	 * Called through their owners on purpose: collecting the two methods into
+	 * an array and invoking them bare drops the receiver, so a consumer store
+	 * whose `flush()` touches `this` throws on `undefined` and the teardown
+	 * publishes a close with the auth writes unpersisted.
+	 */
+	const flushStores = async (): Promise<unknown> => {
+		let firstError: unknown
+		try {
+			await auth.store?.flush?.()
+		} catch (e) {
+			firstError ??= e
+		}
+		try {
+			await autoWrappedStore?.flush?.()
+		} catch (e) {
+			firstError ??= e
+		}
+		return firstError
+	}
+
+	/**
 	 * Single home for the bridge client's lifetime. `ws` below reads the current
 	 * client from it, and this teardown closes `ws` — the cycle is fine because
 	 * both directions only run once the socket is live.
@@ -159,27 +183,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				await new Promise(resolve => setImmediate(resolve))
 			}
 
-			// Capture the FIRST flush failure so a corrupt-on-shutdown auth
-			// state reaches the caller, but finish the rest of the teardown
-			// regardless — the client is released either way.
-			//
-			// Called through their owners on purpose. Collecting the two methods
-			// into an array and invoking them bare drops the receiver, so a
-			// consumer store whose `flush()` touches `this` throws on
-			// `undefined` — the teardown then records a flush failure, releases
-			// the client and publishes the close with the auth writes still
-			// unpersisted.
-			let firstFlushError: unknown
-			try {
-				await auth.store?.flush?.()
-			} catch (e) {
-				firstFlushError ??= e
-			}
-			try {
-				await autoWrappedStore?.flush?.()
-			} catch (e) {
-				firstFlushError ??= e
-			}
+			const firstFlushError = await flushStores()
 
 			// End handlers run before the flush error is rethrown: they are the
 			// consumer's teardown hook, and a corrupt-on-shutdown auth store is
@@ -225,10 +229,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// already set: that path does NOT await the disconnect it skipped, so
 			// `void sock.ws.close(); await sock.end()` could otherwise reach
 			// `free()` with the first disconnect still running.
+			let disconnected = true
 			try {
 				await client.disconnect()
 			} catch {
-				/* ignore */
+				disconnected = false
+			}
+
+			// Teardown already flushed, but only after its own disconnect
+			// attempts. If those all failed and this one succeeded, the
+			// closing-session ratchet writes it enqueues arrived after that
+			// flush — with nothing left to persist them. Cheap enough to just
+			// drain again.
+			if (disconnected) {
+				const lateFlushError = await flushStores()
+				if (lateFlushError) logger.error({ err: lateFlushError }, 'failed to flush after the final disconnect')
 			}
 
 			// Unregister before freeing: `free()` is swallowed, so ordering it
@@ -403,7 +418,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// teardown is waiting on this.
 			terminalClose.reportAfter(() => owner.close(error).finally(() => initPromise), publish)
 		},
-		isAutoReconnectEnabled: () => autoReconnectEnabled
+		isAutoReconnectEnabled: () => autoReconnectEnabled,
+		// Timers the dispatcher armed outlive the events that armed them, and
+		// only the terminal-close path clears them. Ending the socket any other
+		// way — `sock.end()`, an `await using` scope exiting — has to as well,
+		// or one fires from a socket whose client is already freed.
+		onCleanup: cleanup => socketEndHandlers.push(cleanup)
 	})
 
 	const init = async () => {
@@ -665,7 +685,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// The close is published on a chain one hop further out than the
 		// teardown both paths await, so without this `await sock.logout()`
 		// returns just before the event it caused.
-		await terminalClose.published()
+		//
+		// Skipped when re-entered from an end handler, for the same reason
+		// `end()` short-circuits there: the publish waits for the teardown, the
+		// teardown waits for the handler, and the handler would be waiting here
+		// — stalled until the watchdog fires.
+		if (!runningEndHandlers) await terminalClose.published()
 	}
 
 	const registerSocketEndHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {

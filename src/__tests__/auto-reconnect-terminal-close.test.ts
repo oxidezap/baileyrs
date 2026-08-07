@@ -194,6 +194,25 @@ const SILENT: Array<{ label: string; event: BridgeEvent }> = [
 	}
 ]
 
+describe('dispatcher cleanup', () => {
+	it('hands back a cleanup the socket can run on any teardown', () => {
+		// The history-sync pause timer outlives the event that armed it, and
+		// only `emitClose` clears it — so `sock.end()` or an `await using` scope
+		// exiting would leave it to fire `messaging-history.status: paused` from
+		// a socket whose client is already freed. The socket registers this as
+		// an end handler.
+		const { ctx } = makeCtx()
+		const cleanups: Array<() => void> = []
+
+		makeEventHandlers(ctx, { onCleanup: cleanup => cleanups.push(cleanup) })
+
+		expect(cleanups.length).toBe(1)
+		// Idempotent and safe with nothing armed.
+		cleanups[0]!()
+		cleanups[0]!()
+	})
+})
+
 describe('connection.update: terminal disconnects', () => {
 	for (const { label, event, expected } of TERMINAL) {
 		it(`${label} → close ${expected}, and the socket ends itself`, () => {
