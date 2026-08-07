@@ -341,11 +341,16 @@ const DISPATCHERS: DispatcherMap = {
 	// reporting `connecting` forever, with the wasm client never freed and the
 	// consumer's reconnect handler never firing.
 	disconnected: (_, dispatchCtx) => {
-		clearHistorySyncPausedTimeout(dispatchCtx.historySync)
 		if (dispatchCtx.callbacks?.isAutoReconnectEnabled?.() === false) {
+			clearHistorySyncPausedTimeout(dispatchCtx.historySync)
 			emitClose(dispatchCtx, 'Connection closed', DisconnectReason.connectionClosed)
 			return
 		}
+		// The pause timer survives a retrying drop. It is the only pending
+		// transition to `messaging-history.status: paused`, and this socket
+		// lives on — clearing it left a RECENT sync that had reported progress
+		// below 100 with neither `paused` nor `complete` if the reconnect
+		// produced no further chunk, hanging consumers waiting on hydration.
 		emitRetrying(dispatchCtx.ctx)
 	},
 	qr: (evt, { ctx }) => emitConnectionUpdate(ctx, { qr: evt.code }),

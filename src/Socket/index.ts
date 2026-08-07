@@ -50,6 +50,7 @@ import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
 import { makeBridgeClientOwner } from './bridge-client-owner.ts'
+import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
 import { makeMessageMethods } from './messages.ts'
@@ -63,25 +64,6 @@ import type { SocketContext } from './types.ts'
 import { makeUSyncMethods } from './usync.ts'
 
 let wasmInitialized = false
-
-/**
- * How long a terminal-close teardown may run before the socket reports the
- * close anyway.
- *
- * This is a deliberate trade of one guarantee for another, so it is worth
- * being plain about which. Normally the close is published only after teardown
- * finishes, precisely so a consumer answering it with a replacement socket
- * cannot overlap this one's auth-store flush. Past this deadline that no
- * longer holds — but the alternative is losing the event entirely, which is
- * the bug this whole change exists to fix: a bot offline with nothing in its
- * logs.
- *
- * Teardown takes milliseconds in practice; reaching this means a consumer end
- * handler or a store flush never settled, and the error logged alongside says
- * so. Generous rather than tight, because firing early is the harmful
- * direction here.
- */
-const TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS = 60_000
 
 /**
  * Default mapping for the legacy `browser[1]` slot — preserved so users on the
@@ -125,6 +107,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	let user: { id?: string; lid?: string } | undefined
 	/** True once `init()` has finished wiring the client and started its read loop. */
 	let initialized = false
+	/** True while the socket's end handlers run — see `end`. */
+	let runningEndHandlers = false
 
 	/**
 	 * Consumer teardown hooks, plus the socket's own. Declared here rather than
@@ -200,12 +184,23 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// End handlers run before the flush error is rethrown: they are the
 			// consumer's teardown hook, and a corrupt-on-shutdown auth store is
 			// exactly when they most need to run.
-			for (const handler of socketEndHandlers) {
-				try {
-					await handler(error)
-				} catch (handlerError) {
-					logger.error({ err: handlerError }, 'error in socket end handler')
+			//
+			// The flag makes a re-entrant `end()` from inside one of them a
+			// no-op instead of a deadlock: shared cleanup used both directly and
+			// as an end hook would otherwise be handed the very promise that is
+			// waiting for it to return, and nothing would ever settle — no
+			// release, and no terminal close until the watchdog.
+			runningEndHandlers = true
+			try {
+				for (const handler of socketEndHandlers) {
+					try {
+						await handler(error)
+					} catch (handlerError) {
+						logger.error({ err: handlerError }, 'error in socket end handler')
+					}
 				}
+			} finally {
+				runningEndHandlers = false
 			}
 
 			if (firstFlushError) throw firstFlushError
@@ -270,13 +265,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// `sock.setAutoReconnect()` moves it, and the dispatcher reads it to tell a
 	// transient drop from a terminal one.
 	let autoReconnectEnabled = true
-	// How many terminal closes the dispatcher has reported, and the settle of
-	// the most recent one's publish. `logout()` reads both: the count to tell
-	// whether the bridge already announced the logout, and the promise so
-	// `await sock.logout()` does not return one microtask before the `close`
-	// event it caused.
-	let terminalCloseCount = 0
-	let terminalClosePublished: Promise<void> | undefined
+	/** Owns reporting the terminal close: once, after teardown, never not at all. */
+	const terminalClose = makeTerminalCloseReporter({ logger })
 
 	const ctx: SocketContext = {
 		ev,
@@ -369,66 +359,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * that only `free()` reclaims — `run()` returns `void`, so its loop
 		 * exiting is otherwise invisible from here.
 		 *
-		 * `publish` runs after the teardown, so a consumer answering `close`
-		 * with a replacement socket on the same auth folder cannot overlap this
-		 * one's store flush and `free()`. Upstream orders it the same way:
-		 * `ws.close()` and the end handlers, then the close.
-		 *
-		 * But it has to run *unconditionally*. The close used to be emitted
-		 * synchronously and could not be lost; hanging it off a teardown makes
-		 * it conditional on that teardown settling, and a `close` that never
-		 * arrives is the original bug all over again — a bot offline with
-		 * nothing in its logs. Hence both settle paths, a swallowed publish,
-		 * and a watchdog for a teardown that never finishes at all.
+		 * Tearing down and reporting are both handed to the reporter: the close
+		 * has to reach the consumer exactly once and only after this socket has
+		 * released what it owns, or a replacement built in response overlaps it
+		 * on the same auth folder.
 		 */
 		onTerminalClose: (error, publish) => {
-			terminalCloseCount++
-
-			// Settles when the close is *reported*, not when teardown settles.
-			// The watchdog below exists precisely for a teardown that never
-			// settles, so tying this to `end()` would leave `logout()` — which
-			// awaits it — hanging past a close the consumer already received.
-			let markPublished!: () => void
-			terminalClosePublished = new Promise<void>(resolve => {
-				markPublished = resolve
-			})
-
-			let published = false
-			const publishOnce = (reason?: unknown) => {
-				if (published) return
-				published = true
-				if (reason) logger.error({ err: reason }, 'socket teardown failed after a terminal disconnect')
-				try {
-					publish()
-				} catch (err) {
-					// `publish` is `ev.emit`, so this is a throwing consumer
-					// listener. Letting it escape would surface as an unhandled
-					// rejection on a detached chain — process exit under Node's
-					// default handler.
-					logger.error({ err }, 'connection.update listener threw on the terminal close')
-				}
-				markPublished()
-			}
-
-			const watchdog = setTimeout(() => {
-				logger.error(
-					{ afterMs: TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS },
-					'socket teardown is still running; reporting the terminal close anyway'
-				)
-				publishOnce()
-			}, TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS)
-			watchdog.unref?.()
-
-			void end(error).then(
-				() => {
-					clearTimeout(watchdog)
-					publishOnce()
-				},
-				err => {
-					clearTimeout(watchdog)
-					publishOnce(err)
-				}
-			)
+			terminalClose.reportAfter(() => end(error), publish)
 		},
 		isAutoReconnectEnabled: () => autoReconnectEnabled
 	})
@@ -597,7 +534,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	 * neither hits its TDZ (nothing can call `end` during the synchronous
 	 * construction below) nor masks the teardown error.
 	 */
-	const end = (error: Error | undefined): Promise<void> => owner.close(error).finally(() => initPromise)
+	const end = (error: Error | undefined): Promise<void> => {
+		// Called from inside an end handler, the teardown is already running and
+		// is waiting for that handler to return. Handing back its promise would
+		// have the handler await itself.
+		if (runningEndHandlers) return Promise.resolve()
+		return owner.close(error).finally(() => initPromise)
+	}
 
 	let initError: Error | undefined
 	// Started only once `end` exists. `init()`'s synchronous prefix reaches
@@ -636,14 +579,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// at most one — so watch for the dispatcher's instead of assuming
 		// either way. Counting rather than flagging, because a terminal close
 		// may already have happened earlier in this socket's life.
-		const closesBefore = terminalCloseCount
-		// A socket that has already gone through a terminal close reported one
-		// then. `logout()` called from that very handler finds no live client to
-		// dispatch a second `LoggedOut`, so the count cannot move — and
-		// synthesizing a close on that basis gives every listener two terminal
-		// notifications for one socket, and a handler that logs out on close an
-		// asynchronous close/logout loop.
-		const alreadyClosed = owner.isClosing()
+		// `Client::logout()` dispatches `LoggedOut` itself, which the dispatcher
+		// turns into the terminal close. Reporting our own on top of that gave
+		// consumers two closes for one logout, and upstream guarantees at most
+		// one — so watch for the dispatcher's instead of assuming either way.
+		const reportedBefore = terminalClose.hasReported()
 		const live = owner.peek()
 		if (live) {
 			try {
@@ -653,24 +593,25 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 		}
 
-		// Nothing dispatched: no client at all, or `logout()` threw before the
+		// Nothing announced it: no client at all, or `logout()` threw before the
 		// bridge got to it. Upstream always reports exactly one close for a
 		// logout, so emitting none would be worse than emitting one too many.
-		const announceLogout = !alreadyClosed && terminalCloseCount === closesBefore
+		// Keyed on a close having been *reported*, not on the socket closing —
+		// a plain `end()` reports nothing, so keying off that would let a logout
+		// racing one finish with no close at all.
+		const announceLogout = !reportedBefore && !terminalClose.hasReported()
 
 		try {
 			await end(logoutError)
 		} finally {
-			// Published after the teardown, like the dispatcher's own close.
-			// Doing it before would hand a logged-out handler a socket still
-			// flushing the auth folder it is about to delete.
-			//
-			// In a `finally` because `end()` rethrows the first auth-store flush
-			// failure, and the owner releases the client regardless — so on that
-			// path listeners would otherwise see no terminal close at all for a
-			// socket that has definitely ended. The rejection still propagates.
+			// After the teardown, like the dispatcher's own close: doing it
+			// before would hand a logged-out handler a socket still flushing the
+			// auth folder it is about to delete. In a `finally` because `end()`
+			// rethrows the first flush failure and the owner releases the client
+			// regardless — on that path listeners would otherwise see no
+			// terminal close at all for a socket that has definitely ended.
 			if (announceLogout) {
-				try {
+				terminalClose.reportNow(() =>
 					ev.emit('connection.update', {
 						connection: 'close',
 						lastDisconnect: {
@@ -678,19 +619,14 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 							date: new Date()
 						}
 					} as Partial<ConnectionState>)
-				} catch (err) {
-					// Emitted from a `finally`, so a throwing consumer listener
-					// would otherwise replace the auth-store flush failure `end()`
-					// is rethrowing — hiding the real teardown error behind one
-					// from the handler reacting to it.
-					logger.error({ err }, 'connection.update listener threw on the logout close')
-				}
+				)
 			}
 		}
-		// The dispatcher publishes its close on a chain one hop further out than
-		// the teardown both paths await, so without this `await sock.logout()`
+
+		// The close is published on a chain one hop further out than the
+		// teardown both paths await, so without this `await sock.logout()`
 		// returns just before the event it caused.
-		await terminalClosePublished
+		await terminalClose.published()
 	}
 
 	const registerSocketEndHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {

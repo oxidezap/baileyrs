@@ -15,6 +15,7 @@ import { makeEventHandler, makeEventHandlers } from '../Socket/events.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
+import { makeEventBuffer } from '../Utils/event-buffer.ts'
 import { useBridgeStore } from '../Utils/use-bridge-store.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
 import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
@@ -1223,6 +1224,41 @@ describe('dispatch: offline_sync_completed', () => {
 	it('surfaces upstream receivedPendingNotifications readiness', () => {
 		const updates = collect({ type: 'offline_sync_completed', data: { count: 4 } }, 'connection.update')
 		expect(updates).toEqual([{ receivedPendingNotifications: true }])
+	})
+})
+
+describe('event buffer: connection.update delivery', () => {
+	// `EventEmitter.emit()` stops at the first listener that throws. On the
+	// lifecycle channel that means one bad handler keeps the app's reconnect
+	// handler from ever seeing a terminal `close` — the bot stays offline, which
+	// is the failure the whole close contract exists to prevent.
+	it('keeps notifying listeners after one throws', () => {
+		const ev = makeEventBuffer(noopLogger as never)
+		const seen: string[] = []
+
+		ev.on('connection.update', () => {
+			seen.push('first')
+			throw new Error('listener exploded')
+		})
+		ev.on('connection.update', () => seen.push('second'))
+
+		ev.emit('connection.update', { connection: 'close' } as never)
+
+		expect(seen).toEqual(['first', 'second'])
+	})
+
+	it('still stops at a throwing listener on other channels, as upstream does', () => {
+		const ev = makeEventBuffer(noopLogger as never)
+		const seen: string[] = []
+
+		ev.on('creds.update', () => {
+			seen.push('first')
+			throw new Error('listener exploded')
+		})
+		ev.on('creds.update', () => seen.push('second'))
+
+		expect(() => ev.emit('creds.update', {} as never)).toThrow()
+		expect(seen).toEqual(['first'])
 	})
 })
 

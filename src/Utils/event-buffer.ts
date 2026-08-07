@@ -391,6 +391,23 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 
 	ev.on('event', (events: BaileysEventData) => {
 		for (const event of Object.keys(events) as BaileysEvent[]) {
+			if (event === 'connection.update') {
+				// Delivered listener by listener, unlike every other event.
+				// `EventEmitter.emit()` stops at the first listener that throws,
+				// so one bad handler would keep the rest — including the app's
+				// reconnect handler — from ever seeing a terminal `close`, and
+				// the bot would stay offline. This is the lifecycle channel;
+				// losing delivery here is the failure mode the socket's whole
+				// close contract exists to prevent.
+				for (const listener of ev.listeners(event)) {
+					try {
+						;(listener as (data: unknown) => void)(events[event])
+					} catch (err) {
+						logger.error({ err, event }, 'connection.update listener threw; continuing with the rest')
+					}
+				}
+				continue
+			}
 			ev.emit(event, events[event])
 		}
 	})
