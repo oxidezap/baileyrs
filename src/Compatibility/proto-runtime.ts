@@ -655,24 +655,40 @@ class ProtoCompatibilityRuntime {
 		return this.hydrate(schemaId, codec.decode(reader, length))
 	}
 
+	/**
+	 * A fresh instance rather than an in-place re-parent: the codec installs its
+	 * own `toJSON` on what it returns, and deleting that normalizes the object
+	 * into dictionary mode, where every later read is a megamorphic lookup.
+	 */
 	private hydrate(schemaId: number, value: unknown): DynamicObject {
-		const object = isObject(value) ? value : {}
+		const source = isObject(value) ? value : {}
+		const instance = Object.create(this.constructorFor(schemaId).prototype) as DynamicObject
 		const messageFields = this.messageFieldsByName[schemaId]!
-		for (const key in object) {
+		for (const key in source) {
+			const nested = source[key]
 			const field = messageFields[key]
-			if (!field) continue
-			const nested = object[key]
-			if (field[3] & PROTO_FIELD_FLAG.repeated) {
-				if (Array.isArray(nested)) for (const item of nested) if (isObject(item)) this.hydrate(field[2], item)
-			} else if (field[3] & PROTO_FIELD_FLAG.map) {
-				if (isObject(nested)) for (const item of Object.values(nested)) if (isObject(item)) this.hydrate(field[2], item)
-			} else if (isObject(nested)) {
-				this.hydrate(field[2], nested)
+			if (!field) {
+				instance[key] = nested
+			} else if (field[3] & PROTO_FIELD_FLAG.repeated) {
+				if (Array.isArray(nested)) {
+					for (let index = 0; index < nested.length; index++) {
+						const item = nested[index]
+						if (isObject(item)) nested[index] = this.hydrate(field[2], item)
+					}
+				}
+				instance[key] = nested
+			} else if (field[3] & PROTO_FIELD_FLAG.map && isObject(nested)) {
+				const entries: DynamicObject = {}
+				for (const entry in nested) {
+					const item = nested[entry]
+					entries[entry] = isObject(item) ? this.hydrate(field[2], item) : item
+				}
+				instance[key] = entries
+			} else {
+				instance[key] = isObject(nested) ? this.hydrate(field[2], nested) : nested
 			}
 		}
-		if (hasOwn(object, 'toJSON')) delete object.toJSON
-		Object.setPrototypeOf(object, this.constructorFor(schemaId).prototype)
-		return object
+		return instance
 	}
 
 	private projectForEncode(schemaId: number, value: unknown): unknown {
