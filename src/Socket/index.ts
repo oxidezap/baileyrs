@@ -112,6 +112,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// rather than the pre-pair placeholder.
 	ev.on('creds.update', update => Object.assign(auth.creds, update))
 	let user: { id?: string; lid?: string } | undefined
+	/** True once `init()` has finished wiring the client and started its read loop. */
+	let initialized = false
 
 	/**
 	 * Consumer teardown hooks, plus the socket's own. Declared here rather than
@@ -137,7 +139,16 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			try {
 				await ws.close()
 			} catch {
-				/* ignore */
+				// The transport refused to close cleanly. Go straight at the
+				// client so the disconnect still happens *before* the barrier
+				// and flush below: `release` retries it, but that runs after the
+				// flush, and the closing-session ratchet writes a disconnect
+				// enqueues would then have nothing left to persist them.
+				try {
+					await client?.disconnect()
+				} catch {
+					/* ignore */
+				}
 			}
 
 			if (client) {
@@ -272,8 +283,16 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			user = u
 		},
 		getClient: () => {
-			const ready = owner.peek()
-			if (ready) return Promise.resolve(ready)
+			// Deliberately gated on `initialized`, not merely on the client
+			// existing. `adopt()` publishes it several awaits before
+			// `setDeviceProps`, the account lookups and `run()`, so keying off
+			// `peek()` alone would hand ordinary calls like `sendMessage()` a
+			// half-built client whose read loop has not started — and skip the
+			// `initError` check when startup later fails.
+			if (initialized) {
+				const ready = owner.peek()
+				if (ready) return Promise.resolve(ready)
+			}
 
 			return initPromise.then(() => {
 				if (initError) {
@@ -541,6 +560,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// (a terminal callback or an awaitable handle); until it does, the
 		// consumer has to call `sock.end()` on a terminal close.
 		created.run()
+		initialized = true
 	}
 
 	let initError: Error | undefined
@@ -589,20 +609,26 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// logout, so emitting none would be worse than emitting one too many.
 		const announceLogout = terminalCloseCount === closesBefore
 
-		await end(logoutError)
-
-		// Published after the teardown, like the dispatcher's own close. Doing
-		// it before would hand a logged-out handler a socket that is still
-		// flushing the auth folder it is about to delete — the one guarantee
-		// this whole change is selling.
-		if (announceLogout) {
-			ev.emit('connection.update', {
-				connection: 'close',
-				lastDisconnect: {
-					error: logoutError,
-					date: new Date()
-				}
-			} as Partial<ConnectionState>)
+		try {
+			await end(logoutError)
+		} finally {
+			// Published after the teardown, like the dispatcher's own close.
+			// Doing it before would hand a logged-out handler a socket still
+			// flushing the auth folder it is about to delete.
+			//
+			// In a `finally` because `end()` rethrows the first auth-store flush
+			// failure, and the owner releases the client regardless — so on that
+			// path listeners would otherwise see no terminal close at all for a
+			// socket that has definitely ended. The rejection still propagates.
+			if (announceLogout) {
+				ev.emit('connection.update', {
+					connection: 'close',
+					lastDisconnect: {
+						error: logoutError,
+						date: new Date()
+					}
+				} as Partial<ConnectionState>)
+			}
 		}
 		// The dispatcher publishes its close on a chain one hop further out than
 		// the teardown both paths await, so without this `await sock.logout()`

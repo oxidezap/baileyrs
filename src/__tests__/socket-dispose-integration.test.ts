@@ -319,6 +319,45 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('reports the logout close even when the auth store fails to flush', async () => {
+		// `end()` rethrows the first flush failure, and the owner releases the
+		// client regardless — so without publishing on that path listeners see
+		// no terminal close at all for a socket that has definitely ended.
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const store = new Proxy(state.store as object, {
+				get(target, prop, receiver) {
+					const value = Reflect.get(target, prop, receiver)
+					if (prop !== 'flush' || typeof value !== 'function') return value
+					return () => Promise.reject(new Error('flush exploded'))
+				}
+			}) as typeof state.store
+
+			const sock = makeWASocket({
+				auth: { ...state, store },
+				logger: silentLogger,
+				waWebSocketUrl: counter.url
+			})
+			let closes = 0
+			sock.ev.on('connection.update', update => {
+				if (update.connection === 'close') closes++
+			})
+
+			let thrown: unknown
+			await sock.logout().catch(err => {
+				thrown = err
+			})
+
+			// The flush failure still reaches the caller…
+			expect((thrown as Error | undefined)?.message).toBe('flush exploded')
+			// …and the close was not swallowed with it.
+			expect(closes).toBe(1)
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('an immediate dispose — before init settles — keeps the engine from reconnecting', async () => {
 		const counter = await startConnectionCounter()
 		try {

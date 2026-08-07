@@ -54,6 +54,41 @@ const byteFmt = (bytes: number) => {
 	return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
+/** `<failure reason="405">` — the wire code baileyrs reports for an outdated build. */
+const CLIENT_OUTDATED_STATUS = 405
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+/**
+ * How long to wait before replacing a terminally closed socket, or `undefined`
+ * when replacing it is pointless.
+ *
+ * A `close` from baileyrs always means the engine gave up, but "gave up" covers
+ * failures with very different answers. Reconnecting immediately on all of them
+ * turns a temporary ban or an outdated build into a create/teardown loop that
+ * hammers the server, because the replacement is rejected just as fast.
+ */
+const reconnectDelayFor = (statusCode: number | undefined, error: Boom | undefined): number | undefined => {
+	switch (statusCode) {
+		case DisconnectReason.loggedOut:
+			// Needs a fresh pairing, not a fresh socket.
+			return undefined
+		case CLIENT_OUTDATED_STATUS:
+			// The server rejected this build; the next one is rejected too.
+			return undefined
+		case DisconnectReason.forbidden: {
+			// Temporary ban. `expire` is unix-seconds, carried on the Boom's data.
+			const expire = (error?.data as { expire?: number } | undefined)?.expire
+			if (!expire) return undefined
+			return Math.max(0, expire * 1000 - Date.now())
+		}
+		default:
+			// A replaced session, an expired CAT, a generic failure: worth
+			// another socket, but not instantly.
+			return 5_000
+	}
+}
+
 // start a connection
 const startSock = async () => {
 	// Two auth modes:
@@ -94,7 +129,8 @@ const startSock = async () => {
 				const update = events['connection.update']
 				const { connection, lastDisconnect, qr } = update
 				if (connection === 'close') {
-					const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+					const boom = lastDisconnect?.error as Boom | undefined
+					const statusCode = boom?.output?.statusCode
 					// `close` means this socket is finished, exactly as in upstream
 					// Baileys. Transient drops never reach here: the Rust engine
 					// retries those on a fibonacci backoff and reports
@@ -105,10 +141,14 @@ const startSock = async () => {
 					// a replaced session, an outdated build, a temporary ban, an
 					// unrecoverable <failure>. Ignoring it leaves the bot offline
 					// for good.
-					if (statusCode === DisconnectReason.loggedOut) {
-						logger.fatal('Connection closed. You are logged out.')
+					// Recreating blindly is as wrong as ignoring it: several of
+					// these reject the replacement just as fast.
+					const retryDelayMs = reconnectDelayFor(statusCode, boom)
+					if (retryDelayMs === undefined) {
+						logger.fatal({ statusCode }, 'connection closed for good; not reconnecting')
 					} else {
-						logger.warn({ statusCode }, 'connection closed for good, starting a new socket')
+						logger.warn({ statusCode, retryDelayMs }, 'connection closed for good, starting a new socket')
+						if (retryDelayMs > 0) await delay(retryDelayMs)
 						await startSock()
 					}
 					// This socket is spent; the rest of the batch would run
