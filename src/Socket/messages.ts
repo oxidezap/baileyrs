@@ -37,9 +37,11 @@ function getMediaContent(content: WAMessageContent | null | undefined) {
  * it across the delete and restore it on a fresh contextInfo.
  *
  * Mutates `msg` in place.
+ *
+ * `contentType` is a parameter so the send path can hand over the type it has
+ * already resolved rather than have it scanned out of `msg` a second time.
  */
-export function stripContextInfoForBridge(msg: WAMessageContent): void {
-	const contentType = getContentType(msg)
+export function stripContextInfoForBridge(msg: WAMessageContent, contentType = getContentType(msg)): void {
 	const pinAddOnDuration =
 		contentType === 'pinInChatMessage' ? msg.messageContextInfo?.messageAddOnDurationInSecs : undefined
 	delete (msg as Record<string, unknown>).messageContextInfo
@@ -116,7 +118,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		stripContextInfoForBridge(msg)
+		stripContextInfoForBridge(msg, contentType)
 
 		let msgId: string
 		const msgBytes = encodeProto('Message', msg as Record<string, unknown>)
