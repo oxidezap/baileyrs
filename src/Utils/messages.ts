@@ -628,11 +628,15 @@ export const generateWAMessageFromContent = (
 	options: MessageGenerationOptionsFromContent
 ) => {
 	const innerMessage = normalizeMessageContent(message)!
-	const key = getContentType(innerMessage)! as Exclude<keyof proto.IMessage, 'conversation'>
 	const timestamp = unixTimestampSeconds(options.timestamp)
 	const { quoted, userJid } = options
+	// Only the quote and ephemeral branches read the content key, and a plain
+	// send takes neither, so resolve it on demand instead of on every send.
+	let key: Exclude<keyof proto.IMessage, 'conversation'> | undefined
 
 	if (quoted && !isJidNewsletter(jid)) {
+		const contentKey = getContentType(innerMessage)! as Exclude<keyof proto.IMessage, 'conversation'>
+		key = contentKey
 		const participant = quoted.key.fromMe
 			? userJid // TODO: Add support for LIDs
 			: quoted.participant || quoted.key.participant || quoted.key.remoteJid
@@ -648,7 +652,7 @@ export const generateWAMessageFromContent = (
 		}
 
 		const contextInfo: proto.IContextInfo =
-			('contextInfo' in innerMessage[key]! && innerMessage[key]?.contextInfo) || {}
+			('contextInfo' in innerMessage[contentKey]! && innerMessage[contentKey]?.contextInfo) || {}
 		contextInfo.participant = jidNormalizedUser(participant!)
 		contextInfo.stanzaId = quoted.key.id
 		contextInfo.quotedMessage = quotedMsg
@@ -659,27 +663,28 @@ export const generateWAMessageFromContent = (
 			contextInfo.remoteJid = quoted.key.remoteJid
 		}
 
-		if (contextInfo && innerMessage[key]) {
+		if (contextInfo && innerMessage[contentKey]) {
 			/* @ts-ignore */
-			innerMessage[key].contextInfo = contextInfo
+			innerMessage[contentKey].contextInfo = contextInfo
 		}
 	}
 
 	if (
 		// if we want to send a disappearing message
 		!!options?.ephemeralExpiration &&
-		// and it's not a protocol message -- delete, toggle disappear message
-		key !== 'protocolMessage' &&
-		// already not converted to disappearing message
-		key !== 'ephemeralMessage' &&
 		// newsletters don't support ephemeral messages
 		!isJidNewsletter(jid)
 	) {
-		/* @ts-ignore */
-		innerMessage[key].contextInfo = {
-			...((innerMessage[key] as Record<string, unknown>).contextInfo as Record<string, unknown>),
-			expiration: options.ephemeralExpiration || WA_DEFAULT_EPHEMERAL
-			//ephemeralSettingTimestamp: options.ephemeralOptions.eph_setting_ts?.toString()
+		const contentKey = key ?? (getContentType(innerMessage)! as Exclude<keyof proto.IMessage, 'conversation'>)
+		// skip protocol messages -- delete, toggle disappear message -- and
+		// content already converted to a disappearing message
+		if (contentKey !== 'protocolMessage' && contentKey !== 'ephemeralMessage') {
+			/* @ts-ignore */
+			innerMessage[contentKey].contextInfo = {
+				...((innerMessage[contentKey] as Record<string, unknown>).contextInfo as Record<string, unknown>),
+				expiration: options.ephemeralExpiration || WA_DEFAULT_EPHEMERAL
+				//ephemeralSettingTimestamp: options.ephemeralOptions.eph_setting_ts?.toString()
+			}
 		}
 	}
 
