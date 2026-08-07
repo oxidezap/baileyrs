@@ -21,8 +21,12 @@
  * Events deliberately absent from the terminal set, and why:
  *  - `disconnected` — the engine only dispatches `Event::Disconnected` for an
  *    *unexpected* loop exit, and every terminal path sets `expected_disconnect`
- *    first, which suppresses it (`client/lifecycle.rs`). So this one is by
- *    construction the "engine is retrying" signal.
+ *    first, which suppresses it (`client/lifecycle.rs`). So this one is the
+ *    "engine is retrying" signal — with one exception the dispatcher handles:
+ *    under `setAutoReconnect(false)` the run loop dispatches `Disconnected`
+ *    and only *then* tests the flag and breaks out, which makes the very same
+ *    event terminal. Absence from this list means "not terminal on its own",
+ *    not "never terminal".
  *  - `streamError` — reaches JS only from the engine's catch-all `<stream:error>`
  *    branch (unknown code, `<ack/>`, `<xml-not-well-formed>`); the coded ones
  *    (401/409/515/516/429/503) dispatch their own events instead. Every case

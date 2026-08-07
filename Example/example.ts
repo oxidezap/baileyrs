@@ -111,6 +111,9 @@ const startSock = async () => {
 						logger.warn({ statusCode }, 'connection closed for good, starting a new socket')
 						await startSock()
 					}
+					// This socket is spent; the rest of the batch would run
+					// against a closed one. `benchmark.ts` does the same.
+					return
 				}
 
 				if (qr) {

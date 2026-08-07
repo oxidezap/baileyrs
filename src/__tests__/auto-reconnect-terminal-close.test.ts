@@ -82,9 +82,12 @@ const dispatch = (bridgeEvent: BridgeEvent, opts: { autoReconnect?: boolean } = 
 	})
 
 	makeEventHandlers(ctx, {
-		onTerminalClose: error => {
+		onTerminalClose: (error, publish) => {
 			terminalCloses.push(error)
 			trace.push('end')
+			// The socket wires this to `end(...).finally(publish)`; the test
+			// stands in for a teardown that has already finished.
+			publish()
 		},
 		isAutoReconnectEnabled: () => opts.autoReconnect ?? true
 	}).onEvent?.(bridgeEvent as never)
@@ -291,6 +294,28 @@ describe('setAutoReconnect(false) turns a plain drop terminal', () => {
 		expect(close).toBe(undefined)
 		expect(trace).toEqual(['connecting'])
 	})
+
+	// 500/503 are only "retryable" while the engine is allowed to retry. With
+	// the flag off the run loop breaks on the next pass, so reporting
+	// `connecting` would strand the socket in that state with nothing left to
+	// restore it and the wasm client never freed.
+	// 503 has a DisconnectReason of its own; 500 falls through to the generic
+	// connectionClosed, same as it would in `mapConnectFailureToDisconnect`.
+	for (const { reason, expected } of [
+		{ reason: 503, expected: DisconnectReason.unavailableService },
+		{ reason: 500, expected: DisconnectReason.connectionClosed }
+	]) {
+		it(`connect failure ${reason} is terminal too when auto-reconnect is off`, () => {
+			const { close, statusCode, trace } = dispatch(
+				{ type: 'connect_failure', data: { reason, message: 'x' } },
+				{ autoReconnect: false }
+			)
+
+			expect(close?.connection).toBe('close')
+			expect(statusCode).toBe(expected)
+			expect(trace).toEqual(['end', 'close'])
+		})
+	}
 })
 
 describe('a retrying update clears the spent QR', () => {

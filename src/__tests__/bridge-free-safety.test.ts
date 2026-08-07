@@ -31,6 +31,15 @@ import { expect } from './expect.ts'
 
 const SRC = import.meta.dirname
 
+interface ChildOutcome {
+	/** Exit code, or null when the watchdog killed it. */
+	code: number | null
+	timedOut: boolean
+	/** Whether the child got as far as the call under test. */
+	reachedTarget: boolean
+	stderr: string
+}
+
 /** Build a client against a dead loopback port, then run `body`. */
 const runChild = (body: string, folder: string) => {
 	const script = `
@@ -48,19 +57,31 @@ const runChild = (body: string, folder: string) => {
 		const c = await createWhatsAppClient(
 			makeTransport(cfg), makeHttpClient(cfg), undefined, state.store, null, undefined, null
 		)
+		// Printed once the client exists and just before the risky call, so the
+		// parent can tell "crashed at free()" from "never got there" — a bad
+		// import, an auth-store failure or a hung child would otherwise look
+		// exactly like the crash this suite documents.
+		console.log('READY')
 		${body}
 		await new Promise(r => setTimeout(r, 1500))
 		process.exit(0)
 	`
-	return new Promise<number | null>(resolve => {
-		const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: 'ignore' })
+	return new Promise<ChildOutcome>(resolve => {
+		const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {
+			stdio: ['ignore', 'pipe', 'pipe']
+		})
+		let stdout = ''
+		let stderr = ''
+		child.stdout.on('data', chunk => (stdout += String(chunk)))
+		child.stderr.on('data', chunk => (stderr += String(chunk)))
+
 		const timer = setTimeout(() => {
 			child.kill('SIGKILL')
-			resolve(null)
+			resolve({ code: null, timedOut: true, reachedTarget: stdout.includes('READY'), stderr })
 		}, 25_000)
 		child.on('exit', code => {
 			clearTimeout(timer)
-			resolve(code)
+			resolve({ code, timedOut: false, reachedTarget: stdout.includes('READY'), stderr })
 		})
 	})
 }
@@ -81,19 +102,27 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		// makes `free()` safe on its own, this test starts failing — which is
 		// the signal to drop the `disconnect()` from `end()`, not to relax the
 		// assertion.
-		const code = await runChild(
+		const outcome = await runChild(
 			`
 			c.fetchBlocklist().catch(() => {})
 			c.free()
 			`,
 			folder
 		)
-		expect(code === 0).toBe(false)
+
+		// It got to `free()`…
+		expect(outcome.reachedTarget).toBe(true)
+		// …died rather than hanging…
+		expect(outcome.timedOut).toBe(false)
+		expect(outcome.code === 0).toBe(false)
+		// …and died the documented way. Any other crash means the hazard moved
+		// and this suite is no longer describing it.
+		expect(outcome.stderr).toContain('psize <= size + max_overhead')
 	})
 
 	it('await disconnect() before free() survives the same pending call', async () => {
 		// The shape `end()` uses.
-		const code = await runChild(
+		const outcome = await runChild(
 			`
 			c.fetchBlocklist().catch(() => {})
 			await c.disconnect()
@@ -101,14 +130,15 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 			`,
 			folder
 		)
-		expect(code).toBe(0)
+		expect(outcome.reachedTarget).toBe(true)
+		expect(outcome.code).toBe(0)
 	})
 
 	it('await disconnect() before free() survives an in-flight logout()', async () => {
 		// The production path: `Client::logout()` dispatches `LoggedOut` before
 		// awaiting its own `disconnect()`, so the terminal-close handler can
 		// re-enter `end()` while `logout()` is still running.
-		const code = await runChild(
+		const outcome = await runChild(
 			`
 			c.logout().catch(() => {})
 			await c.disconnect()
@@ -116,6 +146,7 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 			`,
 			folder
 		)
-		expect(code).toBe(0)
+		expect(outcome.reachedTarget).toBe(true)
+		expect(outcome.code).toBe(0)
 	})
 })

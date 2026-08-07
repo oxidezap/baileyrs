@@ -149,11 +149,16 @@ interface EventCallbacks {
 	onDirtyState?: (event: Extract<CanonicalEvent, { type: 'dirtyState' }>) => void
 	/**
 	 * The engine has stopped reconnecting: this client is dead weight only
-	 * `free()` can reclaim. Fired immediately before the `close` that reports
-	 * it, so the socket is already shutting down by the time the consumer's
-	 * handler runs and builds a replacement.
+	 * `free()` can reclaim.
+	 *
+	 * Owns publishing the `close` too — `publish()` must be called, and the
+	 * point of handing it over is that the socket can finish tearing down
+	 * first. Upstream does the same, emitting its close only after `ws.close()`
+	 * and the end handlers (`Socket/socket.ts`). A consumer answering `close`
+	 * with a replacement socket on the same auth folder would otherwise race
+	 * the old one's store flush and `free()`.
 	 */
-	onTerminalClose?: (error: Error) => void
+	onTerminalClose?: (error: Error, publish: () => void) => void
 	/**
 	 * Whether `sock.setAutoReconnect(true)` is in effect. A plain drop is only
 	 * transient while the engine still intends to retry: with auto-reconnect
@@ -202,10 +207,11 @@ type DispatcherMap = { [K in CanonicalEvent['type']]: DispatcherFn<K> }
  * build a new one. Disconnects the engine is still retrying never come through
  * here — see `emitRetrying` and `terminal-close.ts`.
  *
- * `onTerminalClose` runs first so the socket starts tearing itself down before
- * the consumer sees the event: `end()` flips its `ended` flag synchronously,
- * so by the time a handler calls `makeWASocket()` again the old socket is
- * already spent rather than racing the new one.
+ * `onTerminalClose` owns both the teardown and the publish, so the socket can
+ * be fully torn down before the consumer sees the event — the order upstream
+ * uses, and what keeps a replacement socket from overlapping the old one's
+ * store flush. Without that callback (a bare `makeEventHandler`), the close
+ * goes out immediately.
  */
 const emitClose = (
 	{ ctx, callbacks }: DispatchCtx,
@@ -214,11 +220,17 @@ const emitClose = (
 	data?: Record<string, unknown>
 ) => {
 	const error = new Boom(reason, { statusCode, data })
-	callbacks?.onTerminalClose?.(error)
-	ctx.ev.emit('connection.update', {
-		connection: 'close',
-		lastDisconnect: { error, date: new Date() }
-	} as Partial<ConnectionState>)
+	const publish = () =>
+		ctx.ev.emit('connection.update', {
+			connection: 'close',
+			lastDisconnect: { error, date: new Date() }
+		} as Partial<ConnectionState>)
+
+	if (callbacks?.onTerminalClose) {
+		callbacks.onTerminalClose(error, publish)
+		return
+	}
+	publish()
 }
 
 /**
@@ -362,7 +374,11 @@ const DISPATCHERS: DispatcherMap = {
 		// DisconnectReason. Defaults to connectionClosed for unknown codes.
 		// LoggedOut paths (401/403/406) drive bots' "should I re-pair?"
 		// branch — folding them into connectionClosed kept that broken.
-		if (isReconnectableConnectFailure(evt.reason)) {
+		// "Reconnectable" is only true while the engine is allowed to reconnect.
+		// With `setAutoReconnect(false)` the run loop breaks on the next pass,
+		// so reporting `connecting` for a 500/503 would leave the socket stuck
+		// in that state with nothing left to restore it.
+		if (isReconnectableConnectFailure(evt.reason) && dispatchCtx.callbacks?.isAutoReconnectEnabled?.() !== false) {
 			dispatchCtx.ctx.logger.warn(
 				{ reason: evt.reason, message: evt.message },
 				'connect failure; the engine will retry'

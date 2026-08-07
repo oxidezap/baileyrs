@@ -9,7 +9,7 @@
  * and the global kept a strong reference to a client the socket had dropped.
  */
 
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { _registerActiveBridgeClient, _unregisterActiveBridgeClient } from '../Utils/messages.ts'
@@ -53,9 +53,21 @@ const downloadError = async (): Promise<string> => {
 }
 
 describe('_unregisterActiveBridgeClient', () => {
-	it('leaves the standalone helper reporting "no bridge client" instead of reaching a freed pointer', async () => {
-		const client = freedClient()
+	// The pointer is module-global, so a test that leaves one registered makes
+	// the next one order-dependent. Track what each test claimed and release it.
+	const registered: WasmWhatsAppClient[] = []
+	const register = (client: WasmWhatsAppClient) => {
+		registered.push(client)
 		_registerActiveBridgeClient(client)
+		return client
+	}
+
+	afterEach(() => {
+		for (const client of registered.splice(0)) _unregisterActiveBridgeClient(client)
+	})
+
+	it('leaves the standalone helper reporting "no bridge client" instead of reaching a freed pointer', async () => {
+		const client = register(freedClient())
 
 		// Before: the global still points at the freed client.
 		expect(await downloadError()).toContain('null pointer passed to rust')
@@ -69,29 +81,31 @@ describe('_unregisterActiveBridgeClient', () => {
 	})
 
 	it('is identity-checked: ending socket A must not unregister socket B', async () => {
-		const a = freedClient()
-		const b = liveClient()
-
-		_registerActiveBridgeClient(a)
-		_registerActiveBridgeClient(b) // a second socket takes over the pointer
+		const a = register(freedClient())
+		const b = register(liveClient()) // a second socket takes over the pointer
 
 		_unregisterActiveBridgeClient(a) // the old socket's `end()`
 
 		// B is still registered, so the download runs against it and fails
 		// further downstream (empty payload) — not with "no bridge client".
-		const message = await downloadError()
-		expect(message.includes('no bridge client available')).toBe(false)
+		expect((await downloadError()).includes('no bridge client available')).toBe(false)
+
+		// And B really is why: clearing it flips the failure back, which a bare
+		// negative assertion would not have proven — it also passes when the
+		// download simply succeeds.
+		_unregisterActiveBridgeClient(b)
+		expect(await downloadError()).toContain('no bridge client available')
 	})
 
 	it('is idempotent: a repeated unregister must not clear the next registration', async () => {
-		const a = freedClient()
-		_registerActiveBridgeClient(a)
+		const a = register(freedClient())
 		_unregisterActiveBridgeClient(a)
 		_unregisterActiveBridgeClient(a)
 
-		const b = liveClient()
-		_registerActiveBridgeClient(b)
-		const message = await downloadError()
-		expect(message.includes('no bridge client available')).toBe(false)
+		const b = register(liveClient())
+		expect((await downloadError()).includes('no bridge client available')).toBe(false)
+
+		_unregisterActiveBridgeClient(b)
+		expect(await downloadError()).toContain('no bridge client available')
 	})
 })

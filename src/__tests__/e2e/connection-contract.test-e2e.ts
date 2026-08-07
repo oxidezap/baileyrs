@@ -39,14 +39,21 @@ type ConnectionUpdate = { connection?: string; lastDisconnect?: { error?: Error 
 
 const statusOf = (update: ConnectionUpdate) => (update.lastDisconnect?.error as Boom | undefined)?.output?.statusCode
 
-/** Record every `connection.update` a socket publishes, in order. */
+/**
+ * Record every `connection.update` a socket publishes, in order.
+ *
+ * `stop()` must be called — several tests share one long-lived socket, and a
+ * listener per test would accumulate on it and retain every array they filled.
+ */
 const recordUpdates = (client: TestClient) => {
 	const updates: ConnectionUpdate[] = []
-	client.sock.ev.on('connection.update', (update: ConnectionUpdate) => updates.push(update))
+	const listener = (update: ConnectionUpdate) => updates.push(update)
+	client.sock.ev.on('connection.update', listener)
 	return {
 		all: () => updates,
 		closes: () => updates.filter(update => update.connection === 'close'),
-		connectings: () => updates.filter(update => update.connection === 'connecting')
+		connectings: () => updates.filter(update => update.connection === 'connecting'),
+		stop: () => client.sock.ev.off('connection.update', listener)
 	}
 }
 
@@ -73,35 +80,42 @@ describe('E2E: connection.update contract', { timeout: 180_000 }, () => {
 
 	test('a transport drop reports connecting, never close, and the engine restores it', async () => {
 		const seen = recordUpdates(alice)
-		const connectionsBefore = proxy.connections()
+		try {
+			const connectionsBefore = proxy.connections()
 
-		const reopened = waitForEvent(alice.sock, 'connection.update', u => u.connection === 'open', 90_000)
-		proxy.cut()
-		await reopened
+			const reopened = waitForEvent(alice.sock, 'connection.update', u => u.connection === 'open', 90_000)
+			proxy.cut()
+			await reopened
 
-		// A fresh TCP connection proves the engine really reconnected rather
-		// than the old one having survived the cut.
-		expect(proxy.connections() > connectionsBefore).toBe(true)
-		// The whole point: an upstream-style handler keyed on `close` must not
-		// have fired, or it would have built a second socket while the engine
-		// was restoring this one.
-		expect(seen.closes().length).toBe(0)
-		expect(seen.connectings().length > 0).toBe(true)
-		expect(alice.sock.isConnected).toBe(true)
+			// A fresh TCP connection proves the engine really reconnected rather
+			// than the old one having survived the cut.
+			expect(proxy.connections() > connectionsBefore).toBe(true)
+			// The whole point: an upstream-style handler keyed on `close` must not
+			// have fired, or it would have built a second socket while the engine
+			// was restoring this one.
+			expect(seen.closes().length).toBe(0)
+			expect(seen.connectings().length > 0).toBe(true)
+			expect(alice.sock.isConnected).toBe(true)
+		} finally {
+			seen.stop()
+		}
 	})
 
 	test('the retrying update clears the spent QR', async () => {
 		const seen = recordUpdates(alice)
+		try {
+			const reopened = waitForEvent(alice.sock, 'connection.update', u => u.connection === 'open', 90_000)
+			proxy.cut()
+			await reopened
 
-		const reopened = waitForEvent(alice.sock, 'connection.update', u => u.connection === 'open', 90_000)
-		proxy.cut()
-		await reopened
-
-		const connecting = seen.connectings()[0] as { qr?: string } | undefined
-		if (!connecting) throw new Error('expected a connecting update')
-		// A consumer merging partial state would otherwise keep rendering a QR
-		// the server has already rotated away.
-		expect(connecting.qr).toBe(undefined)
+			const connecting = seen.connectings()[0] as { qr?: string } | undefined
+			if (!connecting) throw new Error('expected a connecting update')
+			// A consumer merging partial state would otherwise keep rendering a QR
+			// the server has already rotated away.
+			expect(connecting.qr).toBe(undefined)
+		} finally {
+			seen.stop()
+		}
 	})
 
 	test('messages still flow after the engine-driven reconnect', async () => {
@@ -181,12 +195,13 @@ describe('E2E: teardown with a live connection', { timeout: 120_000 }, () => {
 		const seen = recordUpdates(client)
 		try {
 			await client.sock.logout().catch(() => {})
-			await new Promise(resolve => setTimeout(resolve, 1500))
-
+			// No sleep: `logout()` resolves only after the close it caused has
+			// been published. Sleeping here would hide a regression in that.
 			const closes = seen.closes()
 			expect(closes.length).toBe(1)
 			expect(statusOf(closes[0]!)).toBe(DisconnectReason.loggedOut)
 		} finally {
+			seen.stop()
 			try {
 				await destroyTestClient(client)
 			} catch {
@@ -218,6 +233,7 @@ describe('E2E: teardown with a live connection', { timeout: 120_000 }, () => {
 			expect(closes.length > 0).toBe(true)
 			expect(statusOf(closes[0]!)).toBe(DisconnectReason.connectionClosed)
 		} finally {
+			seen.stop()
 			try {
 				await destroyTestClient(client)
 			} catch {

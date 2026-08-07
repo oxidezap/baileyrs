@@ -51,9 +51,16 @@ import makeWASocket from '@oxidezap/baileyrs'
 ### Drop-in replacement for upstream Baileys
 
 baileyrs is API-compatible with [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys).
-Existing projects switch over by aliasing the package — **no source changes needed**
-(one exception: carrying an existing pairing across takes a one-line import swap,
-see [Migrating from Upstream Baileys](#migrating-from-upstream-baileys)):
+Existing projects switch over by aliasing the package — **the API and imports
+need no source changes**. Two things do:
+
+- Carrying an existing pairing across takes a one-line import swap, see
+  [Migrating from Upstream Baileys](#migrating-from-upstream-baileys).
+- If your `connection.update` handler was written for a baileyrs before
+  0.1, see [Gotchas](#gotchas): a `close` now always means the socket is
+  finished, and you have to recreate it. Code written against upstream
+  Baileys already does the right thing.
+
 
 ```sh
 npm install @whiskeysockets/baileys@npm:@oxidezap/baileyrs
@@ -78,24 +85,31 @@ now resolves to baileyrs.
 import makeWASocket, { Boom, DisconnectReason, useMultiFileAuthState } from '@oxidezap/baileyrs'
 
 const { state } = await useMultiFileAuthState('auth_info')
-const sock = makeWASocket({ auth: state })
 
-sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
-    if (connection === 'close') {
-        // `close` means this socket is finished — same as upstream Baileys.
-        // Transient drops never get here; the Rust engine retries those and
-        // reports `connecting`.
-        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-        if (statusCode === DisconnectReason.loggedOut) {
-            console.log('Logged out')
-        } else {
-            connectToWhatsApp()
+async function connectToWhatsApp() {
+    const sock = makeWASocket({ auth: state })
+
+    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+        if (connection === 'close') {
+            // `close` means this socket is finished — same as upstream Baileys.
+            // Transient drops never get here; the Rust engine retries those and
+            // reports `connecting`.
+            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log('Logged out')
+            } else {
+                connectToWhatsApp()
+            }
         }
-    }
-    if (connection === 'open') {
-        console.log('Connected')
-    }
-})
+        if (connection === 'open') {
+            console.log('Connected')
+        }
+    })
+
+    return sock
+}
+
+const sock = await connectToWhatsApp()
 
 sock.ev.on('messages.upsert', ({ messages }) => {
     for (const msg of messages) {

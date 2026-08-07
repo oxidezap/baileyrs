@@ -39,27 +39,40 @@ export interface CuttableProxy {
  * @param targetPort port of the mock server (default 8080)
  * @param path       websocket path appended to the returned URL
  */
-export async function startCuttableProxy(targetPort = 8080, path = '/ws/chat'): Promise<CuttableProxy> {
+export async function startCuttableProxy(
+	targetPort = 8080,
+	path = '/ws/chat',
+	/** Where to report infrastructure failures the proxy would otherwise swallow. */
+	logger: ((message: string) => void) | undefined = message => console.error(message)
+): Promise<CuttableProxy> {
 	const live = new Set<Socket>()
-	/** Server-side halves, so `freeze()` can stall just the reply direction. */
-	const upstreams = new Set<Socket>()
+	/**
+	 * Server-side half → its client half. `freeze()` detaches the reply pipe
+	 * rather than pausing the socket: `pipe()` manages flow on its own and
+	 * resumes the source on `'drain'`, with no idea a manual `pause()` ever
+	 * happened — so a drain arriving after `freeze()` would silently reopen the
+	 * black hole the teardown test depends on staying shut.
+	 */
+	const replyPipes = new Map<Socket, Socket>()
 	let connections = 0
 	let frozen = false
 
 	const server: Server = createServer(client => {
 		connections++
 		const upstream = connect(targetPort, '127.0.0.1')
+		// A mock server that is down would otherwise surface as a test that
+		// simply never connects, minutes later, with nothing to read.
+		upstream.on('error', err => {
+			logger?.(`tcp-proxy: upstream connect failed: ${(err as Error).message}`)
+		})
 		live.add(client)
 		live.add(upstream)
-		upstreams.add(upstream)
-		// A connection opened while frozen starts frozen too, so a reconnect
-		// mid-test cannot quietly restore the link.
-		if (frozen) upstream.pause()
+		replyPipes.set(upstream, client)
 
 		const drop = () => {
 			live.delete(client)
 			live.delete(upstream)
-			upstreams.delete(upstream)
+			replyPipes.delete(upstream)
 			client.destroy()
 			upstream.destroy()
 		}
@@ -69,11 +82,23 @@ export async function startCuttableProxy(targetPort = 8080, path = '/ws/chat'): 
 		upstream.on('close', drop)
 
 		client.pipe(upstream)
-		upstream.pipe(client)
+		// A connection opened while frozen starts frozen too, so a reconnect
+		// mid-test cannot quietly restore the link.
+		if (!frozen) upstream.pipe(client)
 	})
-	server.on('error', () => {})
-
-	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+	// Bind failures reject `startCuttableProxy` instead of being swallowed:
+	// a proxy that never listened makes every test in the file time out.
+	const listening = new Promise<void>((resolve, reject) => {
+		server.once('error', reject)
+		server.listen(0, '127.0.0.1', () => {
+			server.removeListener('error', reject)
+			// Past bind, per-connection errors are expected (we cut them
+			// ourselves) and must not take the server down.
+			server.on('error', err => logger?.(`tcp-proxy: server error: ${(err as Error).message}`))
+			resolve()
+		})
+	})
+	await listening
 	const address = server.address()
 	if (typeof address === 'string' || address === null) throw new Error('expected a TCP address')
 
@@ -83,21 +108,21 @@ export async function startCuttableProxy(targetPort = 8080, path = '/ws/chat'): 
 		cut: () => {
 			for (const socket of live) socket.destroy()
 			live.clear()
-			upstreams.clear()
+			replyPipes.clear()
 		},
 		freeze: () => {
 			frozen = true
-			for (const upstream of upstreams) upstream.pause()
+			for (const [upstream, client] of replyPipes) upstream.unpipe(client)
 		},
 		thaw: () => {
 			frozen = false
-			for (const upstream of upstreams) upstream.resume()
+			for (const [upstream, client] of replyPipes) upstream.pipe(client)
 		},
 		close: async () => {
 			frozen = false
 			for (const socket of live) socket.destroy()
 			live.clear()
-			upstreams.clear()
+			replyPipes.clear()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	}
