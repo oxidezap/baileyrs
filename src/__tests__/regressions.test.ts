@@ -1247,6 +1247,22 @@ describe('event buffer: connection.update delivery', () => {
 		expect(seen).toEqual(['first', 'second'])
 	})
 
+	it('calls listeners with the emitter as `this`, as emit() would', () => {
+		// A listener declared as a normal function that removes itself with
+		// `this.off(...)` is a common pattern; calling it bare makes `this`
+		// undefined and the throw is swallowed by the isolation above.
+		const ev = makeEventBuffer(noopLogger as never)
+		let receiverMatched = false
+
+		ev.on('connection.update', function selfRemoving(this: unknown) {
+			receiverMatched = typeof (this as { off?: unknown })?.off === 'function'
+		})
+
+		ev.emit('connection.update', { connection: 'close' } as never)
+
+		expect(receiverMatched).toBe(true)
+	})
+
 	it('still stops at a throwing listener on other channels, as upstream does', () => {
 		const ev = makeEventBuffer(noopLogger as never)
 		const seen: string[] = []

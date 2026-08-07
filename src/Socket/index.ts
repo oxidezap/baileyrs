@@ -284,7 +284,18 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			user = u
 		},
 		getClient: () => {
-			// Deliberately gated on `initialized`, not merely on the client
+			// `peek()` keeps returning the client through `closing` so teardown
+			// can still close the transport with it — but that is teardown's
+			// client, not everyone's. Handing it to an ordinary call racing
+			// shutdown, or made from an end handler, starts a bridge operation
+			// while the client is being disconnected and freed, which is the
+			// heap-corruption hazard the whole teardown ordering exists to
+			// avoid. Refuse from the moment `close()` is called.
+			if (owner.isClosing()) {
+				return Promise.reject(new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
+			}
+
+			// Otherwise gated on `initialized`, not merely on the client
 			// existing. `adopt()` publishes it several awaits before
 			// `setDeviceProps`, the account lookups and `run()`, so keying off
 			// `peek()` alone would hand ordinary calls like `sendMessage()` a
@@ -306,6 +317,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			})
 		},
 		getClientSync: () => {
+			// Same rule as `getClient` — see there.
+			if (owner.isClosing()) {
+				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+			}
 			const built = owner.peek()
 			if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
 			return built
@@ -365,7 +380,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * on the same auth folder.
 		 */
 		onTerminalClose: (error, publish) => {
-			terminalClose.reportAfter(() => end(error), publish)
+			// `owner.close()`, not `end()`. `end()` short-circuits when called
+			// from inside an end handler — it has to, or the handler awaits the
+			// teardown waiting for it — and a terminal event raised from one of
+			// those would then publish against an already-resolved promise,
+			// letting a close listener build a replacement while the old client
+			// is still owned. This waits for the real teardown, and cannot
+			// deadlock because `reportAfter` runs it detached; nothing in the
+			// teardown is waiting on this.
+			terminalClose.reportAfter(() => owner.close(error).finally(() => initPromise), publish)
 		},
 		isAutoReconnectEnabled: () => autoReconnectEnabled
 	})
@@ -599,7 +622,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// Keyed on a close having been *reported*, not on the socket closing —
 		// a plain `end()` reports nothing, so keying off that would let a logout
 		// racing one finish with no close at all.
-		const announceLogout = !reportedBefore && !terminalClose.hasReported()
+		const mayNeedFallback = !reportedBefore && !terminalClose.hasReported()
 
 		try {
 			await end(logoutError)
@@ -610,7 +633,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// rethrows the first flush failure and the owner releases the client
 			// regardless — on that path listeners would otherwise see no
 			// terminal close at all for a socket that has definitely ended.
-			if (announceLogout) {
+			// Rechecked here, not just before the await: a dispatcher close
+			// arriving while `end()` ran would otherwise be followed by this
+			// stale decision, giving consumers two closes for one logout.
+			if (mayNeedFallback && !terminalClose.hasReported()) {
 				terminalClose.reportNow(() =>
 					ev.emit('connection.update', {
 						connection: 'close',

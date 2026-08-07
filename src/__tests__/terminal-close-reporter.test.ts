@@ -101,6 +101,26 @@ describe('terminal close: reportAfter', () => {
 		expect(publishes).toBe(1)
 	})
 
+	it('publishes when teardown throws synchronously, not just when it rejects', async () => {
+		// A teardown that throws before returning a promise never reaches
+		// `.then`, so the close would wait for the watchdog — or never arrive
+		// at all if the timer were ever removed.
+		let published = false
+		const reporter = makeReporter()
+
+		reporter.reportAfter(
+			() => {
+				throw new Error('sync boom')
+			},
+			() => {
+				published = true
+			}
+		)
+		await reporter.published()
+
+		expect(published).toBe(true)
+	})
+
 	it('contains a throwing listener instead of letting it escape', async () => {
 		// `publish` emits on the consumer's bus, from a detached chain — an
 		// escaping throw is an unhandled rejection, i.e. process exit under

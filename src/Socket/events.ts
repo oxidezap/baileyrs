@@ -214,11 +214,17 @@ type DispatcherMap = { [K in CanonicalEvent['type']]: DispatcherFn<K> }
  * goes out immediately.
  */
 const emitClose = (
-	{ ctx, callbacks }: DispatchCtx,
+	{ ctx, callbacks, historySync }: DispatchCtx,
 	reason: string,
 	statusCode: number,
 	data?: Record<string, unknown>
 ) => {
+	// Every terminal path cancels the history-sync pause timer, not just the
+	// one in `disconnected`. A transient drop deliberately keeps it armed, so
+	// without this a drop followed by a terminal close leaves it to fire a
+	// `messaging-history.status: paused` from a socket that has already ended.
+	clearHistorySyncPausedTimeout(historySync)
+
 	const error = new Boom(reason, { statusCode, data })
 	const publish = () =>
 		ctx.ev.emit('connection.update', {
@@ -342,7 +348,6 @@ const DISPATCHERS: DispatcherMap = {
 	// consumer's reconnect handler never firing.
 	disconnected: (_, dispatchCtx) => {
 		if (dispatchCtx.callbacks?.isAutoReconnectEnabled?.() === false) {
-			clearHistorySyncPausedTimeout(dispatchCtx.historySync)
 			emitClose(dispatchCtx, 'Connection closed', DisconnectReason.connectionClosed)
 			return
 		}

@@ -130,7 +130,16 @@ export const makeTerminalCloseReporter = (opts: {
 				if (err) logger.error({ err }, 'socket teardown failed after a terminal disconnect')
 				publishOnce()
 			}
-			void teardown().then(() => finish(), finish)
+			// `teardown()` is called inside the try because it can throw
+			// *synchronously*, before returning a promise — `.then` would never
+			// run and the close would stay unpublished until the watchdog, or
+			// forever if the timer were ever removed. The no-silent-failure
+			// promise has to hold for that path too.
+			try {
+				void teardown().then(() => finish(), finish)
+			} catch (err) {
+				finish(err)
+			}
 		},
 
 		reportNow: publish => {

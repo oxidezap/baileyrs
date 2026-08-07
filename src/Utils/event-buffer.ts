@@ -401,7 +401,12 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 				// close contract exists to prevent.
 				for (const listener of ev.listeners(event)) {
 					try {
-						;(listener as (data: unknown) => void)(events[event])
+						// `.call(ev, …)` so `this` is still the emitter, as it
+						// would be under `emit()`. A listener declared as a
+						// normal function that does `this.off('connection.update', …)`
+						// — a common self-removing pattern — would otherwise
+						// throw on `undefined` and be swallowed by the catch.
+						;(listener as (this: unknown, data: unknown) => void).call(ev, events[event])
 					} catch (err) {
 						logger.error({ err, event }, 'connection.update listener threw; continuing with the rest')
 					}

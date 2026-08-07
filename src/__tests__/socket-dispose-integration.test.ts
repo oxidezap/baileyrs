@@ -348,6 +348,45 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('refuses socket operations once teardown owns the client', async () => {
+		// `peek()` keeps returning the client through `closing` so teardown can
+		// still close the transport with it — but handing it to an ordinary
+		// call racing shutdown starts a bridge operation while that client is
+		// being disconnected and freed, which is the heap-corruption hazard the
+		// teardown ordering exists to avoid.
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const store = new Proxy(state.store as object, {
+				get(target, prop, receiver) {
+					const value = Reflect.get(target, prop, receiver)
+					if (prop !== 'flush' || typeof value !== 'function') return value
+					// Hold teardown open so the racing call lands inside it.
+					return async () => wait(400)
+				}
+			}) as typeof state.store
+
+			const sock = makeWASocket({
+				auth: { ...state, store },
+				logger: silentLogger,
+				waWebSocketUrl: counter.url
+			})
+			await wait(300)
+
+			const ending = sock.end(undefined)
+			// `sendNode` goes through `ctx.getClient()`.
+			const message = await sock
+				.sendNode({ tag: 'iq', attrs: {} })
+				.then(() => '<resolved>')
+				.catch((err: Error) => err.message)
+			await ending
+
+			expect(message).toContain('Connection Closed')
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('reports the logout close even when the auth store fails to flush', async () => {
 		// `end()` rethrows the first flush failure, and the owner releases the
 		// client regardless — so without publishing on that path listeners see
