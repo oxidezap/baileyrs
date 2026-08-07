@@ -20,6 +20,8 @@ export class WebSocketClient extends EventEmitter {
 
 	private closing = false
 	private closed = false
+	/** The in-flight `close()`, so a second caller joins it instead of skipping it. */
+	private closingPromise: Promise<void> | undefined
 	private readonly getClient: () => WasmWhatsAppClient | undefined
 	private listenerMutationDepth = 0
 
@@ -117,15 +119,31 @@ export class WebSocketClient extends EventEmitter {
 		void client.connect().catch(error => this.emit('error', error))
 	}
 
+	/**
+	 * Idempotent, and a second caller joins the first rather than returning
+	 * while it is still going.
+	 *
+	 * The early return used to be bare: `void ws.close(); await sock.end()`
+	 * saw `closing` already set, returned immediately, and let teardown reach
+	 * `free()` with the original `disconnect()` still in flight — the wasm heap
+	 * corruption `bridge-free-safety.test.ts` documents. Awaiting a *second*
+	 * `disconnect()` does not join the first one; sharing the promise does.
+	 */
 	async close(): Promise<void> {
-		if (this.closing || this.closed) return
+		if (this.closed) return
+		if (this.closingPromise) return this.closingPromise
+
 		this.closing = true
-		try {
-			await this.getClient()?.disconnect()
-		} finally {
-			this.closing = false
-			this.closed = true
-		}
+		this.closingPromise = (async () => {
+			try {
+				await this.getClient()?.disconnect()
+			} finally {
+				this.closing = false
+				this.closed = true
+				this.closingPromise = undefined
+			}
+		})()
+		return this.closingPromise
 	}
 
 	send(str: string | Uint8Array, cb?: (err?: Error) => void): boolean {

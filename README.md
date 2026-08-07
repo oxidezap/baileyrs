@@ -106,17 +106,18 @@ async function connectToWhatsApp() {
         }
     })
 
+    // Register every handler in here. A replacement socket is a new emitter,
+    // so anything attached outside stops firing after the first reconnect.
+    sock.ev.on('messages.upsert', ({ messages }) => {
+        for (const msg of messages) {
+            console.log('received message', msg.key.id)
+        }
+    })
+
     return sock
 }
 
 const sock = await connectToWhatsApp()
-
-sock.ev.on('messages.upsert', ({ messages }) => {
-    for (const msg of messages) {
-        console.log('received message', msg.key.id)
-    }
-})
-
 await sock.sendMessage('1234567890@s.whatsapp.net', { text: 'Hello!' })
 ```
 

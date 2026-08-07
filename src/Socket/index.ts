@@ -156,13 +156,23 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// Capture the FIRST flush failure so a corrupt-on-shutdown auth
 			// state reaches the caller, but finish the rest of the teardown
 			// regardless — the client is released either way.
+			//
+			// Called through their owners on purpose. Collecting the two methods
+			// into an array and invoking them bare drops the receiver, so a
+			// consumer store whose `flush()` touches `this` throws on
+			// `undefined` — the teardown then records a flush failure, releases
+			// the client and publishes the close with the auth writes still
+			// unpersisted.
 			let firstFlushError: unknown
-			for (const flush of [auth.store?.flush, autoWrappedStore?.flush]) {
-				try {
-					await flush?.()
-				} catch (e) {
-					firstFlushError ??= e
-				}
+			try {
+				await auth.store?.flush?.()
+			} catch (e) {
+				firstFlushError ??= e
+			}
+			try {
+				await autoWrappedStore?.flush?.()
+			} catch (e) {
+				firstFlushError ??= e
 			}
 
 			// End handlers run before the flush error is rethrown: they are the
@@ -577,7 +587,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// Nothing dispatched: no client at all, or `logout()` threw before the
 		// bridge got to it. Upstream always reports exactly one close for a
 		// logout, so emitting none would be worse than emitting one too many.
-		if (terminalCloseCount === closesBefore) {
+		const announceLogout = terminalCloseCount === closesBefore
+
+		await end(logoutError)
+
+		// Published after the teardown, like the dispatcher's own close. Doing
+		// it before would hand a logged-out handler a socket that is still
+		// flushing the auth folder it is about to delete — the one guarantee
+		// this whole change is selling.
+		if (announceLogout) {
 			ev.emit('connection.update', {
 				connection: 'close',
 				lastDisconnect: {
@@ -586,8 +604,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				}
 			} as Partial<ConnectionState>)
 		}
-
-		await end(logoutError)
 		// The dispatcher publishes its close on a chain one hop further out than
 		// the teardown both paths await, so without this `await sock.logout()`
 		// returns just before the event it caused.

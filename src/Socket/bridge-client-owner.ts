@@ -153,6 +153,13 @@ export const makeBridgeClientOwner = (opts: BridgeClientOwnerOptions): BridgeCli
 		},
 
 		discard: async () => {
+			// `close()` keeps the client published for the whole of `teardown`,
+			// so a discard landing in that window would take the very handle
+			// `runClose` already captured and release it a second time — two
+			// disconnect/free sequences on one wasm client, which is the heap
+			// corruption this owner exists to avoid. `close()` owns it from the
+			// moment it starts; joining is the correct answer, not releasing.
+			if (closing) return closePromise
 			const adopted = client
 			client = undefined
 			if (adopted) await trackRelease(adopted)

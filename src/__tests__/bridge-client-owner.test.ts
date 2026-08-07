@@ -264,6 +264,31 @@ describe('bridge client owner: discard', () => {
 		expect(h.teardownCalls.length).toBe(0)
 	})
 
+	it('joins an in-flight close instead of releasing its client again', async () => {
+		// `close()` keeps the client published for the whole of `teardown`, so a
+		// discard landing in that window used to take the same handle and
+		// release it a second time — two disconnect/free sequences on one wasm
+		// client. Reachable for real: a teardown's disconnect can make an
+		// in-flight `init()` bridge call reject, and that failure path discards.
+		let teardownDone = false
+		const h = makeHarness({
+			teardown: async () => {
+				await wait(120)
+				teardownDone = true
+			}
+		})
+		h.owner.adopt(h.client())
+
+		const closing = h.owner.close(undefined)
+		await h.owner.discard()
+
+		// Joined the close rather than racing it…
+		expect(teardownDone).toBe(true)
+		await closing
+		// …and the client was released exactly once.
+		expect(h.trace).toEqual(['teardown(with-client)', 'release(client)'])
+	})
+
 	it('is a no-op when nothing was adopted', async () => {
 		const h = makeHarness()
 

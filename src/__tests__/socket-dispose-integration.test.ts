@@ -289,6 +289,36 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('flushes the auth store through its own object, keeping the receiver', async () => {
+		// Collecting `store.flush` into an array and calling it bare drops the
+		// receiver, so a store whose `flush()` touches `this` throws on
+		// `undefined`. Teardown then records a flush failure and releases the
+		// client anyway — auth writes silently unpersisted.
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			let sawReceiver = false
+			const store = {
+				...(state.store as object),
+				flush() {
+					sawReceiver = this !== undefined
+					return Promise.resolve()
+				}
+			} as typeof state.store
+
+			const sock = makeWASocket({
+				auth: { ...state, store },
+				logger: silentLogger,
+				waWebSocketUrl: counter.url
+			})
+			await sock.end(undefined)
+
+			expect(sawReceiver).toBe(true)
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('an immediate dispose — before init settles — keeps the engine from reconnecting', async () => {
 		const counter = await startConnectionCounter()
 		try {
