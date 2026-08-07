@@ -399,7 +399,14 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 				// the bot would stay offline. This is the lifecycle channel;
 				// losing delivery here is the failure mode the socket's whole
 				// close contract exists to prevent.
-				for (const listener of ev.listeners(event)) {
+				// `rawListeners`, not `listeners`: the latter unwraps `once()`
+				// handlers to the function underneath, so calling that would
+				// never run the wrapper that unregisters them and the listener
+				// would stay subscribed for every later update. `once` is not on
+				// `BaileysEventEmitter` today, so this is unreachable rather than
+				// broken — but the two differ only in this respect and the raw
+				// one is the correct primitive for calling listeners by hand.
+				for (const listener of ev.rawListeners(event)) {
 					try {
 						// `.call(ev, …)` so `this` is still the emitter, as it
 						// would be under `emit()`. A listener declared as a

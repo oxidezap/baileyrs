@@ -86,6 +86,14 @@ import makeWASocket, { Boom, DisconnectReason, useMultiFileAuthState } from '@ox
 
 const { state } = await useMultiFileAuthState('auth_info')
 
+// setTimeout caps at ~2^31-1 ms (~24.8 days) and fires immediately past that,
+// so a long ban has to be waited out in chunks.
+async function waitUntil(deadlineMs: number) {
+    for (let left = deadlineMs - Date.now(); left > 0; left = deadlineMs - Date.now()) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(left, 2_147_483_647)))
+    }
+}
+
 async function connectToWhatsApp() {
     const sock = makeWASocket({ auth: state })
 
@@ -101,12 +109,10 @@ async function connectToWhatsApp() {
             if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
                 console.log('Closed for good', statusCode)
             } else if (statusCode === DisconnectReason.forbidden) {
-                // Temporary ban: `expire` is unix seconds. `Example/example.ts`
-                // chunks the wait, since setTimeout caps at ~24.8 days.
+                // Temporary ban: `expire` is unix seconds.
                 const expire = (lastDisconnect?.error as Boom)?.data?.expire
-                const waitMs = expire ? Math.max(0, expire * 1000 - Date.now()) : 0
                 console.log('Temporarily banned until', expire)
-                if (expire) setTimeout(connectToWhatsApp, Math.min(waitMs, 2_147_483_647))
+                if (expire) waitUntil(expire * 1000).then(connectToWhatsApp)
             } else {
                 setTimeout(connectToWhatsApp, 5_000)
             }
