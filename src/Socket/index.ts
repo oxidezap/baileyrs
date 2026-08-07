@@ -66,11 +66,22 @@ let wasmInitialized = false
 
 /**
  * How long a terminal-close teardown may run before the socket reports the
- * close anyway. Teardown normally takes milliseconds; this only fires when a
- * consumer end handler or an auth-store flush never settles, and losing the
- * event entirely is worse than reporting it early.
+ * close anyway.
+ *
+ * This is a deliberate trade of one guarantee for another, so it is worth
+ * being plain about which. Normally the close is published only after teardown
+ * finishes, precisely so a consumer answering it with a replacement socket
+ * cannot overlap this one's auth-store flush. Past this deadline that no
+ * longer holds — but the alternative is losing the event entirely, which is
+ * the bug this whole change exists to fix: a bot offline with nothing in its
+ * logs.
+ *
+ * Teardown takes milliseconds in practice; reaching this means a consumer end
+ * handler or a store flush never settled, and the error logged alongside says
+ * so. Generous rather than tight, because firing early is the harmful
+ * direction here.
  */
-const TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS = 10_000
+const TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS = 60_000
 
 /**
  * Default mapping for the legacy `browser[1]` slot — preserved so users on the

@@ -152,6 +152,34 @@ describe('bridge client owner: close', () => {
 		expect(h.teardownCalls.length).toBe(1)
 	})
 
+	it('is safe against a teardown that re-enters close()', async () => {
+		// `close()` reserves its promise before invoking `runClose`, because an
+		// async body runs eagerly to its first `await`: teardown starts by
+		// closing the transport, and anything it reaches synchronously that
+		// calls back into `close()` would otherwise see no in-flight close and
+		// start a second teardown — releasing the same wasm client twice.
+		const h = makeHarness()
+		let reentered: Promise<void> | undefined
+		const owner = makeBridgeClientOwner({
+			logger: noopLogger as never,
+			teardown: async () => {
+				h.trace.push('teardown')
+				// Synchronous re-entry, before this body's first await.
+				reentered = owner.close(undefined)
+				await wait(20)
+			},
+			release: async () => {
+				h.trace.push('release')
+			}
+		})
+		owner.adopt(h.client())
+
+		await owner.close(undefined)
+		await reentered
+
+		expect(h.trace).toEqual(['teardown', 'release'])
+	})
+
 	it('releases the client even when teardown throws', async () => {
 		// `teardown` rethrows the first auth-store flush failure. Leaking the
 		// wasm client on that path would make a bad shutdown worse.

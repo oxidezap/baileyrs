@@ -111,10 +111,16 @@ export async function startCuttableProxy(
 			replyPipes.clear()
 		},
 		freeze: () => {
+			if (frozen) return
 			frozen = true
 			for (const [upstream, client] of replyPipes) upstream.unpipe(client)
 		},
 		thaw: () => {
+			// Guarded, because `pipe()` does not dedupe its destination: piping
+			// an already-piped pair adds a second `'data'` listener and every
+			// server reply reaches the client twice, corrupting the wss stream
+			// into failures nowhere near this file.
+			if (!frozen) return
 			frozen = false
 			for (const [upstream, client] of replyPipes) upstream.pipe(client)
 		},

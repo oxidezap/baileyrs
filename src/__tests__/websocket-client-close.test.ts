@@ -83,6 +83,32 @@ describe('WebSocketClient.close()', () => {
 		expect(ws.isClosing).toBe(false)
 	})
 
+	it('is safe against a disconnect that re-enters close()', async () => {
+		// The state is stored before `disconnect()` runs, and the work deferred
+		// by a microtask so that ordering holds. An inline async body would run
+		// eagerly to its first await, invoking `disconnect()` while the state
+		// still said `open` — a synchronous callback reaching back into
+		// `close()` would then issue a second one on the same wasm handle.
+		let calls = 0
+		let ws!: WebSocketClient
+		let reentered: Promise<void> | undefined
+		const client = {
+			isConnected: () => true,
+			disconnect: async () => {
+				calls++
+				// Synchronous re-entry, before this body's first await.
+				reentered = ws.close()
+				await wait(20)
+			}
+		} as unknown as WasmWhatsAppClient
+		ws = makeWs(client)
+
+		await ws.close()
+		await reentered
+
+		expect(calls).toBe(1)
+	})
+
 	it('settles for later callers even when the disconnect rejects', async () => {
 		let calls = 0
 		const client = {

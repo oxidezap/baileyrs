@@ -5,6 +5,12 @@ import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX } from '../Defaults/index.ts'
 import type { SocketConfig } from '../Types/index.ts'
 
 type ReadyState = 0 | 1 | 2 | 3
+
+/** Both settled phases carry the same promise, so a late caller awaits the real close. */
+type CloseState =
+	| { readonly phase: 'open' }
+	| { readonly phase: 'closing'; readonly done: Promise<void> }
+	| { readonly phase: 'closed'; readonly done: Promise<void> }
 type EventListener = Parameters<EventEmitter['on']>[1]
 
 const isRawNodeEventName = (eventName: string | symbol): boolean =>
@@ -18,10 +24,13 @@ export class WebSocketClient extends EventEmitter {
 	readonly config: SocketConfig
 	protected readonly socket: { readonly readyState: ReadyState }
 
-	private closing = false
-	private closed = false
-	/** The in-flight `close()`, so a second caller joins it instead of skipping it. */
-	private closingPromise: Promise<void> | undefined
+	/**
+	 * One value rather than a pair of booleans plus a promise that could
+	 * disagree with them. `closing` carries the in-flight close so a second
+	 * caller joins it instead of returning while the first `disconnect()` is
+	 * still running — which is how teardown reached `free()` on a busy client.
+	 */
+	private closeState: CloseState = { phase: 'open' }
 	private readonly getClient: () => WasmWhatsAppClient | undefined
 	private listenerMutationDepth = 0
 
@@ -43,15 +52,15 @@ export class WebSocketClient extends EventEmitter {
 	}
 
 	get isClosed(): boolean {
-		return this.closed
+		return this.closeState.phase === 'closed'
 	}
 
 	get isClosing(): boolean {
-		return this.closing
+		return this.closeState.phase === 'closing'
 	}
 
 	get isConnecting(): boolean {
-		return !this.isOpen && !this.closing && !this.closed
+		return !this.isOpen && this.closeState.phase === 'open'
 	}
 
 	get hasRawNodeListeners(): boolean {
@@ -115,7 +124,7 @@ export class WebSocketClient extends EventEmitter {
 	connect(): void {
 		const client = this.getClient()
 		if (!client || client.isConnected()) return
-		this.closed = false
+		this.closeState = { phase: 'open' }
 		void client.connect().catch(error => this.emit('error', error))
 	}
 
@@ -123,27 +132,30 @@ export class WebSocketClient extends EventEmitter {
 	 * Idempotent, and a second caller joins the first rather than returning
 	 * while it is still going.
 	 *
-	 * The early return used to be bare: `void ws.close(); await sock.end()`
-	 * saw `closing` already set, returned immediately, and let teardown reach
-	 * `free()` with the original `disconnect()` still in flight — the wasm heap
-	 * corruption `bridge-free-safety.test.ts` documents. Awaiting a *second*
-	 * `disconnect()` does not join the first one; sharing the promise does.
+	 * The early return used to be bare: `void ws.close(); await sock.end()` saw
+	 * the flag, returned immediately, and let teardown reach `free()` with the
+	 * original `disconnect()` still in flight — the wasm heap corruption
+	 * `bridge-free-safety.test.ts` documents. Awaiting a *second* `disconnect()`
+	 * does not join the first one.
+	 *
+	 * The state is stored before `disconnect()` is called, and the work is
+	 * deferred by a microtask to make that ordering hold: an inline async body
+	 * runs eagerly to its first `await`, so `disconnect()` would be invoked
+	 * while the state still said `open`, and anything it reaches synchronously
+	 * that calls back into `close()` would issue a second one.
 	 */
 	async close(): Promise<void> {
-		if (this.closed) return
-		if (this.closingPromise) return this.closingPromise
+		if (this.closeState.phase !== 'open') return this.closeState.done
 
-		this.closing = true
-		this.closingPromise = (async () => {
+		const done: Promise<void> = Promise.resolve().then(async () => {
 			try {
 				await this.getClient()?.disconnect()
 			} finally {
-				this.closing = false
-				this.closed = true
-				this.closingPromise = undefined
+				this.closeState = { phase: 'closed', done }
 			}
-		})()
-		return this.closingPromise
+		})
+		this.closeState = { phase: 'closing', done }
+		return done
 	}
 
 	send(str: string | Uint8Array, cb?: (err?: Error) => void): boolean {
@@ -159,8 +171,8 @@ export class WebSocketClient extends EventEmitter {
 
 	private get readyState(): ReadyState {
 		if (this.isOpen) return 1
-		if (this.closing) return 2
-		if (this.closed) return 3
+		if (this.closeState.phase === 'closing') return 2
+		if (this.closeState.phase === 'closed') return 3
 		return 0
 	}
 }
