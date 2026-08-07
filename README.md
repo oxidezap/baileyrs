@@ -95,12 +95,15 @@ async function connectToWhatsApp() {
             // Transient drops never get here; the Rust engine retries those and
             // reports `connecting`.
             const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-            if (statusCode === DisconnectReason.loggedOut) {
-                console.log('Logged out')
+            // See the reconnect table under Gotchas: a few terminal closes
+            // reject the replacement just as fast, so they are not worth
+            // retrying — or not yet. `Example/example.ts` has the full policy.
+            if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
+                console.log('Closed for good', statusCode)
+            } else if (statusCode === DisconnectReason.forbidden) {
+                const expire = (lastDisconnect?.error as Boom)?.data?.expire
+                console.log('Temporarily banned until', expire)
             } else {
-                // Back off first: a temporary ban (403, with an `expire` on
-                // `error.data`) or an outdated build (405) rejects the
-                // replacement just as fast. See Gotchas for the full policy.
                 setTimeout(connectToWhatsApp, 5_000)
             }
         }

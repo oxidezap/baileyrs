@@ -109,6 +109,34 @@ describe('WebSocketClient.close()', () => {
 		expect(calls).toBe(1)
 	})
 
+	it('does not let a reconnect reopen the facade mid-close', async () => {
+		// A close in flight has already told the client to disconnect, which is
+		// what makes `isConnected()` false — so `connect()` would clear the
+		// `closing` phase, and the next `close()` would start a second
+		// disconnect against a client still finishing the first.
+		let calls = 0
+		let connected = true
+		const client = {
+			isConnected: () => connected,
+			connect: async () => {},
+			disconnect: async () => {
+				calls++
+				connected = false
+				await wait(60)
+			}
+		} as unknown as WasmWhatsAppClient
+		const ws = makeWs(client)
+
+		const closing = ws.close()
+		await wait(10)
+		ws.connect() // a reconnect landing mid-teardown
+		expect(ws.isClosing).toBe(true)
+
+		await closing
+		await ws.close()
+		expect(calls).toBe(1)
+	})
+
 	it('settles for later callers even when the disconnect rejects', async () => {
 		let calls = 0
 		const client = {

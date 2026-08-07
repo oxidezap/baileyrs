@@ -93,6 +93,9 @@ export interface BridgeClientOwner {
 	 * Resolves once every release this owner started has finished, including
 	 * the one a refused `adopt()` kicks off. Startup awaits it on the way out
 	 * so its own promise does not settle with a release still in flight.
+	 *
+	 * A release can outlive the set it started in, so this drains rather than
+	 * awaiting one snapshot.
 	 */
 	settled: () => Promise<void>
 }
@@ -119,12 +122,23 @@ export const makeBridgeClientOwner = (opts: BridgeClientOwnerOptions): BridgeCli
 		return running
 	}
 
+	/** Drain releases started outside this close — see `runClose`. */
+	const drainReleases = async () => {
+		while (pendingReleases.size) await Promise.all(pendingReleases)
+	}
+
 	const runClose = async (client: WasmWhatsAppClient | undefined, error: Error | undefined, done: Promise<void>) => {
 		try {
 			await teardown(client, error)
 		} finally {
 			state = { phase: 'closed', done }
 			if (client) await releaseQuietly(client)
+			// A `discard()` in flight when this close started put the client
+			// back in `starting`, so the capture above found none and teardown
+			// ran without it. Its release is still going: joining here keeps
+			// `close()` from settling while a client is being disconnected and
+			// freed, which is what the caller is told it can rely on.
+			await drainReleases()
 		}
 	}
 
@@ -187,10 +201,6 @@ export const makeBridgeClientOwner = (opts: BridgeClientOwnerOptions): BridgeCli
 			await trackRelease(client)
 		},
 
-		settled: async () => {
-			// A release can outlive the set it started in, so drain rather than
-			// awaiting one snapshot.
-			while (pendingReleases.size) await Promise.all(pendingReleases)
-		}
+		settled: drainReleases
 	}
 }

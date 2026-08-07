@@ -57,7 +57,38 @@ const byteFmt = (bytes: number) => {
 /** `<failure reason="405">` — the wire code baileyrs reports for an outdated build. */
 const CLIENT_OUTDATED_STATUS = 405
 
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+/**
+ * `setTimeout` caps at 2^31-1 ms (~24.8 days) and fires *immediately* past
+ * that, so a long temporary ban would reconnect at once instead of waiting it
+ * out. Chunked so the wait actually holds.
+ */
+const delay = async (ms: number) => {
+	const MAX_TIMEOUT_MS = 2_147_483_647
+	let left = ms
+	while (left > 0) {
+		const chunk = Math.min(left, MAX_TIMEOUT_MS)
+		await new Promise(resolve => setTimeout(resolve, chunk))
+		left -= chunk
+	}
+}
+
+/**
+ * Keep trying to rebuild the socket, detached from any event handler.
+ *
+ * Used when the first attempt threw: giving up there would leave the bot
+ * offline for good, which is the failure this whole reconnect path exists to
+ * avoid.
+ */
+const reconnectLater = async (attempt = 1): Promise<void> => {
+	const backoffMs = Math.min(60_000, 5_000 * 2 ** (attempt - 1))
+	await delay(backoffMs)
+	try {
+		await startSock()
+	} catch (err) {
+		logger.error({ err, attempt, backoffMs }, 'reconnect attempt failed')
+		return reconnectLater(attempt + 1)
+	}
+}
 
 /**
  * How long to wait before replacing a terminally closed socket, or `undefined`
@@ -148,8 +179,18 @@ const startSock = async () => {
 						logger.fatal({ statusCode }, 'connection closed for good; not reconnecting')
 					} else {
 						logger.warn({ statusCode, retryDelayMs }, 'connection closed for good, starting a new socket')
-						if (retryDelayMs > 0) await delay(retryDelayMs)
-						await startSock()
+						// `ev.process` invokes this handler with `void handler(events)`
+						// and attaches no rejection handler, so anything thrown here —
+						// `fetchLatestWaWebVersion()` failing, the auth store refusing
+						// to load — becomes an unhandled rejection that can take the
+						// process down, and the bot stays offline either way.
+						try {
+							if (retryDelayMs > 0) await delay(retryDelayMs)
+							await startSock()
+						} catch (err) {
+							logger.error({ err }, 'failed to start the replacement socket; retrying')
+							void reconnectLater()
+						}
 					}
 					// This socket is spent; the rest of the batch would run
 					// against a closed one. `benchmark.ts` does the same.

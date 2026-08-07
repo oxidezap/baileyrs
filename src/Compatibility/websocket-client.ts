@@ -124,6 +124,11 @@ export class WebSocketClient extends EventEmitter {
 	connect(): void {
 		const client = this.getClient()
 		if (!client || client.isConnected()) return
+		// A close in flight has already told the client to disconnect, which is
+		// exactly what makes `isConnected()` false above. Reopening here would
+		// clear the `closing` phase, and the next `close()` would start a second
+		// disconnect against the same client while the first is still running.
+		if (this.closeState.phase === 'closing') return
 		this.closeState = { phase: 'open' }
 		void client.connect().catch(error => this.emit('error', error))
 	}

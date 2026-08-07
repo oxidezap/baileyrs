@@ -319,6 +319,35 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('logout() after a close has already been reported does not synthesize a second one', async () => {
+		// A consumer that logs out from its own `close` handler finds no live
+		// client, so nothing dispatches `LoggedOut` and the terminal-close count
+		// cannot move. Treating that as "nobody announced it" gave every
+		// listener two terminal notifications for one socket — and a handler
+		// that logs out on close an asynchronous close/logout loop.
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const sock = makeWASocket({ auth: state, logger: silentLogger, waWebSocketUrl: counter.url })
+
+			let closes = 0
+			sock.ev.on('connection.update', update => {
+				if (update.connection === 'close') closes++
+			})
+
+			// First logout reports the close…
+			await sock.logout().catch(() => {})
+			expect(closes).toBe(1)
+
+			// …a second one, as a close handler would do, must stay silent.
+			await sock.logout().catch(() => {})
+			await wait(300)
+			expect(closes).toBe(1)
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('reports the logout close even when the auth store fails to flush', async () => {
 		// `end()` rethrows the first flush failure, and the owner releases the
 		// client regardless — so without publishing on that path listeners see

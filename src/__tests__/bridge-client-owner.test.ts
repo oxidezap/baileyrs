@@ -297,6 +297,28 @@ describe('bridge client owner: settled', () => {
 		expect((thrown as Error | undefined)?.message).toBe('flush exploded')
 	})
 
+	it('close() waits for a release a concurrent discard() started', async () => {
+		// `discard()` puts the client back in `starting` before awaiting its
+		// release, so a `close()` landing in that window captures no client and
+		// runs teardown without it. The release is still going — settling
+		// `close()` there lets the caller start a replacement socket, or delete
+		// the auth folder, while a client is mid-disconnect.
+		let releaseFinished = false
+		const h = makeHarness({
+			release: async () => {
+				await wait(150)
+				releaseFinished = true
+			}
+		})
+		h.owner.adopt(h.client())
+
+		const discarding = h.owner.discard()
+		await h.owner.close(undefined)
+
+		expect(releaseFinished).toBe(true)
+		await discarding
+	})
+
 	it('resolves immediately when nothing is in flight', async () => {
 		const h = makeHarness()
 		await h.owner.settled()

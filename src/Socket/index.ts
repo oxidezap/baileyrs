@@ -583,7 +583,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		initialized = true
 	}
 
-	const end = (error: Error | undefined): Promise<void> => owner.close(error)
+	/**
+	 * Joins startup too, not just the teardown.
+	 *
+	 * `owner.close()` covers the client it can see. A close landing while
+	 * `createWhatsAppClient()` is still pending sees none — the client arrives
+	 * afterwards, `adopt()` refuses it, and the release runs detached. Without
+	 * waiting for `init()` to finish, `await sock.end()` therefore returns while
+	 * that client is still disconnecting and being freed, and the replacement
+	 * socket the consumer builds next overlaps it on the same auth folder.
+	 *
+	 * `initPromise` is declared below and swallows its own failures, so this
+	 * neither hits its TDZ (nothing can call `end` during the synchronous
+	 * construction below) nor masks the teardown error.
+	 */
+	const end = (error: Error | undefined): Promise<void> => owner.close(error).finally(() => initPromise)
 
 	let initError: Error | undefined
 	// Started only once `end` exists. `init()`'s synchronous prefix reaches
@@ -623,6 +637,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// either way. Counting rather than flagging, because a terminal close
 		// may already have happened earlier in this socket's life.
 		const closesBefore = terminalCloseCount
+		// A socket that has already gone through a terminal close reported one
+		// then. `logout()` called from that very handler finds no live client to
+		// dispatch a second `LoggedOut`, so the count cannot move — and
+		// synthesizing a close on that basis gives every listener two terminal
+		// notifications for one socket, and a handler that logs out on close an
+		// asynchronous close/logout loop.
+		const alreadyClosed = owner.isClosing()
 		const live = owner.peek()
 		if (live) {
 			try {
@@ -635,7 +656,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// Nothing dispatched: no client at all, or `logout()` threw before the
 		// bridge got to it. Upstream always reports exactly one close for a
 		// logout, so emitting none would be worse than emitting one too many.
-		const announceLogout = terminalCloseCount === closesBefore
+		const announceLogout = !alreadyClosed && terminalCloseCount === closesBefore
 
 		try {
 			await end(logoutError)
@@ -649,13 +670,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// path listeners would otherwise see no terminal close at all for a
 			// socket that has definitely ended. The rejection still propagates.
 			if (announceLogout) {
-				ev.emit('connection.update', {
-					connection: 'close',
-					lastDisconnect: {
-						error: logoutError,
-						date: new Date()
-					}
-				} as Partial<ConnectionState>)
+				try {
+					ev.emit('connection.update', {
+						connection: 'close',
+						lastDisconnect: {
+							error: logoutError,
+							date: new Date()
+						}
+					} as Partial<ConnectionState>)
+				} catch (err) {
+					// Emitted from a `finally`, so a throwing consumer listener
+					// would otherwise replace the auth-store flush failure `end()`
+					// is rethrowing — hiding the real teardown error behind one
+					// from the handler reacting to it.
+					logger.error({ err }, 'connection.update listener threw on the logout close')
+				}
 			}
 		}
 		// The dispatcher publishes its close on a chain one hop further out than
