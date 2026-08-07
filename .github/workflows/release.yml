@@ -80,10 +80,33 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The commit that triggered this run, not the tag name. Both are the same
+      # release commit, but only this one cannot move: resolving the tag here
+      # and again in publish leaves a window where the two jobs build different
+      # trees, and npm records this sha as the package's source regardless of
+      # what the workspace was checked out to.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
+
+      # Guards the assumption above: release-please tags the commit it just
+      # merged, so a tag pointing elsewhere means this run would verify and
+      # publish something the release does not name.
+      - name: Confirm the release tag points at this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+          target=$(jq -r '.object.sha' <<<"$ref")
+          if [ "$(jq -r '.object.type' <<<"$ref")" = tag ]; then
+            target=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$target" --jq '.object.sha')
+          fi
+          if [ "$target" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG points at $target, not $GITHUB_SHA"
+            exit 1
+          fi
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -117,7 +140,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          # Same immutable commit verify checked out and vouched for.
+          ref: ${{ github.sha }}
           # Nothing here talks to the remote after checkout, and the steps below
           # run third-party install and build scripts in a job holding OIDC
           # publish rights. Don't leave the token in .git/config for them.
