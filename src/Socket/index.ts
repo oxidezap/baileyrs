@@ -5,8 +5,7 @@ import {
 	type DevicePlatformType,
 	encodeProto,
 	initWasmEngine,
-	type UploadMediaResult,
-	type WasmWhatsAppClient
+	type UploadMediaResult
 } from '@oxidezap/whatsapp-rust-bridge'
 import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
@@ -40,7 +39,7 @@ import type Long from 'long'
 import { DisconnectReason } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
-import { _registerActiveBridgeClient, downloadMediaMessage } from '../Utils/messages.ts'
+import { _registerActiveBridgeClient, _unregisterActiveBridgeClient, downloadMediaMessage } from '../Utils/messages.ts'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
@@ -50,6 +49,8 @@ import { makeBlockingMethods } from './blocking.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
+import { makeBridgeClientOwner } from './bridge-client-owner.ts'
+import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
 import { makeMessageMethods } from './messages.ts'
@@ -103,11 +104,161 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// this first so `ev.on('creds.update', saveCreds)` persists the merged state
 	// rather than the pre-pair placeholder.
 	ev.on('creds.update', update => Object.assign(auth.creds, update))
-	let client: WasmWhatsAppClient | undefined
-	let readyClient: Promise<WasmWhatsAppClient> | undefined
 	let user: { id?: string; lid?: string } | undefined
+	/** True once `init()` has finished wiring the client and started its read loop. */
+	let initialized = false
+	/** True while the socket's end handlers run — see `end`. */
+	let runningEndHandlers = false
 
-	const ws = new WebSocketClient(fullConfig.waWebSocketUrl, fullConfig, () => client)
+	/**
+	 * Consumer teardown hooks, plus the socket's own. Declared here rather than
+	 * beside their registrations so the owner below can close over the list
+	 * before anything fills it.
+	 */
+	const socketEndHandlers: Array<(error: Error | undefined) => void | Promise<void>> = []
+
+	/**
+	 * Drain both auth stores, returning the FIRST failure rather than throwing
+	 * so the caller can finish the rest of its work and still report it.
+	 *
+	 * Called through their owners on purpose: collecting the two methods into
+	 * an array and invoking them bare drops the receiver, so a consumer store
+	 * whose `flush()` touches `this` throws on `undefined` and the teardown
+	 * publishes a close with the auth writes unpersisted.
+	 */
+	const flushStores = async (): Promise<unknown> => {
+		let firstError: unknown
+		try {
+			await auth.store?.flush?.()
+		} catch (e) {
+			firstError ??= e
+		}
+		try {
+			await autoWrappedStore?.flush?.()
+		} catch (e) {
+			firstError ??= e
+		}
+		return firstError
+	}
+
+	/**
+	 * Single home for the bridge client's lifetime. `ws` below reads the current
+	 * client from it, and this teardown closes `ws` — the cycle is fine because
+	 * both directions only run once the socket is live.
+	 */
+	const owner = makeBridgeClientOwner({
+		logger,
+		/**
+		 * Everything the socket owns beyond the client itself. Runs once, with
+		 * the client still usable, whether or not one was ever adopted — a
+		 * teardown that landed mid-init still has a transport to close and a
+		 * store to drain.
+		 */
+		teardown: async (client, error) => {
+			try {
+				await ws.close()
+			} catch {
+				// The transport refused to close cleanly. Go straight at the
+				// client so the disconnect still happens *before* the barrier
+				// and flush below: `release` retries it, but that runs after the
+				// flush, and the closing-session ratchet writes a disconnect
+				// enqueues would then have nothing left to persist them.
+				try {
+					await client?.disconnect()
+				} catch {
+					/* ignore */
+				}
+			}
+
+			if (client) {
+				// Barrier: bridge cleanup paths fired during `disconnect()` may
+				// emit `set()` calls that are still queued as microtasks /
+				// `setImmediate` callbacks at this point. Two yields to the
+				// event loop drain (1) the microtask queue and (2) the next
+				// macrotask tick where wasm-bindgen async callbacks land.
+				// Without this barrier the flushes below run before the bridge
+				// has finished writing — a race that loses the last few sets
+				// (typically the closing-session ratchet step).
+				await new Promise(resolve => setImmediate(resolve))
+				await new Promise(resolve => setImmediate(resolve))
+			}
+
+			const firstFlushError = await flushStores()
+
+			// End handlers run before the flush error is rethrown: they are the
+			// consumer's teardown hook, and a corrupt-on-shutdown auth store is
+			// exactly when they most need to run.
+			//
+			// The flag makes a re-entrant `end()` from inside one of them a
+			// no-op instead of a deadlock: shared cleanup used both directly and
+			// as an end hook would otherwise be handed the very promise that is
+			// waiting for it to return, and nothing would ever settle — no
+			// release, and no terminal close until the watchdog.
+			runningEndHandlers = true
+			try {
+				for (const handler of socketEndHandlers) {
+					try {
+						await handler(error)
+					} catch (handlerError) {
+						logger.error({ err: handlerError }, 'error in socket end handler')
+					}
+				}
+			} finally {
+				runningEndHandlers = false
+			}
+
+			if (firstFlushError) throw firstFlushError
+		},
+
+		release: async client => {
+			// `disconnect()` before `free()` is defence in depth, not a fix for a
+			// reproduced bug on this path.
+			//
+			// The hazard is real and reproducible at the bridge: freeing a client
+			// with any call still pending corrupts the wasm heap — dlmalloc trips
+			// `assertion failed: psize <= size + max_overhead` and the process
+			// dies on `RuntimeError: unreachable`, from a microtask no try/catch
+			// here can reach, since `free()` itself returns normally.
+			// `logout()`, `disconnect()` and a plain `fetchBlocklist()` all
+			// reproduce it — see `__tests__/bridge-free-safety.test.ts`.
+			//
+			// What keeps teardown off that path is the `ws.close()` above, which
+			// is itself a `client.disconnect()` (`Compatibility/websocket-client.ts`).
+			// This is the belt to that braces, and the gap it closes is
+			// `WebSocketClient.close()`'s early return when `closing`/`closed` is
+			// already set: that path does NOT await the disconnect it skipped, so
+			// `void sock.ws.close(); await sock.end()` could otherwise reach
+			// `free()` with the first disconnect still running.
+			let disconnected = true
+			try {
+				await client.disconnect()
+			} catch {
+				disconnected = false
+			}
+
+			// Teardown already flushed, but only after its own disconnect
+			// attempts. If those all failed and this one succeeded, the
+			// closing-session ratchet writes it enqueues arrived after that
+			// flush — with nothing left to persist them. Cheap enough to just
+			// drain again.
+			if (disconnected) {
+				const lateFlushError = await flushStores()
+				if (lateFlushError) logger.error({ err: lateFlushError }, 'failed to flush after the final disconnect')
+			}
+
+			// Unregister before freeing: `free()` is swallowed, so ordering it
+			// last would leave the module-level pointer aimed at a client that is
+			// already gone if anything between them threw.
+			_unregisterActiveBridgeClient(client)
+			try {
+				client.free()
+			} catch {
+				/* ignore */
+			}
+		}
+	})
+
+	const ws = new WebSocketClient(fullConfig.waWebSocketUrl, fullConfig, () => owner.peek())
 
 	let tagEpoch = 0
 	// Per-socket random prefix avoids collisions between sockets created
@@ -125,6 +276,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// `end()` to drain the debounced `saveCreds` timer — `auth.store?.flush?.()`
 	// covers the explicit-store path but not this one.
 	let autoWrappedStore: { flush?: () => Promise<void> } | undefined
+	// Mirrors the engine's `enable_auto_reconnect`, which defaults to on. Only
+	// `sock.setAutoReconnect()` moves it, and the dispatcher reads it to tell a
+	// transient drop from a terminal one.
+	let autoReconnectEnabled = true
+	/** Owns reporting the terminal close: once, after teardown, never not at all. */
+	const terminalClose = makeTerminalCloseReporter({ logger })
 
 	const ctx: SocketContext = {
 		ev,
@@ -142,20 +299,59 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			user = u
 		},
 		getClient: () => {
-			if (readyClient) return readyClient
+			// `peek()` keeps returning the client through `closing` so teardown
+			// can still close the transport with it — but that is teardown's
+			// client, not everyone's. Handing it to an ordinary call racing
+			// shutdown, or made from an end handler, starts a bridge operation
+			// while the client is being disconnected and freed, which is the
+			// heap-corruption hazard the whole teardown ordering exists to
+			// avoid. Refuse from the moment `close()` is called.
+			if (owner.isClosing()) {
+				return Promise.reject(new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
+			}
+
+			// Otherwise gated on `initialized`, not merely on the client
+			// existing. `adopt()` publishes it several awaits before
+			// `setDeviceProps`, the account lookups and `run()`, so keying off
+			// `peek()` alone would hand ordinary calls like `sendMessage()` a
+			// half-built client whose read loop has not started — and skip the
+			// `initError` check when startup later fails.
+			if (initialized) {
+				const ready = owner.peek()
+				if (ready) return Promise.resolve(ready)
+			}
 
 			return initPromise.then(() => {
+				// Rechecked after the await: a close landing while startup was
+				// still running would otherwise be handed the client anyway.
+				//
+				// The window between handing a client back and the call reaching
+				// wasm cannot be closed here — that needs in-flight call
+				// tracking. What covers it is `release`, which awaits
+				// `client.disconnect()` before `free()`; the corruption comes
+				// from freeing with a call pending, and the disconnect drains
+				// those first (`__tests__/bridge-free-safety.test.ts`).
+				if (owner.isClosing()) {
+					throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+				}
+
 				if (initError) {
 					throw new Boom('Bridge client failed to initialize: ' + initError.message, { statusCode: 500 })
 				}
 
-				if (!client) throw new Boom('Client not initialized', { statusCode: 500 })
-				return client
+				const built = owner.peek()
+				if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
+				return built
 			})
 		},
 		getClientSync: () => {
-			if (!client) throw new Boom('Client not initialized', { statusCode: 500 })
-			return client
+			// Same rule as `getClient` — see there.
+			if (owner.isClosing()) {
+				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+			}
+			const built = owner.peek()
+			if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
+			return built
 		}
 	}
 	// The native repository delegates Signal state directly to the core and does
@@ -173,6 +369,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const appStatePatchMutex = makeMutex()
 	const notificationMutex = makeMutex()
 	const activeCallContexts = new Map<string, { peer: string; callCreator: string }>()
+	socketEndHandlers.push(() => activeCallContexts.clear())
 	const groupMethods = makeGroupMethods(ctx)
 	const communityMethods = makeCommunityMethods(ctx, groupMethods)
 	const refreshParticipating = makeParticipatingRefreshHandler(ctx, {
@@ -183,7 +380,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const eventHandlers = makeEventHandlers(ctx, {
 		onPairSuccess: data => {
 			pairedAccount = data
-			client
+			owner
+				.peek()
 				?.getAccount?.()
 				.then((acc: proto.IADVSignedDeviceIdentity | undefined) => {
 					cachedAccount = acc ?? undefined
@@ -198,7 +396,34 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				activeCallContexts.set(callId, { peer: event.from, callCreator })
 			}
 		},
-		onDirtyState: event => refreshParticipating(event.dirtyType)
+		onDirtyState: event => refreshParticipating(event.dirtyType),
+		/**
+		 * The engine has stopped reconnecting, so this client is dead weight
+		 * that only `free()` reclaims — `run()` returns `void`, so its loop
+		 * exiting is otherwise invisible from here.
+		 *
+		 * Tearing down and reporting are both handed to the reporter: the close
+		 * has to reach the consumer exactly once and only after this socket has
+		 * released what it owns, or a replacement built in response overlaps it
+		 * on the same auth folder.
+		 */
+		onTerminalClose: (error, publish) => {
+			// `owner.close()`, not `end()`. `end()` short-circuits when called
+			// from inside an end handler — it has to, or the handler awaits the
+			// teardown waiting for it — and a terminal event raised from one of
+			// those would then publish against an already-resolved promise,
+			// letting a close listener build a replacement while the old client
+			// is still owned. This waits for the real teardown, and cannot
+			// deadlock because `reportAfter` runs it detached; nothing in the
+			// teardown is waiting on this.
+			terminalClose.reportAfter(() => owner.close(error).finally(() => initPromise), publish)
+		},
+		isAutoReconnectEnabled: () => autoReconnectEnabled,
+		// Timers the dispatcher armed outlive the events that armed them, and
+		// only the terminal-close path clears them. Ending the socket any other
+		// way — `sock.end()`, an `await using` scope exiting — has to as well,
+		// or one fires from a socket whose client is already freed.
+		onCleanup: cleanup => socketEndHandlers.push(cleanup)
 	})
 
 	const init = async () => {
@@ -253,7 +478,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		}
 		if (useNativeMemory) logger.debug('auth: using socket-local native memory backend')
 
-		client = await createWhatsAppClient(
+		const created = await createWhatsAppClient(
 			makeTransport(fullConfig),
 			makeHttpClient(fullConfig),
 			eventHandlers,
@@ -262,27 +487,51 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			fullConfig.version,
 			fullConfig.wantedPreKeyCount ?? null
 		)
+		// `end()` can land while the client is still being built — a `sock.end()`
+		// or `await using` right after `makeWASocket()` does exactly that. When
+		// it has, `adopt` frees this client and tells us to stop: nothing else
+		// would ever own it, and `run()` below would reconnect it forever
+		// against a socket the caller already disposed.
+		// `adopt` starts releasing the refused client; joining it here keeps
+		// that work inside `initPromise`, which `Symbol.asyncDispose` awaits.
+		if (!owner.adopt(created)) return owner.settled()
+
+		// Fallback for standalone helpers like `downloadContentFromMessage`
+		// that carry no socket reference.
+		_registerActiveBridgeClient(created, logger)
+
+		// Replay a preference set before the client existed. `setAutoReconnect`
+		// forwards through `client?.`, so `makeWASocket(cfg).setAutoReconnect(false)`
+		// — the idiomatic first line — used to move only the JS mirror and leave
+		// the engine retrying.
+		if (!autoReconnectEnabled) created.setAutoReconnect(false)
+
+		// Everything below talks to `created`, which stays valid for the whole
+		// body, and re-checks `isClosing()` between awaits: once teardown has
+		// started it owns this client, and issuing more bridge calls against it
+		// races the release.
 		if (fullConfig.pushName) {
-			await client.setInitialPushName(fullConfig.pushName)
+			await created.setInitialPushName(fullConfig.pushName)
 		}
-		// Make this client the fallback for standalone helpers like
-		// downloadContentFromMessage that have no socket reference.
-		_registerActiveBridgeClient(client, logger)
+		if (owner.isClosing()) return
 
 		const [osName, browserName] = fullConfig.browser
 
 		const deviceOs = browserName === 'Android' ? 'Android' : osName
-		await client.setDeviceProps({
+		await created.setDeviceProps({
 			os: deviceOs,
 			platformType: browserToPlatformType(browserName),
 			...fullConfig.deviceProps
 		})
+		if (owner.isClosing()) return
 
 		const [jid, lid, account] = await Promise.all([
-			client.getJid(),
-			client.getLid(),
-			client.getAccount().catch(() => undefined)
+			created.getJid(),
+			created.getLid(),
+			created.getAccount().catch(() => undefined)
 		])
+		if (owner.isClosing()) return
+
 		if (jid) {
 			user = { id: jid, lid: lid ?? undefined }
 		}
@@ -295,133 +544,153 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// `UserAgent.platform = ANDROID` (no `web_info`), mirroring upstream
 		// Baileys PR #2201. Required for the server to deliver view_once payloads.
 		if (browserName === 'Android') {
-			await client.setClientProfile({ preset: 'android', osVersion: osName })
+			await created.setClientProfile({ preset: 'android', osVersion: osName })
+			if (owner.isClosing()) return
 		}
 
 		if (isRawNodeForwardingEnabled(ws)) {
-			client.setRawNodeForwarding(true)
+			created.setRawNodeForwarding(true)
 		}
 
-		// `run()` is fire-and-forget by design (the bridge runs the read
-		// loop until disconnect/free) but typed `Promise<void>`. A late
-		// rejection (lost connection during cleanup, etc) without a
-		// `.catch` would escape to `process.on('unhandledRejection')`.
-		// Funnel into the connection.update channel so consumers' regular
-		// reconnect/diagnostic plumbing handles it like any other close.
-		const runPromise = client.run() as unknown as Promise<void> | undefined
-		if (runPromise && typeof runPromise.catch === 'function') {
-			runPromise.catch(err => {
-				logger.error({ err }, 'bridge client.run() rejected')
-				ev.emit('connection.update', {
-					connection: 'close',
-					lastDisconnect: {
-						// restartRequired (515) signals "Rust read loop crashed
-						// unrecoverably, restart the sock". Previously mapped to
-						// 500, which collided with the server-side <stream:error
-						// code="500"> path and made it impossible for consumers
-						// to tell the two apart.
-						error: err instanceof Error ? err : new Boom(String(err), { statusCode: DisconnectReason.restartRequired }),
-						date: new Date()
-					}
-				} as Partial<ConnectionState>)
-			})
-		}
+		// Same race as above: teardown already owns and releases this client, so
+		// starting the read loop now would run against a handle about to go.
+		if (owner.isClosing()) return
+
+		// `run()` spawns the connect/handshake/read/reconnect loop as a
+		// background task and returns `void` — it deliberately is not `async`,
+		// so that it does not hold a wasm-bindgen borrow on `self` that would
+		// block `disconnect()`.
+		//
+		// Consequence: the loop's exit is not observable from here. The engine
+		// clears `enable_auto_reconnect` and breaks out on every terminal
+		// disconnect (conflict/401/409/516, and any `<failure>` whose reason is
+		// not 500/503), and when it does, the `WasmWhatsAppClient` is dead
+		// weight that only `sock.end()` can free — nothing else can, because
+		// the bridge holds the JS event callbacks as wasm-bindgen externrefs,
+		// those close over `ctx`, and `ctx` closes over `client`, so the cycle
+		// crosses the JS/wasm boundary and no `FinalizationRegistry` fires.
+		// Freeing that automatically needs the bridge to expose loop completion
+		// (a terminal callback or an awaitable handle); until it does, the
+		// consumer has to call `sock.end()` on a terminal close.
+		created.run()
+		initialized = true
+	}
+
+	/**
+	 * Joins startup too, not just the teardown.
+	 *
+	 * `owner.close()` covers the client it can see. A close landing while
+	 * `createWhatsAppClient()` is still pending sees none — the client arrives
+	 * afterwards, `adopt()` refuses it, and the release runs detached. Without
+	 * waiting for `init()` to finish, `await sock.end()` therefore returns while
+	 * that client is still disconnecting and being freed, and the replacement
+	 * socket the consumer builds next overlaps it on the same auth folder.
+	 *
+	 * `initPromise` is declared below and swallows its own failures, so this
+	 * neither hits its TDZ (nothing can call `end` during the synchronous
+	 * construction below) nor masks the teardown error.
+	 */
+	const end = (error: Error | undefined): Promise<void> => {
+		// Called from inside an end handler, the teardown is already running and
+		// is waiting for that handler to return. Handing back its promise would
+		// have the handler await itself.
+		if (runningEndHandlers) return Promise.resolve()
+		return owner.close(error).finally(() => initPromise)
 	}
 
 	let initError: Error | undefined
-	const initPromise = init()
-		.then(() => {
-			if (client) readyClient = Promise.resolve(client)
-		})
-		.catch(err => {
-			initError = err instanceof Error ? err : new Error(String(err))
-			logger.error({ err }, 'failed to initialize bridge client')
-		})
+	// Started only once `end` exists. `init()`'s synchronous prefix reaches
+	// `await createWhatsAppClient(...)` before the bridge can dispatch anything,
+	// so today nothing can call `onTerminalClose` — and therefore `end` — that
+	// early. But that is an argument about the current shape of `init()`, not a
+	// rule the code enforces: dispatch a terminal close any sooner and line 401
+	// becomes a `ReferenceError` inside a bridge callback, where no `try/catch`
+	// of ours can reach it. Ordering it here makes the dependency structural.
+	const initPromise = init().catch(err => {
+		initError = err instanceof Error ? err : new Error(String(err))
+		logger.error({ err }, 'failed to initialize bridge client')
 
-	let ended = false
-	const socketEndHandlers: Array<(error: Error | undefined) => void | Promise<void>> = [
-		() => activeCallContexts.clear()
-	]
-	const end = async (error: Error | undefined) => {
-		if (ended) {
-			logger.trace({ trace: error?.stack }, 'connection already closed')
-			return
-		}
-		ended = true
-		const c = client
-		if (c) {
-			try {
-				await ws.close()
-			} catch {
-				/* ignore */
-			}
-			client = undefined
-			readyClient = undefined
+		// A client adopted before the failure outlives a read loop that never
+		// started: `getClient()` correctly rejects, but the standalone
+		// helpers bypass it and would keep reaching the half-built client.
+		return owner.discard()
+	})
 
-			// Barrier: bridge cleanup paths fired during `disconnect()` may
-			// emit `set()` calls that are still queued as microtasks /
-			// `setImmediate` callbacks at this point. Two yields to the
-			// event loop drain (1) microtask queue and (2) the next
-			// macrotask tick where wasm-bindgen async callbacks land.
-			// Without this barrier, the flushes below run before the bridge
-			// has finished writing — a race that loses the last few sets
-			// (typically the closing-session ratchet step).
-			await new Promise(resolve => setImmediate(resolve))
-			await new Promise(resolve => setImmediate(resolve))
-
-			// Capture the FIRST flush failure so a corrupt-on-shutdown auth
-			// state surfaces to the caller. Always finish the rest of
-			// cleanup; rethrow at the end so c.free() still runs.
-			let firstFlushError: unknown
-			try {
-				await auth.store?.flush?.()
-			} catch (e) {
-				firstFlushError ??= e
-			}
-
-			try {
-				await autoWrappedStore?.flush?.()
-			} catch (e) {
-				firstFlushError ??= e
-			}
-
-			try {
-				c.free()
-			} catch {
-				/* ignore */
-			}
-
-			if (firstFlushError) throw firstFlushError
-		}
-
-		for (const handler of socketEndHandlers) {
-			try {
-				await handler(error)
-			} catch (handlerError) {
-				logger.error({ err: handlerError }, 'error in socket end handler')
-			}
-		}
-	}
+	/**
+	 * Idempotent shutdown that later callers can actually await — the socket
+	 * now ends *itself* on a terminal disconnect, so a consumer's
+	 * `await sock.end()` is usually the second call. Resolving it early while
+	 * the first was still flushing turned
+	 * `close` → `await sock.end()` → `makeWASocket()` into two writers on one
+	 * auth folder.
+	 */
 
 	const logout = async (msg?: string) => {
 		user = undefined
-		if (client) {
+		const logoutError = new Boom(msg || 'Logged out', { statusCode: DisconnectReason.loggedOut })
+
+		// `Client::logout()` dispatches `LoggedOut` itself, which the dispatcher
+		// turns into the terminal close. Reporting our own on top of that gave
+		// consumers two `close` events for one logout, and upstream guarantees
+		// at most one — so watch for the dispatcher's instead of assuming
+		// either way. Counting rather than flagging, because a terminal close
+		// may already have happened earlier in this socket's life.
+		// `Client::logout()` dispatches `LoggedOut` itself, which the dispatcher
+		// turns into the terminal close. Reporting our own on top of that gave
+		// consumers two closes for one logout, and upstream guarantees at most
+		// one — so watch for the dispatcher's instead of assuming either way.
+		const reportedBefore = terminalClose.hasReported()
+		const live = owner.peek()
+		if (live) {
 			try {
-				await client.logout()
+				await live.logout()
 			} catch {
 				/* ignore */
 			}
 		}
 
-		const logoutError = new Boom(msg || 'Logged out', { statusCode: DisconnectReason.loggedOut })
-		ev.emit('connection.update', {
-			connection: 'close',
-			lastDisconnect: {
-				error: logoutError,
-				date: new Date()
+		// Nothing announced it: no client at all, or `logout()` threw before the
+		// bridge got to it. Upstream always reports exactly one close for a
+		// logout, so emitting none would be worse than emitting one too many.
+		// Keyed on a close having been *reported*, not on the socket closing —
+		// a plain `end()` reports nothing, so keying off that would let a logout
+		// racing one finish with no close at all.
+		const mayNeedFallback = !reportedBefore && !terminalClose.hasReported()
+
+		try {
+			await end(logoutError)
+		} finally {
+			// After the teardown, like the dispatcher's own close: doing it
+			// before would hand a logged-out handler a socket still flushing the
+			// auth folder it is about to delete. In a `finally` because `end()`
+			// rethrows the first flush failure and the owner releases the client
+			// regardless — on that path listeners would otherwise see no
+			// terminal close at all for a socket that has definitely ended.
+			// Rechecked here, not just before the await: a dispatcher close
+			// arriving while `end()` ran would otherwise be followed by this
+			// stale decision, giving consumers two closes for one logout.
+			if (mayNeedFallback && !terminalClose.hasReported()) {
+				terminalClose.reportNow(() =>
+					ev.emit('connection.update', {
+						connection: 'close',
+						lastDisconnect: {
+							error: logoutError,
+							date: new Date()
+						}
+					} as Partial<ConnectionState>)
+				)
 			}
-		} as Partial<ConnectionState>)
-		await end(logoutError)
+		}
+
+		// The close is published on a chain one hop further out than the
+		// teardown both paths await, so without this `await sock.logout()`
+		// returns just before the event it caused.
+		//
+		// Skipped when re-entered from an end handler, for the same reason
+		// `end()` short-circuits there: the publish waits for the teardown, the
+		// teardown waits for the handler, and the handler would be waiting here
+		// — stalled until the watchdog fires.
+		if (!runningEndHandlers) await terminalClose.published()
 	}
 
 	const registerSocketEndHandler = (handler: (error: Error | undefined) => void | Promise<void>) => {
@@ -493,6 +762,38 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		logger,
 		ws,
 		type: 'md' as const,
+		/**
+		 * `await using sock = makeWASocket(config)` — frees the wasm client on
+		 * scope exit. Nothing else can: the bridge holds the JS event callbacks
+		 * as wasm-bindgen externrefs and those callbacks reach back to this
+		 * closure, so the reference cycle crosses the JS/wasm boundary and no
+		 * `FinalizationRegistry` will ever fire for the client.
+		 *
+		 * Delegates to `end()`, so it flushes the auth store and is idempotent.
+		 *
+		 * Then awaits `initPromise`, because `end()` alone does not satisfy the
+		 * async-disposal contract: called before `createWhatsAppClient()`
+		 * settles, it sees `client === undefined`, frees nothing, and resolves
+		 * while initialization is still running. What actually disposes that
+		 * client is the `ended` guard inside `init()` — so code after the
+		 * `await using` scope would otherwise overlap with bridge construction,
+		 * event callbacks, and store access. `end()` runs first because it sets
+		 * `ended` synchronously, which is what makes `init()` bail out early.
+		 *
+		 * The `finally` is load-bearing: `end()` rethrows the first auth-store
+		 * flush failure, and letting that propagate directly would skip the wait
+		 * and resolve the disposer with `init()` still in flight — losing the
+		 * one guarantee it exists to provide, in exactly the situation where
+		 * cleanup already went wrong. `initPromise` swallows its own failures,
+		 * so awaiting it here cannot mask the flush error.
+		 */
+		async [Symbol.asyncDispose]() {
+			try {
+				await end(undefined)
+			} finally {
+				await initPromise
+			}
+		},
 		// Upstream `socket.ts:1106-1108` returns `authState.creds.me`, which
 		// carries `{ id, lid, name, verifiedName, ... }` — full Contact
 		// shape. Returning the bare `{id, lid}` like before broke
@@ -510,13 +811,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 		},
 		get waClient() {
-			return client
+			return owner.peek()
 		},
 		get isConnected() {
-			return client?.isConnected() ?? false
+			return owner.peek()?.isConnected() ?? false
 		},
 		get isLoggedIn() {
-			return client?.isLoggedIn() ?? false
+			return owner.peek()?.isLoggedIn() ?? false
 		},
 		get authState(): { creds: AuthenticationCreds; keys: SignalKeyStoreWithTransaction } {
 			return {
@@ -564,7 +865,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		registerSocketEndHandler,
 		waitForConnectionUpdate,
 		setAutoReconnect: (enabled: boolean) => {
-			client?.setAutoReconnect(enabled)
+			// Mirrored locally because the dispatcher has to know: with this off,
+			// a plain drop is terminal rather than the start of a backoff.
+			autoReconnectEnabled = enabled
+			owner.peek()?.setAutoReconnect(enabled)
 		},
 		/**
 		 * Update presence either globally (`available`/`unavailable`) or per-chat

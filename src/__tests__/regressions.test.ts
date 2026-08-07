@@ -15,6 +15,7 @@ import { makeEventHandler, makeEventHandlers } from '../Socket/events.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
+import { makeEventBuffer } from '../Utils/event-buffer.ts'
 import { useBridgeStore } from '../Utils/use-bridge-store.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
 import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
@@ -1226,6 +1227,57 @@ describe('dispatch: offline_sync_completed', () => {
 	})
 })
 
+describe('event buffer: connection.update delivery', () => {
+	// `EventEmitter.emit()` stops at the first listener that throws. On the
+	// lifecycle channel that means one bad handler keeps the app's reconnect
+	// handler from ever seeing a terminal `close` — the bot stays offline, which
+	// is the failure the whole close contract exists to prevent.
+	it('keeps notifying listeners after one throws', () => {
+		const ev = makeEventBuffer(noopLogger as never)
+		const seen: string[] = []
+
+		ev.on('connection.update', () => {
+			seen.push('first')
+			throw new Error('listener exploded')
+		})
+		ev.on('connection.update', () => seen.push('second'))
+
+		ev.emit('connection.update', { connection: 'close' } as never)
+
+		expect(seen).toEqual(['first', 'second'])
+	})
+
+	it('calls listeners with the emitter as `this`, as emit() would', () => {
+		// A listener declared as a normal function that removes itself with
+		// `this.off(...)` is a common pattern; calling it bare makes `this`
+		// undefined and the throw is swallowed by the isolation above.
+		const ev = makeEventBuffer(noopLogger as never)
+		let receiverMatched = false
+
+		ev.on('connection.update', function selfRemoving(this: unknown) {
+			receiverMatched = typeof (this as { off?: unknown })?.off === 'function'
+		})
+
+		ev.emit('connection.update', { connection: 'close' } as never)
+
+		expect(receiverMatched).toBe(true)
+	})
+
+	it('still stops at a throwing listener on other channels, as upstream does', () => {
+		const ev = makeEventBuffer(noopLogger as never)
+		const seen: string[] = []
+
+		ev.on('creds.update', () => {
+			seen.push('first')
+			throw new Error('listener exploded')
+		})
+		ev.on('creds.update', () => seen.push('second'))
+
+		expect(() => ev.emit('creds.update', {} as never)).toThrow()
+		expect(seen).toEqual(['first'])
+	})
+})
+
 describe('dispatch: connect_failure → DisconnectReason mapping', () => {
 	const closeStatusFor = (reason: number) => {
 		const updates = collect({ type: 'connect_failure', data: { reason, message: '' } }, 'connection.update')
@@ -1236,12 +1288,22 @@ describe('dispatch: connect_failure → DisconnectReason mapping', () => {
 		expect(closeStatusFor(401)).toBe(401)
 	})
 
-	it('maps 405 (ClientOutdated) to badSession', () => {
-		expect(closeStatusFor(405)).toBe(500)
+	// The wire code, not `badSession` (500). badSession is what bots branch on
+	// to wipe credentials and re-pair, and an outdated build is the one failure
+	// where doing that helps nobody. Upstream keeps the wire code too —
+	// `getErrorCodeFromStreamError` reads `+node.attrs.code` first and only
+	// falls back to badSession when the stanza carries none.
+	it('maps 405 (ClientOutdated) to the wire code, not badSession', () => {
+		expect(closeStatusFor(405)).toBe(405)
 	})
 
-	it('maps 503 (ServiceUnavailable) to unavailableService', () => {
-		expect(closeStatusFor(503)).toBe(503)
+	// 500/503 are the two reasons `ConnectFailureReason::should_reconnect()`
+	// matches, so the engine keeps retrying and the socket reports `connecting`
+	// rather than a `close` the upstream handler would answer with a second
+	// socket. See `auto-reconnect-terminal-close.test.ts`.
+	it('does not close on 503 (ServiceUnavailable) — the engine retries it', () => {
+		const updates = collect({ type: 'connect_failure', data: { reason: 503, message: '' } }, 'connection.update')
+		expect(updates.map(update => update.connection)).toEqual(['connecting'])
 	})
 
 	it('falls back to connectionClosed for unknown codes', () => {

@@ -25,7 +25,7 @@ so existing integrations can migrate with minimal changes. See
 | Media encrypt/decrypt | Node.js crypto | Rust AES-256-CBC + HMAC |
 | Media upload/download | JS fetch + temp files | Rust with CDN failover, auth refresh, resumable upload |
 | Key management | JS auth state | Rust `PersistenceManager` |
-| Auto-reconnect | Manual `startSock()` loop | Built-in with fibonacci backoff |
+| Auto-reconnect | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
 
 ## Documentation
 
@@ -51,9 +51,16 @@ import makeWASocket from '@oxidezap/baileyrs'
 ### Drop-in replacement for upstream Baileys
 
 baileyrs is API-compatible with [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys).
-Existing projects switch over by aliasing the package — **no source changes needed**
-(one exception: carrying an existing pairing across takes a one-line import swap,
-see [Migrating from Upstream Baileys](#migrating-from-upstream-baileys)):
+Existing projects switch over by aliasing the package — **the API and imports
+need no source changes**. Two things do:
+
+- Carrying an existing pairing across takes a one-line import swap, see
+  [Migrating from Upstream Baileys](#migrating-from-upstream-baileys).
+- If your `connection.update` handler was written for a version of baileyrs
+  before 0.1, see [Gotchas](#gotchas): a `close` now always means the socket
+  is finished, and you have to recreate it. Code written against upstream
+  Baileys already does the right thing.
+
 
 ```sh
 npm install @whiskeysockets/baileys@npm:@oxidezap/baileyrs
@@ -78,27 +85,57 @@ now resolves to baileyrs.
 import makeWASocket, { Boom, DisconnectReason, useMultiFileAuthState } from '@oxidezap/baileyrs'
 
 const { state } = await useMultiFileAuthState('auth_info')
-const sock = makeWASocket({ auth: state })
 
-sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
-    if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-        if (statusCode === DisconnectReason.loggedOut) {
-            console.log('Logged out')
+// setTimeout caps at ~2^31-1 ms (~24.8 days) and fires immediately past that,
+// so a long ban has to be waited out in chunks.
+async function waitUntil(deadlineMs: number) {
+    for (let left = deadlineMs - Date.now(); left > 0; left = deadlineMs - Date.now()) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(left, 2_147_483_647)))
+    }
+}
+
+async function connectToWhatsApp() {
+    const sock = makeWASocket({ auth: state })
+
+    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+        if (connection === 'close') {
+            // `close` means this socket is finished — same as upstream Baileys.
+            // Transient drops never get here; the Rust engine retries those and
+            // reports `connecting`.
+            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+            // See the reconnect table under Gotchas: a few terminal closes
+            // reject the replacement just as fast, so they are not worth
+            // retrying — or not yet. `Example/example.ts` has the full policy.
+            if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
+                console.log('Closed for good', statusCode)
+            } else if (statusCode === DisconnectReason.forbidden) {
+                // Temporary ban: `expire` is unix seconds. A missing or past
+                // expiry means the ban is over — reconnect like any other
+                // terminal close rather than staying offline forever.
+                const expire = (lastDisconnect?.error as Boom)?.data?.expire
+                console.log('Temporarily banned until', expire)
+                waitUntil(typeof expire === 'number' ? expire * 1000 : 0).then(connectToWhatsApp)
+            } else {
+                setTimeout(connectToWhatsApp, 5_000)
+            }
         }
-        // Auto-reconnect is handled by the Rust engine — no need to call makeWASocket again
-    }
-    if (connection === 'open') {
-        console.log('Connected')
-    }
-})
+        if (connection === 'open') {
+            console.log('Connected')
+        }
+    })
 
-sock.ev.on('messages.upsert', ({ messages }) => {
-    for (const msg of messages) {
-        console.log('received message', msg.key.id)
-    }
-})
+    // Register every handler in here. A replacement socket is a new emitter,
+    // so anything attached outside stops firing after the first reconnect.
+    sock.ev.on('messages.upsert', ({ messages }) => {
+        for (const msg of messages) {
+            console.log('received message', msg.key.id)
+        }
+    })
 
+    return sock
+}
+
+const sock = await connectToWhatsApp()
 await sock.sendMessage('1234567890@s.whatsapp.net', { text: 'Hello!' })
 ```
 
@@ -156,9 +193,25 @@ preserved. No QR re-scan, no logged-out events.
 
 A few behaviors that differ from upstream — almost always to your advantage:
 
-- **Auto-reconnect is built in.** Don't call `makeWASocket()` again from
-  `connection.update`'s `'close'` branch. The Rust engine retries with
-  fibonacci backoff; opening a second socket leaks the first one.
+- **Auto-reconnect is built in, but `close` still means `close`.** The Rust
+  engine retries transient drops on a fibonacci backoff and reports them as
+  `connection: 'connecting'`, so the canonical upstream handler never fires
+  for those and you never end up with two sockets on one account. A
+  `connection: 'close'` is only emitted once the engine has given up — a
+  replaced session, an outdated build, a temporary ban, an unrecoverable
+  `<failure>` — and by then the socket has already released its resources.
+  Ignoring it leaves the bot permanently offline, so handle it the upstream
+  way and build a replacement — with three exceptions, because some of those
+  failures reject the replacement just as fast:
+
+  | `statusCode` | what to do |
+  | --- | --- |
+  | `DisconnectReason.loggedOut` (401) | stop; needs a fresh pairing |
+  | `405` | stop; the server rejected this build, and the next one too |
+  | `DisconnectReason.forbidden` (403) | wait until `lastDisconnect.error.data.expire` (unix seconds) — it is a temporary ban |
+  | anything else | reconnect, after a short delay |
+
+  `Example/example.ts` implements exactly this.
 - **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
   side caches group metadata and message keys natively. You can still pass
   them — they're respected as overrides — but they're optional.
