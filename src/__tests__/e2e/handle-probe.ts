@@ -53,7 +53,10 @@ const GC_SETTLE_MS = 60
  * upgrade fails loudly here instead of silently reporting zero leaks.
  */
 function instrument(source: string): string {
-	const created = source.match(/function (\w+)\(\w+,\w+,\w+\)\{let (\w+)=\{a:\w+,b:\w+,cnt:1\}/)
+	// `[\w$]` rather than `\w`: `$` is a valid identifier character and the
+	// minifier does emit it, so a name like `h$` slipped past a `\w+` and read
+	// as a wasm-bindgen shape change that had not happened.
+	const created = source.match(/function ([\w$]+)\([\w$]+,[\w$]+,[\w$]+\)\{let ([\w$]+)=\{a:[\w$]+,b:[\w$]+,cnt:1\}/)
 	if (!created) throw new Error('handle probe: closure helper not found in the bridge bundle')
 	let out = source.replace(created[0], created[0].replace('{let ', '{globalThis.__handleProbe.made++;let '))
 
@@ -61,7 +64,7 @@ function instrument(source: string): string {
 	// hooks in at the unref assignment that follows them. That assignment sits
 	// inside a `return` sequence, so the hook has to be an expression: keying
 	// live handles by the record lets survivors be reported with their stack.
-	const unref = out.match(/(\w+)\._wbg_cb_unref=\(\)=>\{if\(--(\w+)\.cnt===0\)/)
+	const unref = out.match(/([\w$]+)\._wbg_cb_unref=\(\)=>\{if\(--([\w$]+)\.cnt===0\)/)
 	if (!unref) throw new Error('handle probe: unref hook not found in the bridge bundle')
 	out = out.replace(
 		unref[0],
@@ -69,7 +72,7 @@ function instrument(source: string): string {
 			`${unref[0]}globalThis.__handleProbe.freed++,globalThis.__handleProbe.alive.delete(${unref[2]}),`
 	)
 
-	const finalizer = out.match(/new FinalizationRegistry\(\((\w+)\)=>(\w+)\.__wbindgen_export5\(\1\.a,\1\.b\)\)/)
+	const finalizer = out.match(/new FinalizationRegistry\(\(([\w$]+)\)=>([\w$]+)\.__wbindgen_export5\(\1\.a,\1\.b\)\)/)
 	if (!finalizer) throw new Error('handle probe: closure FinalizationRegistry not found in the bridge bundle')
 	out = out.replace(
 		finalizer[0],
