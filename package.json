@@ -75,7 +75,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^9.1.4",
-    "@oxidezap/whatsapp-rust-bridge": "0.6.4",
+    "@oxidezap/whatsapp-rust-bridge": "0.6.5",
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5"
