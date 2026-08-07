@@ -12,17 +12,30 @@ name: Release
 on:
   push:
     branches: [main]
+  # Recovery path. Only the run that creates a tag carries `release_created`,
+  # and re-running it replays the workflow file of that commit — the one that
+  # failed. Dispatch this **with the release tag selected as the ref**: npm
+  # attests the package to the event's ref and sha, so publishing from a branch
+  # with the tag as a parameter would name the wrong commit, and a free-form ref
+  # would let a dispatch aim the OIDC job anywhere. A dispatch runs the workflow
+  # stored in the selected tag, so this only covers tags created from this
+  # commit onwards.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# One group for every release and recovery run, not one per ref: they have
+# different refs, so keying on it would let both reach `npm publish` at once and
+# race over which one `latest` ends up pointing at.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
   release-please:
     name: Prepare release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -79,7 +92,13 @@ jobs:
   verify:
     name: Verify the tag
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    # `!cancelled()` rather than `always()`: the dispatch path needs this to run
+    # past a skipped release-please, but a cancelled run must not go on to
+    # publish.
+    if: >-
+      !cancelled() &&
+      (needs.release-please.outputs.release_created == 'true' ||
+       (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -90,18 +109,60 @@ jobs:
       # the two jobs on different trees; a sha cannot.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.sha }}
+          ref: ${{ needs.release-please.outputs.sha || github.sha }}
           persist-credentials: false
+
+      # `ref_type == 'tag'` proves the ref is a tag, not that it is a release.
+      # Without this, anyone able to push a tag could point the job holding npm
+      # OIDC rights at arbitrary code. A GitHub release is what release-please
+      # creates and a hand-pushed tag lacks; the version match ties it to the
+      # tree; and npm refuses `latest` implicitly once a higher version exists,
+      # which would otherwise fail after the whole build.
+      - name: Confirm the dispatch targets a release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$TAG has no GitHub release; only release tags can be published"
+            exit 1
+          fi
+
+          version=$(jq -r .version package.json)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::$TAG does not match package.json version $version"
+            exit 1
+          fi
+
+          name=$(jq -r .name package.json)
+          latest=$(npm view "$name" version 2>/dev/null || true)
+          if [ -n "$latest" ] && [ "$latest" != "$version" ] &&
+             [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -1)" = "$latest" ]; then
+            echo "::error::$name@$latest is already published; $version cannot take latest implicitly"
+            exit 1
+          fi
 
       # The tag and the sha both come from the same action, so this is a
       # consistency check on it rather than on the event: a mismatch means the
       # release names one commit and this run would ship another.
       - name: Confirm the release tag points at this commit
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
           RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
         run: |
+          # npm attests the package to the event's sha whatever the workspace
+          # holds, so a release tagged at an older commit than the push that
+          # created it cannot be published from here without naming a tree that
+          # was never built. Refuse; dispatching on the tag has both agree.
+          if [ "$RELEASE_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG was tagged at $RELEASE_SHA but this event is $GITHUB_SHA;"
+            echo "::error::provenance would name the wrong commit. Dispatch this workflow on $TAG instead."
+            exit 1
+          fi
+
           ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
           target=$(jq -r '.object.sha' <<<"$ref")
           if [ "$(jq -r '.object.type' <<<"$ref")" = tag ]; then
@@ -130,7 +191,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: [release-please, verify]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Gate for the publish step: add required reviewers here to make releases
@@ -147,7 +208,7 @@ jobs:
           # Same immutable commit verify checked out and vouched for. Pinned by
           # sha so retargeting the tag while this job waits on the environment
           # approval cannot change what gets published.
-          ref: ${{ needs.release-please.outputs.sha }}
+          ref: ${{ needs.release-please.outputs.sha || github.sha }}
           # Nothing here talks to the remote after checkout, and the steps below
           # run third-party install and build scripts in a job holding OIDC
           # publish rights. Don't leave the token in .git/config for them.
