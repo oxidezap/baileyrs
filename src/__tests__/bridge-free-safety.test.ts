@@ -1,0 +1,121 @@
+/**
+ * Pins the bridge invariant that `sock.end()` depends on.
+ *
+ * Calling `WasmWhatsAppClient.free()` while any bridge call is still in flight
+ * corrupts the wasm heap: dlmalloc trips
+ * `assertion failed: psize <= size + max_overhead` and the process dies on
+ * `RuntimeError: unreachable`, thrown from a microtask no `try/catch` around
+ * `free()` can reach — `free()` itself returns normally. It is not specific to
+ * one method; `logout()`, `disconnect()` and a plain `fetchBlocklist()` all
+ * reproduce it.
+ *
+ * `await client.disconnect()` first drains those calls in order and makes the
+ * `free()` safe. That is why `end()` awaits it before freeing
+ * (`src/Socket/index.ts`).
+ *
+ * Why here and not through `makeWASocket`: offline, every socket method
+ * rejects immediately, so the window never opens — the whole point is a call
+ * that stays pending inside wasm, which needs either a live server or a
+ * `free()` with no awaits in between. Driving the bridge directly is the only
+ * way to hold that state open deterministically. Each case runs in a child
+ * process because heap corruption takes the whole process with it.
+ */
+
+import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, before, describe, it } from 'node:test'
+
+import { expect } from './expect.ts'
+
+const SRC = import.meta.dirname
+
+/** Build a client against a dead loopback port, then run `body`. */
+const runChild = (body: string, folder: string) => {
+	const script = `
+		import { createWhatsAppClient, initWasmEngine } from '@oxidezap/whatsapp-rust-bridge'
+		import { makeNativeCryptoProvider } from ${JSON.stringify(join(SRC, '../Utils/native-crypto-provider.ts'))}
+		import { useMultiFileAuthState } from ${JSON.stringify(join(SRC, '../Utils/use-multi-file-auth-state.ts'))}
+		import { makeHttpClient, makeTransport } from ${JSON.stringify(join(SRC, '../Socket/transport.ts'))}
+		import { DEFAULT_CONNECTION_CONFIG } from ${JSON.stringify(join(SRC, '../Defaults/index.ts'))}
+		import P from 'pino'
+
+		const logger = P({ level: 'silent' })
+		initWasmEngine(logger, makeNativeCryptoProvider())
+		const { state } = await useMultiFileAuthState(${JSON.stringify(folder)})
+		const cfg = { ...DEFAULT_CONNECTION_CONFIG, logger, waWebSocketUrl: 'ws://127.0.0.1:1' }
+		const c = await createWhatsAppClient(
+			makeTransport(cfg), makeHttpClient(cfg), undefined, state.store, null, undefined, null
+		)
+		${body}
+		await new Promise(r => setTimeout(r, 1500))
+		process.exit(0)
+	`
+	return new Promise<number | null>(resolve => {
+		const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: 'ignore' })
+		const timer = setTimeout(() => {
+			child.kill('SIGKILL')
+			resolve(null)
+		}, 25_000)
+		child.on('exit', code => {
+			clearTimeout(timer)
+			resolve(code)
+		})
+	})
+}
+
+describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () => {
+	let folder: string
+
+	before(async () => {
+		folder = await mkdtemp(join(tmpdir(), 'baileyrs-freesafety-'))
+	})
+
+	after(async () => {
+		await rm(folder, { recursive: true, force: true })
+	})
+
+	it('free() with a pending call corrupts the heap and kills the process', async () => {
+		// Documents the hazard rather than endorsing it. If a future bridge
+		// makes `free()` safe on its own, this test starts failing — which is
+		// the signal to drop the `disconnect()` from `end()`, not to relax the
+		// assertion.
+		const code = await runChild(
+			`
+			c.fetchBlocklist().catch(() => {})
+			c.free()
+			`,
+			folder
+		)
+		expect(code === 0).toBe(false)
+	})
+
+	it('await disconnect() before free() survives the same pending call', async () => {
+		// The shape `end()` uses.
+		const code = await runChild(
+			`
+			c.fetchBlocklist().catch(() => {})
+			await c.disconnect()
+			c.free()
+			`,
+			folder
+		)
+		expect(code).toBe(0)
+	})
+
+	it('await disconnect() before free() survives an in-flight logout()', async () => {
+		// The production path: `Client::logout()` dispatches `LoggedOut` before
+		// awaiting its own `disconnect()`, so the terminal-close handler can
+		// re-enter `end()` while `logout()` is still running.
+		const code = await runChild(
+			`
+			c.logout().catch(() => {})
+			await c.disconnect()
+			c.free()
+			`,
+			folder
+		)
+		expect(code).toBe(0)
+	})
+})

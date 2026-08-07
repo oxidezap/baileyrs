@@ -95,11 +95,22 @@ const startSock = async () => {
 				const { connection, lastDisconnect, qr } = update
 				if (connection === 'close') {
 					const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+					// `close` means this socket is finished, exactly as in upstream
+					// Baileys. Transient drops never reach here: the Rust engine
+					// retries those on a fibonacci backoff and reports
+					// `connection: 'connecting'`, so recreating the socket below
+					// can never race one the engine is still restoring.
+					//
+					// What does reach here is a disconnect the engine gave up on —
+					// a replaced session, an outdated build, a temporary ban, an
+					// unrecoverable <failure>. Ignoring it leaves the bot offline
+					// for good.
 					if (statusCode === DisconnectReason.loggedOut) {
 						logger.fatal('Connection closed. You are logged out.')
+					} else {
+						logger.warn({ statusCode }, 'connection closed for good, starting a new socket')
+						await startSock()
 					}
-					// Other disconnects are handled automatically by the Rust engine
-					// (auto-reconnect with fibonacci backoff). No need to call startSock().
 				}
 
 				if (qr) {

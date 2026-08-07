@@ -900,6 +900,22 @@ export const _registerActiveBridgeClient = (client: WasmWhatsAppClient, logger?:
 	activeBridgeLogger = logger
 }
 
+/**
+ * Drop the module-level pointer when `sock.end()` frees the client it points
+ * at. Without this the global keeps a strong reference to a freed
+ * `WasmWhatsAppClient`, so the next standalone `downloadContentFromMessage()`
+ * call reaches into a null wasm pointer and fails with an opaque
+ * wasm-bindgen error instead of the actionable "no bridge client" Boom.
+ *
+ * Identity-checked on purpose: a multi-account host that ends socket A after
+ * creating socket B must not clear B's registration.
+ */
+export const _unregisterActiveBridgeClient = (client: WasmWhatsAppClient) => {
+	if (activeBridgeClient !== client) return
+	activeBridgeClient = undefined
+	activeBridgeLogger = undefined
+}
+
 const noopLogger: ILogger = {
 	level: 'silent',
 	child: () => noopLogger,

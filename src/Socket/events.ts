@@ -55,6 +55,7 @@ import {
 import { emitMessageUpsert, type MessageUpsertMetadata } from '../Compatibility/message-upsert.ts'
 import { extractMessageCappingPayload } from './message-capping.ts'
 import { mapReachoutTimelock } from './reachout.ts'
+import { isReconnectableConnectFailure } from './terminal-close.ts'
 import type { SocketContext } from './types.ts'
 
 const CANONICAL_MESSAGE_EVENT = 'message'
@@ -146,6 +147,21 @@ interface EventCallbacks {
 	onPairSuccess?: (data: { platform?: string; businessName?: string }) => void | Promise<void>
 	onIncomingCall?: (event: Extract<CanonicalEvent, { type: 'incomingCall' }>) => void
 	onDirtyState?: (event: Extract<CanonicalEvent, { type: 'dirtyState' }>) => void
+	/**
+	 * The engine has stopped reconnecting: this client is dead weight only
+	 * `free()` can reclaim. Fired immediately before the `close` that reports
+	 * it, so the socket is already shutting down by the time the consumer's
+	 * handler runs and builds a replacement.
+	 */
+	onTerminalClose?: (error: Error) => void
+	/**
+	 * Whether `sock.setAutoReconnect(true)` is in effect. A plain drop is only
+	 * transient while the engine still intends to retry: with auto-reconnect
+	 * off, the run loop dispatches `Disconnected` and then breaks for good
+	 * (`client/lifecycle.rs` tests the flag *after* the dispatch), so the same
+	 * event becomes terminal. Absent callback means the default, enabled.
+	 */
+	isAutoReconnectEnabled?: () => boolean
 }
 
 interface DispatchCtx {
@@ -178,17 +194,71 @@ type DispatcherFn<T extends CanonicalEvent['type']> = (evt: CanonicalByType<T>, 
  */
 type DispatcherMap = { [K in CanonicalEvent['type']]: DispatcherFn<K> }
 
-const emitClose = (ctx: SocketContext, reason: string, statusCode: number, data?: Record<string, unknown>) =>
+/**
+ * Report a disconnect the engine will NOT recover from.
+ *
+ * `connection: 'close'` carries one meaning on this socket, the same one it
+ * carries in upstream Baileys: the socket is finished and the consumer has to
+ * build a new one. Disconnects the engine is still retrying never come through
+ * here — see `emitRetrying` and `terminal-close.ts`.
+ *
+ * `onTerminalClose` runs first so the socket starts tearing itself down before
+ * the consumer sees the event: `end()` flips its `ended` flag synchronously,
+ * so by the time a handler calls `makeWASocket()` again the old socket is
+ * already spent rather than racing the new one.
+ */
+const emitClose = (
+	{ ctx, callbacks }: DispatchCtx,
+	reason: string,
+	statusCode: number,
+	data?: Record<string, unknown>
+) => {
+	const error = new Boom(reason, { statusCode, data })
+	callbacks?.onTerminalClose?.(error)
 	ctx.ev.emit('connection.update', {
 		connection: 'close',
-		lastDisconnect: { error: new Boom(reason, { statusCode, data }), date: new Date() }
+		lastDisconnect: { error, date: new Date() }
 	} as Partial<ConnectionState>)
+}
+
+/**
+ * Report a disconnect the engine is retrying on its own.
+ *
+ * Emitted as `connecting` rather than `close` on purpose. The canonical
+ * upstream handler is `if (connection === 'close') reconnect()`, and upstream
+ * has no auto-reconnect — so surfacing a transient drop as `close` makes that
+ * handler build a second socket while the engine is already backing off to
+ * restore the first. Two live sockets for one connection. `connecting` is the
+ * state upstream itself uses while a connection is being (re)established, so
+ * consumers read this as `open → connecting → open` and stay out of the way.
+ */
+const emitRetrying = (ctx: SocketContext) =>
+	ctx.ev.emit('connection.update', {
+		connection: 'connecting',
+		// Same shape upstream's own `connecting` always carries. Without the
+		// explicit clear, a consumer merging partial state keeps rendering the
+		// QR from before the drop — one the server has already rotated away.
+		qr: undefined,
+		receivedPendingNotifications: false
+	} as Partial<ConnectionState>)
+
+/**
+ * `<failure reason="405">` — the wire code, kept as-is rather than folded into
+ * `DisconnectReason`, which has no member for it. See the `clientOutdated`
+ * dispatcher for why `badSession` was the wrong home.
+ */
+const CLIENT_OUTDATED_STATUS = 405
 
 /**
  * Map bridge `ConnectFailureReason` wire codes (per the bridge's
  * `.d.ts` annotation) onto upstream Baileys' `DisconnectReason`.
  * Unknown codes fall through to `connectionClosed` so existing
  * reconnect heuristics keep working.
+ *
+ * Several cases here are belt-and-braces: the engine dispatches its own event
+ * for `is_logged_out()` reasons (401/403/406) and for 405, so those never
+ * reach `connectFailure` in practice. Kept because they cost nothing and the
+ * engine's routing is not ours to depend on.
  */
 const mapConnectFailureToDisconnect = (reason: number | undefined): number => {
 	switch (reason) {
@@ -199,7 +269,7 @@ const mapConnectFailureToDisconnect = (reason: number | undefined): number => {
 		case 402: // TempBanned
 			return DisconnectReason.forbidden
 		case 405: // ClientOutdated
-			return DisconnectReason.badSession
+			return CLIENT_OUTDATED_STATUS
 		case 411: // MultideviceMismatch (legacy alias)
 			return DisconnectReason.multideviceMismatch
 		case 503: // ServiceUnavailable
@@ -249,9 +319,22 @@ const DISPATCHERS: DispatcherMap = {
 		emitConnectionUpdate(ctx, {
 			receivedPendingNotifications: true
 		}),
-	disconnected: (_, { ctx, historySync }) => {
-		clearHistorySyncPausedTimeout(historySync)
-		emitClose(ctx, 'Connection closed', DisconnectReason.connectionClosed)
+	// The engine dispatches `Disconnected` only for an *unexpected* loop exit,
+	// and every terminal path marks `expected_disconnect` first — so this is
+	// normally "the Fibonacci backoff is already running".
+	//
+	// The exception is `sock.setAutoReconnect(false)`: `client/lifecycle.rs`
+	// dispatches `Disconnected` and only *then* tests the flag and breaks out
+	// of the run loop. Treating that as transient would leave the socket
+	// reporting `connecting` forever, with the wasm client never freed and the
+	// consumer's reconnect handler never firing.
+	disconnected: (_, dispatchCtx) => {
+		clearHistorySyncPausedTimeout(dispatchCtx.historySync)
+		if (dispatchCtx.callbacks?.isAutoReconnectEnabled?.() === false) {
+			emitClose(dispatchCtx, 'Connection closed', DisconnectReason.connectionClosed)
+			return
+		}
+		emitRetrying(dispatchCtx.ctx)
 	},
 	qr: (evt, { ctx }) => emitConnectionUpdate(ctx, { qr: evt.code }),
 	pairSuccess: (evt, { ctx, callbacks }) => {
@@ -264,50 +347,59 @@ const DISPATCHERS: DispatcherMap = {
 		// a compat hook for upstream's lifecycle.
 		ctx.ev.emit('creds.update', { registered: true, me: { id, lid, name: businessName }, platform })
 	},
-	pairError: (evt, { ctx }) => emitClose(ctx, 'Pairing failed: ' + evt.error, DisconnectReason.connectionClosed),
-	loggedOut: (evt, { ctx }) =>
-		emitClose(ctx, evt.reason ? `Logged out: ${evt.reason}` : 'Logged out', DisconnectReason.loggedOut),
-	connectFailure: (evt, { ctx }) => {
+	// Pairing failed, but the engine keeps its loop and re-emits a QR — nothing
+	// about the client is dead, so this must not read as `close`. It still
+	// belongs on the bus: the QR the user was shown is spent, and `connecting`
+	// clears it while telling the consumer a fresh one is coming.
+	pairError: (evt, { ctx }) => {
+		ctx.logger.error({ err: evt.error }, 'pairing failed; the engine will retry')
+		emitRetrying(ctx)
+	},
+	loggedOut: (evt, dispatchCtx) =>
+		emitClose(dispatchCtx, evt.reason ? `Logged out: ${evt.reason}` : 'Logged out', DisconnectReason.loggedOut),
+	connectFailure: (evt, dispatchCtx) => {
 		// Map bridge `ConnectFailureReason` wire codes onto Baileys'
 		// DisconnectReason. Defaults to connectionClosed for unknown codes.
 		// LoggedOut paths (401/403/406) drive bots' "should I re-pair?"
 		// branch — folding them into connectionClosed kept that broken.
+		if (isReconnectableConnectFailure(evt.reason)) {
+			dispatchCtx.ctx.logger.warn(
+				{ reason: evt.reason, message: evt.message },
+				'connect failure; the engine will retry'
+			)
+			emitRetrying(dispatchCtx.ctx)
+			return
+		}
+
 		const status = mapConnectFailureToDisconnect(evt.reason)
-		emitClose(ctx, evt.message ?? 'Connection failure', status)
+		emitClose(dispatchCtx, evt.message ?? 'Connection failure', status)
 	},
-	// Preserve the wire code on `boom.data.streamErrorCode` so consumers can
-	// branch on the actual `<stream:error code="...">` (e.g. 500 vs an
-	// unknown code) without losing the canonical DisconnectReason.badSession.
-	streamError: (evt, { ctx }) =>
-		emitClose(ctx, 'Stream error: ' + evt.code, DisconnectReason.badSession, {
-			streamErrorCode: evt.code
-		}),
-	streamReplaced: (_, { ctx }) =>
-		emitConnectionUpdate(ctx, {
-			connection: 'close',
-			lastDisconnect: {
-				error: new Boom('Connection replaced', { statusCode: DisconnectReason.connectionReplaced }),
-				date: new Date()
-			}
-		}),
-	clientOutdated: (_, { ctx }) => emitClose(ctx, 'Client outdated', DisconnectReason.badSession),
-	temporaryBan: (evt, { ctx }) => {
+	// NOT a close. The engine dispatches `StreamError` only from its catch-all
+	// `<stream:error>` branch — an unknown code, an `<ack/>` it still owes the
+	// server, or `<xml-not-well-formed>` — and it keeps or deliberately recycles
+	// the connection in every one of those. This used to report
+	// `DisconnectReason.badSession`, the code bots use to wipe credentials and
+	// re-pair, so a routine stream recycle could destroy a working session. The
+	// coded stream errors (401/409/515/516) never arrive here; they dispatch
+	// `loggedOut` / `streamReplaced` of their own.
+	streamError: (evt, { ctx }) => ctx.logger.warn({ code: evt.code }, 'stream error; the connection is preserved'),
+	streamReplaced: (_, dispatchCtx) =>
+		emitClose(dispatchCtx, 'Connection replaced', DisconnectReason.connectionReplaced),
+	// Carries the wire code (405), not `DisconnectReason.badSession`. Upstream
+	// does the same for stream errors — `+node.attrs.code` first, `badSession`
+	// only as the no-code fallback (`Utils/generics.ts` `getErrorCodeFromStreamError`).
+	// badSession is 500, the code bots use to wipe credentials and re-pair; an
+	// outdated build is the one failure where wiping a perfectly good session
+	// helps nobody, and the next connect fails identically.
+	clientOutdated: (_, dispatchCtx) => emitClose(dispatchCtx, 'Client outdated', CLIENT_OUTDATED_STATUS),
+	temporaryBan: (evt, dispatchCtx) => {
 		// Surface the wire code + expire on the Boom so consumers reading
 		// `lastDisconnect.error.data` can act on the specific reason.
 		const reason = describeTempBan(evt.code)
 		const message = evt.expire
 			? `Temporary ban (${reason}); expires at ${new Date(evt.expire * 1000).toISOString()}`
 			: `Temporary ban (${reason})`
-		ctx.ev.emit('connection.update', {
-			connection: 'close',
-			lastDisconnect: {
-				error: new Boom(message, {
-					statusCode: DisconnectReason.forbidden,
-					data: { code: evt.code, expire: evt.expire }
-				}),
-				date: new Date()
-			}
-		} as Partial<ConnectionState>)
+		emitClose(dispatchCtx, message, DisconnectReason.forbidden, { code: evt.code, expire: evt.expire })
 	},
 	qrScannedWithoutMultidevice: (_, { ctx }) => ctx.logger.warn('QR scanned but multi-device not enabled on phone'),
 

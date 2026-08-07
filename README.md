@@ -25,7 +25,7 @@ so existing integrations can migrate with minimal changes. See
 | Media encrypt/decrypt | Node.js crypto | Rust AES-256-CBC + HMAC |
 | Media upload/download | JS fetch + temp files | Rust with CDN failover, auth refresh, resumable upload |
 | Key management | JS auth state | Rust `PersistenceManager` |
-| Auto-reconnect | Manual `startSock()` loop | Built-in with fibonacci backoff |
+| Auto-reconnect | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
 
 ## Documentation
 
@@ -82,11 +82,15 @@ const sock = makeWASocket({ auth: state })
 
 sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
     if (connection === 'close') {
+        // `close` means this socket is finished — same as upstream Baileys.
+        // Transient drops never get here; the Rust engine retries those and
+        // reports `connecting`.
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
         if (statusCode === DisconnectReason.loggedOut) {
             console.log('Logged out')
+        } else {
+            connectToWhatsApp()
         }
-        // Auto-reconnect is handled by the Rust engine — no need to call makeWASocket again
     }
     if (connection === 'open') {
         console.log('Connected')
@@ -156,9 +160,15 @@ preserved. No QR re-scan, no logged-out events.
 
 A few behaviors that differ from upstream — almost always to your advantage:
 
-- **Auto-reconnect is built in.** Don't call `makeWASocket()` again from
-  `connection.update`'s `'close'` branch. The Rust engine retries with
-  fibonacci backoff; opening a second socket leaks the first one.
+- **Auto-reconnect is built in, but `close` still means `close`.** The Rust
+  engine retries transient drops on a fibonacci backoff and reports them as
+  `connection: 'connecting'`, so the canonical upstream handler never fires
+  for those and you never end up with two sockets on one account. A
+  `connection: 'close'` is only emitted once the engine has given up — a
+  replaced session, an outdated build, a temporary ban, an unrecoverable
+  `<failure>` — and by then the socket has already released its resources.
+  Handle it the upstream way: recreate the socket unless the reason is
+  `loggedOut`. Ignoring it leaves the bot permanently offline.
 - **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
   side caches group metadata and message keys natively. You can still pass
   them — they're respected as overrides — but they're optional.

@@ -1236,12 +1236,22 @@ describe('dispatch: connect_failure → DisconnectReason mapping', () => {
 		expect(closeStatusFor(401)).toBe(401)
 	})
 
-	it('maps 405 (ClientOutdated) to badSession', () => {
-		expect(closeStatusFor(405)).toBe(500)
+	// The wire code, not `badSession` (500). badSession is what bots branch on
+	// to wipe credentials and re-pair, and an outdated build is the one failure
+	// where doing that helps nobody. Upstream keeps the wire code too —
+	// `getErrorCodeFromStreamError` reads `+node.attrs.code` first and only
+	// falls back to badSession when the stanza carries none.
+	it('maps 405 (ClientOutdated) to the wire code, not badSession', () => {
+		expect(closeStatusFor(405)).toBe(405)
 	})
 
-	it('maps 503 (ServiceUnavailable) to unavailableService', () => {
-		expect(closeStatusFor(503)).toBe(503)
+	// 500/503 are the two reasons `ConnectFailureReason::should_reconnect()`
+	// matches, so the engine keeps retrying and the socket reports `connecting`
+	// rather than a `close` the upstream handler would answer with a second
+	// socket. See `auto-reconnect-terminal-close.test.ts`.
+	it('does not close on 503 (ServiceUnavailable) — the engine retries it', () => {
+		const updates = collect({ type: 'connect_failure', data: { reason: 503, message: '' } }, 'connection.update')
+		expect(updates.map(update => update.connection)).toEqual(['connecting'])
 	})
 
 	it('falls back to connectionClosed for unknown codes', () => {
