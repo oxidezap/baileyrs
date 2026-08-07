@@ -271,6 +271,32 @@ describe('bridge client owner: settled', () => {
 		expect(releaseFinished).toBe(true)
 	})
 
+	it('does not adopt the failure of a close it joined', async () => {
+		// `discard()` is best-effort cleanup called from `init()`'s catch, and
+		// `close()` rejects when teardown rethrows the first auth-store flush
+		// error. Propagating that would make `initPromise` reject — which the
+		// socket documents as impossible, relies on for `getClient()`'s error
+		// message, and does not always await, so it could surface as an
+		// unhandled rejection.
+		const h = makeHarness({
+			teardown: async () => {
+				throw new Error('flush exploded')
+			}
+		})
+		h.owner.adopt(h.client())
+
+		const closing = h.owner.close(undefined)
+		// Resolving is the assertion.
+		await h.owner.discard()
+
+		// …and the close itself still reports the failure to its own callers.
+		let thrown: unknown
+		await closing.catch(err => {
+			thrown = err
+		})
+		expect((thrown as Error | undefined)?.message).toBe('flush exploded')
+	})
+
 	it('resolves immediately when nothing is in flight', async () => {
 		const h = makeHarness()
 		await h.owner.settled()

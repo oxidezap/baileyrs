@@ -56,9 +56,9 @@ need no source changes**. Two things do:
 
 - Carrying an existing pairing across takes a one-line import swap, see
   [Migrating from Upstream Baileys](#migrating-from-upstream-baileys).
-- If your `connection.update` handler was written for a baileyrs before
-  0.1, see [Gotchas](#gotchas): a `close` now always means the socket is
-  finished, and you have to recreate it. Code written against upstream
+- If your `connection.update` handler was written for a version of baileyrs
+  before 0.1, see [Gotchas](#gotchas): a `close` now always means the socket
+  is finished, and you have to recreate it. Code written against upstream
   Baileys already does the right thing.
 
 
@@ -98,7 +98,10 @@ async function connectToWhatsApp() {
             if (statusCode === DisconnectReason.loggedOut) {
                 console.log('Logged out')
             } else {
-                connectToWhatsApp()
+                // Back off first: a temporary ban (403, with an `expire` on
+                // `error.data`) or an outdated build (405) rejects the
+                // replacement just as fast. See Gotchas for the full policy.
+                setTimeout(connectToWhatsApp, 5_000)
             }
         }
         if (connection === 'open') {
@@ -182,8 +185,18 @@ A few behaviors that differ from upstream — almost always to your advantage:
   `connection: 'close'` is only emitted once the engine has given up — a
   replaced session, an outdated build, a temporary ban, an unrecoverable
   `<failure>` — and by then the socket has already released its resources.
-  Handle it the upstream way: recreate the socket unless the reason is
-  `loggedOut`. Ignoring it leaves the bot permanently offline.
+  Ignoring it leaves the bot permanently offline, so handle it the upstream
+  way and build a replacement — with three exceptions, because some of those
+  failures reject the replacement just as fast:
+
+  | `statusCode` | what to do |
+  | --- | --- |
+  | `DisconnectReason.loggedOut` (401) | stop; needs a fresh pairing |
+  | `405` | stop; the server rejected this build, and the next one too |
+  | `DisconnectReason.forbidden` (403) | wait until `lastDisconnect.error.data.expire` (unix seconds) — it is a temporary ban |
+  | anything else | reconnect, after a short delay |
+
+  `Example/example.ts` implements exactly this.
 - **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
   side caches group metadata and message keys natively. You can still pass
   them — they're respected as overrides — but they're optional.

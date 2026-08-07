@@ -511,7 +511,9 @@ const runChild = async (body: string, folder: string, url: string) => {
 			child.kill('SIGKILL')
 			resolve({ outcome: 'timeout', code: null })
 		}, 25_000)
-		child.on('exit', code => {
+		// `close` rather than `exit`, so the child's pipes are drained before
+		// the outcome is reported.
+		child.on('close', code => {
 			clearTimeout(timer)
 			resolve({ outcome: 'exited', code })
 		})

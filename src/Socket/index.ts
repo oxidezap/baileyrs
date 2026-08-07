@@ -384,6 +384,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		onTerminalClose: (error, publish) => {
 			terminalCloseCount++
 
+			// Settles when the close is *reported*, not when teardown settles.
+			// The watchdog below exists precisely for a teardown that never
+			// settles, so tying this to `end()` would leave `logout()` — which
+			// awaits it — hanging past a close the consumer already received.
+			let markPublished!: () => void
+			terminalClosePublished = new Promise<void>(resolve => {
+				markPublished = resolve
+			})
+
 			let published = false
 			const publishOnce = (reason?: unknown) => {
 				if (published) return
@@ -398,6 +407,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					// default handler.
 					logger.error({ err }, 'connection.update listener threw on the terminal close')
 				}
+				markPublished()
 			}
 
 			const watchdog = setTimeout(() => {
@@ -409,7 +419,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}, TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS)
 			watchdog.unref?.()
 
-			terminalClosePublished = end(error).then(
+			void end(error).then(
 				() => {
 					clearTimeout(watchdog)
 					publishOnce()
@@ -419,7 +429,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					publishOnce(err)
 				}
 			)
-			void terminalClosePublished
 		},
 		isAutoReconnectEnabled: () => autoReconnectEnabled
 	})
@@ -574,7 +583,16 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		initialized = true
 	}
 
+	const end = (error: Error | undefined): Promise<void> => owner.close(error)
+
 	let initError: Error | undefined
+	// Started only once `end` exists. `init()`'s synchronous prefix reaches
+	// `await createWhatsAppClient(...)` before the bridge can dispatch anything,
+	// so today nothing can call `onTerminalClose` — and therefore `end` — that
+	// early. But that is an argument about the current shape of `init()`, not a
+	// rule the code enforces: dispatch a terminal close any sooner and line 401
+	// becomes a `ReferenceError` inside a bridge callback, where no `try/catch`
+	// of ours can reach it. Ordering it here makes the dependency structural.
 	const initPromise = init().catch(err => {
 		initError = err instanceof Error ? err : new Error(String(err))
 		logger.error({ err }, 'failed to initialize bridge client')
@@ -593,7 +611,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	 * `close` → `await sock.end()` → `makeWASocket()` into two writers on one
 	 * auth folder.
 	 */
-	const end = (error: Error | undefined): Promise<void> => owner.close(error)
 
 	const logout = async (msg?: string) => {
 		user = undefined

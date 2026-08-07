@@ -79,7 +79,11 @@ const runChild = (body: string, folder: string) => {
 			child.kill('SIGKILL')
 			resolve({ code: null, timedOut: true, reachedTarget: stdout.includes('READY'), stderr })
 		}, 25_000)
-		child.on('exit', code => {
+		// `close`, not `exit`: `exit` fires when the process ends, before the
+		// parent has necessarily drained its pipes. The panic text asserted
+		// below is the last thing a crashing child writes, so it is exactly the
+		// chunk most likely to still be in flight.
+		child.on('close', code => {
 			clearTimeout(timer)
 			resolve({ code, timedOut: false, reachedTarget: stdout.includes('READY'), stderr })
 		})

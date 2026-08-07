@@ -167,7 +167,17 @@ export const makeBridgeClientOwner = (opts: BridgeClientOwnerOptions): BridgeCli
 			// `close()` owns the client from the moment it starts, and keeps it
 			// published for the whole of teardown — releasing it here as well
 			// would be two disconnect/free sequences on one handle. Join instead.
-			if (state.phase === 'closing' || state.phase === 'closed') return state.done
+			//
+			// Joining without adopting the failure: `close()` rejects when
+			// teardown rethrows the first auth-store flush error, and this is
+			// best-effort cleanup called from `init()`'s catch. Propagating it
+			// would make `initPromise` reject — which the socket documents as
+			// impossible, relies on for `getClient()`'s error message, and does
+			// not always await, so it could surface as an unhandled rejection.
+			if (state.phase === 'closing' || state.phase === 'closed') {
+				await state.done.catch(() => {})
+				return
+			}
 			if (state.phase !== 'running') return
 
 			const { client } = state
