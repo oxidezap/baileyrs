@@ -124,6 +124,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          # A GitHub release proves nothing on its own: anyone with write access
+          # can tag arbitrary code and attach a release record to it by hand.
+          # Reachability from main is what ties this commit to the protected
+          # branch it had to pass through, so check that first.
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+          case "$status" in
+            identical | behind) ;;
+            *)
+              echo "::error::$TAG is at a commit that is not on main ($status)"
+              exit 1
+              ;;
+          esac
+
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::$TAG has no GitHub release; only release tags can be published"
             exit 1
