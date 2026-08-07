@@ -35,6 +35,11 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      # The commit the release was tagged at. Not necessarily the commit that
+      # triggered this run: if the run for a release PR merge fails or is
+      # superseded, a later push is what creates the release, and the tag then
+      # names the earlier merge.
+      sha: ${{ steps.release.outputs.sha }}
     steps:
       # A pull request opened with GITHUB_TOKEN gets its checks queued in an
       # approval-required state, so the release PR sits there until a maintainer
@@ -80,31 +85,30 @@ jobs:
     permissions:
       contents: read
     steps:
-      # The commit that triggered this run, not the tag name. Both are the same
-      # release commit, but only this one cannot move: resolving the tag here
-      # and again in publish leaves a window where the two jobs build different
-      # trees, and npm records this sha as the package's source regardless of
-      # what the workspace was checked out to.
+      # The commit the release was tagged at, by sha rather than by tag name.
+      # A name can be retargeted between this checkout and publish's, leaving
+      # the two jobs on different trees; a sha cannot.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.release-please.outputs.sha }}
           persist-credentials: false
 
-      # Guards the assumption above: release-please tags the commit it just
-      # merged, so a tag pointing elsewhere means this run would verify and
-      # publish something the release does not name.
+      # The tag and the sha both come from the same action, so this is a
+      # consistency check on it rather than on the event: a mismatch means the
+      # release names one commit and this run would ship another.
       - name: Confirm the release tag points at this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
         run: |
           ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
           target=$(jq -r '.object.sha' <<<"$ref")
           if [ "$(jq -r '.object.type' <<<"$ref")" = tag ]; then
             target=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$target" --jq '.object.sha')
           fi
-          if [ "$target" != "$GITHUB_SHA" ]; then
-            echo "::error::$TAG points at $target, not $GITHUB_SHA"
+          if [ "$target" != "$RELEASE_SHA" ]; then
+            echo "::error::$TAG points at $target, not $RELEASE_SHA"
             exit 1
           fi
 
@@ -140,8 +144,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Same immutable commit verify checked out and vouched for.
-          ref: ${{ github.sha }}
+          # Same immutable commit verify checked out and vouched for. Pinned by
+          # sha so retargeting the tag while this job waits on the environment
+          # approval cannot change what gets published.
+          ref: ${{ needs.release-please.outputs.sha }}
           # Nothing here talks to the remote after checkout, and the steps below
           # run third-party install and build scripts in a job holding OIDC
           # publish rights. Don't leave the token in .git/config for them.
