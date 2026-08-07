@@ -307,6 +307,19 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 
 			return initPromise.then(() => {
+				// Rechecked after the await: a close landing while startup was
+				// still running would otherwise be handed the client anyway.
+				//
+				// The window between handing a client back and the call reaching
+				// wasm cannot be closed here — that needs in-flight call
+				// tracking. What covers it is `release`, which awaits
+				// `client.disconnect()` before `free()`; the corruption comes
+				// from freeing with a call pending, and the disconnect drains
+				// those first (`__tests__/bridge-free-safety.test.ts`).
+				if (owner.isClosing()) {
+					throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+				}
+
 				if (initError) {
 					throw new Boom('Bridge client failed to initialize: ' + initError.message, { statusCode: 500 })
 				}

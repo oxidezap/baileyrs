@@ -109,10 +109,12 @@ async function connectToWhatsApp() {
             if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
                 console.log('Closed for good', statusCode)
             } else if (statusCode === DisconnectReason.forbidden) {
-                // Temporary ban: `expire` is unix seconds.
+                // Temporary ban: `expire` is unix seconds. A missing or past
+                // expiry means the ban is over — reconnect like any other
+                // terminal close rather than staying offline forever.
                 const expire = (lastDisconnect?.error as Boom)?.data?.expire
                 console.log('Temporarily banned until', expire)
-                if (expire) waitUntil(expire * 1000).then(connectToWhatsApp)
+                waitUntil(typeof expire === 'number' ? expire * 1000 : 0).then(connectToWhatsApp)
             } else {
                 setTimeout(connectToWhatsApp, 5_000)
             }

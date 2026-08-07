@@ -387,6 +387,46 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('refuses a call that was waiting on init when teardown starts', async () => {
+		// The guard runs again after the `initPromise` await: a close landing
+		// while startup was still going would otherwise hand the client to a
+		// call that had been queued behind it.
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const store = new Proxy(state.store as object, {
+				get(target, prop, receiver) {
+					const value = Reflect.get(target, prop, receiver)
+					if (typeof value !== 'function' || prop === 'flush') return value
+					// Slow startup so the call below is still queued behind it.
+					return async (...args: unknown[]) => {
+						await wait(250)
+						return (value as (...a: unknown[]) => unknown).apply(target, args)
+					}
+				}
+			}) as typeof state.store
+
+			const sock = makeWASocket({
+				auth: { ...state, store },
+				logger: silentLogger,
+				waWebSocketUrl: counter.url
+			})
+
+			// Queued behind init…
+			const queued = sock
+				.sendNode({ tag: 'iq', attrs: {} })
+				.then(() => '<resolved>')
+				.catch((err: Error) => err.message)
+			// …and teardown starts before init finishes.
+			const ending = sock.end(undefined).catch(() => {})
+
+			expect(await queued).toContain('Connection Closed')
+			await ending
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('reports the logout close even when the auth store fails to flush', async () => {
 		// `end()` rethrows the first flush failure, and the owner releases the
 		// client regardless — so without publishing on that path listeners see
