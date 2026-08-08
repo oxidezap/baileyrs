@@ -15,6 +15,7 @@ import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import { makeServerQueryMethods } from '../Socket/server-queries.ts'
 import type { SocketContext } from '../Socket/types.ts'
+import { delay } from '../Utils/generics.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
 
@@ -182,6 +183,33 @@ describe('refreshMediaConn forwards the force flag and feeds getMediaHost', () =
 		expect(info.auth).toBe('AUTH')
 		expect(info.ttl).toBe(3600)
 		expect(info.fetchDate instanceof Date).toBe(true)
+	})
+
+	/**
+	 * The engine serves a live connection from its own cache, so a second call
+	 * is not a second fetch. Restamping it would let a caller renewing on
+	 * `fetchDate + ttl` carry expired credentials for another full ttl.
+	 */
+	it('a connection served from the cache keeps the date it was fetched on', async () => {
+		const { methods } = makeHarness({ getMediaConn: async () => conn })
+
+		const first = await methods.refreshMediaConn()
+		await delay(5)
+		const second = await methods.refreshMediaConn()
+
+		expect(second.fetchDate.getTime()).toBe(first.fetchDate.getTime())
+	})
+
+	it('new credentials are stamped with the moment they arrived', async () => {
+		let auth = 'AUTH'
+		const { methods } = makeHarness({ getMediaConn: async () => ({ ...conn, auth }) })
+
+		const first = await methods.refreshMediaConn()
+		await delay(5)
+		auth = 'AUTH2'
+		const second = await methods.refreshMediaConn(true)
+
+		expect(second.fetchDate.getTime() > first.fetchDate.getTime()).toBe(true)
 	})
 })
 

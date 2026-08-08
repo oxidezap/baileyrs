@@ -51,6 +51,13 @@ const toCapInfo = (result: NewChatMessageCappingResult): NewChatMessageCapInfo &
 export const makeServerQueryMethods = (ctx: SocketContext) => {
 	/** Last host seen, so the synchronous accessor upstream exposes can answer. */
 	let mediaHost = ''
+	/**
+	 * When the credentials were obtained, not when they were last handed out.
+	 * The engine serves a live connection from its cache, and upstream only
+	 * stamps a new date on an actual fetch, so a caller renewing on
+	 * `fetchDate + ttl` has to see the fetch it is measuring from.
+	 */
+	let fetched: { auth: string; at: Date } | undefined
 
 	return {
 		/**
@@ -63,7 +70,10 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 		): Promise<Omit<MediaConnInfo, 'hosts'> & { hosts: { hostname: string }[] }> => {
 			const conn = await (await ctx.getClient()).getMediaConn(forceGet)
 			mediaHost = conn.hosts[0]?.hostname ?? mediaHost
-			return { auth: conn.auth, ttl: conn.ttl, hosts: conn.hosts, fetchDate: new Date() }
+			if (!fetched || fetched.auth !== conn.auth) {
+				fetched = { auth: conn.auth, at: new Date() }
+			}
+			return { auth: conn.auth, ttl: conn.ttl, hosts: conn.hosts, fetchDate: fetched.at }
 		},
 
 		/** Synchronous, as upstream has it, so it reads what the last refresh saw. */
