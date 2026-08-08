@@ -28,28 +28,6 @@ function getMediaContent(content: WAMessageContent | null | undefined) {
 	)
 }
 
-/**
- * Drop `messageContextInfo` before handing the proto to the Rust bridge so the
- * bridge can fill in its own `messageSecret` / `reportingTokenVersion`.
- *
- * Exception: pin messages need `messageAddOnDurationInSecs` (86400 / 604800 /
- * 2592000 to pin, 0 to unpin). The bridge does not set this field, so we save
- * it across the delete and restore it on a fresh contextInfo.
- *
- * Mutates `msg` in place.
- *
- * `contentType` is a parameter so the send path can hand over the type it has
- * already resolved rather than have it scanned out of `msg` a second time.
- */
-export function stripContextInfoForBridge(msg: WAMessageContent, contentType = getContentType(msg)): void {
-	const pinAddOnDuration =
-		contentType === 'pinInChatMessage' ? msg.messageContextInfo?.messageAddOnDurationInSecs : undefined
-	delete (msg as Record<string, unknown>).messageContextInfo
-	if (pinAddOnDuration !== undefined && pinAddOnDuration !== null) {
-		msg.messageContextInfo = { messageAddOnDurationInSecs: pinAddOnDuration }
-	}
-}
-
 type NormalizedUserJid = { userId: string; jid: string }
 const normalizedUserJids = new WeakMap<SocketContext, NormalizedUserJid>()
 
@@ -117,8 +95,6 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				return fullMsg
 			}
 		}
-
-		stripContextInfoForBridge(msg, contentType)
 
 		let msgId: string
 		const msgBytes = encodeProto('Message', msg as Record<string, unknown>)
@@ -208,8 +184,9 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			'relayMessage compatibility plan'
 		)
 
-		stripContextInfoForBridge(message as WAMessageContent)
-
+		// The message goes to the bridge as the caller built it: the core merges
+		// its own messageSecret / reportingTokenVersion over whatever arrives, so
+		// nothing in messageContextInfo has to be dropped on this side.
 		const bytes = encodeProto('Message', message)
 		if (plan.kind === 'retransmission') {
 			await client.retransmitMessageBytes(jid, bytes, plan.input)

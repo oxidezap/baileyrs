@@ -5,7 +5,6 @@ import { decodeProto, encodeMessageWireBatch, encodeProto } from '@oxidezap/what
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 
 import { makeEventHandlers } from '../Socket/events.ts'
-import { stripContextInfoForBridge } from '../Socket/messages.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, WAMessage } from '../Types/index.ts'
 import { generateWAMessageContent, generateWAMessageFromContent } from '../Utils/messages.ts'
@@ -119,8 +118,6 @@ describe('quoted media enum regression', () => {
 			userJid: 'fixture-bot@lid',
 			timestamp: new Date(1_750_000_100_000)
 		})
-		stripContextInfoForBridge(outgoing.message!)
-
 		// This was the failing production boundary: the old reflected event
 		// transport produced the string "IMAGE", which ts-proto coerced to NaN.
 		const outgoingBytes = encodeProto('Message', outgoing.message as Record<string, unknown>)
