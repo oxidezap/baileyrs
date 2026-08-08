@@ -8,12 +8,22 @@
  * rejects with `invalid-argument` naming the parameter, and it does the same
  * for a stream parameter that cannot do what a stream does.
  *
- * What this pins is the bridge boundary itself, driven directly, not the socket
- * methods layered over it. The distinction is real: `sock.readMessages` runs its
- * input through `receiptMessageKeys` first, which drops anything without a
- * `remoteJid` and an `id`, so this exact bad value resolves there without ever
- * reaching the bridge. The boundary is still a consumer-facing contract, since
- * `MediaGenerationOptions.processMedia` hands the raw client over.
+ * What this pins is the bridge boundary itself, driven directly. How much of
+ * the socket surface each probe stands for varies, so to be exact about it:
+ *
+ *  - `muteChat` is a bare pass-through on the socket, so that probe is the
+ *    public path, argument and all.
+ *  - `encryptMediaStream` reaches consumers raw, handed over by
+ *    `MediaGenerationOptions.processMedia`.
+ *  - `readMessages` is filtered by `receiptMessageKeys` first, which drops
+ *    anything without a `remoteJid` and an `id`, so through the socket this
+ *    value resolves to a no-op instead of reaching the bridge.
+ *  - `sendPresence` sits behind `sendPresenceUpdate`, which turns an off-union
+ *    status into a missing-target-jid Boom before the bridge sees it.
+ *
+ * The last two are still worth probing here: the boundary is one contract, and
+ * a normalizer that happens to absorb one bad value today is not a reason to
+ * leave the boundary under it untested.
  *
  * The probes run in a child process because the old failure mode is fatal: only
  * a separate process can tell "the call rejected" from "the call took the test
