@@ -11,18 +11,29 @@ import type { SocketContext } from './types.ts'
  * memory and are contractually forbidden from raising, so a consumer whose
  * handler throws would cost the session its borrowed batches. A handler that
  * fails is reported through the logger and the caller carries on.
+ *
+ * The return type says `void`, which an `async` handler also satisfies, so a
+ * handler that rejects rather than throws is contained the same way. Left
+ * loose it would surface as an unhandled rejection, which ends the process
+ * under `--unhandled-rejections=strict`.
  */
 export const makeUnexpectedErrorReporter = (logger: ILogger) => {
 	const logUnexpected = (err: unknown, msg: string) => logger.error({ err }, `unexpected error in '${msg}'`)
+	const logHandlerFailure = (err: unknown, msg: string, reportingError: unknown) => {
+		logger.error({ err: reportingError }, 'the onUnexpectedError handler threw')
+		logUnexpected(err, msg)
+	}
 	let handler: (err: unknown, msg: string) => void = logUnexpected
 
 	return {
 		report: (err: unknown, msg: string) => {
 			try {
-				handler(err, msg)
+				const settled = handler(err, msg) as unknown
+				if (settled instanceof Promise) {
+					settled.catch(reportingError => logHandlerFailure(err, msg, reportingError))
+				}
 			} catch (reportingError) {
-				logger.error({ err: reportingError }, 'the onUnexpectedError handler threw')
-				logUnexpected(err, msg)
+				logHandlerFailure(err, msg, reportingError)
 			}
 		},
 		get handler() {

@@ -20,6 +20,7 @@ import { makeInternalMethods, makeUnexpectedErrorReporter } from '../Socket/inte
 import type { SocketContext } from '../Socket/types.ts'
 import type { WAMessage } from '../Types/index.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
+import { delay } from '../Utils/generics.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
 import { expect } from './expect.ts'
@@ -260,6 +261,23 @@ describe('the unexpected-error reporter is shared, replaceable and cannot throw'
 			throw new Error('the handler itself blew up')
 		}
 		reporter.report(new Error('boom'), 'a failing dispatcher')
+
+		expect(logged.length).toBe(2)
+		expect(String(logged[1]!.msg)).toBe("unexpected error in 'a failing dispatcher'")
+	})
+
+	// `void` is satisfied by an async function too, so a handler that rejects
+	// rather than throws would otherwise escape as an unhandled rejection and
+	// end the process under --unhandled-rejections=strict.
+	it('a handler that rejects is contained the same way a throwing one is', async () => {
+		const { logged, logger } = makeLogger()
+		const reporter = makeUnexpectedErrorReporter(logger)
+
+		reporter.handler = async () => {
+			throw new Error('the handler itself rejected')
+		}
+		reporter.report(new Error('boom'), 'a failing dispatcher')
+		await delay(1)
 
 		expect(logged.length).toBe(2)
 		expect(String(logged[1]!.msg)).toBe("unexpected error in 'a failing dispatcher'")
