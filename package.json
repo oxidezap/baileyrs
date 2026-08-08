@@ -86,6 +86,7 @@
     "@types/node": "^26.1.1",
     "baileys": "7.0.0-rc13",
     "jimp": "^1.6.0",
+    "link-preview-js": "^3.2.0",
     "music-metadata": "^11.14.0",
     "oxfmt": "^0.59.0",
     "oxlint": "1.74.0",
