@@ -35,15 +35,15 @@ const minutesPastMidnight = (value: string, which: 'open' | 'close'): number => 
 
 /**
  * Both catalog reads take an optional jid and mean "mine" without one, as
- * upstream does. Only a socket that has not finished logging in has no
- * identity to fall back on, and that is worth saying rather than sending an
- * empty jid the server would reject.
+ * upstream does. `getMe` rather than `getUser`, because it reads through to the
+ * persisted credentials, which is the same place upstream reads from and is
+ * populated before the socket finishes its own initialisation.
  */
 const catalogSubject = (method: string, ctx: SocketContext, jid?: string): string => {
-	const subject = jidNormalizedUser(jid || ctx.getUser()?.id)
+	const subject = jidNormalizedUser(jid || ctx.getMe()?.id)
 	if (!subject) {
 		throw new Boom(
-			`${method}: no jid was given and the socket is not logged in yet, so there is no own catalog to read`,
+			`${method}: no jid was given and there is no authenticated account, so there is no own catalog to read`,
 			{
 				statusCode: 400
 			}

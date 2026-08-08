@@ -49,7 +49,7 @@ const makeHarness = (overrides: Record<string, unknown> = {}, ownId?: string) =>
 	const ctx = {
 		ev: new EventEmitter(),
 		logger,
-		getUser: () => (ownId === undefined ? undefined : { id: ownId }),
+		getMe: () => (ownId === undefined ? undefined : { id: ownId }),
 		getClient: async () => client
 	} as unknown as SocketContext
 	return { calls, methods: makeBusinessMethods(ctx) }
@@ -73,9 +73,10 @@ describe('the reads delegate with the options the bridge takes', () => {
 	})
 
 	/**
-	 * Upstream reads the caller's own catalog when the jid is left out, and the
-	 * own id it falls back to carries a device suffix that the catalog query
-	 * does not take.
+	 * Upstream reads the caller's own catalog when the jid is left out, from the
+	 * persisted credentials rather than the socket's own initialisation, so a
+	 * restored session can call it right away. The id there carries a device
+	 * suffix that the catalog query does not take.
 	 */
 	for (const [label, run] of [
 		['getCatalog', (m: ReturnType<typeof makeHarness>['methods']) => m.getCatalog({ limit: 1 })],
@@ -89,10 +90,10 @@ describe('the reads delegate with the options the bridge takes', () => {
 			expect(calls[0]![1][0]).toBe('15559990000@s.whatsapp.net')
 		})
 
-		it(`${label} rejects when there is no jid and no identity to fall back on`, async () => {
+		it(`${label} rejects when there is no jid and no account to fall back on`, async () => {
 			const { calls, methods } = makeHarness()
 
-			await expect(run(methods)).rejects.toThrow(/not logged in yet/)
+			await expect(run(methods)).rejects.toThrow(/no authenticated account/)
 			expect(calls).toEqual([])
 		})
 	}
