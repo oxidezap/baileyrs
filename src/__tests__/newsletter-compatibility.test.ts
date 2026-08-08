@@ -196,7 +196,25 @@ describe('newsletterUpdate dispatches the picture field', () => {
 
 		await methods.newsletterUpdate(JID, { picture: '' })
 
-		expect(calls.map(c => c[0])).toEqual(['newsletterMetadata', 'newsletterRemovePicture'])
+		// No metadata read: the remove already answers with the refreshed
+		// metadata, so fetching it would be a round trip thrown away.
+		expect(calls.map(c => c[0])).toEqual(['newsletterRemovePicture'])
+	})
+
+	it('a picture-only update does not pay for a metadata read first', async () => {
+		const { calls, methods } = makeHarness()
+
+		await methods.newsletterUpdate(JID, { picture: Buffer.from('x').toString('base64') })
+
+		expect(calls.map(c => c[0])).toEqual(['newsletterSetPicture'])
+	})
+
+	it('an empty delta still has to read the metadata to have something to return', async () => {
+		const { calls, methods } = makeHarness()
+
+		await methods.newsletterUpdate(JID, {})
+
+		expect(calls.map(c => c[0])).toEqual(['newsletterMetadata'])
 	})
 
 	it('a base64 picture is decoded to bytes, not forwarded as a string', async () => {
@@ -236,6 +254,14 @@ describe('newsletterFetchMessages refuses the paging arguments it cannot honour'
 
 		await expect(methods.newsletterFetchMessages(JID, 10, 0, 99)).rejects.toThrow(/`after` is not supported/)
 		expect(calls).toEqual([])
+	})
+
+	it('zeroes are not a request, so the common (jid, count, 0, 0) call runs', async () => {
+		const { calls, methods } = makeHarness()
+
+		await methods.newsletterFetchMessages(JID, 10, 0, 0)
+
+		expect(calls).toEqual([['newsletterMessages', [JID, 10, null]]])
 	})
 })
 

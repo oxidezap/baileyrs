@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { bridgeNewsletterMetadataToBaileys } from '../Compatibility/newsletter-results.ts'
+import type { NewsletterMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 import type { NewsletterMetadata, NewsletterUpdate } from '../Types/Newsletter.ts'
 import type { WAMediaUpload } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
@@ -33,16 +34,19 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 	 */
 	newsletterUpdate: async (jid: string, updates: NewsletterUpdate): Promise<NewsletterMetadata> => {
 		const client = await ctx.getClient()
-		let result =
-			updates.name !== undefined || updates.description !== undefined
-				? await client.newsletterUpdate(jid, updates.name ?? null, updates.description ?? null)
-				: await client.newsletterMetadata(jid)
+		let result: NewsletterMetadataResult | undefined
+		if (updates.name !== undefined || updates.description !== undefined) {
+			result = await client.newsletterUpdate(jid, updates.name ?? null, updates.description ?? null)
+		}
 		if (updates.picture === '') {
 			result = await client.newsletterRemovePicture(jid)
 		} else if (updates.picture !== undefined) {
 			result = await client.newsletterSetPicture(jid, new Uint8Array(Buffer.from(updates.picture, 'base64')))
 		}
-		return bridgeNewsletterMetadataToBaileys(result)
+		// Only when the delta asked for nothing: every write above already
+		// answers with the refreshed metadata, so reading it would be a round
+		// trip whose result is thrown away.
+		return bridgeNewsletterMetadataToBaileys(result ?? (await client.newsletterMetadata(jid)))
 	},
 
 	newsletterUpdateName: async (jid: string, name: string): Promise<NewsletterMetadata> => {
@@ -97,6 +101,10 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 	 * from a `before` cursor and carries no time filter. Mapping `after` onto
 	 * `before` would page the opposite direction and return a plausible wrong
 	 * answer, so a caller asking for either is told instead.
+	 *
+	 * Zero is not asking. `since: 0` is the epoch and `after: 0` is no cursor,
+	 * which is what the unfiltered query already does, so the common
+	 * `(jid, count, 0, 0)` call runs rather than being refused for nothing.
 	 */
 	newsletterFetchMessages: async (jid: string, count: number, since?: number, after?: number) => {
 		if (since) {
