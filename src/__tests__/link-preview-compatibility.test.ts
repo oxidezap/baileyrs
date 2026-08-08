@@ -53,27 +53,20 @@ describe('getUrlInfo separates having no preview from failing to get one', () =>
 		})
 	}
 
-	// The parser is handed the link, not the sentence it sits in.
+	/**
+	 * `.invalid` is reserved as never-resolvable, so these reach the fetch and
+	 * fail there without depending on the network being up or on a timeout
+	 * winning a race. Rejecting rather than resolving is the whole assertion:
+	 * it is what separates a link that failed from no link at all.
+	 */
 	it('a link inside a sentence is what gets fetched', async () => {
-		// Bounded so this does not wait on the network: reaching the fetch at
-		// all is what distinguishes it from the no-link branch above.
-		await expect(
-			getUrlInfo('visit https://example.com today', { thumbnailWidth: 192, fetchOpts: { timeout: 1 } })
-		).rejects.toThrow()
+		await expect(getUrlInfo('visit https://nothing-here.invalid today', OPTS)).rejects.toThrow()
 	})
 
 	it('a link that is present but unusable is not treated as absent', async () => {
-		// Reaching the parser at all is the point: this is the branch where a
-		// failure has to surface rather than be read as "no preview".
-		await expect(getUrlInfo('https://example.com', { ...OPTS, fetchOpts: { timeout: 1 } })).rejects.toThrow()
+		await expect(getUrlInfo('https://nothing-here.invalid', OPTS)).rejects.toThrow()
 	})
 
-	/**
-	 * Upstream's `uploadImage` is typed for an uploader that takes an
-	 * already-encrypted file; an uploader here takes plaintext and returns the
-	 * encrypted result. Accepting it would hand the caller's own function the
-	 * wrong argument, which is worse than saying so.
-	 */
 	// A proxy cannot be honoured on either fetch here, and half-applying it is
 	// worse than refusing: the page lookup would resolve locally and the
 	// thumbnail would connect direct, both of which the operator configured
@@ -84,6 +77,12 @@ describe('getUrlInfo separates having no preview from failing to get one', () =>
 		).rejects.toThrow(/proxyUrl is not supported/)
 	})
 
+	/**
+	 * Upstream's `uploadImage` is typed for an uploader that takes an
+	 * already-encrypted file; an uploader here takes plaintext and returns the
+	 * encrypted result. Accepting it would hand the caller's own function the
+	 * wrong argument, which is worse than saying so.
+	 */
 	it('uploadImage is refused, naming the contract it cannot honour', async () => {
 		await expect(getUrlInfo('https://example.com', { ...OPTS, uploadImage: async () => undefined })).rejects.toThrow(
 			/uploadImage is not supported/
@@ -121,7 +120,21 @@ describe('the thumbnail fetch refuses destinations a preview must not reach', ()
 		// The same address as the line above, written the other way. Judging
 		// only the dotted form would leave this one a way through.
 		['v4-mapped loopback written in hex', 'http://[::ffff:7f00:1]/x.jpg'],
-		['v4-mapped link-local in hex', 'http://[::ffff:a9fe:a9fe]/x.jpg']
+		['v4-mapped link-local in hex', 'http://[::ffff:a9fe:a9fe]/x.jpg'],
+		// The same addresses without the `::` shorthand. The URL parser folds
+		// these back to the canonical form before the guard sees them, so what
+		// they pin is that the guard is never handed a spelling it misreads.
+		['loopback written out in full', 'http://[0:0:0:0:0:0:0:1]/x.jpg'],
+		['v4-mapped loopback written out in full', 'http://[0:0:0:0:0:ffff:7f00:1]/x.jpg'],
+		['a unique-local address written out in full', 'http://[fd00:0:0:0:0:0:0:1]/x.jpg'],
+		// The deprecated v4-compatible form, which is what `::127.0.0.1` becomes
+		// once the URL parser has folded it. Refused with the rest of `::/96`.
+		['a v4-compatible address', 'http://[::7f00:1]/x.jpg'],
+		// Reserved rather than private, and refused for the same reason: an
+		// operator routing one of these internally would have it reachable.
+		['the benchmarking range', 'http://198.18.0.1/x.jpg'],
+		['a documentation range', 'http://203.0.113.1/x.jpg'],
+		['the IETF protocol assignments range', 'http://192.0.0.1/x.jpg']
 	] as const) {
 		it(`refuses ${label}`, async () => {
 			await expect(fetchThumbnail(address)).rejects.toThrow(/private address/)
@@ -169,7 +182,15 @@ describe('the link is taken out of the text it was written in', () => {
 		['a link before a comma', 'https://example.com, then leave', 'https://example.com'],
 		['a link in parentheses', 'see (https://example.com) for more', 'https://example.com'],
 		['a link before an exclamation', 'look at https://example.com!', 'https://example.com'],
-		['the first of several', 'https://one.example then https://two.example', 'https://one.example']
+		['the first of several', 'https://one.example then https://two.example', 'https://one.example'],
+		// An explicit scheme is unambiguous wherever it sits, so it does not
+		// have to be preceded by a space to count.
+		['a link after a colon', 'See:https://example.com', 'https://example.com'],
+		['a link in angle brackets', '<https://example.com>', 'https://example.com'],
+		// Kept as written rather than prefixed again: `https://HTTPS://...`
+		// parses as nothing.
+		['an uppercase scheme', 'HTTPS://example.com/a', 'HTTPS://example.com/a'],
+		['a bare host in angle brackets', '<example.com>', 'https://example.com']
 	] as const) {
 		it(`${label} becomes ${expected}`, () => {
 			expect(firstLink(text)).toBe(expected)

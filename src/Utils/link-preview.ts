@@ -8,13 +8,13 @@ import type { ILogger } from './logger.ts'
 import { extractImageThumb } from './messages-media.ts'
 
 const THUMBNAIL_WIDTH_PX = 192
+/** An explicit scheme names a link wherever it sits, so nothing is required before it. */
+const SCHEMED_URL = /https?:\/\/[^\s<>]+/i
 /**
- * Whether the text names something fetchable at all: an explicit scheme, or a
- * host whose last label is alphabetic, which is what separates `example.com`
- * from `version 1.22`. Loose enough that the parser still judges the URL, tight
- * enough that ordinary prose does not reach it and come back as an error.
+ * A bare host has to earn it: something before it, and an alphabetic last
+ * label, which is what separates `example.com` from `version 1.22`.
  */
-const FIRST_URL = /(^|[\s([{'"])(https?:\/\/\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/\S*)?)(?=[\s.,!?)\]}]|$)/i
+const BARE_HOST = /(^|[\s([{'"<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>]*)?)(?=[\s.,!?)\]}>]|$)/i
 
 /**
  * The first link in a piece of text, or undefined when there is none. Exported
@@ -27,9 +27,16 @@ const FIRST_URL = /(^|[\s([{'"])(https?:\/\/\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d
  * parentheses.
  */
 export const _firstLink = (text: string): string | undefined => {
-	const found = FIRST_URL.exec(text)?.[2]?.replace(/[.,!?;:'")\]}]+$/, '')
+	const schemed = SCHEMED_URL.exec(text)
+	const bare = BARE_HOST.exec(text)
+	// Whichever starts earlier. A bare match begins at the character before the
+	// host, so it is that offset, not the match's, that compares.
+	const bareAt = bare ? bare.index + bare[1]!.length : Number.POSITIVE_INFINITY
+	const found = (schemed && schemed.index <= bareAt ? schemed[0] : bare?.[2])?.replace(/[.,!?;:'")\]}]+$/, '')
 	if (!found) return undefined
-	return found.startsWith('https://') || found.startsWith('http://') ? found : `https://${found}`
+	// Case-insensitively, since `HTTPS://` is a scheme too and prefixing it
+	// again would build a URL that parses as nothing.
+	return /^https?:\/\//i.test(found) ? found : `https://${found}`
 }
 /** Enough for any preview thumbnail, and small enough that a hostile one cannot exhaust memory. */
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
@@ -59,49 +66,96 @@ type LinkPreviewResult = {
 }
 
 /**
- * Addresses no outbound request from a link preview may reach: loopback, the
- * private ranges, link-local, and the cloud metadata address that sits inside
- * link-local and is the usual target.
+ * The eight groups an IPv6 literal stands for, with `::` expanded and any
+ * trailing dotted quad folded in. Undefined when the text is not one, so an
+ * unrecognised form is refused rather than read as public.
  */
+const hextetsOf = (address: string): number[] | undefined => {
+	const [head, tail, ...rest] = address.split('::')
+	if (rest.length) return undefined
+
+	const groupsOf = (part: string): number[] | undefined => {
+		if (!part) return []
+		const groups: number[] = []
+		for (const piece of part.split(':')) {
+			if (piece.includes('.')) {
+				if (isIP(piece) !== 4) return undefined
+				const [a, b, c, d] = piece.split('.').map(Number)
+				groups.push((a! << 8) | b!, (c! << 8) | d!)
+			} else if (/^[0-9a-f]{1,4}$/.test(piece)) {
+				groups.push(Number.parseInt(piece, 16))
+			} else {
+				return undefined
+			}
+		}
+		return groups
+	}
+
+	const left = groupsOf(head ?? '')
+	const right = tail === undefined ? [] : groupsOf(tail)
+	if (!left || !right) return undefined
+	if (tail === undefined) return left.length === 8 ? left : undefined
+	const gap = 8 - left.length - right.length
+	return gap < 0 ? undefined : [...left, ...Array.from<number>({ length: gap }).fill(0), ...right]
+}
+
 /**
- * The v4 address an IPv4-mapped IPv6 literal stands for, in either form it can
- * be written: `::ffff:127.0.0.1` and `::ffff:7f00:1` are the same address, and
- * judging only the dotted one leaves the other a way through.
+ * The v4 address an IPv4-mapped IPv6 literal stands for, in each spelling of
+ * it: `::ffff:127.0.0.1`, `::ffff:7f00:1` and `::ffff:0:7f00:1` are one
+ * address, and judging only one leaves the others a way through.
  */
-const mappedIPv4 = (address: string): string | undefined => {
-	const mapped = /^::ffff:(?:0:)?(.+)$/i.exec(address)
-	if (!mapped) return undefined
-	const tail = mapped[1]!
-	if (isIP(tail) === 4) return tail
-	const hextets = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail)
-	if (!hextets) return undefined
-	const high = Number.parseInt(hextets[1]!, 16)
-	const low = Number.parseInt(hextets[2]!, 16)
+const mappedIPv4 = (groups: number[]): string | undefined => {
+	const zeroesUpTo = (count: number) => groups.slice(0, count).every(group => group === 0)
+	if (!((zeroesUpTo(5) && groups[5] === 0xffff) || (zeroesUpTo(4) && groups[4] === 0xffff && groups[5] === 0))) {
+		return undefined
+	}
+	const [high, low] = [groups[6]!, groups[7]!]
 	return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
 }
 
-const isPrivateAddress = (address: string): boolean => {
-	if (isIP(address) === 6) {
-		const normalised = address.toLowerCase()
-		const mapped = mappedIPv4(normalised)
-		if (mapped) return isPrivateAddress(mapped)
-		if (normalised === '::1' || normalised === '::') return true
-		if (normalised.startsWith('fc') || normalised.startsWith('fd')) return true
-		if (normalised.startsWith('fe8') || normalised.startsWith('fe9') || normalised.startsWith('fea')) return true
-		if (normalised.startsWith('feb')) return true
-		return false
-	}
-
-	const [a, b] = address.split('.').map(Number)
+const isPrivateIPv4 = (address: string): boolean => {
+	const [a, b, c] = address.split('.').map(Number)
 	// Anything unparseable is refused rather than allowed, so a form not
 	// recognised here cannot become a way through.
-	if (a === undefined || b === undefined || !Number.isFinite(a) || !Number.isFinite(b)) return true
+	if (a === undefined || b === undefined || c === undefined) return true
+	if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return true
 	if (a === 0 || a === 10 || a === 127) return true
 	if (a === 169 && b === 254) return true
 	if (a === 172 && b >= 16 && b <= 31) return true
 	if (a === 192 && b === 168) return true
 	if (a === 100 && b >= 64 && b <= 127) return true
+	// Not private, but not globally routable either. An operator who routes one
+	// of these internally would otherwise have it reachable from a preview.
+	if (a === 192 && b === 0 && (c === 0 || c === 2)) return true
+	if (a === 198 && (b === 18 || b === 19)) return true
+	if (a === 198 && b === 51 && c === 100) return true
+	if (a === 203 && b === 0 && c === 113) return true
 	return a >= 224
+}
+
+/**
+ * Judged by value rather than by how the address is written. Both callers hand
+ * this canonical text today, and resting on that would make the guard wrong the
+ * moment one of them stops.
+ */
+const isPrivateIPv6 = (groups: number[]): boolean => {
+	const mapped = mappedIPv4(groups)
+	if (mapped) return isPrivateIPv4(mapped)
+	// All of `::/96`, which covers the unspecified address, loopback and the
+	// deprecated v4-compatible forms, then fc00::/7 and fe80::/10.
+	if (groups.slice(0, 6).every(group => group === 0)) return true
+	return (groups[0]! & 0xfe00) === 0xfc00 || (groups[0]! & 0xffc0) === 0xfe80
+}
+
+/**
+ * Addresses no outbound request from a link preview may reach: loopback, the
+ * private ranges, link-local and the cloud metadata address that sits inside
+ * link-local and is the usual target, plus the IPv6 equivalents.
+ */
+const isPrivateAddress = (address: string): boolean => {
+	if (isIP(address) !== 6) return isPrivateIPv4(address)
+	const groups = hextetsOf(address.toLowerCase())
+	return groups ? isPrivateIPv6(groups) : true
 }
 
 /**
@@ -123,11 +177,18 @@ const publicAddressOf = async (target: URL): Promise<string> => {
 		throw new Boom(`link preview: refusing to fetch ${target.protocol}`, { statusCode: 400 })
 	}
 	const host = target.hostname.replace(/^\[|\]$/g, '')
-	const address = isIP(host) ? host : (await lookup(host)).address
-	if (isPrivateAddress(address)) {
-		throw new Boom(`link preview: refusing to fetch a private address (${address})`, { statusCode: 400 })
+	const resolved = isIP(host) ? [host] : (await lookup(host, { all: true })).map(({ address }) => address)
+	const [first] = resolved
+	if (!first) {
+		throw new Boom(`link preview: ${host} did not resolve`, { statusCode: 400 })
 	}
-	return address
+	// Every address a name answers with, not just the first: several records
+	// mean the one judged here need not be the one connected to.
+	const refused = resolved.find(address => isPrivateAddress(address))
+	if (refused) {
+		throw new Boom(`link preview: refusing to fetch a private address (${refused})`, { statusCode: 400 })
+	}
+	return first
 }
 
 const assertPublicDestination = async (target: URL): Promise<void> => {
