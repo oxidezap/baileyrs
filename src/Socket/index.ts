@@ -42,6 +42,7 @@ import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
+import { makeBusinessMethods } from './business.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -951,6 +952,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makePresenceMethods(ctx),
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
+		...makeBusinessMethods(ctx),
 		downloadMedia: async <T extends 'buffer' | 'stream'>(
 			message: WAMessage,
 			type: T,

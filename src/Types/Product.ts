@@ -1,4 +1,16 @@
+import type { CatalogResult as CatalogPageResult, CollectionsResult } from '@oxidezap/whatsapp-rust-bridge'
+
 import type { WAMediaUpload } from './Message.ts'
+
+/**
+ * What `getCatalog` returns, under a name of its own. The `CatalogResult`
+ * below is the raw catalog envelope and is a different shape, so a consumer
+ * typing the call has one name to reach for and it is this one.
+ */
+export type CatalogPage = CatalogPageResult
+
+/** As `CatalogPage`, for `getCollections`. */
+export type CollectionsPage = CollectionsResult
 
 export type CatalogResult = {
 	data: {
