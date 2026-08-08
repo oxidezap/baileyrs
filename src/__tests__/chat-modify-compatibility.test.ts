@@ -13,7 +13,9 @@
  * takes them. The other pins that anything left over rejects.
  */
 
+import { readFileSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
+import path from 'node:path'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
@@ -184,6 +186,55 @@ describe('chatModify: a field the wire call cannot carry is refused, not dropped
 
 		expect(calls).toEqual([['deleteLabel', ['lbl-1']]])
 	})
+})
+
+/**
+ * The delegation tests above compare our calls against a fake, so on their own
+ * they prove we call what this file says we call and nothing more. For the
+ * label methods that is not enough: every parameter is a string, so a swapped
+ * pair type checks, and a swap made in both the code and its test would agree
+ * with itself.
+ *
+ * This reads the parameter names out of the bridge's own declarations, so the
+ * assumed order is pinned to the package rather than to us. Together the two
+ * halves mean something: we pass label first, and label is what the bridge
+ * takes first.
+ */
+describe('the argument order these tests assume is the one the bridge declares', () => {
+	const dts = readFileSync(
+		path.resolve(
+			import.meta.dirname,
+			'../../node_modules/@oxidezap/whatsapp-rust-bridge/dist/whatsapp_rust_bridge.d.ts'
+		),
+		'utf8'
+	)
+
+	const parameterNames = (method: string): string[] => {
+		const declaration = new RegExp(`^\\s{4}${method}\\((.*?)\\):`, 'm').exec(dts)
+		if (!declaration) throw new Error(`no declaration for ${method} in the bridge .d.ts`)
+		return (
+			declaration[1]!
+				.split(/,(?![^<(]*[>)])/)
+				.map(parameter => parameter.trim().split(':')[0]!.trim())
+				// The whole point is the order, so an empty parameter list has to
+				// come back empty rather than as ['']
+				.filter(name => name.length > 0)
+		)
+	}
+
+	for (const [method, expected] of [
+		['addChatLabel', ['label_id', 'chat_jid']],
+		['removeChatLabel', ['label_id', 'chat_jid']],
+		['addMessageLabel', ['label_id', 'chat_jid', 'message_id']],
+		['removeMessageLabel', ['label_id', 'chat_jid', 'message_id']],
+		['createLabel', ['label_id', 'name', 'color']],
+		['saveContact', ['jid', 'full_name', 'first_name', 'save_on_primary_addressbook']],
+		['setQuickReply', ['id', 'shortcut', 'message', 'keywords', 'count']]
+	] as const) {
+		it(`${method} takes (${expected.join(', ')})`, () => {
+			expect(parameterNames(method)).toEqual([...expected])
+		})
+	}
 })
 
 describe('chatModify: anything with no path rejects', () => {
