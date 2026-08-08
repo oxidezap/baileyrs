@@ -1,7 +1,7 @@
 import type { proto } from '../WAProto/runtime.ts'
 import type { QuickReplyAction } from '../Types/Bussines.ts'
 import type { LabelActionBody } from '../Types/Label.ts'
-import type { ChatModification, WAPatchName } from '../Types/index.ts'
+import type { ChatModification } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { SocketContext } from './types.ts'
 
@@ -141,17 +141,6 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 				const variant = Object.keys(mod)[0] ?? '(empty)'
 				throw new Boom(`chatModify: unsupported modification '${variant}'`, { statusCode: 400, data: { variant, jid } })
 			}
-		},
-
-		/**
-		 * Force re-sync of app state collections.
-		 *
-		 * In the Rust bridge architecture, app state is managed internally by the engine
-		 * and synced automatically on connect. This method is a no-op provided for API
-		 * compatibility with upstream Baileys.
-		 */
-		resyncAppState: async (_collections?: readonly WAPatchName[], _isInitialSync?: boolean) => {
-			ctx.logger.info('resyncAppState: app state is synced automatically by the Rust bridge')
 		},
 
 		// Upstream models all of these as sugar over `chatModify`, and so do we:

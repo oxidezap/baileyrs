@@ -50,6 +50,7 @@ import { makeBridgeClientOwner } from './bridge-client-owner.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
+import { makeInternalMethods, makeUnexpectedErrorReporter } from './internals.ts'
 import { makeMessageMethods } from './messages.ts'
 import { makeNewsletterMethods } from './newsletter.ts'
 import { makePreKeyMethods } from './prekeys.ts'
@@ -280,12 +281,19 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	let autoReconnectEnabled = true
 	/** Owns reporting the terminal close: once, after teardown, never not at all. */
 	const terminalClose = makeTerminalCloseReporter({ logger })
+	/**
+	 * Held in a reporter rather than captured, because `sock.onUnexpectedError`
+	 * is an assignable property: a consumer that replaces it has to be the one
+	 * the socket's own failure paths reach afterwards.
+	 */
+	const unexpectedErrors = makeUnexpectedErrorReporter(logger)
 
 	const ctx: SocketContext = {
 		ev,
 		logger,
 		fullConfig,
 		ws,
+		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,
 		getMe: () => {
 			const me = auth.creds.me
@@ -947,6 +955,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeContactMethods(ctx),
 		...makeProfileMethods(ctx),
 		...makeChatActionMethods(ctx),
+		...makeInternalMethods(ctx),
 		...usyncMethods,
 		...makeStanzaResponseMethods(ctx),
 		...makePresenceMethods(ctx),
@@ -965,6 +974,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			})
 		}
 	}
+
+	// Assigning replaces the handler the socket itself reports through, rather
+	// than shadowing it with a second one only a consumer could reach.
+	Object.defineProperty(sock, 'onUnexpectedError', {
+		get: () => unexpectedErrors.handler,
+		set: (handler: (err: unknown, msg: string) => void) => {
+			unexpectedErrors.handler = handler
+		},
+		enumerable: true,
+		configurable: true
+	})
 
 	return sock
 }
