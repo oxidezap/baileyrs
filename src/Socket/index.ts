@@ -50,6 +50,7 @@ import { makeBridgeClientOwner } from './bridge-client-owner.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
+import { makeInternalMethods } from './internals.ts'
 import { makeMessageMethods } from './messages.ts'
 import { makeNewsletterMethods } from './newsletter.ts'
 import { makePreKeyMethods } from './prekeys.ts'
@@ -947,6 +948,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeContactMethods(ctx),
 		...makeProfileMethods(ctx),
 		...makeChatActionMethods(ctx),
+		...makeInternalMethods(ctx),
 		...usyncMethods,
 		...makeStanzaResponseMethods(ctx),
 		...makePresenceMethods(ctx),
