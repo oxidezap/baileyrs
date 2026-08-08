@@ -1106,12 +1106,29 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		for (const data of acks) onEvent({ type: 'server_ack', data } as unknown as WhatsAppEvent)
 	}
 
+	// Opting the two packed paths into the bridge's borrowing contract, which
+	// lets it hand every batch out of one reused buffer instead of allocating
+	// per batch. Both handlers already satisfied the contract unchanged: each
+	// decodes as its first act, and `decodeReceiptWireBatch` /
+	// `decodeServerAckWireBatch` materialise every field rather than keeping a
+	// view, so nothing points at the buffer once they return. Neither is async,
+	// and no exception escapes them — the decode is guarded here and the
+	// dispatch is guarded in `dispatchCanonicalEvent` — both of which the
+	// contract requires, since either one drops the whole session back to a
+	// buffer per batch.
+	//
+	// Declaring a borrowing name replaces its copying counterpart as the sink,
+	// so the pair below is the whole opt-in. There is deliberately none for
+	// messages: `decodeMessageWireBatch` returns views over the batch, so reuse
+	// would alias the decoded result and not just the buffer.
 	return {
 		onEvent,
 		onMessageBatch,
 		onHistorySyncBatch,
 		onReceiptBatch,
 		onServerAckBatch,
+		onReceiptBatchBorrowed: onReceiptBatch,
+		onServerAckBatchBorrowed: onServerAckBatch,
 		historySyncConversationTypes: CONVERSATION_HISTORY_SYNC_TYPES
 	}
 }
