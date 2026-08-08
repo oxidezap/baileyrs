@@ -8,11 +8,12 @@
  * rejects with `invalid-argument` naming the parameter, and it does the same
  * for a stream parameter that cannot do what a stream does.
  *
- * Every method here is reachable from this package's public surface:
- * `readMessages` and `muteChat` are socket methods, `encryptMediaStream` is
- * handed to consumers through `MediaGenerationOptions.processMedia`. None of
- * them is called with a bad argument by our own code, so what this pins is the
- * contract a consumer gets, not a path we take.
+ * What this pins is the bridge boundary itself, driven directly, not the socket
+ * methods layered over it. The distinction is real: `sock.readMessages` runs its
+ * input through `receiptMessageKeys` first, which drops anything without a
+ * `remoteJid` and an `id`, so this exact bad value resolves there without ever
+ * reaching the bridge. The boundary is still a consumer-facing contract, since
+ * `MediaGenerationOptions.processMedia` hands the raw client over.
  *
  * The probes run in a child process because the old failure mode is fatal: only
  * a separate process can tell "the call rejected" from "the call took the test
@@ -93,7 +94,11 @@ const runProbes = (folder: string) => {
 			makeTransport(cfg), makeHttpClient(cfg), undefined, state.store, null, undefined, null
 		)
 
-		const report = outcome => console.log('PROBE ' + JSON.stringify(outcome))
+		// Awaits the write callback rather than using console.log: stdout is a
+		// pipe here, so process.exit() below would drop whatever is still
+		// buffered and the parent would read a truncated run as a regression.
+		const report = outcome =>
+			new Promise(done => process.stdout.write('PROBE ' + JSON.stringify(outcome) + '\\n', done))
 		const probe = async (label, run) => {
 			// A call that never settles is the failure being tested for, so it
 			// has to be reported rather than waited on.
@@ -109,7 +114,7 @@ const runProbes = (folder: string) => {
 				pending
 			])
 			clearTimeout(timer)
-			report(outcome)
+			await report(outcome)
 			// The call is still in flight, so continuing would reach free()
 			// with a pending call: the heap corruption bridge-free-safety
 			// documents, whose crash would then be reported instead of this.

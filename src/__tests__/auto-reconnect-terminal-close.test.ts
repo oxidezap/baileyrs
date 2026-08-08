@@ -234,11 +234,12 @@ describe('connection.update: terminal disconnects', () => {
  * with nothing here failing to build. Bridge 0.7.0 writes the spellings down
  * instead, keeping every value it already emitted.
  *
- * That makes them a contract, and this is where the contract is observed: the
- * reason is interpolated straight into the close message, so it is the text a
- * consumer logs and greps. It steers nothing, the status code is always
- * `loggedOut`, but a change to it is a change to the public surface, and
- * without this test the next one would pass unnoticed too.
+ * The events are synthetic, so this pins our half of that contract rather than
+ * the bridge's: the dispatcher hands the reason through untouched, the close
+ * message is exactly `Logged out: <reason>`, and the status code stays
+ * `loggedOut` whatever the reason says. The list doubles as the record of which
+ * values the bridge undertakes to emit. A change on the bridge side of the line
+ * is caught by the bridge's own tests, which assert those spellings literally.
  */
 const LOGGED_OUT_REASONS = [
 	'Generic',
