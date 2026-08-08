@@ -17,7 +17,7 @@ import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import makeWASocket from '../Socket/index.ts'
 import type { proto } from '../WAProto/runtime.ts'
-import { downloadMediaMessage } from '../Utils/messages.ts'
+import { _registerActiveBridgeClient, _unregisterActiveBridgeClient, downloadMediaMessage } from '../Utils/messages.ts'
 import type { WAMessage } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
@@ -50,27 +50,14 @@ const IMAGE_MESSAGE = {
 
 /**
  * Upstream takes the context optionally and downloads over its own HTTP; here
- * the download, its CDN failover and its decryption are the engine's, so the
- * client has to arrive somehow. Required was the wrong way to say that: it
- * turned an upstream three-argument call into a compile error rather than an
- * explanation.
+ * the download, its CDN failover and its decryption are the engine's, so a
+ * client has to reach it. Required was the wrong way to say that: this package
+ * already registers the client the last `makeWASocket` built, which is the same
+ * fallback `downloadContentFromMessage` offers, so upstream's three-argument
+ * call can run rather than merely explain itself.
  */
-describe('downloadMediaMessage takes upstream three arguments and says what is missing', () => {
-	it('a call without the context rejects naming what it needs and where to get it', async () => {
-		await expect(downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {})).rejects.toThrow(/bridge client is required/)
-	})
-
-	it('the rejection points at the socket method that supplies it', async () => {
-		await expect(downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {})).rejects.toThrow(/sock\.downloadMedia/)
-	})
-
-	it('a context without a client is refused the same way, not dereferenced', async () => {
-		await expect(downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, {} as never)).rejects.toThrow(
-			/bridge client is required/
-		)
-	})
-
-	it('a context carrying the client runs rather than being refused', async () => {
+describe('downloadMediaMessage runs on upstream three arguments', () => {
+	const recordingClient = () => {
 		const downloaded: unknown[][] = []
 		const waClient = {
 			downloadMedia: async (...args: unknown[]) => {
@@ -78,11 +65,46 @@ describe('downloadMediaMessage takes upstream three arguments and says what is m
 				return new Uint8Array([1, 2, 3])
 			}
 		} as unknown as WasmWhatsAppClient
+		return { downloaded, waClient }
+	}
+
+	it('a context carrying the client is used', async () => {
+		const { downloaded, waClient } = recordingClient()
 
 		const result = await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, { waClient } as never)
 
 		expect(downloaded.length).toBe(1)
 		expect(Buffer.from(result).length).toBe(3)
+	})
+
+	it('without a context the registered client is used, so a three-argument call downloads', async () => {
+		const { downloaded, waClient } = recordingClient()
+		_registerActiveBridgeClient(waClient)
+		try {
+			const result = await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {})
+
+			expect(downloaded.length).toBe(1)
+			expect(Buffer.from(result).length).toBe(3)
+		} finally {
+			_unregisterActiveBridgeClient(waClient)
+		}
+	})
+
+	it('a context present but empty falls back too rather than being dereferenced', async () => {
+		const { downloaded, waClient } = recordingClient()
+		_registerActiveBridgeClient(waClient)
+		try {
+			await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, {} as never)
+
+			expect(downloaded.length).toBe(1)
+		} finally {
+			_unregisterActiveBridgeClient(waClient)
+		}
+	})
+
+	it('with neither a context nor a registration it rejects, naming both ways to supply one', async () => {
+		await expect(downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {})).rejects.toThrow(/no bridge client available/)
+		await expect(downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {})).rejects.toThrow(/sock\.downloadMedia/)
 	})
 })
 

@@ -824,7 +824,13 @@ export type DownloadMediaMessageContext = {
  *
  * Uses the Rust bridge for download — provides CDN failover, automatic auth
  * refresh on 401/404, HMAC-SHA256 integrity verification, and AES-256-CBC
- * decryption. Requires `ctx.waClient` (the bridge client).
+ * decryption, so a bridge client has to reach it.
+ *
+ * `ctx` is optional, as upstream has it: without one the client registered by
+ * the most recent `makeWASocket` is used, the same fallback
+ * `downloadContentFromMessage` offers for standalone calls. A host juggling
+ * several sockets should pass `ctx` explicitly, because the registration points
+ * at whichever client was created last.
  */
 export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	message: WAMessage,
@@ -832,13 +838,14 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	options: MediaDownloadOptions,
 	ctx?: DownloadMediaMessageContext
 ) => {
-	if (!ctx?.waClient) {
+	const waClient = ctx?.waClient ?? activeBridgeClient
+	if (!waClient) {
 		throw new Boom(
-			'downloadMediaMessage: a fourth argument carrying the bridge client is required, because the download, its CDN failover and its decryption all happen in the engine. `sock.downloadMedia(message, type, options)` passes it for you.',
-			{ statusCode: 400 }
+			'downloadMediaMessage: no bridge client available, and the download, its CDN failover and its decryption all happen in the engine. Pass `{ waClient: sock.waClient }`, use `sock.downloadMedia(message, type, options)`, or call after `makeWASocket()` has initialized.',
+			{ statusCode: 500 }
 		)
 	}
-	const withClient = ctx
+	const withClient = { ...ctx, waClient }
 	return (await downloadMsg()) as Type extends 'buffer' ? Buffer : Readable
 
 	async function downloadMsg() {
