@@ -74,11 +74,14 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 		refreshMediaConn: async (
 			forceGet = false
 		): Promise<Omit<MediaConnInfo, 'hosts'> & { hosts: { hostname: string }[] }> => {
-			const conn = await (await ctx.getClient()).getMediaConn(forceGet)
+			// Forced on the first call, as upstream's first call is: the engine may
+			// already hold a connection acquired by an upload, and stamping that
+			// one as fetched now would report it fresher than it is.
+			const held = fetched
+			const conn = await (await ctx.getClient()).getMediaConn(forceGet || !held)
 			mediaHost = conn.hosts[0]?.hostname ?? mediaHost
-			if (forceGet || !fetched || fetched.auth !== conn.auth || !isLive(fetched)) {
-				fetched = { auth: conn.auth, ttl: conn.ttl, at: new Date() }
-			}
+			const isFetch = forceGet || !held || held.auth !== conn.auth || !isLive(held)
+			fetched = isFetch ? { auth: conn.auth, ttl: conn.ttl, at: new Date() } : held
 			// A copy: the stored instant decides when the next call restamps, and a
 			// consumer holding the same Date could move it.
 			return { auth: conn.auth, ttl: conn.ttl, hosts: conn.hosts, fetchDate: new Date(fetched.at) }

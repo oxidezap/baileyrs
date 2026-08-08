@@ -175,7 +175,10 @@ describe('cleanDirtyBits passes the type through and normalises the timestamp', 
 describe('refreshMediaConn forwards the force flag and feeds getMediaHost', () => {
 	const conn = { auth: 'AUTH', ttl: 3600, hosts: [{ hostname: 'mmg.whatsapp.net' }] }
 
-	it('forcing and not forcing take different arguments', async () => {
+	// The engine may already hold a connection an upload acquired, and it gives
+	// no signal for how old that one is, so the first call fetches rather than
+	// stamping whatever comes back as fresh. Upstream's first call queries too.
+	it('the first call fetches, and after that forcing is what the caller asked for', async () => {
 		const seen: boolean[] = []
 		const { methods } = makeHarness({
 			getMediaConn: async (force: boolean) => {
@@ -185,9 +188,10 @@ describe('refreshMediaConn forwards the force flag and feeds getMediaHost', () =
 		})
 
 		await methods.refreshMediaConn()
+		await methods.refreshMediaConn()
 		await methods.refreshMediaConn(true)
 
-		expect(seen).toEqual([false, true])
+		expect(seen).toEqual([true, false, true])
 	})
 
 	it('getMediaHost is empty until a refresh, then reports the host', async () => {
