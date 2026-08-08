@@ -830,8 +830,15 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	message: WAMessage,
 	type: Type,
 	options: MediaDownloadOptions,
-	ctx: DownloadMediaMessageContext
+	ctx?: DownloadMediaMessageContext
 ) => {
+	if (!ctx?.waClient) {
+		throw new Boom(
+			'downloadMediaMessage: a fourth argument carrying the bridge client is required, because the download, its CDN failover and its decryption all happen in the engine. `sock.downloadMedia(message, type, options)` passes it for you.',
+			{ statusCode: 400 }
+		)
+	}
+	const withClient = ctx
 	return (await downloadMsg()) as Type extends 'buffer' ? Buffer : Readable
 
 	async function downloadMsg() {
@@ -879,12 +886,12 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 		] as const
 
 		if (type === 'buffer') {
-			const data = await ctx.waClient.downloadMedia(...args)
+			const data = await withClient.waClient.downloadMedia(...args)
 			return Buffer.from(data)
 		}
 
 		// Stream mode: Web ReadableStream from Rust → Node.js Readable
-		const webStream = ctx.waClient.downloadMediaStream(...args)
+		const webStream = withClient.waClient.downloadMediaStream(...args)
 		return Readable.fromWeb(webStream as WebReadableStream)
 	}
 }
