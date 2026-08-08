@@ -63,7 +63,8 @@ export const makePrivacyMethods = (ctx: SocketContext) => {
 		 * Warned once rather than thrown: upstream callers await this inside a send
 		 * workflow, and rejecting would abort a workflow that was going to succeed.
 		 */
-		issuePrivacyTokens: async (jids: string[], _timestamp?: number): Promise<void> => {
+		issuePrivacyTokens: async (jids: string[], timestamp?: number): Promise<void> => {
+			void timestamp
 			if (!warnedAboutPrivacyTokens) {
 				warnedAboutPrivacyTokens = true
 				ctx.logger.warn(
