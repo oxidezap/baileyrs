@@ -22,6 +22,21 @@ const noProductWriteRoute = (method: string): never => {
 	)
 }
 
+/**
+ * Upstream types these as strings, so an empty one is reachable from an
+ * unfilled form. `Number('')` is midnight, which would quietly rewrite the
+ * schedule instead of being refused.
+ */
+const minutesPastMidnight = (value: string, which: 'open' | 'close'): number => {
+	const minutes = Number(value)
+	if (value.trim() === '' || !Number.isInteger(minutes) || minutes < 0 || minutes > 1440) {
+		throw new Boom(`updateBussinesProfile: ${which} time '${value}' is not a count of minutes past midnight`, {
+			statusCode: 400
+		})
+	}
+	return minutes
+}
+
 export const makeBusinessMethods = (ctx: SocketContext) => ({
 	getCatalog: async ({ jid, limit, cursor }: GetCatalogOptions): Promise<CatalogResult> => {
 		if (!jid) {
@@ -68,8 +83,10 @@ export const makeBusinessMethods = (ctx: SocketContext) => ({
 							config: args.hours.days.map(day => ({
 								dayOfWeek: day.day,
 								mode: day.mode,
-								openTime: day.mode === 'specific_hours' ? Number(day.openTimeInMinutes) : undefined,
-								closeTime: day.mode === 'specific_hours' ? Number(day.closeTimeInMinutes) : undefined
+								openTime:
+									day.mode === 'specific_hours' ? minutesPastMidnight(day.openTimeInMinutes, 'open') : undefined,
+								closeTime:
+									day.mode === 'specific_hours' ? minutesPastMidnight(day.closeTimeInMinutes, 'close') : undefined
 							}))
 						}
 					}

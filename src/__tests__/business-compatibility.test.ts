@@ -186,6 +186,29 @@ describe('updateBussinesProfile carries every field the delta has', () => {
 	})
 })
 
+describe('an unusable opening-hour time is refused, not read as midnight', () => {
+	for (const [label, open, close] of [
+		['empty', '', '1080'],
+		['blank', '   ', '1080'],
+		['not a number', 'nine', '1080'],
+		['out of range', '540', '5000']
+	] as const) {
+		it(`${label} rejects`, async () => {
+			const { calls, methods } = makeHarness()
+
+			await expect(
+				methods.updateBussinesProfile({
+					hours: {
+						timezone: 'America/Sao_Paulo',
+						days: [{ day: 'mon', mode: 'specific_hours', openTimeInMinutes: open, closeTimeInMinutes: close }]
+					}
+				})
+			).rejects.toThrow(/is not a count of minutes past midnight/)
+			expect(calls).toEqual([])
+		})
+	}
+})
+
 describe('removeCoverPhoto works and updateCoverPhoto says what is missing', () => {
 	it('remove delegates', async () => {
 		const { calls, methods } = makeHarness()
