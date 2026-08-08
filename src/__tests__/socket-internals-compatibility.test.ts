@@ -9,15 +9,30 @@
  * where only the event half belongs to this layer.
  */
 
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
+import makeWASocket from '../Socket/index.ts'
 import { makeInternalMethods } from '../Socket/internals.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { WAMessage } from '../Types/index.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
 import type { ILogger } from '../Utils/logger.ts'
+import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
 import { expect } from './expect.ts'
+
+const silentLogger = {
+	level: 'silent',
+	child: () => silentLogger,
+	trace: () => undefined,
+	debug: () => undefined,
+	info: () => undefined,
+	warn: () => undefined,
+	error: () => undefined
+} as unknown as ILogger
 
 const makeHarness = (overrides: Record<string, unknown> = {}, connectTimeoutMs?: number) => {
 	const calls: Array<[string, unknown[]]> = []
@@ -188,5 +203,53 @@ describe('messageRetryManager is null rather than a second retry manager', () =>
 		const { methods } = makeHarness()
 
 		expect(methods.messageRetryManager).toBe(null)
+	})
+})
+
+/**
+ * The hook is only an extension point if it resolves the current handler
+ * instead of the one it captured when the socket was built. Two halves, one
+ * per file: the socket exposes an accessor whose setter replaces the handler
+ * its own failure paths report through, and this method reads that handler per
+ * call rather than closing over the default.
+ */
+describe('assigning onUnexpectedError replaces the handler the socket reports through', () => {
+	it('the method reports through whatever the context resolves to now', () => {
+		const seen: string[] = []
+		let handler: (err: unknown, msg: string) => void = () => undefined
+		const ctx = {
+			ev: makeEventBuffer(silentLogger),
+			logger: silentLogger,
+			fullConfig: {},
+			reportUnexpectedError: (err: unknown, msg: string) => handler(err, msg),
+			getClient: async () => undefined
+		} as unknown as SocketContext
+		const methods = makeInternalMethods(ctx)
+
+		handler = (_err, msg) => seen.push(msg)
+		methods.onUnexpectedError(new Error('boom'), 'a failing dispatcher')
+
+		expect(seen).toEqual(['a failing dispatcher'])
+	})
+
+	it('the socket exposes it as an accessor, so assignment is observed rather than shadowed', async () => {
+		const authFolder = await mkdtemp(join(tmpdir(), 'baileyrs-hook-'))
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const sock = makeWASocket({ auth: state, logger: silentLogger, waWebSocketUrl: 'ws://127.0.0.1:1' })
+			try {
+				const descriptor = Object.getOwnPropertyDescriptor(sock, 'onUnexpectedError')
+				const replacement = () => undefined
+
+				sock.onUnexpectedError = replacement
+
+				expect(typeof descriptor?.set).toBe('function')
+				expect(sock.onUnexpectedError).toBe(replacement)
+			} finally {
+				await (sock as unknown as { [Symbol.asyncDispose](): Promise<void> })[Symbol.asyncDispose]()
+			}
+		} finally {
+			await rm(authFolder, { recursive: true, force: true })
+		}
 	})
 })

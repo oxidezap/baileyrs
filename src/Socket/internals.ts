@@ -49,7 +49,9 @@ export const makeInternalMethods = (ctx: SocketContext) => {
 		/**
 		 * The same reporter the socket's own failure paths use, rather than a
 		 * second one that only a consumer could reach: a dispatcher that threw
-		 * or a wire batch that would not decode arrives here.
+		 * or a wire batch that would not decode arrives here. The socket
+		 * redefines this as an accessor, so assigning to it replaces the
+		 * handler those paths report through.
 		 */
 		onUnexpectedError: (err: Error, msg: string): void => {
 			ctx.reportUnexpectedError(err, msg)

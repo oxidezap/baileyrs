@@ -281,15 +281,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	let autoReconnectEnabled = true
 	/** Owns reporting the terminal close: once, after teardown, never not at all. */
 	const terminalClose = makeTerminalCloseReporter({ logger })
+	/**
+	 * Held in a slot rather than captured, because `sock.onUnexpectedError` is
+	 * an assignable property: a consumer that replaces it has to be the one the
+	 * socket's own failure paths reach afterwards.
+	 */
+	let unexpectedErrorHandler: (err: unknown, msg: string) => void = (err, msg) => {
+		logger.error({ err }, `unexpected error in '${msg}'`)
+	}
 
 	const ctx: SocketContext = {
 		ev,
 		logger,
 		fullConfig,
 		ws,
-		reportUnexpectedError: (err, msg) => {
-			logger.error({ err }, `unexpected error in '${msg}'`)
-		},
+		reportUnexpectedError: (err, msg) => unexpectedErrorHandler(err, msg),
 		getUser: () => user,
 		getMe: () => {
 			const me = auth.creds.me
@@ -970,6 +976,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			})
 		}
 	}
+
+	// Assigning replaces the handler the socket itself reports through, rather
+	// than shadowing it with a second one only a consumer could reach.
+	Object.defineProperty(sock, 'onUnexpectedError', {
+		get: () => unexpectedErrorHandler,
+		set: (handler: (err: unknown, msg: string) => void) => {
+			unexpectedErrorHandler = handler
+		},
+		enumerable: true,
+		configurable: true
+	})
 
 	return sock
 }
