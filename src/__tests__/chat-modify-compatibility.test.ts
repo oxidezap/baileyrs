@@ -131,6 +131,26 @@ describe('chatModify: variants that used to resolve without doing anything', () 
 	}
 })
 
+describe('chatModify: a quick reply with no usable key gets one', () => {
+	// Upstream mints a key from the clock for both, and the core rejects an
+	// empty index, so neither may reach the bridge as ''.
+	for (const [label, timestamp] of [
+		['empty', ''],
+		['absent', undefined]
+	] as const) {
+		it(`a ${label} timestamp becomes a generated key`, async () => {
+			const { calls, methods } = makeHarness()
+
+			await methods.chatModify({ quickReply: { timestamp, shortcut: 'hi', message: 'Hello' } }, CHAT)
+
+			const [name, args] = calls[0]!
+			expect(name).toBe('setQuickReply')
+			expect(typeof args[0]).toBe('string')
+			expect((args[0] as string).length > 0).toBe(true)
+		})
+	}
+})
+
 describe('chatModify: anything with no path rejects', () => {
 	it('names the variant it could not run', async () => {
 		const { calls, methods } = makeHarness()

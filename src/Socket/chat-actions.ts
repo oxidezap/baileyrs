@@ -96,7 +96,9 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 			} else if ('quickReply' in mod) {
 				// Upstream's `timestamp` is the app-state index key, the same slot
 				// the core calls `id`. Deleting is the same upsert with `deleted`.
-				const id = mod.quickReply.timestamp ?? String(Math.floor(Date.now() / 1000))
+				// `||`, not `??`: upstream treats an empty timestamp as absent and
+				// mints a key, and the core rejects an empty index outright.
+				const id = mod.quickReply.timestamp || String(Math.floor(Date.now() / 1000))
 				if (mod.quickReply.deleted) {
 					await client.deleteQuickReply(id)
 				} else {
