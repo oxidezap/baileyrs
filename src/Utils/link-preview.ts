@@ -206,6 +206,18 @@ export const getUrlInfo = async (
 	text: string,
 	opts: URLGenerationOptions = { thumbnailWidth: THUMBNAIL_WIDTH_PX, fetchOpts: { timeout: 3000 } }
 ): Promise<WAUrlInfo | undefined> => {
+	if (opts.fetchOpts.proxyUrl) {
+		// Refused rather than half-applied. The page fetch would resolve the
+		// host locally, which both fails where only the proxy can resolve and
+		// leaks the destination where the proxy was chosen for privacy, and the
+		// thumbnail would connect direct. Honouring it needs a proxy dispatcher,
+		// which is a dependency this package does not carry.
+		throw new Boom(
+			'getUrlInfo: proxyUrl is not supported, because neither the metadata fetch nor the thumbnail can be routed through a proxy here, and doing either directly would defeat the reason it was configured',
+			{ statusCode: 501 }
+		)
+	}
+
 	if (opts.uploadImage) {
 		throw new Boom(
 			'getUrlInfo: uploadImage is not supported, because an upload function here takes plaintext and returns the encrypted result, while this option is typed for one that takes an already-encrypted file. Leave it unset and the thumbnail is generated locally.',
@@ -222,7 +234,10 @@ export const getUrlInfo = async (
 		const { getLinkPreview } = (await import('link-preview-js' as string)) as {
 			getLinkPreview: (url: string, options: Record<string, unknown>) => Promise<LinkPreviewResult>
 		}
-		const previewLink = text.startsWith('https://') || text.startsWith('http://') ? text : `https://${text}`
+		// The link itself, not the sentence around it: prefixing a whole
+		// sentence with a scheme leans on the parser tokenising it back apart.
+		const found = FIRST_URL.exec(text)?.[2] ?? text
+		const previewLink = found.startsWith('https://') || found.startsWith('http://') ? found : `https://${found}`
 
 		const info = await getLinkPreview(previewLink, {
 			...opts.fetchOpts,
@@ -233,9 +248,18 @@ export const getUrlInfo = async (
 			// follower. One hop, because that is what the parser offers under
 			// manual redirects: it consults this once and fetches once more.
 			handleRedirects: (baseURL: string, forwardedURL: string) => {
-				const from = new URL(baseURL).hostname
-				const to = new URL(forwardedURL).hostname
-				return to === from || to === `www.${from}` || `www.${to}` === from
+				const from = new URL(baseURL)
+				const to = new URL(forwardedURL)
+				// Scheme and port too, not the host alone: the follow-up request
+				// carries the caller's headers, so a hop to http:// on the same
+				// name would put their credentials on the wire in clear, and one
+				// to another port would hand them to a different service.
+				if (to.protocol !== from.protocol || to.port !== from.port) return false
+				return (
+					to.hostname === from.hostname ||
+					to.hostname === `www.${from.hostname}` ||
+					`www.${to.hostname}` === from.hostname
+				)
 			},
 			// Resolves the host so the address, not the name, is judged. The
 			// parser rejects loopback on what this returns, and the private

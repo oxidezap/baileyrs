@@ -49,6 +49,15 @@ describe('getUrlInfo separates having no preview from failing to get one', () =>
 		})
 	}
 
+	// The parser is handed the link, not the sentence it sits in.
+	it('a link inside a sentence is what gets fetched', async () => {
+		// Bounded so this does not wait on the network: reaching the fetch at
+		// all is what distinguishes it from the no-link branch above.
+		await expect(
+			getUrlInfo('visit https://example.com today', { thumbnailWidth: 192, fetchOpts: { timeout: 1 } })
+		).rejects.toThrow()
+	})
+
 	it('a link that is present but unusable is not treated as absent', async () => {
 		// Reaching the parser at all is the point: this is the branch where a
 		// failure has to surface rather than be read as "no preview".
@@ -61,6 +70,16 @@ describe('getUrlInfo separates having no preview from failing to get one', () =>
 	 * encrypted result. Accepting it would hand the caller's own function the
 	 * wrong argument, which is worse than saying so.
 	 */
+	// A proxy cannot be honoured on either fetch here, and half-applying it is
+	// worse than refusing: the page lookup would resolve locally and the
+	// thumbnail would connect direct, both of which the operator configured
+	// against.
+	it('a configured proxy is refused rather than half-applied', async () => {
+		await expect(
+			getUrlInfo('https://example.com', { ...OPTS, fetchOpts: { ...OPTS.fetchOpts, proxyUrl: 'http://proxy:8080' } })
+		).rejects.toThrow(/proxyUrl is not supported/)
+	})
+
 	it('uploadImage is refused, naming the contract it cannot honour', async () => {
 		await expect(getUrlInfo('https://example.com', { ...OPTS, uploadImage: async () => undefined })).rejects.toThrow(
 			/uploadImage is not supported/
