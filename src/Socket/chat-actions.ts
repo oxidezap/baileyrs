@@ -1,3 +1,6 @@
+import type { proto } from '../WAProto/runtime.ts'
+import type { QuickReplyAction } from '../Types/Bussines.ts'
+import type { LabelActionBody } from '../Types/Label.ts'
 import type { ChatModification, WAPatchName } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { SocketContext } from './types.ts'
@@ -120,6 +123,51 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 		 */
 		resyncAppState: async (_collections?: readonly WAPatchName[], _isInitialSync?: boolean) => {
 			ctx.logger.info('resyncAppState: app state is synced automatically by the Rust bridge')
+		},
+
+		// Upstream models all of these as sugar over `chatModify`, and so do we:
+		// one place decides which bridge call a modification becomes, so the
+		// method and the modification can never disagree.
+
+		addOrEditContact: async (jid: string, contact: proto.SyncActionValue.IContactAction) => {
+			await methods.chatModify({ contact }, jid)
+		},
+
+		removeContact: async (jid: string) => {
+			await methods.chatModify({ contact: null }, jid)
+		},
+
+		addLabel: async (jid: string, labels: LabelActionBody) => {
+			await methods.chatModify({ addLabel: { ...labels } }, jid)
+		},
+
+		addChatLabel: async (jid: string, labelId: string) => {
+			await methods.chatModify({ addChatLabel: { labelId } }, jid)
+		},
+
+		removeChatLabel: async (jid: string, labelId: string) => {
+			await methods.chatModify({ removeChatLabel: { labelId } }, jid)
+		},
+
+		addMessageLabel: async (jid: string, messageId: string, labelId: string) => {
+			await methods.chatModify({ addMessageLabel: { labelId, messageId } }, jid)
+		},
+
+		removeMessageLabel: async (jid: string, messageId: string, labelId: string) => {
+			await methods.chatModify({ removeMessageLabel: { labelId, messageId } }, jid)
+		},
+
+		star: async (jid: string, messages: { id: string; fromMe?: boolean }[], star: boolean) => {
+			await methods.chatModify({ star: { messages, star } }, jid)
+		},
+
+		// No jid: a quick reply is account-wide, keyed only by its index.
+		addOrEditQuickReply: async (quickReply: QuickReplyAction) => {
+			await methods.chatModify({ quickReply }, '')
+		},
+
+		removeQuickReply: async (timestamp: string) => {
+			await methods.chatModify({ quickReply: { timestamp, deleted: true } }, '')
 		}
 	}
 	return methods
