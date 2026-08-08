@@ -811,12 +811,19 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 	return content
 }
 
+/**
+ * Every field is optional, so upstream's `{ reuploadRequest, logger }` and this
+ * package's `{ waClient }` are both accepted.
+ *
+ * `reuploadRequest` and `logger` are declared for that compatibility and are
+ * not read: the engine handles the re-upload request, the CDN failover and the
+ * logging itself, so a caller's versions would have nothing to do.
+ */
 export type DownloadMediaMessageContext = {
-	reuploadRequest: (msg: WAMessage) => Promise<WAMessage>
-	logger: ILogger
-	/** Bridge client for media download — handles CDN failover, auth refresh,
-	 *  HMAC-SHA256 verification, and AES-256-CBC decryption internally. */
-	waClient: Pick<WasmWhatsAppClient, 'downloadMedia' | 'downloadMediaStream'>
+	reuploadRequest?: (msg: WAMessage) => Promise<WAMessage>
+	logger?: ILogger
+	/** Bridge client for media download. Falls back to the registered one. */
+	waClient?: Pick<WasmWhatsAppClient, 'downloadMedia' | 'downloadMediaStream'>
 }
 
 /**
@@ -824,14 +831,28 @@ export type DownloadMediaMessageContext = {
  *
  * Uses the Rust bridge for download — provides CDN failover, automatic auth
  * refresh on 401/404, HMAC-SHA256 integrity verification, and AES-256-CBC
- * decryption. Requires `ctx.waClient` (the bridge client).
+ * decryption, so a bridge client has to reach it.
+ *
+ * `ctx` is optional, as upstream has it: without one the client registered by
+ * the most recent `makeWASocket` is used, the same fallback
+ * `downloadContentFromMessage` offers for standalone calls. A host juggling
+ * several sockets should pass `ctx` explicitly, because the registration points
+ * at whichever client was created last.
  */
 export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 	message: WAMessage,
 	type: Type,
 	options: MediaDownloadOptions,
-	ctx: DownloadMediaMessageContext
+	ctx?: DownloadMediaMessageContext
 ) => {
+	const waClient = ctx?.waClient ?? activeBridgeClient
+	if (!waClient) {
+		throw new Boom(
+			'downloadMediaMessage: no bridge client available, and the download, its CDN failover and its decryption all happen in the engine. Pass `{ waClient: sock.waClient }`, use `sock.downloadMedia(message, type, options)`, or call after `makeWASocket()` has initialized.',
+			{ statusCode: 500 }
+		)
+	}
+	const withClient = { ...ctx, waClient }
 	return (await downloadMsg()) as Type extends 'buffer' ? Buffer : Readable
 
 	async function downloadMsg() {
@@ -879,12 +900,12 @@ export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
 		] as const
 
 		if (type === 'buffer') {
-			const data = await ctx.waClient.downloadMedia(...args)
+			const data = await withClient.waClient.downloadMedia(...args)
 			return Buffer.from(data)
 		}
 
 		// Stream mode: Web ReadableStream from Rust → Node.js Readable
-		const webStream = ctx.waClient.downloadMediaStream(...args)
+		const webStream = withClient.waClient.downloadMediaStream(...args)
 		return Readable.fromWeb(webStream as WebReadableStream)
 	}
 }

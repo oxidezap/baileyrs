@@ -248,8 +248,8 @@ describe('removeCoverPhoto works and updateCoverPhoto says what is missing', () 
  */
 describe('the product write methods reject, and say the route does not exist', () => {
 	for (const [label, run] of [
-		['productCreate', (m: ReturnType<typeof makeHarness>['methods']) => m.productCreate({})],
-		['productUpdate', (m: ReturnType<typeof makeHarness>['methods']) => m.productUpdate('p1', {})],
+		['productCreate', (m: ReturnType<typeof makeHarness>['methods']) => m.productCreate({} as never)],
+		['productUpdate', (m: ReturnType<typeof makeHarness>['methods']) => m.productUpdate('p1', {} as never)],
 		['productDelete', (m: ReturnType<typeof makeHarness>['methods']) => m.productDelete(['p1'])]
 	] as const) {
 		it(`${label} rejects`, async () => {

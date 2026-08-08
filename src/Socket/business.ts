@@ -1,6 +1,7 @@
 import type { OrderResult, BusinessProfileUpdateInput } from '@oxidezap/whatsapp-rust-bridge'
-import type { CatalogPage, CollectionsPage, GetCatalogOptions } from '../Types/Product.ts'
+import type { CatalogPage, CollectionsPage, GetCatalogOptions, ProductCreate, ProductUpdate } from '../Types/Product.ts'
 import type { UpdateBussinesProfileProps } from '../Types/Bussines.ts'
+import type { WAMediaUpload } from '../Types/Message.ts'
 import { Boom } from '../Utils/boom.ts'
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import type { SocketContext } from './types.ts'
@@ -11,7 +12,8 @@ import type { SocketContext } from './types.ts'
  * why instead of a bare TypeError, and rejecting because there is nothing to
  * call.
  */
-const noProductWriteRoute = (method: string): never => {
+const noProductWriteRoute = (method: string, ...ignored: unknown[]): never => {
+	void ignored
 	throw new Boom(
 		`${method} is not supported: the WhatsApp Web client has no product create, edit or delete operation, so there is nothing for this to call. Manage the catalog from the WhatsApp Business app.`,
 		{ statusCode: 501 }
@@ -112,7 +114,8 @@ export const makeBusinessMethods = (ctx: SocketContext) => ({
 	 * package's upload path cannot produce one: it requires a url and a
 	 * direct path, which that endpoint does not return.
 	 */
-	updateCoverPhoto: async (_photo: unknown): Promise<never> => {
+	updateCoverPhoto: async (photo: WAMediaUpload): Promise<never> => {
+		void photo
 		throw new Boom(
 			'updateCoverPhoto is not available yet: the cover photo upload returns an {fbid, meta_hmac, ts} receipt that this package cannot obtain. removeCoverPhoto works.',
 			{ statusCode: 501 }
@@ -123,9 +126,10 @@ export const makeBusinessMethods = (ctx: SocketContext) => ({
 		await (await ctx.getClient()).removeBusinessCoverPhoto(id)
 	},
 
-	productCreate: async (_create: unknown): Promise<never> => noProductWriteRoute('productCreate'),
+	productCreate: async (create: ProductCreate): Promise<never> => noProductWriteRoute('productCreate', create),
 
-	productUpdate: async (_productId: string, _update: unknown): Promise<never> => noProductWriteRoute('productUpdate'),
+	productUpdate: async (productId: string, update: ProductUpdate): Promise<never> =>
+		noProductWriteRoute('productUpdate', productId, update),
 
-	productDelete: async (_productIds: string[]): Promise<never> => noProductWriteRoute('productDelete')
+	productDelete: async (productIds: string[]): Promise<never> => noProductWriteRoute('productDelete', productIds)
 })

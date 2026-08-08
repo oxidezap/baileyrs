@@ -857,11 +857,25 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		sendRawMessage: async (data: Uint8Array | Buffer) => {
 			return (await ctx.getClient()).sendRawMessage(data instanceof Uint8Array ? data : new Uint8Array(data))
 		},
+		/**
+		 * `dsmMessage` is accepted so the signature matches upstream, and
+		 * refused rather than ignored. Upstream uses it to encrypt a different
+		 * plaintext for the caller's own other devices; the engine encrypts one
+		 * payload for every recipient, so honouring it is not possible here and
+		 * dropping it would send those devices the wrong message.
+		 */
 		createParticipantNodes: async (
 			jids: string[],
 			message: proto.IMessage,
-			extraAttrs?: BinaryNode['attrs']
+			extraAttrs?: BinaryNode['attrs'],
+			dsmMessage?: proto.IMessage
 		): Promise<{ nodes: BinaryNode[]; shouldIncludeDeviceIdentity: boolean }> => {
+			if (dsmMessage) {
+				throw new Boom(
+					'createParticipantNodes: dsmMessage is not supported, the engine encrypts one payload for every recipient and cannot substitute a different one for your own devices',
+					{ statusCode: 501 }
+				)
+			}
 			const bytes = encodeProto('Message', message as Record<string, unknown>)
 			return (await ctx.getClient()).createParticipantNodesBytes(jids, bytes, extraAttrs ?? {})
 		},
