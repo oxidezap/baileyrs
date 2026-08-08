@@ -151,6 +151,41 @@ describe('chatModify: a quick reply with no usable key gets one', () => {
 	}
 })
 
+/**
+ * Both input types carry fields the bridge call has no slot for. Accepting one
+ * and dropping it is the same silent success in miniature: the caller asked for
+ * a username to be set and got a resolved promise with nothing set.
+ */
+describe('chatModify: a field the wire call cannot carry is refused, not dropped', () => {
+	for (const field of ['lidJid', 'pnJid', 'username'] as const) {
+		it(`contact.${field} rejects rather than being ignored`, async () => {
+			const { calls, methods } = makeHarness()
+
+			await expect(methods.chatModify({ contact: { fullName: 'Ada', [field]: 'something' } }, CHAT)).rejects.toThrow(
+				new RegExp(`${field} cannot be set`)
+			)
+			expect(calls).toEqual([])
+		})
+	}
+
+	it('addLabel.predefinedId rejects rather than being ignored', async () => {
+		const { calls, methods } = makeHarness()
+
+		await expect(
+			methods.chatModify({ addLabel: { id: 'lbl-1', name: 'Leads', predefinedId: 3 } }, CHAT)
+		).rejects.toThrow(/predefinedId cannot be set/)
+		expect(calls).toEqual([])
+	})
+
+	it('a delete still works with predefinedId present, since the delete carries no payload', async () => {
+		const { calls, methods } = makeHarness()
+
+		await methods.chatModify({ addLabel: { id: 'lbl-1', predefinedId: 3, deleted: true } }, CHAT)
+
+		expect(calls).toEqual([['deleteLabel', ['lbl-1']]])
+	})
+})
+
 describe('chatModify: anything with no path rejects', () => {
 	it('names the variant it could not run', async () => {
 		const { calls, methods } = makeHarness()

@@ -5,6 +5,21 @@ import type { ChatModification, WAPatchName } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { SocketContext } from './types.ts'
 
+/**
+ * Refuse a field the mutation carries but the wire call cannot. Dropping it
+ * would report success for a change that never happened, which is the failure
+ * this whole path exists to stop.
+ */
+const rejectUnsupportedFields = (where: string, value: object, fields: readonly string[]) => {
+	const present = fields.filter(field => (value as Record<string, unknown>)[field] != null)
+	if (present.length) {
+		throw new Boom(`${where}: ${present.join(', ')} cannot be set through this client`, {
+			statusCode: 400,
+			data: { fields: present }
+		})
+	}
+}
+
 export const makeChatActionMethods = (ctx: SocketContext) => {
 	const methods = {
 		pinChat: async (jid: string, pin: boolean) => {
@@ -55,6 +70,7 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 				// Save/rename a contact (syncs the name to linked devices). `jid` is the
 				// contact's bare PN jid.
 				if (mod.contact) {
+					rejectUnsupportedFields('chatModify contact', mod.contact, ['lidJid', 'pnJid', 'username'])
 					await client.saveContact(
 						jid,
 						mod.contact.fullName ?? undefined,
@@ -83,6 +99,7 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 				if (mod.addLabel.deleted) {
 					await client.deleteLabel(mod.addLabel.id)
 				} else {
+					rejectUnsupportedFields('chatModify addLabel', mod.addLabel, ['predefinedId'])
 					await client.createLabel(mod.addLabel.id, mod.addLabel.name ?? '', mod.addLabel.color ?? 0)
 				}
 			} else if ('addChatLabel' in mod) {
