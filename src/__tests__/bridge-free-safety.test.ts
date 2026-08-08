@@ -2,12 +2,17 @@
  * Pins the bridge invariant that `sock.end()` depends on.
  *
  * Calling `WasmWhatsAppClient.free()` while any bridge call is still in flight
- * corrupts the wasm heap: dlmalloc trips
- * `assertion failed: psize <= size + max_overhead` and the process dies on
- * `RuntimeError: unreachable`, thrown from a microtask no `try/catch` around
- * `free()` can reach — `free()` itself returns normally. It is not specific to
- * one method; `logout()`, `disconnect()` and a plain `fetchBlocklist()` all
- * reproduce it.
+ * corrupts the wasm heap, and the process dies from inside wasm, in a microtask
+ * no `try/catch` around `free()` can reach. `free()` itself returns normally.
+ * It is not specific to one method; `logout()`, `disconnect()` and a plain
+ * `fetchBlocklist()` all reproduce it.
+ *
+ * Which memory check trips first is a property of the build, not of the hazard:
+ * bridge 0.6.5 hit dlmalloc's own consistency assertion, 0.7.0 faults on an
+ * out-of-bounds access before dlmalloc gets to look. So the assertion below
+ * accepts any signature a build has actually produced, and pins instead what
+ * does not vary: the fault comes from inside wasm, and the process does not
+ * survive it.
  *
  * `await client.disconnect()` first drains those calls in order and makes the
  * `free()` safe. That is why `end()` awaits it before freeing
@@ -21,6 +26,7 @@
  * process because heap corruption takes the whole process with it.
  */
 
+import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -102,6 +108,15 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 	})
 
 	it('free() with a pending call corrupts the heap and kills the process', async () => {
+		// Every way the corruption has been observed to announce itself, each
+		// tied to the build that produced it. Kept as a list rather than widened
+		// to "the child died": a rejection, a JS TypeError or an OOM would all
+		// mean the hazard moved. Add a signature only once a build emits it.
+		const WASM_MEMORY_FAULTS = [
+			'psize <= size + max_overhead', // dlmalloc's own check (bridge 0.6.5)
+			'memory access out of bounds' // the fault that beats it (bridge 0.7.0)
+		]
+
 		// Documents the hazard rather than endorsing it. If a future bridge
 		// makes `free()` safe on its own, this test starts failing — which is
 		// the signal to drop the `disconnect()` from `end()`, not to relax the
@@ -121,7 +136,13 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		expect(outcome.code === 0).toBe(false)
 		// …and died the documented way. Any other crash means the hazard moved
 		// and this suite is no longer describing it.
-		expect(outcome.stderr).toContain('psize <= size + max_overhead')
+		assert.ok(
+			WASM_MEMORY_FAULTS.some(fault => outcome.stderr.includes(fault)),
+			`no known wasm memory fault in stderr:\n${outcome.stderr}`
+		)
+		// The fault has to come from wasm. A crash raised in JS would satisfy
+		// the strings above by accident and describe something else entirely.
+		expect(outcome.stderr).toContain('wasm://wasm/')
 	})
 
 	it('await disconnect() before free() survives the same pending call', async () => {
