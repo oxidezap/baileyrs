@@ -965,7 +965,7 @@ const dispatchCanonicalEvent = (canonical: CanonicalEvent, dispatchCtx: Dispatch
 		dispatcher(canonical, dispatchCtx)
 	} catch (err) {
 		// One bad event must not poison the rest of the pipeline.
-		dispatchCtx.ctx.logger.error({ err, type: canonical.type }, 'dispatcher threw — dropping event')
+		dispatchCtx.ctx.reportUnexpectedError(err, `dispatching a '${canonical.type}' event`)
 	}
 }
 
@@ -1011,7 +1011,7 @@ const dispatchCanonicalBatch = (
 				pending = { ...metadata, messages: [message] }
 			}
 		} catch (err) {
-			ctx.logger.error({ err, type: CANONICAL_MESSAGE_EVENT }, 'dispatcher threw — dropping event')
+			ctx.reportUnexpectedError(err, `dispatching a '${CANONICAL_MESSAGE_EVENT}' event`)
 		}
 	}
 
@@ -1045,7 +1045,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		try {
 			view = decodeMessageWireBatch(batch)
 		} catch (err) {
-			ctx.logger.error({ err }, 'failed to decode the message wire batch')
+			ctx.reportUnexpectedError(err, 'decoding the message wire batch')
 			return
 		}
 		const { messageData, messageOffsets, infos } = view
@@ -1087,7 +1087,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		try {
 			receipts = decodeReceiptWireBatch(batch)
 		} catch (err) {
-			ctx.logger.error({ err }, 'failed to decode receipt wire batch')
+			ctx.reportUnexpectedError(err, 'decoding the receipt wire batch')
 			return
 		}
 		// The decoded payload matches the single-event wire shape; the union's
@@ -1100,7 +1100,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		try {
 			acks = decodeServerAckWireBatch(batch)
 		} catch (err) {
-			ctx.logger.error({ err }, 'failed to decode server-ack wire batch')
+			ctx.reportUnexpectedError(err, 'decoding the server-ack wire batch')
 			return
 		}
 		for (const data of acks) onEvent({ type: 'server_ack', data } as unknown as WhatsAppEvent)

@@ -3,11 +3,16 @@ import { Boom } from '../Utils/boom.ts'
 import type { SocketContext } from './types.ts'
 
 /**
- * Upstream has no timeout on `waitForSocketOpen`; the bridge requires one. This
- * is the socket's own connect timeout, so the wait cannot outlive the attempt
- * it is waiting on.
+ * Upstream has no timeout on `waitForSocketOpen`; the bridge requires one, so
+ * one has to be chosen.
+ *
+ * It is the core's own transport connect ceiling, not `connectTimeoutMs`. That
+ * config reaches neither the transport nor the core, so a value below the
+ * ceiling would reject a wait while the attempt behind it was still running and
+ * about to succeed. A value above it would sit past the point the attempt was
+ * already abandoned.
  */
-const waitTimeoutMs = (ctx: SocketContext): number => ctx.fullConfig?.connectTimeoutMs ?? 20_000
+const TRANSPORT_CONNECT_TIMEOUT_MS = 20_000
 
 export const makeInternalMethods = (ctx: SocketContext) => {
 	/** Warned once per socket rather than per call, as with the other no-ops. */
@@ -18,27 +23,36 @@ export const makeInternalMethods = (ctx: SocketContext) => {
 		 * `waitForSocket`, not `waitForConnected`: upstream waits for the socket
 		 * to open, which is not the same as being logged in, and the bridge
 		 * separates the two.
+		 *
+		 * A rejection means the socket did not open within one connect attempt,
+		 * not that it never will: the engine reconnects on its own, and a caller
+		 * that wants the next attempt waits again.
 		 */
 		waitForSocketOpen: async (): Promise<void> => {
-			await (await ctx.getClient()).waitForSocket(waitTimeoutMs(ctx))
+			await (await ctx.getClient()).waitForSocket(TRANSPORT_CONNECT_TIMEOUT_MS)
 		},
 
 		/**
 		 * Publishes a message onto the event bus, which is this layer's own job.
+		 * Buffered as upstream buffers it, so a replay of many messages
+		 * consolidates into the batches a listener expects rather than one
+		 * event per call.
+		 *
 		 * The push-name half of upstream's version is not reproduced: contact
 		 * state belongs to the core, and writing it from here would make two
 		 * writers for one value.
 		 */
-		upsertMessage: async (msg: WAMessage, type: MessageUpsertType): Promise<void> => {
+		upsertMessage: ctx.ev.createBufferedFunction(async (msg: WAMessage, type: MessageUpsertType): Promise<void> => {
 			ctx.ev.emit('messages.upsert', { messages: [msg], type })
-		},
+		}),
 
 		/**
-		 * A consumer extension point rather than protocol state, so it lives
-		 * here. Overridable: assigning to it replaces this default.
+		 * The same reporter the socket's own failure paths use, rather than a
+		 * second one that only a consumer could reach: a dispatcher that threw
+		 * or a wire batch that would not decode arrives here.
 		 */
 		onUnexpectedError: (err: Error, msg: string): void => {
-			ctx.logger.error({ err }, `unexpected error in '${msg}'`)
+			ctx.reportUnexpectedError(err, msg)
 		},
 
 		/**

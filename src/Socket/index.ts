@@ -287,6 +287,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		logger,
 		fullConfig,
 		ws,
+		reportUnexpectedError: (err, msg) => {
+			logger.error({ err }, `unexpected error in '${msg}'`)
+		},
 		getUser: () => user,
 		getMe: () => {
 			const me = auth.creds.me

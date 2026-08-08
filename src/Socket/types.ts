@@ -18,6 +18,12 @@ export interface SocketContext {
 	getClientSync: () => WasmWhatsAppClient
 	/** Raw stanza EventEmitter for CB: pattern compat */
 	ws: EventEmitter
+	/**
+	 * Where a failure goes when it has nowhere else to go: a dispatcher that
+	 * threw, a wire batch that would not decode. Also what the socket exposes
+	 * as `onUnexpectedError`, so the two are one reporter rather than two.
+	 */
+	reportUnexpectedError: (err: unknown, msg: string) => void
 }
 
 /** Convert a bridge Jid struct to a string */

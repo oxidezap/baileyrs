@@ -53,6 +53,7 @@ const makeCtx = () => {
 		getUser: () => undefined,
 		getMe: () => undefined,
 		setUser: () => {},
+		reportUnexpectedError: () => {},
 		getClient: () => Promise.reject(new Error('not used')),
 		getClientSync: () => {
 			throw new Error('not used')
