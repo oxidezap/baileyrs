@@ -114,13 +114,27 @@ describe('fetchNewChatMessageCap renames to upstream fields and keeps absences a
 		})
 	})
 
-	it('an omitted quota stays omitted, because zero here means the quota is spent', async () => {
+	it('an omitted quota stays omitted', async () => {
 		const { methods } = makeHarness({ fetchNewChatMessageCappingInfo: async () => ({ cappingStatus: 'NONE' }) })
 
 		const info = await methods.fetchNewChatMessageCap()
 
 		expect(info).toEqual({ capping_status: 'NONE' })
 		expect('total_quota' in info).toBe(false)
+	})
+
+	// Omission and zero mean different things, and only the presence check
+	// tells them apart: zero is a quota that exists and is spent.
+	it('a zero quota is carried, because zero means the quota is spent', async () => {
+		const { methods } = makeHarness({
+			fetchNewChatMessageCappingInfo: async () => ({ totalQuota: 0, usedQuota: 0, cappingStatus: 'NONE' })
+		})
+
+		const info = await methods.fetchNewChatMessageCap()
+
+		expect('total_quota' in info).toBe(true)
+		expect(info.total_quota).toBe(0)
+		expect(info.used_quota).toBe(0)
 	})
 })
 
@@ -139,6 +153,15 @@ describe('cleanDirtyBits passes the type through and normalises the timestamp', 
 		await methods.cleanDirtyBits('groups', '1700000000')
 
 		expect(calls).toEqual([['cleanDirtyBits', ['groups', 1700000000]]])
+	})
+
+	// `Number('   ')` is the epoch, so a caller meaning "no timestamp" would
+	// otherwise ask the server to clean from the beginning of time.
+	it('rejects a blank string, which Number() would turn into the epoch', async () => {
+		const { calls, methods } = makeHarness()
+
+		await expect(methods.cleanDirtyBits('groups', '   ')).rejects.toThrow(/is not a number/)
+		expect(calls).toEqual([])
 	})
 
 	it('rejects a string that is not a number instead of sending NaN', async () => {

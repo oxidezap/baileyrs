@@ -75,7 +75,9 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 			if (forceGet || !fetched || fetched.auth !== conn.auth) {
 				fetched = { auth: conn.auth, at: new Date() }
 			}
-			return { auth: conn.auth, ttl: conn.ttl, hosts: conn.hosts, fetchDate: fetched.at }
+			// A copy: the stored instant decides when the next call restamps, and a
+			// consumer holding the same Date could move it.
+			return { auth: conn.auth, ttl: conn.ttl, hosts: conn.hosts, fetchDate: new Date(fetched.at) }
 		},
 
 		/** Synchronous, as upstream has it, so it reads what the last refresh saw. */
@@ -92,8 +94,12 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 		cleanDirtyBits: async (type: 'account_sync' | 'groups', fromTimestamp?: number | string): Promise<void> => {
 			let timestamp: number | null = null
 			if (fromTimestamp !== undefined) {
+				// A blank string is not a timestamp, and `Number('')` is the epoch,
+				// so without this a caller meaning "no timestamp" would ask the
+				// server to clean from the beginning of time.
+				const blank = typeof fromTimestamp === 'string' && fromTimestamp.trim() === ''
 				timestamp = typeof fromTimestamp === 'string' ? Number(fromTimestamp) : fromTimestamp
-				if (!Number.isFinite(timestamp)) {
+				if (blank || !Number.isFinite(timestamp)) {
 					throw new Boom(`cleanDirtyBits: fromTimestamp '${fromTimestamp}' is not a number`, { statusCode: 400 })
 				}
 			}
