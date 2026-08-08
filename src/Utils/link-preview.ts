@@ -14,7 +14,7 @@ const SCHEMED_URL = /https?:\/\/[^\s<>]+/i
  * A bare host has to earn it: something before it, and an alphabetic last
  * label, which is what separates `example.com` from `version 1.22`.
  */
-const BARE_HOST = /(^|[\s([{'"<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>]*)?)(?=[\s.,!?)\]}>]|$)/i
+const BARE_HOST = /(^|[\s([{'"<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s<>]*)?)(?=[\s.,!?)\]}>]|$)/i
 
 /**
  * The first link in a piece of text, or undefined when there is none. Exported
@@ -142,9 +142,13 @@ const isPrivateIPv6 = (groups: number[]): boolean => {
 	const mapped = mappedIPv4(groups)
 	if (mapped) return isPrivateIPv4(mapped)
 	// All of `::/96`, which covers the unspecified address, loopback and the
-	// deprecated v4-compatible forms, then fc00::/7 and fe80::/10.
+	// deprecated v4-compatible forms.
 	if (groups.slice(0, 6).every(group => group === 0)) return true
-	return (groups[0]! & 0xfe00) === 0xfc00 || (groups[0]! & 0xffc0) === 0xfe80
+	const first = groups[0]!
+	// fc00::/7 unique-local, fe80::/10 link-local, fec0::/10 site-local and
+	// ff00::/8 multicast, which the v4 side already refuses as 224/4.
+	if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80) return true
+	return (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00
 }
 
 /**

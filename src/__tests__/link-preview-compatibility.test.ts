@@ -116,6 +116,11 @@ describe('the thumbnail fetch refuses destinations a preview must not reach', ()
 		['link-local, where the cloud metadata address lives', 'http://169.254.169.254/latest/meta-data/'],
 		['IPv6 loopback', 'http://[::1]/x.jpg'],
 		['an IPv6 unique-local address', 'http://[fd00::1]/x.jpg'],
+		['an IPv6 link-local address', 'http://[fe80::1]/x.jpg'],
+		['an IPv6 site-local address', 'http://[fec0::1]/x.jpg'],
+		// Refused on the v6 side as well as the v4 one, where it falls under
+		// the 224/4 check.
+		['IPv6 multicast', 'http://[ff02::1]/x.jpg'],
 		['v4-mapped loopback written in dotted form', 'http://[::ffff:127.0.0.1]/x.jpg'],
 		// The same address as the line above, written the other way. Judging
 		// only the dotted form would leave this one a way through.
@@ -190,7 +195,14 @@ describe('the link is taken out of the text it was written in', () => {
 		// Kept as written rather than prefixed again: `https://HTTPS://...`
 		// parses as nothing.
 		['an uppercase scheme', 'HTTPS://example.com/a', 'HTTPS://example.com/a'],
-		['a bare host in angle brackets', '<example.com>', 'https://example.com']
+		['a bare host in angle brackets', '<example.com>', 'https://example.com'],
+		// A query or fragment can follow the host with no path between them.
+		// Keeping only the host would preview a different page than the one
+		// written, which is worse than finding no link at all.
+		['a bare host with a query', 'example.com?article=42', 'https://example.com?article=42'],
+		['a bare host with a fragment', 'example.com#details', 'https://example.com#details'],
+		// Still a question mark ending a sentence, not part of the link.
+		['a bare host ending a question', 'have you seen example.com?', 'https://example.com']
 	] as const) {
 		it(`${label} becomes ${expected}`, () => {
 			expect(firstLink(text)).toBe(expected)
