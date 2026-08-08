@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
-import { stripContextInfoForBridge } from '../Socket/messages.ts'
 import type { WAMessageContent } from '../Types/index.ts'
 import { generateWAMessageContent } from '../Utils/messages.ts'
 import { expect } from './expect.ts'
@@ -16,15 +15,12 @@ import { expect } from './expect.ts'
  *   - 0       → unpin
  *
  * The Rust bridge fills its own `messageSecret` / `reportingTokenVersion`
- * inside `messageContextInfo`, so the JS side strips the field before sending
- * — but for pins we have to keep `messageAddOnDurationInSecs` or the server
- * silently ignores the pin. The bridge merges fields it does not own
- * (verified in `wacore/src/reporting_token.rs::prepare_message_with_context`),
- * so passing the field through is safe.
+ * inside `messageContextInfo` by merging them over what it receives, so the JS
+ * side hands the field over untouched and the duration reaches the server.
  *
- * The `stripContextInfoForBridge` block exercises the actual send path: it
- * runs the helper and then encodes/decodes via the bridge so a regression
- * in either the strip logic OR the proto encoder fails the test.
+ * The codec block below encodes/decodes via the bridge so a regression in the
+ * proto encoder fails the test; the send path itself is covered in
+ * `relay-message-context-info.test.ts`.
  */
 
 const stubKey = {
@@ -41,8 +37,6 @@ interface DecodedMessage {
 		senderTimestampMs?: number
 	}
 	messageContextInfo?: { messageAddOnDurationInSecs?: number }
-	conversation?: string
-	extendedTextMessage?: { text?: string }
 }
 
 type PinTime = 86400 | 604800 | 2592000
@@ -51,7 +45,6 @@ function buildPin(extra: { type: proto.PinInChat.Type; time?: PinTime }): Promis
 }
 
 function bridgeRoundtrip(msg: WAMessageContent): DecodedMessage {
-	stripContextInfoForBridge(msg)
 	const bytes = encodeProto('Message', msg as unknown as Record<string, unknown>)
 	return decodeProto('Message', bytes) as DecodedMessage
 }
@@ -99,7 +92,7 @@ describe('generateWAMessageContent — pin message', () => {
 	})
 })
 
-describe('stripContextInfoForBridge — actual send-path behaviour', () => {
+describe('pin duration survives the proto codec', () => {
 	it('preserves pin duration through encodeProto roundtrip (PIN_FOR_ALL, 7d)', async () => {
 		const m = await buildPin({ type: proto.PinInChat.Type.PIN_FOR_ALL, time: 604800 })
 		const decoded = bridgeRoundtrip(m)
@@ -119,45 +112,5 @@ describe('stripContextInfoForBridge — actual send-path behaviour', () => {
 		const m = await buildPin({ type: proto.PinInChat.Type.UNPIN_FOR_ALL })
 		const decoded = bridgeRoundtrip(m)
 		expect(decoded.messageContextInfo?.messageAddOnDurationInSecs).toBe(0)
-	})
-
-	it('strips messageContextInfo entirely from non-pin messages (field absent on the wire)', async () => {
-		const m = await generateWAMessageContent({ text: 'hello' }, noopOptions)
-		// Plant a stale field to prove it gets stripped.
-		;(m as { messageContextInfo?: unknown }).messageContextInfo = {
-			messageSecret: new Uint8Array(32),
-			messageAddOnDurationInSecs: 999
-		}
-		stripContextInfoForBridge(m)
-		// The own field is gone, so the encoder will not emit it. A generated
-		// protobuf class still exposes upstream's inherited `null` default.
-		expect(Object.hasOwn(m, 'messageContextInfo')).toBe(false)
-		expect((m as { messageContextInfo?: unknown }).messageContextInfo).toBe(null)
-
-		// Sanity: the rest of the message still encodes/decodes.
-		const decoded = decodeProto(
-			'Message',
-			encodeProto('Message', m as unknown as Record<string, unknown>)
-		) as DecodedMessage
-		expect(decoded.extendedTextMessage?.text).toBe('hello')
-	})
-
-	it('strips bridge-owned fields on pins, keeping ONLY messageAddOnDurationInSecs', async () => {
-		const m = await buildPin({ type: proto.PinInChat.Type.PIN_FOR_ALL, time: 604800 })
-		// Plant fields the bridge owns; they must not survive the strip.
-		;(m as { messageContextInfo?: Record<string, unknown> }).messageContextInfo = {
-			messageAddOnDurationInSecs: 604800,
-			messageSecret: new Uint8Array(32).fill(0xab),
-			reportingTokenVersion: 7
-		}
-		stripContextInfoForBridge(m)
-		// Inspect the live JS object: the strip must have replaced the contextInfo
-		// with a fresh one that contains only the duration. The proto3 wire format
-		// can't tell "absent bytes" from "empty bytes" on decode, so we assert
-		// against the in-memory object that the encoder will see.
-		const ctx = m.messageContextInfo as Record<string, unknown> | undefined
-		expect(ctx).toBeDefined()
-		expect(Object.keys(ctx as object).toSorted()).toEqual(['messageAddOnDurationInSecs'])
-		expect(ctx?.messageAddOnDurationInSecs).toBe(604800)
 	})
 })

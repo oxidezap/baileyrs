@@ -1,6 +1,5 @@
 import { describe, it } from 'node:test'
 import { PROTO_MESSAGE_SCHEMAS } from '../WAProto/compatibility-schema.ts'
-import { stripContextInfoForBridge } from '../Socket/messages.ts'
 import type { WAMessage, WAMessageContent } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
 import { proto } from '../WAProto/runtime.ts'
@@ -158,30 +157,5 @@ describe('generateWAMessageFromContent — content key branches', () => {
 			ephemeralExpiration: 86400
 		})
 		expect(wm.message?.extendedTextMessage?.contextInfo).toBeFalsy()
-	})
-})
-
-describe('stripContextInfoForBridge — caller-supplied content type', () => {
-	const pinContent = () =>
-		WAProto.Message.create({
-			pinInChatMessage: { type: proto.PinInChat.Type.PIN_FOR_ALL, senderTimestampMs: 1700000000000 },
-			messageContextInfo: { messageAddOnDurationInSecs: 604800, messageSecret: new Uint8Array(32) }
-		}) as WAMessageContent
-
-	it('matches the type it would have resolved on its own', () => {
-		const resolved = pinContent()
-		const passed = pinContent()
-		stripContextInfoForBridge(resolved)
-		stripContextInfoForBridge(passed, getContentType(passed))
-		expect(passed.messageContextInfo?.messageAddOnDurationInSecs).toBe(
-			resolved.messageContextInfo?.messageAddOnDurationInSecs
-		)
-		expect(passed.messageContextInfo?.messageAddOnDurationInSecs).toBe(604800)
-	})
-
-	it('honours a caller that says the message is not a pin', () => {
-		const msg = pinContent()
-		stripContextInfoForBridge(msg, 'conversation')
-		expect(Object.hasOwn(msg, 'messageContextInfo')).toBe(false)
 	})
 })

@@ -57,6 +57,7 @@
     "compat:audit:json": "npm run build --silent && node scripts/compatibility/audit.ts --format=json",
     "compat:audit:missing": "npm run build --silent && node scripts/compatibility/audit.ts --only-missing",
     "compat:audit:proto": "node scripts/compatibility/proto-runtime-audit.ts --details --strict",
+    "compat:audit:wire": "node scripts/compatibility/wire-fidelity-audit.ts --details --strict",
     "compat:audit:strict": "npm run build --silent && node scripts/compatibility/audit.ts --strict --only-missing",
     "compat:sync-waproto": "node scripts/compatibility/waproto-facade.ts --sync",
     "compat:check-waproto": "node scripts/compatibility/waproto-facade.ts --check",
