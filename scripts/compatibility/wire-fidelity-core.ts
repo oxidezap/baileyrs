@@ -23,7 +23,7 @@ import {
  * other side.
  */
 
-export type FidelityStatus = 'preserved' | 'dropped' | 'altered' | 'divergent' | 'skipped'
+export type FidelityStatus = 'preserved' | 'dropped' | 'altered' | 'divergent' | 'errored' | 'skipped'
 
 export interface FidelityCase {
 	label: string
@@ -147,8 +147,11 @@ export const buildFieldCases = (): FidelityCase[] => {
 }
 
 // xorshift32: a seeded generator keeps a failing fuzz case reproducible from its seed alone.
+// Zero is rejected rather than remapped: it is a fixed point of the shift, and a
+// silently substituted seed would not reproduce the run it is printed with.
 const randomSource = (seed: number) => {
-	let state = seed || 1
+	if (!Number.isInteger(seed) || seed === 0) throw new Error('fuzz seed must be a non-zero integer')
+	let state = seed
 	return () => {
 		state ^= state << 13
 		state ^= state >>> 17
@@ -267,11 +270,13 @@ export const auditWireFidelity = async (
 			sentBytes = await send(testCase.message)
 			sent = decodeProto('Message', sentBytes)
 		} catch (error) {
+			// A send path that throws produces no auditable bytes at all, which is a
+			// harder failure than a dropped field, not a reason to skip the case.
 			for (const path of testCase.paths) {
 				findings.push({
 					label: testCase.label,
 					path,
-					status: 'skipped',
+					status: 'errored',
 					detail: error instanceof Error ? error.message : String(error)
 				})
 			}
@@ -301,13 +306,13 @@ export const auditWireFidelity = async (
 		}
 	}
 
-	const summary = { cases: cases.length, preserved: 0, dropped: 0, altered: 0, divergent: 0, skipped: 0 }
+	const summary = { cases: cases.length, preserved: 0, dropped: 0, altered: 0, divergent: 0, errored: 0, skipped: 0 }
 	for (const finding of findings) summary[finding.status]++
 	return { findings, summary }
 }
 
 export const fidelityAuditFailed = (report: FidelityReport): boolean =>
-	report.summary.dropped > 0 || report.summary.altered > 0
+	report.summary.dropped > 0 || report.summary.altered > 0 || report.summary.errored > 0
 
 /** Fields both codecs accept but place at different numbers; a codec gap, not a send-path one. */
 export const divergentPaths = (report: FidelityReport): string[] => [
@@ -318,7 +323,7 @@ export const renderFidelityReport = (report: FidelityReport, details = false): s
 	const lines = [
 		'send-path wire fidelity',
 		`cases: ${report.summary.cases}`,
-		`preserved: ${report.summary.preserved}  dropped: ${report.summary.dropped}  altered: ${report.summary.altered}  divergent: ${report.summary.divergent}  skipped: ${report.summary.skipped}`
+		`preserved: ${report.summary.preserved}  dropped: ${report.summary.dropped}  altered: ${report.summary.altered}  divergent: ${report.summary.divergent}  errored: ${report.summary.errored}  skipped: ${report.summary.skipped}`
 	]
 	for (const finding of report.findings) {
 		if (finding.status === 'preserved') continue

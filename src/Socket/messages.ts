@@ -184,9 +184,9 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			'relayMessage compatibility plan'
 		)
 
-		// The message goes to the bridge as the caller built it: the core merges
-		// its own messageSecret / reportingTokenVersion over whatever arrives, so
-		// nothing in messageContextInfo has to be dropped on this side.
+		// The message goes to the bridge as the caller built it: the core settles
+		// messageSecret / reportingTokenVersion itself, reusing a caller-set secret
+		// rather than replacing it, so nothing here has to be dropped.
 		const bytes = encodeProto('Message', message)
 		if (plan.kind === 'retransmission') {
 			await client.retransmitMessageBytes(jid, bytes, plan.input)

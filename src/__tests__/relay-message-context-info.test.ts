@@ -12,9 +12,10 @@ import { expect } from './expect.ts'
  * `messageContextInfo` is where a caller puts everything the protocol keeps
  * beside the content: the album association that binds each image to its album
  * parent, device list metadata, bot metadata, padding, add-on expiry, and the
- * poll secret. The send path must hand all of it to the bridge, which owns
- * `messageSecret` / `reportingTokenVersion` and merges its own values over
- * whatever arrives, so nothing has to be removed on this side.
+ * poll secret. These tests pin the JS side of that: what the send path hands
+ * to the bridge client must be what the caller built. The core decides on its
+ * own `messageSecret` / `reportingTokenVersion` from there, which is why
+ * nothing has to be removed here.
  */
 
 const logger = {
@@ -105,7 +106,7 @@ const albumChild = (): WAProto.IMessage =>
 const withContextInfo = (messageContextInfo: Record<string, unknown>): WAProto.IMessage =>
 	({ conversation: 'album member', messageContextInfo }) as unknown as WAProto.IMessage
 
-describe('relayMessage: messageContextInfo reaches the bridge', () => {
+describe('relayMessage: messageContextInfo in the bytes handed to the bridge', () => {
 	it('keeps the album association that binds an image to its album parent', async () => {
 		const decoded = await relayDecoded(albumChild())
 		const association = decoded.messageContextInfo?.messageAssociation
@@ -157,8 +158,8 @@ describe('relayMessage: messageContextInfo reaches the bridge', () => {
 		expect(decoded.pinInChatMessage?.key?.id).toBe('PIN0000000000000000')
 	})
 
-	// The core reuses a caller-set secret rather than minting a fresh one
-	// (polls need the secret they will later decrypt votes with).
+	// The core reuses a caller-set secret rather than minting a fresh one, so
+	// deleting it here would cost a raw poll the secret it decrypts votes with.
 	it('keeps a caller-set messageSecret', async () => {
 		const secret = new Uint8Array(32).fill(0xab)
 		const decoded = await relayDecoded(withContextInfo({ messageSecret: secret }))
@@ -199,7 +200,7 @@ describe('relayMessage: album parent', () => {
 	})
 })
 
-describe('sendMessage: messageContextInfo reaches the bridge', () => {
+describe('sendMessage: messageContextInfo in the bytes handed to the bridge', () => {
 	it('keeps the pin duration generated for a pin', async () => {
 		const { ctx, sent } = makeCapturingContext()
 		await makeMessageMethods(ctx).sendMessage(groupJid, {

@@ -20,10 +20,10 @@ Usage:
   node scripts/compatibility/wire-fidelity-audit.ts [options]
 
 Options:
-  --seed <number>    Fuzz seed (default: 20260808)
+  --seed <number>    Fuzz seed, non-zero (default: 20260808)
   --fuzz <number>    Fuzz cases on top of the schema sweep (default: 200)
   --details          List skipped cases too
-  --strict           Exit 1 when a field is dropped or altered
+  --strict           Exit 1 when a field is dropped, altered, or the send path throws
   --help             Show this help
 `
 
@@ -65,9 +65,8 @@ export const runCli = async (argv: string[]): Promise<number> => {
 		}
 	}
 
-	if (!Number.isInteger(seed) || !Number.isInteger(fuzz) || fuzz < 0) {
-		throw new Error('--seed and --fuzz must be integers, and --fuzz must not be negative')
-	}
+	if (!Number.isInteger(seed) || seed === 0) throw new Error('--seed must be a non-zero integer')
+	if (!Number.isInteger(fuzz) || fuzz < 0) throw new Error('--fuzz must be a non-negative integer')
 
 	const report = await auditWireFidelity([...buildFieldCases(), ...buildFuzzCases(seed, fuzz)])
 	process.stdout.write(`${renderFidelityReport(report, details)}\nfuzz seed: ${seed}\n`)

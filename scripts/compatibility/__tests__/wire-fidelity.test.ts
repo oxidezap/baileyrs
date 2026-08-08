@@ -58,12 +58,28 @@ describe('send-path wire fidelity auditor', () => {
 		)
 		assert.ok(dropped.has('messageContextInfo.messageAssociation'))
 		assert.ok(dropped.has('messageContextInfo.messageAddOnDurationInSecs'))
-		assert.equal(dropped.size, contextInfoFields.length + 1, 'every context field plus the container must be reported')
+		// The container case from the Message sweep plus one case per nested field.
+		const expected = ['messageContextInfo', ...contextInfoFields.map(field => `messageContextInfo.${field}`)]
+		assert.deepEqual([...dropped].toSorted(), expected.toSorted())
+	})
+
+	it('fails when the send path throws instead of reporting the case as skipped', async () => {
+		const report = await auditWireFidelity(buildFieldCases().slice(0, 3), async () => {
+			throw new Error('relay API regression')
+		})
+		assert.ok(fidelityAuditFailed(report))
+		assert.equal(report.summary.errored, 3)
+		assert.equal(report.summary.skipped, 0)
 	})
 
 	it('separates the known codec divergence from send-path findings', async () => {
 		const report = await auditWireFidelity(buildFieldCases())
 		assert.deepEqual(divergentPaths(report).toSorted(), KNOWN_DIVERGENT.toSorted())
+	})
+
+	it('rejects a zero seed rather than running a different one', async () => {
+		await assert.rejects(() => runCli(['--seed=0']), /non-zero integer/u)
+		assert.throws(() => buildFuzzCases(0, 1), /non-zero integer/u)
 	})
 
 	it('runs clean under --strict and prints the seed', async () => {
