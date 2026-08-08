@@ -75,6 +75,18 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 	},
 
 	/**
+	 * The names this package used before it grew upstream's. Kept so existing
+	 * callers do not break on a rename that buys them nothing.
+	 */
+	newsletterSubscribe: async (jid: string): Promise<NewsletterMetadata> => {
+		return bridgeNewsletterMetadataToBaileys(await (await ctx.getClient()).newsletterSubscribe(jid))
+	},
+
+	newsletterUnsubscribe: async (jid: string): Promise<void> => {
+		await (await ctx.getClient()).newsletterUnsubscribe(jid)
+	},
+
+	/**
 	 * The follower-activity mute, which is the one a subscriber toggles. The
 	 * core's other newsletter mute is for admin activity and is a different
 	 * control, so the ambiguous alias is avoided here.

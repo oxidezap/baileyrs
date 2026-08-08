@@ -126,6 +126,16 @@ const DELEGATIONS: Array<{
 		call: ['newsletterCreate', ['Name', null]]
 	},
 	{ label: 'newsletterFollow', run: m => m.newsletterFollow(JID), call: ['newsletterSubscribe', [JID]] },
+	{
+		label: 'newsletterSubscribe (kept from before this package grew upstream names)',
+		run: m => m.newsletterSubscribe(JID),
+		call: ['newsletterSubscribe', [JID]]
+	},
+	{
+		label: 'newsletterUnsubscribe (same)',
+		run: m => m.newsletterUnsubscribe(JID),
+		call: ['newsletterUnsubscribe', [JID]]
+	},
 	{ label: 'newsletterUnfollow', run: m => m.newsletterUnfollow(JID), call: ['newsletterUnsubscribe', [JID]] },
 	{ label: 'newsletterDelete', run: m => m.newsletterDelete(JID), call: ['newsletterDelete', [JID]] },
 	{
