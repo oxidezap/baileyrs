@@ -32,6 +32,23 @@ describe('getUrlInfo separates having no preview from failing to get one', () =>
 		expect(info).toBe(undefined)
 	})
 
+	/**
+	 * Ordinary prose contains dots. Treating any of them as a host would send
+	 * the text to the parser, which rejects it, and since a parser failure now
+	 * surfaces rather than being swallowed, benign input would come back as an
+	 * error instead of as no preview.
+	 */
+	for (const [label, text] of [
+		['a version number', 'upgraded to version 1.22 today'],
+		['a sentence ending in a full stop', 'that is all i had to say.'],
+		['an ellipsis', 'well... maybe not'],
+		['a decimal', 'it cost 3.50 in total']
+	] as const) {
+		it(`${label} is not mistaken for a link`, async () => {
+			expect(await getUrlInfo(text, OPTS)).toBe(undefined)
+		})
+	}
+
 	it('a link that is present but unusable is not treated as absent', async () => {
 		// Reaching the parser at all is the point: this is the branch where a
 		// failure has to surface rather than be read as "no preview".

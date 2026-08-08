@@ -10,10 +10,11 @@ import { extractImageThumb } from './messages-media.ts'
 const THUMBNAIL_WIDTH_PX = 192
 /**
  * Whether the text names something fetchable at all: an explicit scheme, or a
- * host with a dot in it. Deliberately loose, since the parser judges the URL
- * properly; this only separates "no link here" from "a link that failed".
+ * host whose last label is alphabetic, which is what separates `example.com`
+ * from `version 1.22`. Loose enough that the parser still judges the URL, tight
+ * enough that ordinary prose does not reach it and come back as an error.
  */
-const FIRST_URL = /(^|\s)(https?:\/\/\S+|[^\s.]+\.[^\s.]{2,}\S*)/i
+const FIRST_URL = /(^|\s)(https?:\/\/\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/\S*)?)(?=[\s.,!?]|$)/i
 /** Enough for any preview thumbnail, and small enough that a hostile one cannot exhaust memory. */
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
 
@@ -218,8 +219,6 @@ export const getUrlInfo = async (
 	if (!FIRST_URL.test(text)) return undefined
 
 	{
-		let retries = 0
-		const maxRetry = 5
 		const { getLinkPreview } = (await import('link-preview-js' as string)) as {
 			getLinkPreview: (url: string, options: Record<string, unknown>) => Promise<LinkPreviewResult>
 		}
@@ -230,24 +229,28 @@ export const getUrlInfo = async (
 			// `manual`, not `follow`: the redirect handler below only runs on
 			// manual, so following automatically would send every hop unchecked.
 			followRedirects: 'manual',
-			// Only within the same site, and only so many times: a preview must
-			// not become an open redirect follower.
+			// Same site only, so a preview cannot become an open redirect
+			// follower. One hop, because that is what the parser offers under
+			// manual redirects: it consults this once and fetches once more.
 			handleRedirects: (baseURL: string, forwardedURL: string) => {
 				const from = new URL(baseURL).hostname
 				const to = new URL(forwardedURL).hostname
-				if (retries >= maxRetry) return false
-				if (to === from || to === `www.${from}` || `www.${to}` === from) {
-					retries += 1
-					return true
-				}
-				return false
+				return to === from || to === `www.${from}` || `www.${to}` === from
 			},
 			// Resolves the host so the address, not the name, is judged. The
 			// parser rejects loopback on what this returns, and the private
 			// ranges are rejected here.
 			resolveDNSHost: async (target: string) => {
-				const address = await publicAddressOf(new URL(target))
-				return address
+				// Raced against the same bound as the request: the parser starts
+				// its own timer only once this returns, so a stalled resolver
+				// would otherwise sit outside every deadline.
+				const signal = AbortSignal.timeout(opts.fetchOpts.timeout)
+				return await Promise.race([
+					publicAddressOf(new URL(target)),
+					new Promise<never>((_resolve, reject) =>
+						signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+					)
+				])
 			},
 			headers: opts.fetchOpts?.headers as Record<string, string> | undefined
 		})
