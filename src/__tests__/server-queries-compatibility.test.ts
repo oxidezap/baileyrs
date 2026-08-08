@@ -200,6 +200,16 @@ describe('refreshMediaConn forwards the force flag and feeds getMediaHost', () =
 		expect(second.fetchDate.getTime()).toBe(first.fetchDate.getTime())
 	})
 
+	it('a forced call restamps even when the same credentials come back', async () => {
+		const { methods } = makeHarness({ getMediaConn: async () => conn })
+
+		const first = await methods.refreshMediaConn()
+		await delay(5)
+		const forced = await methods.refreshMediaConn(true)
+
+		expect(forced.fetchDate.getTime() > first.fetchDate.getTime()).toBe(true)
+	})
+
 	it('new credentials are stamped with the moment they arrived', async () => {
 		let auth = 'AUTH'
 		const { methods } = makeHarness({ getMediaConn: async () => ({ ...conn, auth }) })
