@@ -55,6 +55,7 @@ import { makeNewsletterMethods } from './newsletter.ts'
 import { makePreKeyMethods } from './prekeys.ts'
 import { makePresenceMethods } from './presence.ts'
 import { makePrivacyMethods } from './privacy.ts'
+import { makeServerQueryMethods } from './server-queries.ts'
 import { makeProfileMethods } from './profile.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { makeHttpClient, makeTransport } from './transport.ts'
@@ -953,6 +954,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
+		...makeServerQueryMethods(ctx),
 		downloadMedia: async <T extends 'buffer' | 'stream'>(
 			message: WAMessage,
 			type: T,
