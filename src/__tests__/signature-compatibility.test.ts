@@ -71,7 +71,7 @@ describe('downloadMediaMessage runs on upstream three arguments', () => {
 	it('a context carrying the client is used', async () => {
 		const { downloaded, waClient } = recordingClient()
 
-		const result = await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, { waClient } as never)
+		const result = await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, { waClient })
 
 		expect(downloaded.length).toBe(1)
 		expect(Buffer.from(result).length).toBe(3)
@@ -90,11 +90,35 @@ describe('downloadMediaMessage runs on upstream three arguments', () => {
 		}
 	})
 
+	/**
+	 * Upstream's context carries a re-upload request and a logger and no client
+	 * at all, so it has to be accepted as written rather than only as `{}`.
+	 */
+	it("upstream's own context shape compiles and falls back to the registration", async () => {
+		const { downloaded, waClient } = recordingClient()
+		_registerActiveBridgeClient(waClient)
+		try {
+			await downloadMediaMessage(
+				IMAGE_MESSAGE,
+				'buffer',
+				{},
+				{
+					reuploadRequest: async (msg: WAMessage) => msg,
+					logger: silentLogger
+				}
+			)
+
+			expect(downloaded.length).toBe(1)
+		} finally {
+			_unregisterActiveBridgeClient(waClient)
+		}
+	})
+
 	it('a context present but empty falls back too rather than being dereferenced', async () => {
 		const { downloaded, waClient } = recordingClient()
 		_registerActiveBridgeClient(waClient)
 		try {
-			await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, {} as never)
+			await downloadMediaMessage(IMAGE_MESSAGE, 'buffer', {}, {})
 
 			expect(downloaded.length).toBe(1)
 		} finally {

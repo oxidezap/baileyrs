@@ -811,12 +811,19 @@ export const extractMessageContent = (content: WAMessageContent | undefined | nu
 	return content
 }
 
+/**
+ * Every field is optional, so upstream's `{ reuploadRequest, logger }` and this
+ * package's `{ waClient }` are both accepted.
+ *
+ * `reuploadRequest` and `logger` are declared for that compatibility and are
+ * not read: the engine handles the re-upload request, the CDN failover and the
+ * logging itself, so a caller's versions would have nothing to do.
+ */
 export type DownloadMediaMessageContext = {
-	reuploadRequest: (msg: WAMessage) => Promise<WAMessage>
-	logger: ILogger
-	/** Bridge client for media download — handles CDN failover, auth refresh,
-	 *  HMAC-SHA256 verification, and AES-256-CBC decryption internally. */
-	waClient: Pick<WasmWhatsAppClient, 'downloadMedia' | 'downloadMediaStream'>
+	reuploadRequest?: (msg: WAMessage) => Promise<WAMessage>
+	logger?: ILogger
+	/** Bridge client for media download. Falls back to the registered one. */
+	waClient?: Pick<WasmWhatsAppClient, 'downloadMedia' | 'downloadMediaStream'>
 }
 
 /**
