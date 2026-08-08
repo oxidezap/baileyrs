@@ -53,13 +53,17 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 	let mediaHost = ''
 	/**
 	 * When the credentials were obtained, not when they were last handed out.
-	 * The engine serves a live connection from its cache, and upstream only
-	 * stamps a new date on an actual fetch, so a caller renewing on
-	 * `fetchDate + ttl` has to see the fetch it is measuring from. A forced
-	 * call is a fetch whatever comes back, including the same auth with a
-	 * renewed ttl.
+	 * The engine serves a live connection from its cache and gives no signal
+	 * for which calls were actual fetches, so the stamp is kept only while the
+	 * connection it describes is still live: past its own ttl, on a forced
+	 * call, or on rotated credentials, whatever comes back is a fetch.
+	 *
+	 * A caller renewing on `fetchDate + ttl` needs both halves of that. Always
+	 * restamping would push its deadline forward forever; never restamping
+	 * would leave it renewing against a moment that has already passed.
 	 */
-	let fetched: { auth: string; at: Date } | undefined
+	let fetched: { auth: string; ttl: number; at: Date } | undefined
+	const isLive = (held: { ttl: number; at: Date }) => Date.now() - held.at.getTime() < held.ttl * 1000
 
 	return {
 		/**
@@ -72,8 +76,8 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 		): Promise<Omit<MediaConnInfo, 'hosts'> & { hosts: { hostname: string }[] }> => {
 			const conn = await (await ctx.getClient()).getMediaConn(forceGet)
 			mediaHost = conn.hosts[0]?.hostname ?? mediaHost
-			if (forceGet || !fetched || fetched.auth !== conn.auth) {
-				fetched = { auth: conn.auth, at: new Date() }
+			if (forceGet || !fetched || fetched.auth !== conn.auth || !isLive(fetched)) {
+				fetched = { auth: conn.auth, ttl: conn.ttl, at: new Date() }
 			}
 			// A copy: the stored instant decides when the next call restamps, and a
 			// consumer holding the same Date could move it.

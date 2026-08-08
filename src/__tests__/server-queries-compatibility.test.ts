@@ -223,6 +223,19 @@ describe('refreshMediaConn forwards the force flag and feeds getMediaHost', () =
 		expect(second.fetchDate.getTime()).toBe(first.fetchDate.getTime())
 	})
 
+	// The engine gives no signal for which calls were actual fetches, so a
+	// connection past its own ttl is treated as refetched: leaving the old date
+	// would leave the caller renewing against a moment already gone.
+	it('a connection past its ttl is restamped even unforced', async () => {
+		const { methods } = makeHarness({ getMediaConn: async () => ({ ...conn, ttl: 0 }) })
+
+		const first = await methods.refreshMediaConn()
+		await delay(5)
+		const second = await methods.refreshMediaConn()
+
+		expect(second.fetchDate.getTime() > first.fetchDate.getTime()).toBe(true)
+	})
+
 	it('a forced call restamps even when the same credentials come back', async () => {
 		const { methods } = makeHarness({ getMediaConn: async () => conn })
 
