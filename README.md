@@ -265,12 +265,14 @@ yourself. It is derived from the internal routing catalog, so a namespace added
 in a later release is covered without you changing anything:
 
 ```ts
+// Aliased install? Import from '@whiskeysockets/baileys' instead; it resolves here.
 import { BRIDGE_INTERNAL_KEY_TYPES, isBridgeInternalKeyType } from '@oxidezap/baileyrs'
 
 isBridgeInternalKeyType('bridge-native-device') // true
 isBridgeInternalKeyType('pre-key')              // false
 
-// Everything the bridge can write today, e.g. for a SQL `NOT IN (...)` clause.
+// Every bridge-internal namespace, e.g. for a SQL `NOT IN (...)` clause. The
+// store also holds the Baileys namespaces the engine projects into it.
 BRIDGE_INTERNAL_KEY_TYPES
 ```
 
