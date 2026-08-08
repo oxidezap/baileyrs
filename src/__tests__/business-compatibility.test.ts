@@ -34,7 +34,7 @@ const logger = {
 	error: () => undefined
 } as ILogger
 
-const makeHarness = (overrides: Record<string, unknown> = {}) => {
+const makeHarness = (overrides: Record<string, unknown> = {}, ownId?: string) => {
 	const calls: Array<[string, unknown[]]> = []
 	const client = new Proxy({} as Record<string, unknown>, {
 		get: (_t, prop) => {
@@ -49,6 +49,7 @@ const makeHarness = (overrides: Record<string, unknown> = {}) => {
 	const ctx = {
 		ev: new EventEmitter(),
 		logger,
+		getUser: () => (ownId === undefined ? undefined : { id: ownId }),
 		getClient: async () => client
 	} as unknown as SocketContext
 	return { calls, methods: makeBusinessMethods(ctx) }
@@ -71,14 +72,27 @@ describe('the reads delegate with the options the bridge takes', () => {
 		expect(calls).toEqual([['getCollections', [SELLER, { collectionLimit: 5 }]]])
 	})
 
+	/**
+	 * Upstream reads the caller's own catalog when the jid is left out, and the
+	 * own id it falls back to carries a device suffix that the catalog query
+	 * does not take.
+	 */
 	for (const [label, run] of [
 		['getCatalog', (m: ReturnType<typeof makeHarness>['methods']) => m.getCatalog({ limit: 1 })],
 		['getCollections', (m: ReturnType<typeof makeHarness>['methods']) => m.getCollections()]
 	] as const) {
-		it(`${label} rejects without a jid rather than querying the wrong account`, async () => {
+		it(`${label} without a jid reads the account's own catalog`, async () => {
+			const { calls, methods } = makeHarness({}, '15559990000:7@s.whatsapp.net')
+
+			await run(methods)
+
+			expect(calls[0]![1][0]).toBe('15559990000@s.whatsapp.net')
+		})
+
+		it(`${label} rejects when there is no jid and no identity to fall back on`, async () => {
 			const { calls, methods } = makeHarness()
 
-			await expect(run(methods)).rejects.toThrow(/jid is required/)
+			await expect(run(methods)).rejects.toThrow(/not logged in yet/)
 			expect(calls).toEqual([])
 		})
 	}

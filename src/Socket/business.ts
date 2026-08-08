@@ -1,12 +1,8 @@
-import type {
-	CatalogResult,
-	CollectionsResult,
-	OrderResult,
-	BusinessProfileUpdateInput
-} from '@oxidezap/whatsapp-rust-bridge'
-import type { GetCatalogOptions } from '../Types/Product.ts'
+import type { OrderResult, BusinessProfileUpdateInput } from '@oxidezap/whatsapp-rust-bridge'
+import type { CatalogPage, CollectionsPage, GetCatalogOptions } from '../Types/Product.ts'
 import type { UpdateBussinesProfileProps } from '../Types/Bussines.ts'
 import { Boom } from '../Utils/boom.ts'
+import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import type { SocketContext } from './types.ts'
 
 /**
@@ -37,19 +33,34 @@ const minutesPastMidnight = (value: string, which: 'open' | 'close'): number => 
 	return minutes
 }
 
+/**
+ * Both catalog reads take an optional jid and mean "mine" without one, as
+ * upstream does. Only a socket that has not finished logging in has no
+ * identity to fall back on, and that is worth saying rather than sending an
+ * empty jid the server would reject.
+ */
+const catalogSubject = (method: string, ctx: SocketContext, jid?: string): string => {
+	const subject = jidNormalizedUser(jid || ctx.getUser()?.id)
+	if (!subject) {
+		throw new Boom(
+			`${method}: no jid was given and the socket is not logged in yet, so there is no own catalog to read`,
+			{
+				statusCode: 400
+			}
+		)
+	}
+	return subject
+}
+
 export const makeBusinessMethods = (ctx: SocketContext) => ({
-	getCatalog: async ({ jid, limit, cursor }: GetCatalogOptions): Promise<CatalogResult> => {
-		if (!jid) {
-			throw new Boom('getCatalog: jid is required', { statusCode: 400 })
-		}
-		return await (await ctx.getClient()).getCatalog(jid, { limit, after: cursor })
+	getCatalog: async ({ jid, limit, cursor }: GetCatalogOptions): Promise<CatalogPage> => {
+		const subject = catalogSubject('getCatalog', ctx, jid)
+		return await (await ctx.getClient()).getCatalog(subject, { limit, after: cursor })
 	},
 
-	getCollections: async (jid?: string, limit?: number): Promise<CollectionsResult> => {
-		if (!jid) {
-			throw new Boom('getCollections: jid is required', { statusCode: 400 })
-		}
-		return await (await ctx.getClient()).getCollections(jid, { collectionLimit: limit })
+	getCollections: async (jid?: string, limit?: number): Promise<CollectionsPage> => {
+		const subject = catalogSubject('getCollections', ctx, jid)
+		return await (await ctx.getClient()).getCollections(subject, { collectionLimit: limit })
 	},
 
 	/**
