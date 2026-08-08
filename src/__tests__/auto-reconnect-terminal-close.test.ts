@@ -227,6 +227,56 @@ describe('connection.update: terminal disconnects', () => {
 	}
 })
 
+/**
+ * `logged_out.reason` used to be `format!("{:?}")` on the core's
+ * `ConnectFailureReason`, a `Debug` string, which is not a stable API: a
+ * variant renamed upstream would have silently changed what a consumer reads,
+ * with nothing here failing to build. Bridge 0.7.0 writes the spellings down
+ * instead, keeping every value it already emitted.
+ *
+ * That makes them a contract, and this is where the contract is observed: the
+ * reason is interpolated straight into the close message, so it is the text a
+ * consumer logs and greps. It steers nothing, the status code is always
+ * `loggedOut`, but a change to it is a change to the public surface, and
+ * without this test the next one would pass unnoticed too.
+ */
+const LOGGED_OUT_REASONS = [
+	'Generic',
+	'LoggedOut',
+	'TempBanned',
+	'AccountLocked',
+	'UnknownLogout',
+	'ClientOutdated',
+	'BadUserAgent',
+	'CatExpired',
+	'CatInvalid',
+	'NotFound',
+	'ClientUnknown',
+	'InternalServerError',
+	'Experimental',
+	'ServiceUnavailable',
+	// The core's own fallback for a code it cannot name, carried through.
+	'Unknown(499)'
+]
+
+describe('logged out: the reason reaches the consumer verbatim', () => {
+	for (const reason of LOGGED_OUT_REASONS) {
+		it(`${reason} → 'Logged out: ${reason}'`, () => {
+			const result = dispatch({ type: 'logged_out', data: { reason } })
+
+			expect((result.close?.lastDisconnect?.error as Boom | undefined)?.message).toBe(`Logged out: ${reason}`)
+			expect(result.statusCode).toBe(DisconnectReason.loggedOut)
+		})
+	}
+
+	it('no reason at all → plain "Logged out"', () => {
+		const result = dispatch({ type: 'logged_out', data: {} })
+
+		expect((result.close?.lastDisconnect?.error as Boom | undefined)?.message).toBe('Logged out')
+		expect(result.statusCode).toBe(DisconnectReason.loggedOut)
+	})
+})
+
 describe('connection.update: disconnects the engine retries', () => {
 	for (const { label, event } of RETRYING) {
 		it(`${label} → 'connecting', never 'close'`, () => {
