@@ -100,7 +100,17 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 					await client.deleteLabel(mod.addLabel.id)
 				} else {
 					rejectUnsupportedFields('chatModify addLabel', mod.addLabel, ['predefinedId'])
-					await client.createLabel(mod.addLabel.id, mod.addLabel.name ?? '', mod.addLabel.color ?? 0)
+					// The mutation replaces the whole label, so a missing field is
+					// not "leave it alone", it is "set it to nothing". Upstream can
+					// omit one because it builds the proto directly; this call
+					// cannot, so both are required rather than defaulted.
+					if (mod.addLabel.name === undefined || mod.addLabel.color === undefined) {
+						throw new Boom(
+							'chatModify addLabel: name and color are both required, because the label mutation is a full replace and an omitted field would reset it',
+							{ statusCode: 400 }
+						)
+					}
+					await client.createLabel(mod.addLabel.id, mod.addLabel.name, mod.addLabel.color)
 				}
 			} else if ('addChatLabel' in mod) {
 				await client.addChatLabel(mod.addChatLabel.labelId, jid)

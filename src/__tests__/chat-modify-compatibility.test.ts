@@ -179,6 +179,21 @@ describe('chatModify: a field the wire call cannot carry is refused, not dropped
 		expect(calls).toEqual([])
 	})
 
+	// The label mutation replaces the whole action, so an omitted field is
+	// "set to nothing" rather than "leave alone". Upstream can omit one
+	// because it builds the proto itself; this call has no way to.
+	for (const [label, body] of [
+		['name', { id: 'lbl-1', color: 3 }],
+		['color', { id: 'lbl-1', name: 'Leads' }]
+	] as const) {
+		it(`addLabel without ${label} rejects rather than resetting it`, async () => {
+			const { calls, methods } = makeHarness()
+
+			await expect(methods.chatModify({ addLabel: body }, CHAT)).rejects.toThrow(/name and color are both required/)
+			expect(calls).toEqual([])
+		})
+	}
+
 	it('a delete still works with predefinedId present, since the delete carries no payload', async () => {
 		const { calls, methods } = makeHarness()
 
