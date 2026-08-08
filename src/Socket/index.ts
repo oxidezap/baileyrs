@@ -50,7 +50,7 @@ import { makeBridgeClientOwner } from './bridge-client-owner.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
-import { makeInternalMethods } from './internals.ts'
+import { makeInternalMethods, makeUnexpectedErrorReporter } from './internals.ts'
 import { makeMessageMethods } from './messages.ts'
 import { makeNewsletterMethods } from './newsletter.ts'
 import { makePreKeyMethods } from './prekeys.ts'
@@ -282,20 +282,18 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	/** Owns reporting the terminal close: once, after teardown, never not at all. */
 	const terminalClose = makeTerminalCloseReporter({ logger })
 	/**
-	 * Held in a slot rather than captured, because `sock.onUnexpectedError` is
-	 * an assignable property: a consumer that replaces it has to be the one the
-	 * socket's own failure paths reach afterwards.
+	 * Held in a reporter rather than captured, because `sock.onUnexpectedError`
+	 * is an assignable property: a consumer that replaces it has to be the one
+	 * the socket's own failure paths reach afterwards.
 	 */
-	let unexpectedErrorHandler: (err: unknown, msg: string) => void = (err, msg) => {
-		logger.error({ err }, `unexpected error in '${msg}'`)
-	}
+	const unexpectedErrors = makeUnexpectedErrorReporter(logger)
 
 	const ctx: SocketContext = {
 		ev,
 		logger,
 		fullConfig,
 		ws,
-		reportUnexpectedError: (err, msg) => unexpectedErrorHandler(err, msg),
+		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,
 		getMe: () => {
 			const me = auth.creds.me
@@ -980,9 +978,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// Assigning replaces the handler the socket itself reports through, rather
 	// than shadowing it with a second one only a consumer could reach.
 	Object.defineProperty(sock, 'onUnexpectedError', {
-		get: () => unexpectedErrorHandler,
+		get: () => unexpectedErrors.handler,
 		set: (handler: (err: unknown, msg: string) => void) => {
-			unexpectedErrorHandler = handler
+			unexpectedErrors.handler = handler
 		},
 		enumerable: true,
 		configurable: true

@@ -16,7 +16,7 @@ import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import makeWASocket from '../Socket/index.ts'
-import { makeInternalMethods } from '../Socket/internals.ts'
+import { makeInternalMethods, makeUnexpectedErrorReporter } from '../Socket/internals.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { WAMessage } from '../Types/index.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
@@ -207,32 +207,65 @@ describe('messageRetryManager is null rather than a second retry manager', () =>
 })
 
 /**
- * The hook is only an extension point if it resolves the current handler
- * instead of the one it captured when the socket was built. Two halves, one
- * per file: the socket exposes an accessor whose setter replaces the handler
- * its own failure paths report through, and this method reads that handler per
- * call rather than closing over the default.
+ * One reporter, shared by the socket's `onUnexpectedError` property and by the
+ * internal paths that raise failures, so a consumer's replacement is what those
+ * paths reach rather than a second handler nothing calls.
+ *
+ * It also has to survive a handler that throws: some of its callers are bridge
+ * callbacks that borrow memory and are forbidden from raising, so an exception
+ * escaping here would cost the session its borrowed batches.
  */
-describe('assigning onUnexpectedError replaces the handler the socket reports through', () => {
-	it('the method reports through whatever the context resolves to now', () => {
-		const seen: string[] = []
-		let handler: (err: unknown, msg: string) => void = () => undefined
-		const ctx = {
-			ev: makeEventBuffer(silentLogger),
-			logger: silentLogger,
-			fullConfig: {},
-			reportUnexpectedError: (err: unknown, msg: string) => handler(err, msg),
-			getClient: async () => undefined
-		} as unknown as SocketContext
-		const methods = makeInternalMethods(ctx)
+describe('the unexpected-error reporter is shared, replaceable and cannot throw', () => {
+	const makeLogger = () => {
+		const logged: Array<Record<string, unknown>> = []
+		const logger = {
+			level: 'silent',
+			child: () => logger,
+			trace: () => undefined,
+			debug: () => undefined,
+			info: () => undefined,
+			warn: () => undefined,
+			error: (fields: unknown, msg: unknown) => logged.push({ fields, msg })
+		} as unknown as ILogger
+		return { logged, logger }
+	}
 
-		handler = (_err, msg) => seen.push(msg)
-		methods.onUnexpectedError(new Error('boom'), 'a failing dispatcher')
+	it('reports through the logger until a consumer replaces the handler', () => {
+		const { logged, logger } = makeLogger()
+		const reporter = makeUnexpectedErrorReporter(logger)
 
-		expect(seen).toEqual(['a failing dispatcher'])
+		reporter.report(new Error('boom'), 'a failing dispatcher')
+
+		expect(logged.length).toBe(1)
+		expect(String(logged[0]!.msg)).toBe("unexpected error in 'a failing dispatcher'")
 	})
 
-	it('the socket exposes it as an accessor, so assignment is observed rather than shadowed', async () => {
+	it('a replaced handler receives what the internal paths report', () => {
+		const { logged, logger } = makeLogger()
+		const reporter = makeUnexpectedErrorReporter(logger)
+		const seen: string[] = []
+
+		reporter.handler = (_err, msg) => seen.push(msg)
+		reporter.report(new Error('boom'), 'a failing dispatcher')
+
+		expect(seen).toEqual(['a failing dispatcher'])
+		expect(logged.length).toBe(0)
+	})
+
+	it('a handler that throws does not raise into the caller, and the failure is still logged', () => {
+		const { logged, logger } = makeLogger()
+		const reporter = makeUnexpectedErrorReporter(logger)
+
+		reporter.handler = () => {
+			throw new Error('the handler itself blew up')
+		}
+		reporter.report(new Error('boom'), 'a failing dispatcher')
+
+		expect(logged.length).toBe(2)
+		expect(String(logged[1]!.msg)).toBe("unexpected error in 'a failing dispatcher'")
+	})
+
+	it('the socket wires the property to that reporter rather than a second one', async () => {
 		const authFolder = await mkdtemp(join(tmpdir(), 'baileyrs-hook-'))
 		try {
 			const { state } = await useMultiFileAuthState(authFolder)
@@ -251,5 +284,15 @@ describe('assigning onUnexpectedError replaces the handler the socket reports th
 		} finally {
 			await rm(authFolder, { recursive: true, force: true })
 		}
+	})
+})
+
+describe('resyncAppState keeps both arguments optional', () => {
+	it('a call with no arguments resolves, as it did before this surface was documented', async () => {
+		const { calls, methods } = makeHarness()
+
+		await methods.resyncAppState()
+
+		expect(calls).toEqual([])
 	})
 })

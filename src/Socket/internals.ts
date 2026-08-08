@@ -1,6 +1,38 @@
 import type { BinaryNode, MessageUpsertType, WAMessage, WAPatchCreate } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
+import type { ILogger } from '../Utils/logger.ts'
 import type { SocketContext } from './types.ts'
+
+/**
+ * The one place an unexpected failure is reported, shared by the socket's
+ * `onUnexpectedError` property and by the internal paths that raise them.
+ *
+ * `report` cannot throw. Some of its callers are bridge callbacks that borrow
+ * memory and are contractually forbidden from raising, so a consumer whose
+ * handler throws would cost the session its borrowed batches. A handler that
+ * fails is reported through the logger and the caller carries on.
+ */
+export const makeUnexpectedErrorReporter = (logger: ILogger) => {
+	const logUnexpected = (err: unknown, msg: string) => logger.error({ err }, `unexpected error in '${msg}'`)
+	let handler: (err: unknown, msg: string) => void = logUnexpected
+
+	return {
+		report: (err: unknown, msg: string) => {
+			try {
+				handler(err, msg)
+			} catch (reportingError) {
+				logger.error({ err: reportingError }, 'the onUnexpectedError handler threw')
+				logUnexpected(err, msg)
+			}
+		},
+		get handler() {
+			return handler
+		},
+		set handler(next: (err: unknown, msg: string) => void) {
+			handler = next
+		}
+	}
+}
 
 /**
  * Upstream has no timeout on `waitForSocketOpen`; the bridge requires one, so
@@ -66,8 +98,8 @@ export const makeInternalMethods = (ctx: SocketContext) => {
 		 * delegate to, and rejecting would break a call whose intent is met.
 		 */
 		resyncAppState: async (
-			collections: readonly ('critical_block' | 'critical_unblock_low' | 'regular_high' | 'regular_low' | 'regular')[],
-			isInitialSync: boolean
+			collections?: readonly ('critical_block' | 'critical_unblock_low' | 'regular_high' | 'regular_low' | 'regular')[],
+			isInitialSync?: boolean
 		): Promise<void> => {
 			void collections
 			void isInitialSync
