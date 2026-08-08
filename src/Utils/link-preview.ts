@@ -14,7 +14,23 @@ const THUMBNAIL_WIDTH_PX = 192
  * from `version 1.22`. Loose enough that the parser still judges the URL, tight
  * enough that ordinary prose does not reach it and come back as an error.
  */
-const FIRST_URL = /(^|\s)(https?:\/\/\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/\S*)?)(?=[\s.,!?]|$)/i
+const FIRST_URL = /(^|[\s([{'"])(https?:\/\/\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/\S*)?)(?=[\s.,!?)\]}]|$)/i
+
+/**
+ * The first link in a piece of text, or undefined when there is none. Exported
+ * under an underscore so the extraction can be tested without a network.
+ *
+ * Trailing prose punctuation is dropped: a link at the end of a sentence
+ * carries the full stop with it, and `https://example.com.` is not what the
+ * writer meant. A closing bracket goes the same way, which costs the rare url
+ * that genuinely ends in one and saves the common case of a link in
+ * parentheses.
+ */
+export const _firstLink = (text: string): string | undefined => {
+	const found = FIRST_URL.exec(text)?.[2]?.replace(/[.,!?;:'")\]}]+$/, '')
+	if (!found) return undefined
+	return found.startsWith('https://') || found.startsWith('http://') ? found : `https://${found}`
+}
 /** Enough for any preview thumbnail, and small enough that a hostile one cannot exhaust memory. */
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
 
@@ -228,17 +244,13 @@ export const getUrlInfo = async (
 	// A designed branch rather than a swallowed parser error: text with no link
 	// in it has no preview, which is an answer, not a failure. Deciding it here
 	// means every error the parser does raise is a real one.
-	if (!FIRST_URL.test(text)) return undefined
+	const previewLink = _firstLink(text)
+	if (!previewLink) return undefined
 
 	{
 		const { getLinkPreview } = (await import('link-preview-js' as string)) as {
 			getLinkPreview: (url: string, options: Record<string, unknown>) => Promise<LinkPreviewResult>
 		}
-		// The link itself, not the sentence around it: prefixing a whole
-		// sentence with a scheme leans on the parser tokenising it back apart.
-		const found = FIRST_URL.exec(text)?.[2] ?? text
-		const previewLink = found.startsWith('https://') || found.startsWith('http://') ? found : `https://${found}`
-
 		const info = await getLinkPreview(previewLink, {
 			...opts.fetchOpts,
 			// `manual`, not `follow`: the redirect handler below only runs on

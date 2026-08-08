@@ -15,7 +15,11 @@
 
 import { describe, it } from 'node:test'
 
-import { _getCompressedJpegThumbnail as getCompressedJpegThumbnail, getUrlInfo } from '../Utils/link-preview.ts'
+import {
+	_firstLink as firstLink,
+	_getCompressedJpegThumbnail as getCompressedJpegThumbnail,
+	getUrlInfo
+} from '../Utils/link-preview.ts'
 import { expect } from './expect.ts'
 
 const OPTS = { thumbnailWidth: 192, fetchOpts: { timeout: 3000 } }
@@ -147,4 +151,38 @@ describe('the thumbnail fetch refuses destinations a preview must not reach', ()
 			})
 		).rejects.toThrow(/proxyUrl is not applied/)
 	})
+})
+
+/**
+ * What gets fetched, decided without a network. The extraction is what
+ * separates "no link here", which is an answer, from "a link that failed",
+ * which is an error, so it is worth pinning on its own.
+ */
+describe('the link is taken out of the text it was written in', () => {
+	for (const [label, text, expected] of [
+		['a bare link', 'https://example.com/a', 'https://example.com/a'],
+		['a link inside a sentence', 'visit https://example.com/a today', 'https://example.com/a'],
+		['a scheme-less host', 'example.com/a', 'https://example.com/a'],
+		// A link at the end of a sentence carries the full stop with it, and
+		// fetching `example.com.` is not what the writer meant.
+		['a link ending a sentence', 'go to https://example.com.', 'https://example.com'],
+		['a link before a comma', 'https://example.com, then leave', 'https://example.com'],
+		['a link in parentheses', 'see (https://example.com) for more', 'https://example.com'],
+		['a link before an exclamation', 'look at https://example.com!', 'https://example.com'],
+		['the first of several', 'https://one.example then https://two.example', 'https://one.example']
+	] as const) {
+		it(`${label} becomes ${expected}`, () => {
+			expect(firstLink(text)).toBe(expected)
+		})
+	}
+
+	for (const [label, text] of [
+		['a version number', 'upgraded to version 1.22 today'],
+		['a sentence with no link', 'there is no link in this sentence'],
+		['a decimal', 'it cost 3.50 in total']
+	] as const) {
+		it(`${label} yields nothing to fetch`, () => {
+			expect(firstLink(text)).toBe(undefined)
+		})
+	}
 })
