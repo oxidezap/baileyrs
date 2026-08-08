@@ -258,10 +258,11 @@ const isEmpty = () => !creds.registered && !creds.me?.id
 **A non-empty key store is not evidence of a session.** `creds.registered` and
 `creds.me?.id` are, and they are the only thing to check.
 
-When you do need to walk a store — enumerating, counting, exporting, migrating
-— skip the bridge rows with the exported classifier rather than matching the
-prefix yourself. It is derived from the internal routing catalog, so a
-namespace added in a later release is covered without you changing anything:
+When you need to present a store the way upstream would — counting rows,
+listing the Signal namespaces, exporting an upstream-shaped dump — filter the
+bridge rows out with the exported classifier rather than matching the prefix
+yourself. It is derived from the internal routing catalog, so a namespace added
+in a later release is covered without you changing anything:
 
 ```ts
 import { BRIDGE_INTERNAL_KEY_TYPES, isBridgeInternalKeyType } from '@oxidezap/baileyrs'
@@ -272,6 +273,16 @@ isBridgeInternalKeyType('pre-key')              // false
 // Everything the bridge can write today, e.g. for a SQL `NOT IN (...)` clause.
 BRIDGE_INTERNAL_KEY_TYPES
 ```
+
+> **Do not drop these rows from a backup or a store-to-store move.** They are
+> effective state, not metadata. `bridge-signed-prekey`, `bridge-sender-key-devices`,
+> `bridge-base-key`, `bridge-sent-message`, `bridge-msg-secret`,
+> `bridge-mutation-mac` and `bridge-meta` have no Baileys projection at all, and
+> a Signal session that turned native-only lives under `bridge-native-session`
+> alone. Restoring only the non-bridge rows rolls those sessions back or loses
+> the state outright. Filter the bridge rows only where the destination is an
+> upstream-shaped view that cannot represent them; a full backup, or a move
+> between two baileyrs stores, carries every `bridge-` row across.
 
 This applies to stores you own — the upstream `{ creds, keys }` shape that
 baileyrs auto-wraps, including `useLegacyMultiFileAuthState`. It does not apply
