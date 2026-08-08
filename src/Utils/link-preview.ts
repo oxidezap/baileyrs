@@ -104,13 +104,14 @@ const hextetsOf = (address: string): number[] | undefined => {
  * it: `::ffff:127.0.0.1`, `::ffff:7f00:1` and `::ffff:0:7f00:1` are one
  * address, and judging only one leaves the others a way through.
  */
+const dottedQuad = (high: number, low: number) => `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
+
 const mappedIPv4 = (groups: number[]): string | undefined => {
 	const zeroesUpTo = (count: number) => groups.slice(0, count).every(group => group === 0)
 	if (!((zeroesUpTo(5) && groups[5] === 0xffff) || (zeroesUpTo(4) && groups[4] === 0xffff && groups[5] === 0))) {
 		return undefined
 	}
-	const [high, low] = [groups[6]!, groups[7]!]
-	return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
+	return dottedQuad(groups[6]!, groups[7]!)
 }
 
 const isPrivateIPv4 = (address: string): boolean => {
@@ -141,6 +142,12 @@ const isPrivateIPv4 = (address: string): boolean => {
 const isPrivateIPv6 = (groups: number[]): boolean => {
 	const mapped = mappedIPv4(groups)
 	if (mapped) return isPrivateIPv4(mapped)
+	// NAT64 carries a v4 address the network translates to on the way out, so
+	// the embedded address is what decides. Only the /96 embedding can be read
+	// off the literal; any other length in the prefix is refused instead.
+	if (groups[0] === 0x0064 && groups[1] === 0xff9b) {
+		return groups.slice(2, 6).every(group => group === 0) ? isPrivateIPv4(dottedQuad(groups[6]!, groups[7]!)) : true
+	}
 	// All of `::/96`, which covers the unspecified address, loopback and the
 	// deprecated v4-compatible forms.
 	if (groups.slice(0, 6).every(group => group === 0)) return true
@@ -316,8 +323,29 @@ export const getUrlInfo = async (
 		const { getLinkPreview } = (await import('link-preview-js' as string)) as {
 			getLinkPreview: (url: string, options: Record<string, unknown>) => Promise<LinkPreviewResult>
 		}
+
+		// One deadline for the whole call rather than a fresh timer per step.
+		// The parser starts its own only once the resolver returns, so a slow
+		// lookup and a slow server each got the full timeout and a 3s call could
+		// run 6s. Resolving here first and handing over what is left holds both
+		// inside one budget.
+		const deadline = Date.now() + opts.fetchOpts.timeout
+		const remaining = () => Math.max(1, deadline - Date.now())
+		const beforeDeadline = async <T>(work: Promise<T>): Promise<T> => {
+			const signal = AbortSignal.timeout(remaining())
+			return await Promise.race([
+				work,
+				new Promise<never>((_resolve, reject) =>
+					signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+				)
+			])
+		}
+
+		await beforeDeadline(assertPublicDestination(new URL(previewLink)))
+
 		const info = await getLinkPreview(previewLink, {
 			...opts.fetchOpts,
+			timeout: remaining(),
 			// `manual`, not `follow`: the redirect handler below only runs on
 			// manual, so following automatically would send every hop unchecked.
 			followRedirects: 'manual',
@@ -340,19 +368,9 @@ export const getUrlInfo = async (
 			},
 			// Resolves the host so the address, not the name, is judged. The
 			// parser rejects loopback on what this returns, and the private
-			// ranges are rejected here.
-			resolveDNSHost: async (target: string) => {
-				// Raced against the same bound as the request: the parser starts
-				// its own timer only once this returns, so a stalled resolver
-				// would otherwise sit outside every deadline.
-				const signal = AbortSignal.timeout(opts.fetchOpts.timeout)
-				return await Promise.race([
-					publicAddressOf(new URL(target)),
-					new Promise<never>((_resolve, reject) =>
-						signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-					)
-				])
-			},
+			// ranges are rejected here. A redirect brings it back, which is why
+			// it is bounded by the shared deadline rather than its own timer.
+			resolveDNSHost: async (target: string) => await beforeDeadline(publicAddressOf(new URL(target))),
 			headers: opts.fetchOpts?.headers as Record<string, string> | undefined
 		})
 

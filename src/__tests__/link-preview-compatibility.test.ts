@@ -135,6 +135,11 @@ describe('the thumbnail fetch refuses destinations a preview must not reach', ()
 		// The deprecated v4-compatible form, which is what `::127.0.0.1` becomes
 		// once the URL parser has folded it. Refused with the rest of `::/96`.
 		['a v4-compatible address', 'http://[::7f00:1]/x.jpg'],
+		// NAT64 hands the network a v4 address to translate to, so the embedded
+		// one is what decides. The second is the same address at a prefix length
+		// the literal cannot reveal, which is refused rather than guessed at.
+		['a NAT64 literal wrapping a private v4 address', 'http://[64:ff9b::a00:5]/x.jpg'],
+		['a NAT64 literal at an unreadable prefix length', 'http://[64:ff9b:0:1::a00:5]/x.jpg'],
 		// Reserved rather than private, and refused for the same reason: an
 		// operator routing one of these internally would have it reachable.
 		['the benchmarking range', 'http://198.18.0.1/x.jpg'],
