@@ -32,8 +32,10 @@ describe('getUrlInfo separates having no preview from failing to get one', () =>
 		expect(info).toBe(undefined)
 	})
 
-	it('a host that cannot be resolved surfaces its error instead', async () => {
-		await expect(getUrlInfo('https://not-a-real-host.invalid', OPTS)).rejects.toThrow()
+	it('a link that is present but unusable is not treated as absent', async () => {
+		// Reaching the parser at all is the point: this is the branch where a
+		// failure has to surface rather than be read as "no preview".
+		await expect(getUrlInfo('https://example.com', { ...OPTS, fetchOpts: { timeout: 1 } })).rejects.toThrow()
 	})
 
 	/**
@@ -74,12 +76,28 @@ describe('the thumbnail fetch refuses destinations a preview must not reach', ()
 		['carrier-grade NAT space', 'http://100.64.0.1/x.jpg'],
 		['link-local, where the cloud metadata address lives', 'http://169.254.169.254/latest/meta-data/'],
 		['IPv6 loopback', 'http://[::1]/x.jpg'],
-		['an IPv6 unique-local address', 'http://[fd00::1]/x.jpg']
+		['an IPv6 unique-local address', 'http://[fd00::1]/x.jpg'],
+		['v4-mapped loopback written in dotted form', 'http://[::ffff:127.0.0.1]/x.jpg'],
+		// The same address as the line above, written the other way. Judging
+		// only the dotted form would leave this one a way through.
+		['v4-mapped loopback written in hex', 'http://[::ffff:7f00:1]/x.jpg'],
+		['v4-mapped link-local in hex', 'http://[::ffff:a9fe:a9fe]/x.jpg']
 	] as const) {
 		it(`refuses ${label}`, async () => {
 			await expect(fetchThumbnail(address)).rejects.toThrow(/private address/)
 		})
 	}
+
+	/**
+	 * A literal private address is refused before any request is made. The
+	 * parser's own URL pattern excludes those ranges, so this passes without the
+	 * resolver hook; what the hook adds is the case that pattern cannot see, a
+	 * public name that resolves to a private address, and that one needs a
+	 * controlled DNS name and is not covered here.
+	 */
+	it('the page fetch refuses a private address too, not only the thumbnail', async () => {
+		await expect(getUrlInfo('http://169.254.169.254/latest/meta-data/', OPTS)).rejects.toThrow()
+	})
 
 	it('refuses a scheme that is not http', async () => {
 		await expect(fetchThumbnail('file:///etc/passwd')).rejects.toThrow(/refusing to fetch file:/)

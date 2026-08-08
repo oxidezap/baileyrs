@@ -8,6 +8,12 @@ import type { ILogger } from './logger.ts'
 import { extractImageThumb } from './messages-media.ts'
 
 const THUMBNAIL_WIDTH_PX = 192
+/**
+ * Whether the text names something fetchable at all: an explicit scheme, or a
+ * host with a dot in it. Deliberately loose, since the parser judges the URL
+ * properly; this only separates "no link here" from "a link that failed".
+ */
+const FIRST_URL = /(^|\s)(https?:\/\/\S+|[^\s.]+\.[^\s.]{2,}\S*)/i
 /** Enough for any preview thumbnail, and small enough that a hostile one cannot exhaust memory. */
 const MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024
 
@@ -40,20 +46,39 @@ type LinkPreviewResult = {
  * private ranges, link-local, and the cloud metadata address that sits inside
  * link-local and is the usual target.
  */
+/**
+ * The v4 address an IPv4-mapped IPv6 literal stands for, in either form it can
+ * be written: `::ffff:127.0.0.1` and `::ffff:7f00:1` are the same address, and
+ * judging only the dotted one leaves the other a way through.
+ */
+const mappedIPv4 = (address: string): string | undefined => {
+	const mapped = /^::ffff:(?:0:)?(.+)$/i.exec(address)
+	if (!mapped) return undefined
+	const tail = mapped[1]!
+	if (isIP(tail) === 4) return tail
+	const hextets = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail)
+	if (!hextets) return undefined
+	const high = Number.parseInt(hextets[1]!, 16)
+	const low = Number.parseInt(hextets[2]!, 16)
+	return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`
+}
+
 const isPrivateAddress = (address: string): boolean => {
 	if (isIP(address) === 6) {
 		const normalised = address.toLowerCase()
+		const mapped = mappedIPv4(normalised)
+		if (mapped) return isPrivateAddress(mapped)
 		if (normalised === '::1' || normalised === '::') return true
 		if (normalised.startsWith('fc') || normalised.startsWith('fd')) return true
 		if (normalised.startsWith('fe8') || normalised.startsWith('fe9') || normalised.startsWith('fea')) return true
 		if (normalised.startsWith('feb')) return true
-		// v4-mapped, judged on the address it maps to.
-		const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalised)
-		return mapped ? isPrivateAddress(mapped[1]!) : false
+		return false
 	}
 
 	const [a, b] = address.split('.').map(Number)
-	if (a === undefined || b === undefined) return true
+	// Anything unparseable is refused rather than allowed, so a form not
+	// recognised here cannot become a way through.
+	if (a === undefined || b === undefined || !Number.isFinite(a) || !Number.isFinite(b)) return true
 	if (a === 0 || a === 10 || a === 127) return true
 	if (a === 169 && b === 254) return true
 	if (a === 172 && b >= 16 && b <= 31) return true
@@ -71,16 +96,25 @@ const isPrivateAddress = (address: string): boolean => {
  * pointing at a private address is the whole trick. Redirects are refused
  * rather than followed, since each hop would need judging again and a
  * thumbnail is not worth that.
+ *
+ * A name that resolves differently between this check and the connection is
+ * not closed off: doing that means pinning the address into the socket, which
+ * needs a custom agent this package does not carry.
  */
-const assertPublicDestination = async (target: URL): Promise<void> => {
+const publicAddressOf = async (target: URL): Promise<string> => {
 	if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-		throw new Boom(`link preview thumbnail: refusing to fetch ${target.protocol}`, { statusCode: 400 })
+		throw new Boom(`link preview: refusing to fetch ${target.protocol}`, { statusCode: 400 })
 	}
 	const host = target.hostname.replace(/^\[|\]$/g, '')
 	const address = isIP(host) ? host : (await lookup(host)).address
 	if (isPrivateAddress(address)) {
-		throw new Boom(`link preview thumbnail: refusing to fetch a private address (${address})`, { statusCode: 400 })
+		throw new Boom(`link preview: refusing to fetch a private address (${address})`, { statusCode: 400 })
 	}
+	return address
+}
+
+const assertPublicDestination = async (target: URL): Promise<void> => {
+	await publicAddressOf(target)
 }
 
 /**
@@ -106,14 +140,21 @@ export const _getCompressedJpegThumbnail = async (
 		)
 	}
 
+	// One deadline for the whole operation, started before the lookup: a slow
+	// resolver is as good a stall as a slow server, and the timeout is
+	// documented as bounding the thumbnail, not just its connection.
+	const signal = AbortSignal.timeout(fetchOpts.timeout)
 	const target = new URL(url, pageUrl)
-	await assertPublicDestination(target)
+	await Promise.race([
+		assertPublicDestination(target),
+		new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
+	])
 
 	const sameOrigin = target.origin === new URL(pageUrl).origin
 	const response = await fetch(target, {
 		method: 'GET',
 		redirect: 'error',
-		signal: AbortSignal.timeout(fetchOpts.timeout),
+		signal,
 		headers: sameOrigin ? (fetchOpts.headers as HeadersInit) : undefined
 	})
 	if (!response.ok) {
@@ -149,8 +190,11 @@ export const _getCompressedJpegThumbnail = async (
  * needs. Nothing here is protocol: it is an HTTP fetch, an OpenGraph parse and
  * a thumbnail, which is why it belongs in this layer rather than the engine.
  *
- * Resolves to undefined when the page has no title to preview or the fetch
- * found nothing usable, and throws for anything else, as upstream does.
+ * Resolves to undefined for the two cases that mean "no preview": text with no
+ * link in it, and a page with no title. Everything else throws, including a
+ * timeout, because a swallowed failure is indistinguishable from a page that
+ * genuinely had nothing, and a caller retrying the first would give up on the
+ * second.
  *
  * The metadata parse comes from `link-preview-js`, an optional peer dependency
  * this package already declares and had no reader for, so nothing new is
@@ -168,7 +212,12 @@ export const getUrlInfo = async (
 		)
 	}
 
-	try {
+	// A designed branch rather than a swallowed parser error: text with no link
+	// in it has no preview, which is an answer, not a failure. Deciding it here
+	// means every error the parser does raise is a real one.
+	if (!FIRST_URL.test(text)) return undefined
+
+	{
 		let retries = 0
 		const maxRetry = 5
 		const { getLinkPreview } = (await import('link-preview-js' as string)) as {
@@ -178,7 +227,9 @@ export const getUrlInfo = async (
 
 		const info = await getLinkPreview(previewLink, {
 			...opts.fetchOpts,
-			followRedirects: 'follow',
+			// `manual`, not `follow`: the redirect handler below only runs on
+			// manual, so following automatically would send every hop unchecked.
+			followRedirects: 'manual',
 			// Only within the same site, and only so many times: a preview must
 			// not become an open redirect follower.
 			handleRedirects: (baseURL: string, forwardedURL: string) => {
@@ -190,6 +241,13 @@ export const getUrlInfo = async (
 					return true
 				}
 				return false
+			},
+			// Resolves the host so the address, not the name, is judged. The
+			// parser rejects loopback on what this returns, and the private
+			// ranges are rejected here.
+			resolveDNSHost: async (target: string) => {
+				const address = await publicAddressOf(new URL(target))
+				return address
 			},
 			headers: opts.fetchOpts?.headers as Record<string, string> | undefined
 		})
@@ -216,10 +274,5 @@ export const getUrlInfo = async (
 		}
 
 		return urlInfo
-	} catch (err) {
-		// The one failure that means "no preview here" rather than "something
-		// broke": every other error belongs to the caller.
-		if (!(err instanceof Error) || !err.message.includes('receive a valid')) throw err
-		return undefined
 	}
 }
