@@ -27,11 +27,7 @@ import type {
 	ReachoutTimelockState,
 	SignalKeyStoreWithTransaction,
 	UserFacingSocketConfig,
-	WAPrivacyGroupAddValue,
-	WAPrivacyOnlineValue,
-	WAPrivacyValue,
 	WABusinessProfile,
-	WAReadReceiptsValue,
 	WAMessage,
 	WAMessageKey
 } from '../Types/index.ts'
@@ -57,6 +53,7 @@ import { makeMessageMethods } from './messages.ts'
 import { makeNewsletterMethods } from './newsletter.ts'
 import { makePreKeyMethods } from './prekeys.ts'
 import { makePresenceMethods } from './presence.ts'
+import { makePrivacyMethods } from './privacy.ts'
 import { makeProfileMethods } from './profile.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { makeHttpClient, makeTransport } from './transport.ts'
@@ -902,31 +899,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			const bytes = data instanceof Uint8Array && !Buffer.isBuffer(data) ? data : new Uint8Array(data)
 			return (await ctx.getClient()).uploadMedia(bytes, toBridgeMediaType(opts.mediaType))
 		},
-		fetchPrivacySettings: async (force?: boolean) => {
-			void force
-			return (await ctx.getClient()).fetchPrivacySettings()
-		},
-		updatePrivacySetting: async (category: string, value: string) => {
-			await (await ctx.getClient()).updatePrivacySetting(category, value)
-		},
-		updateLastSeenPrivacy: async (value: WAPrivacyValue) => {
-			await (await ctx.getClient()).updatePrivacySetting('last', value)
-		},
-		updateOnlinePrivacy: async (value: WAPrivacyOnlineValue) => {
-			await (await ctx.getClient()).updatePrivacySetting('online', value)
-		},
-		updateProfilePicturePrivacy: async (value: WAPrivacyValue) => {
-			await (await ctx.getClient()).updatePrivacySetting('profile', value)
-		},
-		updateStatusPrivacy: async (value: WAPrivacyValue) => {
-			await (await ctx.getClient()).updatePrivacySetting('status', value)
-		},
-		updateReadReceiptsPrivacy: async (value: WAReadReceiptsValue) => {
-			await (await ctx.getClient()).updatePrivacySetting('readreceipts', value)
-		},
-		updateGroupsAddPrivacy: async (value: WAPrivacyGroupAddValue) => {
-			await (await ctx.getClient()).updatePrivacySetting('groupadd', value)
-		},
+		...makePrivacyMethods(ctx),
 		updateDefaultDisappearingMode: async (duration: number) => {
 			await (await ctx.getClient()).updateDefaultDisappearingMode(duration)
 		},
