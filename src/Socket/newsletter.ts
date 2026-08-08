@@ -76,10 +76,13 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 
 	/**
 	 * The names this package used before it grew upstream's. Kept so existing
-	 * callers do not break on a rename that buys them nothing.
+	 * callers do not break on a rename that buys them nothing, and returning
+	 * the bridge result unmapped for the same reason: a caller reading `jid`
+	 * or `subscriberCount` off it would find them renamed otherwise.
+	 * `newsletterFollow` is the one that speaks upstream's shape.
 	 */
-	newsletterSubscribe: async (jid: string): Promise<NewsletterMetadata> => {
-		return bridgeNewsletterMetadataToBaileys(await (await ctx.getClient()).newsletterSubscribe(jid))
+	newsletterSubscribe: async (jid: string): Promise<NewsletterMetadataResult> => {
+		return await (await ctx.getClient()).newsletterSubscribe(jid)
 	},
 
 	newsletterUnsubscribe: async (jid: string): Promise<void> => {

@@ -275,6 +275,30 @@ describe('newsletterFetchMessages refuses the paging arguments it cannot honour'
 	})
 })
 
+/**
+ * The two names this package had before it grew upstream's. They kept working
+ * through the rename, and they have to keep returning what they returned:
+ * their callers were written against the bridge result, not upstream's names.
+ */
+describe('the legacy subscribe alias returns the bridge result, unrenamed', () => {
+	it('newsletterSubscribe answers with jid, subscriberCount and inviteCode', async () => {
+		const { methods } = makeHarness()
+
+		const result = await methods.newsletterSubscribe(JID)
+
+		expect(result).toEqual(METADATA)
+	})
+
+	it('newsletterFollow is the one that answers in upstream field names', async () => {
+		const { methods } = makeHarness()
+
+		const result = await methods.newsletterFollow(JID)
+
+		expect(result.id).toBe(JID)
+		expect(result.subscribers).toBe(42)
+	})
+})
+
 describe('subscribeNewsletterUpdates and newsletterSubscribers shape their results', () => {
 	it('the live-update duration comes back as upstream types it, a string', async () => {
 		const { methods } = makeHarness({ newsletterSubscribeLiveUpdates: async () => 300 })
