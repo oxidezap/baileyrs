@@ -220,6 +220,63 @@ A few behaviors that differ from upstream — almost always to your advantage:
   `(err as Boom).output.statusCode` pattern works unchanged. If your
   `package.json` was pulling `@hapi/boom` only for baileys, you can drop
   the dependency.
+- **Your key store also holds bridge state, so "empty" is not "unpaired".**
+  See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
+  one can break a boot path, so it has its own section.
+
+### Bridge state in your key store
+
+Upstream Baileys keeps engine state in `creds` (persisted by `saveCreds`) and
+puts only Signal key material in `keys`. baileyrs uses that same `keys` store
+as the persistence channel for the Rust core's own state as well: its device
+record, and the byte-level records the Signal namespaces are projected from.
+Those live under namespaces reserved with the **`bridge-` prefix**:
+
+| namespace | what it holds |
+| --- | --- |
+| `bridge-native-*` | the core's own encoding of a namespace that also has a Baileys projection (`bridge-native-session`, `bridge-native-prekey`, `bridge-native-device`, …) |
+| `bridge-*` | core records with no Baileys equivalent (`bridge-signed-prekey`, `bridge-sent-message`, `bridge-msg-secret`, `bridge-meta`, …) |
+
+No upstream Baileys namespace starts with `bridge-`, and none of your data is
+stored under one. Which of them you actually see depends on what the engine
+touches; `bridge-native-device` shows up first, because the core reads its
+device record while the socket is still `connecting` — **before any QR, before
+any pairing**.
+
+That last point is the one that bites. A store that counted rows to decide
+whether this was a first run reports a session that does not exist:
+
+```js
+// WRONG on baileyrs: bridge-native-device is already in the table before pairing,
+// so this never reports empty again — the bot skips its pairing flow and hangs.
+const isEmpty = () => !creds.registered && !creds.me?.id && countKeys() === 0
+
+// Right, on baileyrs and upstream alike: creds are the pairing record.
+const isEmpty = () => !creds.registered && !creds.me?.id
+```
+
+**A non-empty key store is not evidence of a session.** `creds.registered` and
+`creds.me?.id` are, and they are the only thing to check.
+
+When you do need to walk a store — enumerating, counting, exporting, migrating
+— skip the bridge rows with the exported classifier rather than matching the
+prefix yourself. It is derived from the internal routing catalog, so a
+namespace added in a later release is covered without you changing anything:
+
+```ts
+import { BRIDGE_INTERNAL_KEY_TYPES, isBridgeInternalKeyType } from '@oxidezap/baileyrs'
+
+isBridgeInternalKeyType('bridge-native-device') // true
+isBridgeInternalKeyType('pre-key')              // false
+
+// Everything the bridge can write today, e.g. for a SQL `NOT IN (...)` clause.
+BRIDGE_INTERNAL_KEY_TYPES
+```
+
+This applies to stores you own — the upstream `{ creds, keys }` shape that
+baileyrs auto-wraps, including `useLegacyMultiFileAuthState`. It does not apply
+to `useMultiFileAuthState`, whose `keys` is a projection over the engine's own
+store; the `bridge-` namespaces never surface through it.
 
 ## Disclaimer
 
