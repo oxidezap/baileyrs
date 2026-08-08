@@ -6,61 +6,71 @@ import type {
 	WAPrivacyValue,
 	WAReadReceiptsValue
 } from '../Types/index.ts'
-import { Boom } from '../Utils/boom.ts'
 import type { SocketContext } from './types.ts'
 
-export const makePrivacyMethods = (ctx: SocketContext) => ({
-	fetchPrivacySettings: async (force?: boolean) => {
-		void force
-		return (await ctx.getClient()).fetchPrivacySettings()
-	},
+export const makePrivacyMethods = (ctx: SocketContext) => {
+	/** Per socket, so a send loop calling this does not flood the log. */
+	let warnedAboutPrivacyTokens = false
 
-	updatePrivacySetting: async (category: string, value: string) => {
-		await (await ctx.getClient()).updatePrivacySetting(category, value)
-	},
+	return {
+		fetchPrivacySettings: async (force?: boolean) => {
+			void force
+			return (await ctx.getClient()).fetchPrivacySettings()
+		},
 
-	updateLastSeenPrivacy: async (value: WAPrivacyValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('last', value)
-	},
+		updatePrivacySetting: async (category: string, value: string) => {
+			await (await ctx.getClient()).updatePrivacySetting(category, value)
+		},
 
-	updateOnlinePrivacy: async (value: WAPrivacyOnlineValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('online', value)
-	},
+		updateLastSeenPrivacy: async (value: WAPrivacyValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('last', value)
+		},
 
-	updateProfilePicturePrivacy: async (value: WAPrivacyValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('profile', value)
-	},
+		updateOnlinePrivacy: async (value: WAPrivacyOnlineValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('online', value)
+		},
 
-	updateStatusPrivacy: async (value: WAPrivacyValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('status', value)
-	},
+		updateProfilePicturePrivacy: async (value: WAPrivacyValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('profile', value)
+		},
 
-	updateReadReceiptsPrivacy: async (value: WAReadReceiptsValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('readreceipts', value)
-	},
+		updateStatusPrivacy: async (value: WAPrivacyValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('status', value)
+		},
 
-	updateGroupsAddPrivacy: async (value: WAPrivacyGroupAddValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('groupadd', value)
-	},
+		updateReadReceiptsPrivacy: async (value: WAReadReceiptsValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('readreceipts', value)
+		},
 
-	updateCallPrivacy: async (value: WAPrivacyCallValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('calladd', value)
-	},
+		updateGroupsAddPrivacy: async (value: WAPrivacyGroupAddValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('groupadd', value)
+		},
 
-	updateMessagesPrivacy: async (value: WAPrivacyMessagesValue) => {
-		await (await ctx.getClient()).updatePrivacySetting('messages', value)
-	},
+		updateCallPrivacy: async (value: WAPrivacyCallValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('calladd', value)
+		},
 
-	/**
-	 * Declared to reject rather than to run: the core issues these tokens on
-	 * every 1:1 send, rate limited by a sender bucket. A manual call would
-	 * issue a second token outside that bucket and move the timestamp the
-	 * limiter reads.
-	 */
-	issuePrivacyTokens: async (_jids: string[], _timestamp?: number): Promise<never> => {
-		throw new Boom(
-			'issuePrivacyTokens is not supported: the engine issues privacy tokens automatically on every 1:1 send, and a manual call would bypass its rate limiter. Remove the call.',
-			{ statusCode: 501 }
-		)
+		updateMessagesPrivacy: async (value: WAPrivacyMessagesValue) => {
+			await (await ctx.getClient()).updatePrivacySetting('messages', value)
+		},
+
+		/**
+		 * Resolves without issuing anything. The engine already issues these
+		 * tokens on every 1:1 send, rate limited by a sender bucket, so the
+		 * caller's intent is met before they ask; a second manual issue would land
+		 * outside that bucket and move the timestamp the limiter reads.
+		 *
+		 * Warned once rather than thrown: upstream callers await this inside a send
+		 * workflow, and rejecting would abort a workflow that was going to succeed.
+		 */
+		issuePrivacyTokens: async (jids: string[], _timestamp?: number): Promise<void> => {
+			if (!warnedAboutPrivacyTokens) {
+				warnedAboutPrivacyTokens = true
+				ctx.logger.warn(
+					{ count: jids.length },
+					'issuePrivacyTokens is a no-op: the engine issues privacy tokens on every 1:1 send, so this call can be removed'
+				)
+			}
+		}
 	}
-})
+}

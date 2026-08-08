@@ -91,15 +91,35 @@ describe('privacy wrappers do not swallow a bridge failure', () => {
 	}
 })
 
-describe('issuePrivacyTokens refuses instead of issuing a second token', () => {
-	it('rejects, and the message says the engine already does it', async () => {
+/**
+ * The engine issues these on every 1:1 send, so the caller's intent is already
+ * met and the method has nothing to do. Resolving keeps an upstream send
+ * workflow that awaits it running; issuing anything would land outside the
+ * core's rate bucket and move the timestamp its limiter reads.
+ */
+describe('issuePrivacyTokens is a no-op that says so once', () => {
+	it('resolves without reaching the bridge', async () => {
 		const { calls, methods } = makeHarness()
 
-		await expect(methods.issuePrivacyTokens(['15550000000@s.whatsapp.net'])).rejects.toThrow(
-			/issues privacy tokens automatically/
-		)
-		// Nothing reached the bridge: a rejection that still sent something
-		// would be the regression this method exists to avoid.
+		await methods.issuePrivacyTokens(['15550000000@s.whatsapp.net'])
+
 		expect(calls).toEqual([])
+	})
+
+	it('warns the first time and stays quiet after, so a send loop does not flood', async () => {
+		const warnings: string[] = []
+		const ctx = {
+			ev: new EventEmitter(),
+			logger: { ...logger, warn: (_data: unknown, msg: string) => warnings.push(msg) },
+			getClient: async () => ({}) as never
+		} as unknown as SocketContext
+		const methods = makePrivacyMethods(ctx)
+
+		await methods.issuePrivacyTokens(['a@s.whatsapp.net'])
+		await methods.issuePrivacyTokens(['b@s.whatsapp.net'])
+		await methods.issuePrivacyTokens(['c@s.whatsapp.net'])
+
+		expect(warnings.length).toBe(1)
+		expect(warnings[0]).toContain('no-op')
 	})
 })
