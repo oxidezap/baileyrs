@@ -19,6 +19,7 @@
  * runner down with it", which is the whole distinction under test.
  */
 
+import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -100,12 +101,19 @@ const runProbes = (folder: string) => {
 			const pending = new Promise(resolve => {
 				timer = setTimeout(() => resolve({ label, settled: 'pending' }), 8000)
 			})
-			const settled = run().then(
-				() => ({ label, settled: 'resolved' }),
-				e => ({ label, settled: 'rejected', kind: e?.kind, field: e?.field })
-			)
-			report(await Promise.race([settled, pending]))
+			const outcome = await Promise.race([
+				run().then(
+					() => ({ label, settled: 'resolved' }),
+					e => ({ label, settled: 'rejected', kind: e?.kind, field: e?.field })
+				),
+				pending
+			])
 			clearTimeout(timer)
+			report(outcome)
+			// The call is still in flight, so continuing would reach free()
+			// with a pending call: the heap corruption bridge-free-safety
+			// documents, whose crash would then be reported instead of this.
+			if (outcome.settled === 'pending') process.exit(9)
 		}
 
 		${PROBES.map(({ label, call }) => `await probe(${JSON.stringify(label)}, () => ${call})`).join('\n\t\t')}
@@ -124,6 +132,12 @@ const runProbes = (folder: string) => {
 		child.stderr.on('data', chunk => (stderr += String(chunk)))
 
 		const timer = setTimeout(() => child.kill('SIGKILL'), 60_000)
+		// Unlistened, a failed spawn throws in the test runner and leaves this
+		// promise pending until the suite times out.
+		child.on('error', error => {
+			clearTimeout(timer)
+			resolve({ code: null, outcomes: [], stderr: `${stderr}\nspawn failed: ${String(error)}` })
+		})
 		// `close`, not `exit`: the parent has to have drained the pipes before
 		// the reports can be parsed.
 		child.on('close', code => {
@@ -152,8 +166,12 @@ describe('bridge: a bad argument rejects instead of escaping the caller', { time
 
 	it('every probe settles, and the process survives all of them', () => {
 		// On 0.6.5 the first probe alone ended the child, so nothing after it
-		// was ever reported.
-		expect(run.outcomes.map(outcome => outcome.label)).toEqual(PROBES.map(probe => probe.label))
+		// was ever reported. The child's stderr is the only account of why.
+		assert.deepStrictEqual(
+			run.outcomes.map(outcome => outcome.label),
+			PROBES.map(probe => probe.label),
+			`child exited with ${run.code}; stderr:\n${run.stderr}`
+		)
 		expect(run.code).toBe(0)
 	})
 
