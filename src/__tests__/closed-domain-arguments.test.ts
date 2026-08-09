@@ -479,7 +479,18 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 	it('a value that cannot be turned into a string is still reported as a bad argument', async () => {
 		// Rendering the value is part of the message, so a value that throws on
 		// conversion could replace the 400 with a TypeError from our own report.
-		for (const hostile of [Object.create(null) as unknown, { toString: () => JSON.parse('nope') }]) {
+		// A revoked proxy throws on any read at all, `Object.prototype.toString`
+		// included, so the fallback cannot read the value either.
+		const revocable = Proxy.revocable({}, {})
+		revocable.revoke()
+		const hostileValues: unknown[] = [
+			Object.create(null),
+			{ toString: () => JSON.parse('nope') },
+			revocable.proxy,
+			new Proxy({}, { get: () => JSON.parse('nope') })
+		]
+
+		for (const hostile of hostileValues) {
 			const error = await settle(() => sock.groupParticipantsUpdate(GROUP, [USER], arg(hostile)))
 			expect(statusCodeOf(error)).toBe(400)
 			expect(isDomainRejection(error)).toBe(true)

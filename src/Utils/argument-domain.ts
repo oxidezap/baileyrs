@@ -6,9 +6,9 @@ const shown = (value: unknown): string => {
 	try {
 		return String(value)
 	} catch {
-		// A null-prototype object, or one whose conversion throws. Reporting the
-		// bad argument must not fail on the argument.
-		return Object.prototype.toString.call(value)
+		// A null-prototype object, a revoked proxy, a trap that throws. `typeof`
+		// reads nothing off the value, so reporting it cannot fail on it.
+		return `[${typeof value}]`
 	}
 }
 
