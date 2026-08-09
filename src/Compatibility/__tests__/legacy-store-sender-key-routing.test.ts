@@ -33,6 +33,18 @@ const MALFORMED = [
 	['sender without a domain', `${GROUP}:5511900000001.0`, `${GROUP}::5511900000001::`]
 ] as const
 
+/** No JID carries whitespace or a control character. Validating the chat only
+ *  by "not a separator" would let one through and make it a storage key, where
+ *  it is invisible in a log and unmatchable by a later lookup. */
+const NOT_A_JID = [
+	['space', '120363000000000001 @g.us'],
+	['inner space', '120363 000000001@g.us'],
+	['tab', `120363${String.fromCharCode(9)}000000001@g.us`],
+	['newline', `120363${String.fromCharCode(10)}000000001@g.us`],
+	['carriage return', `120363000000000001@g${String.fromCharCode(13)}.us`],
+	['null', `120363${String.fromCharCode(0)}000000001@g.us`]
+] as const
+
 describe('legacy-store sender-key routing', () => {
 	it('translates every chat kind that owns a sender key', () => {
 		for (const [label, native, legacy] of ADDRESSES) {
@@ -62,6 +74,13 @@ describe('legacy-store sender-key routing', () => {
 		for (const [label, native, legacy] of MALFORMED) {
 			expect(() => `${label}: ${legacyKey(NativeStore.SENDER_KEY, native)}`).toThrow(TypeError)
 			expect(() => `${label}: ${nativeKey(NativeStore.SENDER_KEY, legacy)}`).toThrow(TypeError)
+		}
+	})
+
+	it('rejects a chat that is not a JID, in both directions', () => {
+		for (const [label, chat] of NOT_A_JID) {
+			expect(() => `${label}: ${legacyKey(NativeStore.SENDER_KEY, `${chat}:5511900000001@c.us.0`)}`).toThrow(TypeError)
+			expect(() => `${label}: ${nativeKey(NativeStore.SENDER_KEY, `${chat}::5511900000001::0`)}`).toThrow(TypeError)
 		}
 	})
 
