@@ -324,55 +324,45 @@ export const getUrlInfo = async (
 			getLinkPreview: (url: string, options: Record<string, unknown>) => Promise<LinkPreviewResult>
 		}
 
-		// One deadline for the whole call rather than a fresh timer per step.
-		// The parser starts its own only once the resolver returns, so a slow
-		// lookup and a slow server each got the full timeout and a 3s call could
-		// run 6s. Resolving here first and handing over what is left holds both
-		// inside one budget.
-		const deadline = Date.now() + opts.fetchOpts.timeout
-		const remaining = () => Math.max(1, deadline - Date.now())
-		const beforeDeadline = async <T>(work: Promise<T>): Promise<T> => {
-			const signal = AbortSignal.timeout(remaining())
-			return await Promise.race([
-				work,
-				new Promise<never>((_resolve, reject) =>
-					signal.addEventListener('abort', () => reject(signal.reason), { once: true })
-				)
-			])
-		}
+		// The whole call is raced, not each step inside it. The parser takes its
+		// timeout up front but runs the resolver hook before starting that timer,
+		// so bounding the lookup and the request separately still let them add
+		// up. Racing the call is the only bound the parser cannot walk past.
+		const deadline = AbortSignal.timeout(opts.fetchOpts.timeout)
 
-		await beforeDeadline(assertPublicDestination(new URL(previewLink)))
-
-		const info = await getLinkPreview(previewLink, {
-			...opts.fetchOpts,
-			timeout: remaining(),
-			// `manual`, not `follow`: the redirect handler below only runs on
-			// manual, so following automatically would send every hop unchecked.
-			followRedirects: 'manual',
-			// Same site only, so a preview cannot become an open redirect
-			// follower. One hop, because that is what the parser offers under
-			// manual redirects: it consults this once and fetches once more.
-			handleRedirects: (baseURL: string, forwardedURL: string) => {
-				const from = new URL(baseURL)
-				const to = new URL(forwardedURL)
-				// Scheme and port too, not the host alone: the follow-up request
-				// carries the caller's headers, so a hop to http:// on the same
-				// name would put their credentials on the wire in clear, and one
-				// to another port would hand them to a different service.
-				if (to.protocol !== from.protocol || to.port !== from.port) return false
-				return (
-					to.hostname === from.hostname ||
-					to.hostname === `www.${from.hostname}` ||
-					`www.${to.hostname}` === from.hostname
-				)
-			},
-			// Resolves the host so the address, not the name, is judged. The
-			// parser rejects loopback on what this returns, and the private
-			// ranges are rejected here. A redirect brings it back, which is why
-			// it is bounded by the shared deadline rather than its own timer.
-			resolveDNSHost: async (target: string) => await beforeDeadline(publicAddressOf(new URL(target))),
-			headers: opts.fetchOpts?.headers as Record<string, string> | undefined
-		})
+		const info = await Promise.race([
+			getLinkPreview(previewLink, {
+				...opts.fetchOpts,
+				// `manual`, not `follow`: the redirect handler below only runs on
+				// manual, so following automatically would send every hop unchecked.
+				followRedirects: 'manual',
+				// Same site only, so a preview cannot become an open redirect
+				// follower. One hop, because that is what the parser offers under
+				// manual redirects: it consults this once and fetches once more.
+				handleRedirects: (baseURL: string, forwardedURL: string) => {
+					const from = new URL(baseURL)
+					const to = new URL(forwardedURL)
+					// Scheme and port too, not the host alone: the follow-up request
+					// carries the caller's headers, so a hop to http:// on the same
+					// name would put their credentials on the wire in clear, and one
+					// to another port would hand them to a different service.
+					if (to.protocol !== from.protocol || to.port !== from.port) return false
+					return (
+						to.hostname === from.hostname ||
+						to.hostname === `www.${from.hostname}` ||
+						`www.${to.hostname}` === from.hostname
+					)
+				},
+				// Resolves the host so the address, not the name, is judged. The
+				// parser rejects loopback on what this returns, and the private
+				// ranges are rejected here. A redirect brings it back.
+				resolveDNSHost: async (target: string) => await publicAddressOf(new URL(target)),
+				headers: opts.fetchOpts?.headers as Record<string, string> | undefined
+			}),
+			new Promise<never>((_resolve, reject) =>
+				deadline.addEventListener('abort', () => reject(deadline.reason), { once: true })
+			)
+		])
 
 		if (!info?.title) return undefined
 
