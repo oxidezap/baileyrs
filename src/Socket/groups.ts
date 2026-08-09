@@ -28,7 +28,7 @@ const GROUP_SETTING_ALIASES = {
 /** The table is the definition: both the type and the accepted set come off it. */
 export type GroupSetting = keyof typeof GROUP_SETTING_ALIASES
 
-export const GROUP_SETTINGS = Object.keys(GROUP_SETTING_ALIASES) as GroupSetting[]
+export const GROUP_SETTINGS: readonly GroupSetting[] = Object.keys(GROUP_SETTING_ALIASES) as GroupSetting[]
 
 export const GROUP_REQUEST_ACTIONS = ['approve', 'reject'] as const
 
