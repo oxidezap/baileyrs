@@ -1,7 +1,16 @@
 import { Boom } from './boom.ts'
 
 /** Quoted when it is a string, bare otherwise, so `""` and `undefined` read apart. */
-const shown = (value: unknown): string => (typeof value === 'string' ? JSON.stringify(value) : String(value))
+const shown = (value: unknown): string => {
+	if (typeof value === 'string') return JSON.stringify(value)
+	try {
+		return String(value)
+	} catch {
+		// A null-prototype object, or one whose conversion throws. Reporting the
+		// bad argument must not fail on the argument.
+		return Object.prototype.toString.call(value)
+	}
+}
 
 /**
  * Refuse a value outside a closed set, naming the method, the parameter, what

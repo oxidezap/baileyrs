@@ -476,6 +476,17 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 		expect(isDomainRejection(error)).toBe(false)
 	})
 
+	it('a value that cannot be turned into a string is still reported as a bad argument', async () => {
+		// Rendering the value is part of the message, so a value that throws on
+		// conversion could replace the 400 with a TypeError from our own report.
+		for (const hostile of [Object.create(null) as unknown, { toString: () => JSON.parse('nope') }]) {
+			const error = await settle(() => sock.groupParticipantsUpdate(GROUP, [USER], arg(hostile)))
+			expect(statusCodeOf(error)).toBe(400)
+			expect(isDomainRejection(error)).toBe(true)
+			expect((error as Error).message).toContain('[object')
+		}
+	})
+
 	it('every closed-domain parameter on the socket is covered or exempt', async () => {
 		const directory = path.resolve(import.meta.dirname, '../Socket')
 		const covered = new Set(CASES.flatMap(entry => (entry.source ? [entry.source] : [])))

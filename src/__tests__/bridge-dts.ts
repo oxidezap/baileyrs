@@ -28,7 +28,9 @@ export const loadBridgeDts = (): string => {
 
 /** The members of an `export type X = "a" | "b"`, in declaration order. */
 export const bridgeStringUnion = (dts: string, name: string): string[] => {
-	const declaration = new RegExp(`^export type ${name} = (.+);$`, 'mu').exec(dts)
+	// `[^;]+` rather than `.+`: the generator wraps long unions across lines, as
+	// it already does for WhatsAppEvent, and a body-shaped match survives that.
+	const declaration = new RegExp(`^export type ${name} = ([^;]+);$`, 'mu').exec(dts)
 	if (!declaration) throw new Error(`the bridge no longer declares ${name}`)
 	return [...declaration[1]!.matchAll(/"([^"]*)"/gu)].map(match => match[1]!)
 }
