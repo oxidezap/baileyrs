@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/oxidezap/baileyrs/compare/v0.1.1...v0.1.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **legacy-store:** accept status/broadcast sender-key addresses ([#38](https://github.com/oxidezap/baileyrs/issues/38)) ([51b6919](https://github.com/oxidezap/baileyrs/commit/51b6919781f0d60b0747434456e6c8c25c271ac4))
+
 ## [0.1.1](https://github.com/oxidezap/baileyrs/compare/v0.1.0...v0.1.1) (2026-08-09)
 
 
