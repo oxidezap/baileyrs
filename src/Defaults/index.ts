@@ -131,8 +131,12 @@ export type MediaType = keyof typeof MEDIA_HKDF_KEY_MAPPING
 
 export const MEDIA_KEYS = Object.keys(MEDIA_PATH_MAP) as MediaType[]
 
-/** The type's own members, for checking one that arrives untyped. */
-export const MEDIA_TYPES = Object.keys(MEDIA_HKDF_KEY_MAPPING) as MediaType[]
+/**
+ * The type's own members, for checking one that arrives untyped. Readonly
+ * because it is public and the upload guard reads it: editing it would change
+ * what every caller is allowed to send.
+ */
+export const MEDIA_TYPES: readonly MediaType[] = Object.keys(MEDIA_HKDF_KEY_MAPPING) as MediaType[]
 
 /** 120s timeout for history sync stall detection, matching upstream Baileys. */
 export const HISTORY_SYNC_PAUSED_TIMEOUT_MS = 120_000
