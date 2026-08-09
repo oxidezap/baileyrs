@@ -73,6 +73,11 @@ export const UPSTREAM_SK_KEY_LID = `${SAMPLE_GROUP}::100000037037034_1::0`
 export const BRIDGE_SK_KEY_PN_DEV = `${SAMPLE_GROUP}:559980000003:5@s.whatsapp.net.0`
 export const UPSTREAM_SK_KEY_PN_DEV = `${SAMPLE_GROUP}::559980000003::5`
 
+// Status is fanned out with sender keys exactly like a group chat is.
+export const SAMPLE_STATUS = 'status@broadcast'
+export const BRIDGE_SK_KEY_STATUS = `${SAMPLE_STATUS}:559980000003:76@c.us.0`
+export const UPSTREAM_SK_KEY_STATUS = `${SAMPLE_STATUS}::559980000003::76`
+
 // Session keys (pairwise, no group prefix).
 export const BRIDGE_SESSION_KEY_LID = '100000037037034@lid.0'
 export const UPSTREAM_SESSION_KEY_LID = '100000037037034_1.0'

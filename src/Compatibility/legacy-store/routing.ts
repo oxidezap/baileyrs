@@ -76,15 +76,21 @@ function legacySignalAddress(address: string): string {
 	return `${user}${SignalAddressSyntax.SIGNAL_DEVICE}${parsed.device}`
 }
 
+/** A sender key is `<chatJid>:<signalAddress>`, and the chat is a group, status
+ *  or a broadcast list. Which chats fan out through sender keys is the core's
+ *  namespace, so the boundary validates the JID shape, not the domain. No JID
+ *  carries whitespace or a control character, and letting one through would
+ *  mint a storage key that no later lookup can match. */
+const CHAT_JID = /^[^\s:@\p{Cc}]+@[^\s:@\p{Cc}]+$/u
+
 function legacySenderKey(key: string): string {
-	const groupTerminator = `${SignalAddressSyntax.DOMAIN}${SignalDomain.GROUP}${SignalAddressSyntax.JID_DEVICE}`
-	const groupEnd = key.indexOf(groupTerminator)
-	if (groupEnd < 0) throw new TypeError(`invalid native sender-key address: ${key}`)
-	const addressStart = groupEnd + groupTerminator.length
-	const group = key.slice(0, addressStart - SignalAddressSyntax.JID_DEVICE.length)
-	const address = legacySignalAddress(key.slice(addressStart))
+	const chatDomain = key.indexOf(SignalAddressSyntax.DOMAIN)
+	const chatEnd = chatDomain < 0 ? -1 : key.indexOf(SignalAddressSyntax.JID_DEVICE, chatDomain)
+	const chat = chatEnd < 0 ? '' : key.slice(0, chatEnd)
+	if (!CHAT_JID.test(chat)) throw new TypeError(`invalid native sender-key address: ${key}`)
+	const address = legacySignalAddress(key.slice(chatEnd + SignalAddressSyntax.JID_DEVICE.length))
 	const deviceSeparator = address.lastIndexOf(SignalAddressSyntax.SIGNAL_DEVICE)
-	return [group, address.slice(0, deviceSeparator), address.slice(deviceSeparator + 1)].join(
+	return [chat, address.slice(0, deviceSeparator), address.slice(deviceSeparator + 1)].join(
 		SignalAddressSyntax.SENDER_KEY_PART
 	)
 }
@@ -146,7 +152,7 @@ function nativeSignalAddress(address: string): string {
 
 function nativeSenderKey(key: string): string {
 	const parts = key.split(SignalAddressSyntax.SENDER_KEY_PART)
-	if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+	if (parts.length !== 3 || !CHAT_JID.test(parts[0]!) || !parts[1] || !parts[2]) {
 		throw new TypeError(`invalid legacy sender-key address: ${key}`)
 	}
 	return `${parts[0]}${SignalAddressSyntax.JID_DEVICE}${nativeSignalAddress(`${parts[1]}.${parts[2]}`)}`

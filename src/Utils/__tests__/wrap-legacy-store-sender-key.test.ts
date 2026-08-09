@@ -17,8 +17,10 @@ import { wrapLegacyStore } from '../wrap-legacy-store.ts'
 import {
 	BRIDGE_SK_KEY_LID,
 	BRIDGE_SK_KEY_PN_DEV,
+	BRIDGE_SK_KEY_STATUS,
 	UPSTREAM_SK_KEY_LID,
 	UPSTREAM_SK_KEY_PN_DEV,
+	UPSTREAM_SK_KEY_STATUS,
 	buildBridgeSenderKeyBytes,
 	fill,
 	makeWrapped
@@ -37,6 +39,12 @@ describe('wrap-legacy-store: sender_key key-name translation', () => {
 		const { wrapped, keys } = await makeWrapped()
 		await wrapped.set('sender_key', BRIDGE_SK_KEY_PN_DEV, buildBridgeSenderKeyBytes())
 		expect(keys.raw['sender-key']?.[UPSTREAM_SK_KEY_PN_DEV]).toBeDefined()
+	})
+
+	test('status chat translates like a group chat', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		await wrapped.set('sender_key', BRIDGE_SK_KEY_STATUS, buildBridgeSenderKeyBytes())
+		expect(keys.raw['sender-key']?.[UPSTREAM_SK_KEY_STATUS]).toBeDefined()
 	})
 
 	test('bridge GET reads back from the upstream-formatted key', async () => {
@@ -64,6 +72,34 @@ describe('wrap-legacy-store: sender_key key-name translation', () => {
 
 		const out = await wrapped.get('sender_key', BRIDGE_SK_KEY_LID)
 		expect(out).not.toBe(null)
+	})
+})
+
+describe('wrap-legacy-store: sender_key batch deletion', () => {
+	test('a group + status batch deletes both instead of failing as a whole', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		await wrapped.setMany!('sender_key', [
+			[BRIDGE_SK_KEY_LID, buildBridgeSenderKeyBytes()],
+			[BRIDGE_SK_KEY_STATUS, buildBridgeSenderKeyBytes()]
+		])
+
+		await wrapped.deleteMany!('sender_key', [BRIDGE_SK_KEY_LID, BRIDGE_SK_KEY_STATUS])
+
+		expect(keys.raw['sender-key']?.[UPSTREAM_SK_KEY_LID]).toBeUndefined()
+		expect(keys.raw['sender-key']?.[UPSTREAM_SK_KEY_STATUS]).toBeUndefined()
+	})
+
+	// All-or-nothing is deliberate: an untranslatable key is a defect, and a
+	// partial delete would strip the native mirror while the legacy projection
+	// survives.
+	test('a genuinely malformed key still rejects the whole batch', async () => {
+		const { wrapped, keys } = await makeWrapped()
+		await wrapped.set('sender_key', BRIDGE_SK_KEY_LID, buildBridgeSenderKeyBytes())
+
+		await expect(wrapped.deleteMany!('sender_key', [BRIDGE_SK_KEY_LID, 'not-a-sender-key'])).rejects.toThrow(
+			/invalid native sender-key/
+		)
+		expect(keys.raw['sender-key']?.[UPSTREAM_SK_KEY_LID]).toBeDefined()
 	})
 })
 
