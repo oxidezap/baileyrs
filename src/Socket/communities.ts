@@ -2,7 +2,17 @@ import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts
 import { bridgeParticipantChangesToBaileys } from '../Compatibility/socket-results.ts'
 import { PARTICIPANT_ACTIONS, type GroupMetadata, type ParticipantAction } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
-import { makeGroupMethods } from './groups.ts'
+import {
+	GROUP_REQUEST_ACTIONS,
+	GROUP_SETTINGS,
+	JOIN_APPROVAL_MODES,
+	makeGroupMethods,
+	MEMBER_ADD_MODES,
+	type GroupRequestAction,
+	type GroupSetting,
+	type JoinApprovalMode,
+	type MemberAddMode
+} from './groups.ts'
 import type { SocketContext } from './types.ts'
 
 type LinkedGroup = {
@@ -79,7 +89,16 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		},
 
 		communityRequestParticipantsList: groups.groupRequestParticipantsList,
-		communityRequestParticipantsUpdate: groups.groupRequestParticipantsUpdate,
+
+		/**
+		 * The four below are the group operation, and they check the argument
+		 * themselves rather than delegating straight to it: a refusal has to name
+		 * the method the consumer called, not the one it happens to reuse.
+		 */
+		communityRequestParticipantsUpdate: async (jid: string, participants: string[], action: GroupRequestAction) => {
+			assertArgumentDomain('communityRequestParticipantsUpdate', 'action', action, GROUP_REQUEST_ACTIONS)
+			return groups.groupRequestParticipantsUpdate(jid, participants, action)
+		},
 
 		communityParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
 			assertArgumentDomain('communityParticipantsUpdate', 'action', action, PARTICIPANT_ACTIONS)
@@ -98,9 +117,18 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		communityAcceptInviteV4: groups.groupAcceptInviteV4,
 		communityGetInviteInfo: groups.groupGetInviteInfo,
 		communityToggleEphemeral: groups.groupToggleEphemeral,
-		communitySettingUpdate: groups.groupSettingUpdate,
-		communityMemberAddMode: groups.groupMemberAddMode,
-		communityJoinApprovalMode: groups.groupJoinApprovalMode,
+		communitySettingUpdate: async (jid: string, setting: GroupSetting): Promise<void> => {
+			assertArgumentDomain('communitySettingUpdate', 'setting', setting, GROUP_SETTINGS)
+			return groups.groupSettingUpdate(jid, setting)
+		},
+		communityMemberAddMode: async (jid: string, mode: MemberAddMode): Promise<void> => {
+			assertArgumentDomain('communityMemberAddMode', 'mode', mode, MEMBER_ADD_MODES)
+			return groups.groupMemberAddMode(jid, mode)
+		},
+		communityJoinApprovalMode: async (jid: string, mode: JoinApprovalMode): Promise<void> => {
+			assertArgumentDomain('communityJoinApprovalMode', 'mode', mode, JOIN_APPROVAL_MODES)
+			return groups.groupJoinApprovalMode(jid, mode)
+		},
 		communityFetchAllParticipating
 	}
 }

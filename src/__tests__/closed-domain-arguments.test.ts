@@ -30,6 +30,7 @@ import { after, before, describe, it } from 'node:test'
 import P from 'pino'
 
 import makeWASocket from '../Socket/index.ts'
+import { downloadMediaMessage } from '../Utils/messages.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
 import { bridgeStringUnion, loadBridgeDts } from './bridge-dts.ts'
 import { expect } from './expect.ts'
@@ -254,14 +255,48 @@ const CASES: DomainCase[] = [
 		source: 'messages.ts:sendReceipts:type'
 	},
 	{
-		// The socket method is a delegate, and `downloadMediaMessage` is also
-		// exported on its own, so the check belongs there and the message says
-		// that name.
-		label: 'downloadMediaMessage',
+		label: 'downloadMedia',
 		parameter: 'type',
 		values: ['buffer', 'stream'],
 		call: (sock, value) =>
 			sock.downloadMedia({ key: { remoteJid: USER, id: '3EB0' }, message: {} }, arg<'buffer'>(value), {})
+	},
+	{
+		// The socket method delegates to this one, which is also exported on its
+		// own, so both entry points check and each reports its own name.
+		label: 'downloadMediaMessage',
+		parameter: 'type',
+		values: ['buffer', 'stream'],
+		call: (_sock, value) =>
+			downloadMediaMessage({ key: { remoteJid: USER, id: '3EB0' }, message: {} }, arg<'buffer'>(value), {})
+	},
+	{
+		label: 'communityRequestParticipantsUpdate',
+		parameter: 'action',
+		values: ['approve', 'reject'],
+		call: (sock, value) => sock.communityRequestParticipantsUpdate(GROUP, [USER], arg(value)),
+		source: 'communities.ts:communityRequestParticipantsUpdate:action'
+	},
+	{
+		label: 'communitySettingUpdate',
+		parameter: 'setting',
+		values: ['announcement', 'not_announcement', 'locked', 'unlocked'],
+		call: (sock, value) => sock.communitySettingUpdate(GROUP, arg(value)),
+		source: 'communities.ts:communitySettingUpdate:setting'
+	},
+	{
+		label: 'communityMemberAddMode',
+		parameter: 'mode',
+		values: ['admin_add', 'all_member_add'],
+		call: (sock, value) => sock.communityMemberAddMode(GROUP, arg(value)),
+		source: 'communities.ts:communityMemberAddMode:mode'
+	},
+	{
+		label: 'communityJoinApprovalMode',
+		parameter: 'mode',
+		values: ['on', 'off'],
+		call: (sock, value) => sock.communityJoinApprovalMode(GROUP, arg(value)),
+		source: 'communities.ts:communityJoinApprovalMode:mode'
 	}
 ]
 

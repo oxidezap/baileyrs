@@ -37,7 +37,13 @@ import { DisconnectReason, WA_PRESENCES } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
-import { _registerActiveBridgeClient, _unregisterActiveBridgeClient, downloadMediaMessage } from '../Utils/messages.ts'
+import {
+	_registerActiveBridgeClient,
+	_unregisterActiveBridgeClient,
+	downloadMediaMessage,
+	MEDIA_DOWNLOAD_TYPES,
+	type MediaDownloadType
+} from '../Utils/messages.ts'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
@@ -983,11 +989,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
 		...makeServerQueryMethods(ctx),
-		downloadMedia: async <T extends 'buffer' | 'stream'>(
+		downloadMedia: async <T extends MediaDownloadType>(
 			message: WAMessage,
 			type: T,
 			options: MediaDownloadOptions = {}
 		) => {
+			// Checked here as well as in the helper: the client is awaited while
+			// the context below is built, and a check past that await reports a
+			// stack without the caller in it.
+			assertArgumentDomain('downloadMedia', 'type', type, MEDIA_DOWNLOAD_TYPES)
 			return downloadMediaMessage(message, type, options, {
 				logger,
 				reuploadRequest: (m: WAMessage) => sock.updateMediaMessage(m),
