@@ -7,21 +7,50 @@ import type { ChatLabelAssociationActionBody } from './LabelAssociation.ts'
 import type { MessageLabelAssociationActionBody } from './LabelAssociation.ts'
 import type { MinimalMessage, WAMessageKey } from './Message.ts'
 
-/** privacy settings in WhatsApp Web */
-export type WAPrivacyValue = 'all' | 'contacts' | 'contact_blacklist' | 'none'
+/**
+ * privacy settings in WhatsApp Web
+ *
+ * Each of these is a set first and a type second: the wrappers that take one
+ * check the value against the same array the type is derived from, so a value
+ * cannot be accepted by the compiler and refused at runtime, or the reverse.
+ */
+export const WA_PRIVACY_VALUES = ['all', 'contacts', 'contact_blacklist', 'none'] as const
 
-export type WAPrivacyOnlineValue = 'all' | 'match_last_seen'
+export type WAPrivacyValue = (typeof WA_PRIVACY_VALUES)[number]
 
-export type WAPrivacyGroupAddValue = 'all' | 'contacts' | 'contact_blacklist'
+export const WA_PRIVACY_ONLINE_VALUES = ['all', 'match_last_seen'] as const
 
-export type WAReadReceiptsValue = 'all' | 'none'
+export type WAPrivacyOnlineValue = (typeof WA_PRIVACY_ONLINE_VALUES)[number]
 
-export type WAPrivacyCallValue = 'all' | 'known'
+export const WA_PRIVACY_GROUP_ADD_VALUES = ['all', 'contacts', 'contact_blacklist'] as const
 
-export type WAPrivacyMessagesValue = 'all' | 'contacts'
+export type WAPrivacyGroupAddValue = (typeof WA_PRIVACY_GROUP_ADD_VALUES)[number]
+
+export const WA_READ_RECEIPTS_VALUES = ['all', 'none'] as const
+
+export type WAReadReceiptsValue = (typeof WA_READ_RECEIPTS_VALUES)[number]
+
+export const WA_PRIVACY_CALL_VALUES = ['all', 'known'] as const
+
+export type WAPrivacyCallValue = (typeof WA_PRIVACY_CALL_VALUES)[number]
+
+export const WA_PRIVACY_MESSAGES_VALUES = ['all', 'contacts'] as const
+
+export type WAPrivacyMessagesValue = (typeof WA_PRIVACY_MESSAGES_VALUES)[number]
+
+/** the two the account itself broadcasts, as opposed to the per-chat states */
+export const WA_PRESENCE_STATUSES = ['unavailable', 'available'] as const
+
+export type WAPresenceStatus = (typeof WA_PRESENCE_STATUSES)[number]
+
+export const WA_CHAT_STATES = ['composing', 'recording', 'paused'] as const
+
+export type WAChatState = (typeof WA_CHAT_STATES)[number]
 
 /** set of statuses visible to other people; see updatePresence() in WhatsAppWeb.Send */
-export type WAPresence = 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'
+export const WA_PRESENCES = [...WA_PRESENCE_STATUSES, ...WA_CHAT_STATES] as const
+
+export type WAPresence = (typeof WA_PRESENCES)[number]
 
 export const ALL_WA_PATCH_NAMES = [
 	'critical_block',

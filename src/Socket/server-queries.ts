@@ -2,8 +2,13 @@ import type { BotListResult, NewChatMessageCappingResult } from '@oxidezap/whats
 import type { BotListInfo } from '../Types/Chat.ts'
 import type { NewChatMessageCapInfo } from '../Types/State.ts'
 import type { MediaConnInfo } from '../Types/Message.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { SocketContext } from './types.ts'
+
+export const DIRTY_BIT_TYPES = ['account_sync', 'groups'] as const
+
+export type DirtyBitType = (typeof DIRTY_BIT_TYPES)[number]
 
 /**
  * Every section, flattened and deduplicated, rather than only the section the
@@ -98,7 +103,8 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 			return toCapInfo(await (await ctx.getClient()).fetchNewChatMessageCappingInfo())
 		},
 
-		cleanDirtyBits: async (type: 'account_sync' | 'groups', fromTimestamp?: number | string): Promise<void> => {
+		cleanDirtyBits: async (type: DirtyBitType, fromTimestamp?: number | string): Promise<void> => {
+			assertArgumentDomain('cleanDirtyBits', 'type', type, DIRTY_BIT_TYPES)
 			let timestamp: number | null = null
 			if (fromTimestamp !== undefined) {
 				// A blank string is not a timestamp, and `Number('')` is the epoch,

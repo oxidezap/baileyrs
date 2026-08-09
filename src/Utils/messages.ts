@@ -29,6 +29,7 @@ import type {
 import { WAMessageStatus, WAProto } from '../Types/index.ts'
 import { proto } from '../WAProto/runtime.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
+import { assertArgumentDomain } from './argument-domain.ts'
 import { Boom } from './boom.ts'
 import { sha256 } from './crypto.ts'
 import { getKeyAuthor, toNumber, unixTimestampSeconds } from './generics.ts'
@@ -826,6 +827,10 @@ export type DownloadMediaMessageContext = {
 	waClient?: Pick<WasmWhatsAppClient, 'downloadMedia' | 'downloadMediaStream'>
 }
 
+export const MEDIA_DOWNLOAD_TYPES = ['buffer', 'stream'] as const
+
+export type MediaDownloadType = (typeof MEDIA_DOWNLOAD_TYPES)[number]
+
 /**
  * Downloads the given message. Throws an error if it's not a media message.
  *
@@ -839,12 +844,15 @@ export type DownloadMediaMessageContext = {
  * several sockets should pass `ctx` explicitly, because the registration points
  * at whichever client was created last.
  */
-export const downloadMediaMessage = async <Type extends 'buffer' | 'stream'>(
+export const downloadMediaMessage = async <Type extends MediaDownloadType>(
 	message: WAMessage,
 	type: Type,
 	options: MediaDownloadOptions,
 	ctx?: DownloadMediaMessageContext
 ) => {
+	// Anything but 'buffer' used to take the stream branch, so a typo returned
+	// a Readable to a caller holding it as a Buffer.
+	assertArgumentDomain('downloadMediaMessage', 'type', type, MEDIA_DOWNLOAD_TYPES)
 	const waClient = ctx?.waClient ?? activeBridgeClient
 	if (!waClient) {
 		throw new Boom(

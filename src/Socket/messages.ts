@@ -11,7 +11,8 @@ import type {
 	WAMessageContent,
 	WAMessageKey
 } from '../Types/index.ts'
-import { WAProto } from '../Types/index.ts'
+import { MESSAGE_RECEIPT_TYPES, WAProto } from '../Types/index.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
 import { jidNormalizedUser } from '../WABinary/index.ts'
@@ -227,6 +228,9 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 * Not supported: 'hist_sync', 'peer_msg' (logged as warning)
 	 */
 	sendReceipt: async (jid: string, participant: string | undefined, messageIds: string[], type: MessageReceiptType) => {
+		// Ahead of the empty-list exit: the types this method handles elsewhere
+		// resolve without sending anything, so a typo looked like a no-op.
+		assertArgumentDomain('sendReceipt', 'type', type, MESSAGE_RECEIPT_TYPES)
 		if (!messageIds.length) return
 
 		if (type === 'read' || type === 'read-self') {
@@ -261,6 +265,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 	 * Send receipts for multiple message keys, grouped by JID and participant.
 	 */
 	sendReceipts: async (keys: WAMessageKey[], type: MessageReceiptType) => {
+		assertArgumentDomain('sendReceipts', 'type', type, MESSAGE_RECEIPT_TYPES)
 		const client = await ctx.getClient()
 		const receiptKeys = receiptMessageKeys(keys)
 

@@ -5,20 +5,42 @@ import {
 	bridgeParticipantChangesToBaileys
 } from '../Compatibility/socket-results.ts'
 import { emitMessageUpsert } from '../Compatibility/message-upsert.ts'
-import { WAMessageStubType, type GroupMetadata, type ParticipantAction, type WAMessageKey } from '../Types/index.ts'
+import {
+	PARTICIPANT_ACTIONS,
+	WAMessageStubType,
+	type GroupMetadata,
+	type ParticipantAction,
+	type WAMessageKey
+} from '../Types/index.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { generateMessageIDV2, unixTimestampSeconds } from '../Utils/generics.ts'
 import { proto } from '../WAProto/runtime.ts'
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import type { SocketContext } from './types.ts'
 
-type GroupSetting = 'announcement' | 'not_announcement' | 'locked' | 'unlocked'
-
-const GROUP_SETTING_ALIASES: Record<GroupSetting, { setting: 'locked' | 'announce'; value: boolean }> = {
+const GROUP_SETTING_ALIASES = {
 	announcement: { setting: 'announce', value: true },
 	not_announcement: { setting: 'announce', value: false },
 	locked: { setting: 'locked', value: true },
 	unlocked: { setting: 'locked', value: false }
-}
+} as const satisfies Record<string, { setting: 'locked' | 'announce'; value: boolean }>
+
+/** The table is the definition: both the type and the accepted set come off it. */
+export type GroupSetting = keyof typeof GROUP_SETTING_ALIASES
+
+export const GROUP_SETTINGS: readonly GroupSetting[] = Object.keys(GROUP_SETTING_ALIASES) as GroupSetting[]
+
+export const GROUP_REQUEST_ACTIONS = ['approve', 'reject'] as const
+
+export type GroupRequestAction = (typeof GROUP_REQUEST_ACTIONS)[number]
+
+export const MEMBER_ADD_MODES = ['admin_add', 'all_member_add'] as const
+
+export type MemberAddMode = (typeof MEMBER_ADD_MODES)[number]
+
+export const JOIN_APPROVAL_MODES = ['on', 'off'] as const
+
+export type JoinApprovalMode = (typeof JOIN_APPROVAL_MODES)[number]
 
 const inviteExpirationNumber = (value: number | { toNumber(): number } | null | undefined): number =>
 	typeof value === 'number' ? value : (value?.toNumber() ?? 0)
@@ -30,7 +52,8 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 	}
 
 	const groupSettingUpdate = async (jid: string, setting: GroupSetting): Promise<void> => {
-		const mapped = GROUP_SETTING_ALIASES[setting]
+		const checked = assertArgumentDomain('groupSettingUpdate', 'setting', setting, GROUP_SETTINGS)
+		const mapped = GROUP_SETTING_ALIASES[checked]
 		await (await ctx.getClient()).groupSettingUpdate(jid, mapped.setting, mapped.value)
 	}
 
@@ -109,13 +132,15 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 			return bridgeMembershipRequestsToBaileys(await (await ctx.getClient()).groupRequestParticipantsList(jid))
 		},
 
-		groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: 'approve' | 'reject') => {
+		groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: GroupRequestAction) => {
+			assertArgumentDomain('groupRequestParticipantsUpdate', 'action', action, GROUP_REQUEST_ACTIONS)
 			return bridgeMembershipRequestUpdatesToBaileys(
 				await (await ctx.getClient()).groupRequestParticipantsUpdate(jid, participants, action)
 			)
 		},
 
 		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
+			assertArgumentDomain('groupParticipantsUpdate', 'action', action, PARTICIPANT_ACTIONS)
 			return bridgeParticipantChangesToBaileys(
 				await (await ctx.getClient()).groupParticipantsUpdate(jid, participants, action)
 			)
@@ -153,11 +178,15 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 
 		groupSettingUpdate,
 
-		groupMemberAddMode: async (jid: string, mode: 'admin_add' | 'all_member_add'): Promise<void> => {
+		groupMemberAddMode: async (jid: string, mode: MemberAddMode): Promise<void> => {
+			assertArgumentDomain('groupMemberAddMode', 'mode', mode, MEMBER_ADD_MODES)
 			await (await ctx.getClient()).groupMemberAddMode(jid, mode)
 		},
 
-		groupJoinApprovalMode: async (jid: string, mode: 'on' | 'off'): Promise<void> => {
+		groupJoinApprovalMode: async (jid: string, mode: JoinApprovalMode): Promise<void> => {
+			// Anything but 'on' used to mean off, so a typo turned approvals off
+			// and reported success.
+			assertArgumentDomain('groupJoinApprovalMode', 'mode', mode, JOIN_APPROVAL_MODES)
 			await (await ctx.getClient()).groupSettingUpdate(jid, 'membership_approval', mode === 'on')
 		},
 

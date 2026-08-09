@@ -84,8 +84,10 @@ describe('newsletterMetadata takes (type, key) and dispatches on the type', () =
 	it('an unknown key type rejects rather than being treated as a jid', async () => {
 		const { calls, methods } = makeHarness()
 
+		// Same refusal as before, now worded like every other off-domain
+		// argument: the parameter, what arrived, and what is accepted.
 		await expect(methods.newsletterMetadata('nope' as unknown as 'jid', 'whatever')).rejects.toThrow(
-			/unknown key type 'nope'/
+			/newsletterMetadata: "type" must be one of "invite", "jid", received "nope"/
 		)
 		expect(calls).toEqual([])
 	})
