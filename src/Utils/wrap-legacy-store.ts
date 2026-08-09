@@ -9,4 +9,9 @@
 
 export { wrapLegacyStore } from '../Compatibility/legacy-store/adapter.ts'
 export { useLegacyMultiFileAuthState } from '../Compatibility/legacy-store/multi-file.ts'
+export {
+	BRIDGE_INTERNAL_KEY_PREFIX,
+	BRIDGE_INTERNAL_KEY_TYPES,
+	isBridgeInternalKeyType
+} from '../Compatibility/legacy-store/namespaces.ts'
 export type { WrappedLegacyStore } from '../Compatibility/legacy-store/types.ts'
