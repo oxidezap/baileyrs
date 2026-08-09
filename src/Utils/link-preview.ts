@@ -328,7 +328,16 @@ export const getUrlInfo = async (
 		// timeout up front but runs the resolver hook before starting that timer,
 		// so bounding the lookup and the request separately still let them add
 		// up. Racing the call is the only bound the parser cannot walk past.
+		//
+		// The resolver shares the same expiry rather than getting a timer of its
+		// own, so a lookup that outlives the deadline fails the hop instead of
+		// letting the parser open a request nobody is waiting for. What it has
+		// already opened is left to the parser's own timeout, since it exposes
+		// no signal to cancel through.
 		const deadline = AbortSignal.timeout(opts.fetchOpts.timeout)
+		const expired = new Promise<never>((_resolve, reject) =>
+			deadline.addEventListener('abort', () => reject(deadline.reason), { once: true })
+		)
 
 		const info = await Promise.race([
 			getLinkPreview(previewLink, {
@@ -356,12 +365,10 @@ export const getUrlInfo = async (
 				// Resolves the host so the address, not the name, is judged. The
 				// parser rejects loopback on what this returns, and the private
 				// ranges are rejected here. A redirect brings it back.
-				resolveDNSHost: async (target: string) => await publicAddressOf(new URL(target)),
+				resolveDNSHost: async (target: string) => await Promise.race([publicAddressOf(new URL(target)), expired]),
 				headers: opts.fetchOpts?.headers as Record<string, string> | undefined
 			}),
-			new Promise<never>((_resolve, reject) =>
-				deadline.addEventListener('abort', () => reject(deadline.reason), { once: true })
-			)
+			expired
 		])
 
 		if (!info?.title) return undefined
