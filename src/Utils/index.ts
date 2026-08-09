@@ -3,6 +3,9 @@ export * from './auth-utils.ts'
 export * from './crypto.ts'
 export * from './generics.ts'
 export * from './messages.ts'
+// Named rather than `*`: the underscore hooks in that file exist for the tests
+// and would otherwise become released API.
+export { getUrlInfo, type URLGenerationOptions } from './link-preview.ts'
 export * from './messages-media.ts'
 export * from './process-history-message.ts'
 export * from './process-message.ts'
