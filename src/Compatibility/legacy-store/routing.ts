@@ -5,7 +5,6 @@ import {
 	LidMapping,
 	NativeStore,
 	RouteKind,
-	SenderKeyDomains,
 	SignalAddressSyntax,
 	SignalDomain,
 	SignalDomainType,
@@ -77,28 +76,21 @@ function legacySignalAddress(address: string): string {
 	return `${user}${SignalAddressSyntax.SIGNAL_DEVICE}${parsed.device}`
 }
 
-function legacySenderKey(key: string): string {
-	// A sender key is `<chatJid>:<signalAddress>`, and the chat is not always a
-	// group: status updates and broadcast lists fan out through the very same
-	// mechanism, so `status@broadcast:<address>` is a legitimate address that
-	// reaches this translator. Anchoring only on `@g.us:` made every one of them
-	// throw, and because the throw happens inside a storage operation it takes
-	// down whatever triggered it — a `sendMessage` to an unrelated group, for
-	// instance.
-	for (const domain of SenderKeyDomains) {
-		const terminator = `${SignalAddressSyntax.DOMAIN}${domain}${SignalAddressSyntax.JID_DEVICE}`
-		const chatEnd = key.indexOf(terminator)
-		if (chatEnd < 0) continue
-		const addressStart = chatEnd + terminator.length
-		const chat = key.slice(0, addressStart - SignalAddressSyntax.JID_DEVICE.length)
-		const address = legacySignalAddress(key.slice(addressStart))
-		const deviceSeparator = address.lastIndexOf(SignalAddressSyntax.SIGNAL_DEVICE)
-		return [chat, address.slice(0, deviceSeparator), address.slice(deviceSeparator + 1)].join(
-			SignalAddressSyntax.SENDER_KEY_PART
-		)
-	}
+/** A sender key is `<chatJid>:<signalAddress>`, and the chat is a group, status
+ *  or a broadcast list. Which chats fan out through sender keys is the core's
+ *  namespace, so the boundary validates the JID shape, not the domain. */
+const CHAT_JID = /^[^:@]+@[^:@]+$/
 
-	throw new TypeError(`invalid native sender-key address: ${key}`)
+function legacySenderKey(key: string): string {
+	const chatDomain = key.indexOf(SignalAddressSyntax.DOMAIN)
+	const chatEnd = chatDomain < 0 ? -1 : key.indexOf(SignalAddressSyntax.JID_DEVICE, chatDomain)
+	const chat = chatEnd < 0 ? '' : key.slice(0, chatEnd)
+	if (!CHAT_JID.test(chat)) throw new TypeError(`invalid native sender-key address: ${key}`)
+	const address = legacySignalAddress(key.slice(chatEnd + SignalAddressSyntax.JID_DEVICE.length))
+	const deviceSeparator = address.lastIndexOf(SignalAddressSyntax.SIGNAL_DEVICE)
+	return [chat, address.slice(0, deviceSeparator), address.slice(deviceSeparator + 1)].join(
+		SignalAddressSyntax.SENDER_KEY_PART
+	)
 }
 
 const passthroughKey = (_store: ProjectedStoreName, key: string): string => key
@@ -158,7 +150,7 @@ function nativeSignalAddress(address: string): string {
 
 function nativeSenderKey(key: string): string {
 	const parts = key.split(SignalAddressSyntax.SENDER_KEY_PART)
-	if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+	if (parts.length !== 3 || !CHAT_JID.test(parts[0]!) || !parts[1] || !parts[2]) {
 		throw new TypeError(`invalid legacy sender-key address: ${key}`)
 	}
 	return `${parts[0]}${SignalAddressSyntax.JID_DEVICE}${nativeSignalAddress(`${parts[1]}.${parts[2]}`)}`

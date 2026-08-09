@@ -86,16 +86,8 @@ export const SignalDomain = Object.freeze({
 	GROUP: 'g.us',
 	LID: 'lid',
 	HOSTED: 'hosted',
-	HOSTED_LID: 'hosted.lid',
-	BROADCAST: 'broadcast'
+	HOSTED_LID: 'hosted.lid'
 } as const)
-
-/**
- * Chats that own sender keys. Group messaging is the common case, but status
- * (`status@broadcast`) and broadcast lists are fanned out with the same
- * sender-key mechanism, so their addresses reach the store too.
- */
-export const SenderKeyDomains = Object.freeze([SignalDomain.GROUP, SignalDomain.BROADCAST] as const)
 
 export const SignalAddressSyntax = Object.freeze({
 	DOMAIN: '@',
