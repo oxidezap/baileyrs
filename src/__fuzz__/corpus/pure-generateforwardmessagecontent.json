@@ -1,0 +1,14 @@
+[
+	{
+		"note": "baileyrs writes contextInfo onto the caller's own message object; upstream leaves the argument untouched",
+		"input": [
+			{
+				"key": {},
+				"message": {
+					"senderKeyDistributionMessage": {}
+				}
+			},
+			null
+		]
+	}
+]
