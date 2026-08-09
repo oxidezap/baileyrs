@@ -5,6 +5,7 @@ import {
 	LidMapping,
 	NativeStore,
 	RouteKind,
+	SenderKeyDomains,
 	SignalAddressSyntax,
 	SignalDomain,
 	SignalDomainType,
@@ -77,16 +78,27 @@ function legacySignalAddress(address: string): string {
 }
 
 function legacySenderKey(key: string): string {
-	const groupTerminator = `${SignalAddressSyntax.DOMAIN}${SignalDomain.GROUP}${SignalAddressSyntax.JID_DEVICE}`
-	const groupEnd = key.indexOf(groupTerminator)
-	if (groupEnd < 0) throw new TypeError(`invalid native sender-key address: ${key}`)
-	const addressStart = groupEnd + groupTerminator.length
-	const group = key.slice(0, addressStart - SignalAddressSyntax.JID_DEVICE.length)
-	const address = legacySignalAddress(key.slice(addressStart))
-	const deviceSeparator = address.lastIndexOf(SignalAddressSyntax.SIGNAL_DEVICE)
-	return [group, address.slice(0, deviceSeparator), address.slice(deviceSeparator + 1)].join(
-		SignalAddressSyntax.SENDER_KEY_PART
-	)
+	// A sender key is `<chatJid>:<signalAddress>`, and the chat is not always a
+	// group: status updates and broadcast lists fan out through the very same
+	// mechanism, so `status@broadcast:<address>` is a legitimate address that
+	// reaches this translator. Anchoring only on `@g.us:` made every one of them
+	// throw, and because the throw happens inside a storage operation it takes
+	// down whatever triggered it — a `sendMessage` to an unrelated group, for
+	// instance.
+	for (const domain of SenderKeyDomains) {
+		const terminator = `${SignalAddressSyntax.DOMAIN}${domain}${SignalAddressSyntax.JID_DEVICE}`
+		const chatEnd = key.indexOf(terminator)
+		if (chatEnd < 0) continue
+		const addressStart = chatEnd + terminator.length
+		const chat = key.slice(0, addressStart - SignalAddressSyntax.JID_DEVICE.length)
+		const address = legacySignalAddress(key.slice(addressStart))
+		const deviceSeparator = address.lastIndexOf(SignalAddressSyntax.SIGNAL_DEVICE)
+		return [chat, address.slice(0, deviceSeparator), address.slice(deviceSeparator + 1)].join(
+			SignalAddressSyntax.SENDER_KEY_PART
+		)
+	}
+
+	throw new TypeError(`invalid native sender-key address: ${key}`)
 }
 
 const passthroughKey = (_store: ProjectedStoreName, key: string): string => key
