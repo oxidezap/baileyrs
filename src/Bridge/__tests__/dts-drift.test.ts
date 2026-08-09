@@ -11,33 +11,10 @@
  */
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 import { KNOWN_BRIDGE_EVENT_TYPES } from '../adapt.ts'
+import { loadBridgeDts } from '../../__tests__/bridge-dts.ts'
 import { expect } from '../../__tests__/expect.ts'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-
-/** Resolve `whatsapp_rust_bridge.d.ts` from the installed package. */
-function loadBridgeDts(): string {
-	const candidates = [
-		path.resolve(__dirname, '../../../node_modules/@oxidezap/whatsapp-rust-bridge/dist/whatsapp_rust_bridge.d.ts'),
-		// Pre-0.6.0-alpha.39 packages shipped the declarations under pkg/.
-		path.resolve(__dirname, '../../../node_modules/@oxidezap/whatsapp-rust-bridge/pkg/whatsapp_rust_bridge.d.ts'),
-		// Sibling checkout, for local development against an unpublished bridge.
-		path.resolve(__dirname, '../../../../whatsapp-rust-bridge/pkg/whatsapp_rust_bridge.d.ts')
-	]
-	for (const candidate of candidates) {
-		try {
-			return readFileSync(candidate, 'utf8')
-		} catch {
-			/* try next */
-		}
-	}
-	throw new Error(`Could not find whatsapp_rust_bridge.d.ts. Tried:\n  ${candidates.join('\n  ')}`)
-}
 
 /**
  * Extract every discriminator string from the `WhatsAppEvent` union. The

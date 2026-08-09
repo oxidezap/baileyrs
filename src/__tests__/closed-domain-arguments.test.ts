@@ -23,7 +23,6 @@
  */
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -32,6 +31,7 @@ import P from 'pino'
 
 import makeWASocket from '../Socket/index.ts'
 import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
+import { bridgeStringUnion, loadBridgeDts } from './bridge-dts.ts'
 import { expect } from './expect.ts'
 
 type Socket = ReturnType<typeof makeWASocket>
@@ -320,32 +320,10 @@ const enclosingName = (text: string, index: number): string => {
 	return name
 }
 
-/** Read the union members of an `export type X = "a" | "b"` in the bridge .d.ts. */
-const bridgeUnion = (() => {
-	const candidates = [
-		path.resolve(
-			import.meta.dirname,
-			'../../node_modules/@oxidezap/whatsapp-rust-bridge/dist/whatsapp_rust_bridge.d.ts'
-		),
-		path.resolve(import.meta.dirname, '../../../whatsapp-rust-bridge/pkg/whatsapp_rust_bridge.d.ts')
-	]
-	let dts = ''
-	for (const candidate of candidates) {
-		try {
-			dts = readFileSync(candidate, 'utf8')
-			break
-		} catch {
-			/* try the next one */
-		}
-	}
-	if (!dts) throw new Error(`could not find whatsapp_rust_bridge.d.ts, tried:\n  ${candidates.join('\n  ')}`)
+/** The bridge's own union for a name, as the core deserializes it. */
+const bridgeDts = loadBridgeDts()
 
-	return (name: string): string[] => {
-		const declaration = new RegExp(`^export type ${name} = (.+);$`, 'mu').exec(dts)
-		if (!declaration) throw new Error(`the bridge no longer declares ${name}`)
-		return [...declaration[1]!.matchAll(/"([^"]*)"/gu)].map(match => match[1]!)
-	}
-})()
+const bridgeUnion = (name: string): string[] => bridgeStringUnion(bridgeDts, name)
 
 const isDomainRejection = (error: unknown): boolean => error instanceof Error && / must be one of /u.test(error.message)
 
