@@ -79,6 +79,8 @@ interface DomainCase {
 	call: (sock: Socket, value: unknown) => Promise<unknown>
 	/** `file.ts:method:parameter`, as the source scan below spells it. */
 	source?: string
+	/** The parameter has a default, so omitting it is not passing a value. */
+	defaulted?: boolean
 }
 
 const CASES: DomainCase[] = [
@@ -213,7 +215,8 @@ const CASES: DomainCase[] = [
 		parameter: 'type',
 		values: ['preview', 'image'],
 		call: (sock, value) => sock.profilePictureUrl(USER, arg(value)),
-		source: 'contacts.ts:profilePictureUrl:type'
+		source: 'contacts.ts:profilePictureUrl:type',
+		defaulted: true
 	},
 	{
 		label: 'newsletterMetadata',
@@ -270,17 +273,46 @@ const EXEMPT: Record<string, string> = {
 	'groups.ts:<module>:setting': 'a value in the alias table, not a parameter',
 	'business.ts:minutesPastMidnight:which': 'a module-internal helper, called with a literal at both call sites',
 	'internals.ts:resyncAppState:collections': 'a no-op wrapper: nothing is forwarded to the bridge',
-	'server-queries.ts:createCallLink:_type': 'refused with a 501 whatever the value is'
+	'server-queries.ts:createCallLink:_type': 'refused with a 501 whatever the value is',
+	'internals.ts:upsertMessage:type': 'published on the event bus, so the value comes back to the caller unchanged'
 }
 
-/** `parameter: 'a' | 'b'`, or a parameter of a type that is one of those. */
-const CLOSED_DOMAIN_PARAMETER =
-	/(?:(?:const|let|var)\s+)?(?<parameter>[A-Za-z_$][\w$]*)\??:\s*(?:readonly )?\(?(?:(?:'[^']*'\s*\|\s*)+'[^']*'|(?:ParticipantAction|MediaType|MessageReceiptType|WAPresence|GroupSetting|WAPrivacyValue|WAPrivacyOnlineValue|WAPrivacyGroupAddValue|WAReadReceiptsValue|WAPrivacyCallValue|WAPrivacyMessagesValue)\b)/gu
+/** A type declared as a set of string literals, however it is spelled. */
+const CLOSED_DOMAIN_TYPE =
+	/type (?<name>[A-Za-z_$][\w$]*) =\s*(?:\(typeof [\w$]+\)\[number\]|keyof typeof [\w$]+|\|?\s*'[^']*'(?:\s*\|\s*'[^']*')+)/gu
+
+/** `parameter: 'a' | 'b'`, or a parameter typed by one of the above. */
+const ANNOTATED_PARAMETER =
+	/(?<declarator>(?:const|let|var)\s+)?(?<parameter>[A-Za-z_$][\w$]*)\??:\s*(?:readonly )?\(?(?<type>'[^']*'(?:\s*\|\s*'[^']*')+|[A-Za-z_$][\w$]*)/gu
+
+/**
+ * Every closed-domain type name in the package, so the scan follows a signature
+ * that names its domain instead of spelling it out. Resolved rather than
+ * listed: a list would go stale the first time one of them is renamed, which is
+ * the same failure the scan exists to prevent.
+ */
+const closedDomainTypeNames = async (): Promise<Set<string>> => {
+	const names = new Set<string>()
+	const visit = async (directory: string): Promise<void> => {
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			if (entry.name === '__tests__' || entry.name === 'WAProto') continue
+			const full = path.join(directory, entry.name)
+			if (entry.isDirectory()) await visit(full)
+			else if (entry.name.endsWith('.ts')) {
+				for (const match of (await readFile(full, 'utf8')).matchAll(CLOSED_DOMAIN_TYPE)) {
+					names.add(match.groups!.name!)
+				}
+			}
+		}
+	}
+	await visit(path.resolve(import.meta.dirname, '..'))
+	return names
+}
 
 /** The method whose parameter list the match sits in. */
 const enclosingName = (text: string, index: number): string => {
 	const opener =
-		/(?:(?<assigned>[A-Za-z_$][\w$]*)\s*=\s*|(?<keyed>[A-Za-z_$][\w$]*)\s*:\s*)(?:async\s*)?(?:<[^<>]*>\s*)?\(/gu
+		/(?:(?<assigned>[A-Za-z_$][\w$]*)\s*=\s*|(?<keyed>[A-Za-z_$][\w$]*)\s*:\s*)(?:[\w$.]+\s*\(\s*)?(?:async\s*)?(?:<[^<>]*>\s*)?\(/gu
 	let name = '<module>'
 	for (const match of text.slice(0, index).matchAll(opener)) {
 		name = match.groups?.assigned ?? match.groups?.keyed ?? name
@@ -403,7 +435,11 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 		const probes: unknown[] = ['☠️', 'bogus', '']
 		const spelled = values.find(value => typeof value === 'string')!
 		if (spelled.toUpperCase() !== spelled) probes.push(spelled.toUpperCase())
-		if (!values.includes(undefined)) probes.push(undefined, null)
+		// `undefined` is a value only where the domain has it or the parameter
+		// has a default, and there it means "not passed" rather than a mistake.
+		// `null` never does: it is a value the caller chose.
+		if (!values.includes(undefined) && !testCase.defaulted) probes.push(undefined)
+		if (!values.includes(undefined)) probes.push(null)
 
 		it(`${label} rejects an off-domain ${parameter}`, async () => {
 			for (const probe of probes) {
@@ -430,13 +466,16 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 	it('every closed-domain parameter on the socket is covered or exempt', async () => {
 		const directory = path.resolve(import.meta.dirname, '../Socket')
 		const covered = new Set(CASES.flatMap(entry => (entry.source ? [entry.source] : [])))
+		const domainTypes = await closedDomainTypeNames()
 		const found: string[] = []
 
 		for (const file of (await readdir(directory)).filter(name => name.endsWith('.ts'))) {
 			const text = await readFile(path.join(directory, file), 'utf8')
-			for (const match of text.matchAll(CLOSED_DOMAIN_PARAMETER)) {
-				if (/^(?:const|let|var)\b/u.test(match[0]!)) continue
-				found.push(`${file}:${enclosingName(text, match.index)}:${match.groups!.parameter}`)
+			for (const match of text.matchAll(ANNOTATED_PARAMETER)) {
+				const { declarator, parameter, type } = match.groups!
+				if (declarator) continue
+				if (!type!.startsWith("'") && !domainTypes.has(type!)) continue
+				found.push(`${file}:${enclosingName(text, match.index)}:${parameter}`)
 			}
 		}
 

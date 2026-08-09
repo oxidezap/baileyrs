@@ -93,15 +93,19 @@ export type MessageWithContextInfo =
 	| 'pollResultSnapshotMessage'
 	| 'messageHistoryNotice'
 
-export type MessageReceiptType =
-	| 'read'
-	| 'read-self'
-	| 'hist_sync'
-	| 'peer_msg'
-	| 'sender'
-	| 'inactive'
-	| 'played'
-	| undefined
+/** `undefined` is a member: it is how upstream spells a delivery receipt. */
+export const MESSAGE_RECEIPT_TYPES = [
+	'read',
+	'read-self',
+	'hist_sync',
+	'peer_msg',
+	'sender',
+	'inactive',
+	'played',
+	undefined
+] as const
+
+export type MessageReceiptType = (typeof MESSAGE_RECEIPT_TYPES)[number]
 
 export type MediaConnInfo = {
 	auth: string

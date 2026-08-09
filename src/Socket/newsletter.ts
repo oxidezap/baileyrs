@@ -3,9 +3,14 @@ import { bridgeNewsletterMetadataToBaileys } from '../Compatibility/newsletter-r
 import type { NewsletterMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 import type { NewsletterMetadata, NewsletterUpdate } from '../Types/Newsletter.ts'
 import type { WAMediaUpload } from '../Types/index.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateProfilePicture } from '../Utils/messages-media.ts'
 import type { SocketContext } from './types.ts'
+
+export const NEWSLETTER_KEY_TYPES = ['invite', 'jid'] as const
+
+export type NewsletterKeyType = (typeof NEWSLETTER_KEY_TYPES)[number]
 
 export const makeNewsletterMethods = (ctx: SocketContext) => ({
 	newsletterCreate: async (name: string, description?: string): Promise<NewsletterMetadata> => {
@@ -17,10 +22,8 @@ export const makeNewsletterMethods = (ctx: SocketContext) => ({
 	 * rather than one that inspects the key. Resolves to null when the
 	 * newsletter does not exist, matching upstream.
 	 */
-	newsletterMetadata: async (type: 'invite' | 'jid', key: string): Promise<NewsletterMetadata | null> => {
-		if (type !== 'invite' && type !== 'jid') {
-			throw new Boom(`newsletterMetadata: unknown key type '${type}'`, { statusCode: 400 })
-		}
+	newsletterMetadata: async (type: NewsletterKeyType, key: string): Promise<NewsletterMetadata | null> => {
+		assertArgumentDomain('newsletterMetadata', 'type', type, NEWSLETTER_KEY_TYPES)
 		const client = await ctx.getClient()
 		const result =
 			type === 'invite' ? await client.newsletterMetadataByInvite(key) : await client.newsletterMetadata(key)

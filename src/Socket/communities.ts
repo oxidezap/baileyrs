@@ -1,6 +1,7 @@
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import { bridgeParticipantChangesToBaileys } from '../Compatibility/socket-results.ts'
-import type { GroupMetadata, ParticipantAction } from '../Types/index.ts'
+import { PARTICIPANT_ACTIONS, type GroupMetadata, type ParticipantAction } from '../Types/index.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { makeGroupMethods } from './groups.ts'
 import type { SocketContext } from './types.ts'
 
@@ -81,6 +82,7 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		communityRequestParticipantsUpdate: groups.groupRequestParticipantsUpdate,
 
 		communityParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
+			assertArgumentDomain('communityParticipantsUpdate', 'action', action, PARTICIPANT_ACTIONS)
 			return bridgeParticipantChangesToBaileys(
 				await (await ctx.getClient()).communityParticipantsUpdate(jid, participants, action)
 			)

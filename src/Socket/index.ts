@@ -18,7 +18,7 @@ import { makeStanzaResponseMethods } from '../Compatibility/stanza-responses.ts'
 import { makeParticipatingRefreshHandler } from '../Compatibility/participating-refresh.ts'
 import { makeTaggedMessageWaiter } from '../Compatibility/tagged-message-waiter.ts'
 import { isRawNodeForwardingEnabled, WebSocketClient } from '../Compatibility/websocket-client.ts'
-import { DEFAULT_CONNECTION_CONFIG, type MediaType } from '../Defaults/index.ts'
+import { DEFAULT_CONNECTION_CONFIG, MEDIA_TYPES, type MediaType } from '../Defaults/index.ts'
 import type {
 	BinaryNode,
 	AuthenticationCreds,
@@ -29,10 +29,12 @@ import type {
 	UserFacingSocketConfig,
 	WABusinessProfile,
 	WAMessage,
-	WAMessageKey
+	WAMessageKey,
+	WAPresence
 } from '../Types/index.ts'
 import type Long from 'long'
-import { DisconnectReason } from '../Types/index.ts'
+import { DisconnectReason, WA_PRESENCES } from '../Types/index.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
 import { _registerActiveBridgeClient, _unregisterActiveBridgeClient, downloadMediaMessage } from '../Utils/messages.ts'
@@ -898,10 +900,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * caller hears about the protocol mistake instead of the bridge silently
 		 * sending nothing.
 		 */
-		sendPresenceUpdate: async (
-			type: 'available' | 'unavailable' | 'composing' | 'recording' | 'paused',
-			toJid?: string
-		) => {
+		sendPresenceUpdate: async (type: WAPresence, toJid?: string) => {
+			// Ahead of the client: an off-union value used to fall through to the
+			// chat-state branch and be reported as a missing jid.
+			assertArgumentDomain('sendPresenceUpdate', 'type', type, WA_PRESENCES)
 			const c = await ctx.getClient()
 			if (type === 'available' || type === 'unavailable') {
 				return c.sendPresence(type)
@@ -920,6 +922,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * keep working. Delegates to the bridge's encrypt + CDN-failover upload.
 		 */
 		waUploadToServer: async (data: Uint8Array | Buffer, opts: { mediaType: MediaType }): Promise<UploadMediaResult> => {
+			// The upstream set, which is wider than what the bridge uploads:
+			// `toBridgeMediaType` below still refuses the ones it cannot map.
+			assertArgumentDomain('waUploadToServer', 'mediaType', opts?.mediaType, MEDIA_TYPES)
 			const bytes = data instanceof Uint8Array && !Buffer.isBuffer(data) ? data : new Uint8Array(data)
 			return (await ctx.getClient()).uploadMedia(bytes, toBridgeMediaType(opts.mediaType))
 		},

@@ -7,7 +7,10 @@ export type GroupParticipant = Contact & {
 	admin?: 'admin' | 'superadmin' | null
 }
 
-export type ParticipantAction = 'add' | 'remove' | 'promote' | 'demote' | 'modify'
+export const PARTICIPANT_ACTIONS = ['add', 'remove', 'promote', 'demote', 'modify'] as const
+
+/** Derived from the values, so the runtime check and the type cannot drift. */
+export type ParticipantAction = (typeof PARTICIPANT_ACTIONS)[number]
 
 export type RequestJoinAction = 'created' | 'revoked' | 'rejected'
 

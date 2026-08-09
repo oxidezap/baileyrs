@@ -1,4 +1,9 @@
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import type { SocketContext } from './types.ts'
+
+export const PROFILE_PICTURE_TYPES = ['preview', 'image'] as const
+
+export type ProfilePictureType = (typeof PROFILE_PICTURE_TYPES)[number]
 
 export type OnWhatsAppResult = {
 	exists: boolean
@@ -26,7 +31,8 @@ export const makeContactMethods = (ctx: SocketContext) => ({
 		})
 	},
 
-	profilePictureUrl: async (jid: string, type: 'preview' | 'image' = 'preview', timeoutMs?: number) => {
+	profilePictureUrl: async (jid: string, type: ProfilePictureType = 'preview', timeoutMs?: number) => {
+		assertArgumentDomain('profilePictureUrl', 'type', type, PROFILE_PICTURE_TYPES)
 		const result = await (await ctx.getClient()).profilePictureUrl(jid, type, timeoutMs)
 		return result?.url
 	},
