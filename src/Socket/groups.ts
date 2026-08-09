@@ -52,7 +52,8 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 	}
 
 	const groupSettingUpdate = async (jid: string, setting: GroupSetting): Promise<void> => {
-		const mapped = GROUP_SETTING_ALIASES[assertArgumentDomain('groupSettingUpdate', 'setting', setting, GROUP_SETTINGS)]
+		const checked = assertArgumentDomain('groupSettingUpdate', 'setting', setting, GROUP_SETTINGS)
+		const mapped = GROUP_SETTING_ALIASES[checked]
 		await (await ctx.getClient()).groupSettingUpdate(jid, mapped.setting, mapped.value)
 	}
 

@@ -91,9 +91,8 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		communityRequestParticipantsList: groups.groupRequestParticipantsList,
 
 		/**
-		 * The four below are the group operation, and they check the argument
-		 * themselves rather than delegating straight to it: a refusal has to name
-		 * the method the consumer called, not the one it happens to reuse.
+		 * The community methods that are the group operation check under their own
+		 * name before delegating: a refusal has to name the method that was called.
 		 */
 		communityRequestParticipantsUpdate: async (jid: string, participants: string[], action: GroupRequestAction) => {
 			assertArgumentDomain('communityRequestParticipantsUpdate', 'action', action, GROUP_REQUEST_ACTIONS)
