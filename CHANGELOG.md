@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/oxidezap/baileyrs/compare/v0.1.2...v0.1.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **deps:** bump @oxidezap/whatsapp-rust-bridge to 0.7.1 ([#42](https://github.com/oxidezap/baileyrs/issues/42)) ([cf023a0](https://github.com/oxidezap/baileyrs/commit/cf023a033e3aba27a1ba9324d3c21af6afb7ff3c))
+* **socket:** reject an invalid enum argument before it reaches the bridge ([#40](https://github.com/oxidezap/baileyrs/issues/40)) ([20c6ee0](https://github.com/oxidezap/baileyrs/commit/20c6ee04b34956d7d6bd9ce2117509f334063609))
+
 ## [0.1.2](https://github.com/oxidezap/baileyrs/compare/v0.1.1...v0.1.2) (2026-08-09)
 
 
