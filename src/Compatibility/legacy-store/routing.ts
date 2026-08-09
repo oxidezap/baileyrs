@@ -78,8 +78,10 @@ function legacySignalAddress(address: string): string {
 
 /** A sender key is `<chatJid>:<signalAddress>`, and the chat is a group, status
  *  or a broadcast list. Which chats fan out through sender keys is the core's
- *  namespace, so the boundary validates the JID shape, not the domain. */
-const CHAT_JID = /^[^:@]+@[^:@]+$/
+ *  namespace, so the boundary validates the JID shape, not the domain. No JID
+ *  carries whitespace or a control character, and letting one through would
+ *  mint a storage key that no later lookup can match. */
+const CHAT_JID = /^[^\s:@\p{Cc}]+@[^\s:@\p{Cc}]+$/u
 
 function legacySenderKey(key: string): string {
 	const chatDomain = key.indexOf(SignalAddressSyntax.DOMAIN)
