@@ -16,7 +16,6 @@ import { proto } from '../WAProto/runtime.ts'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
 import { isHostedLidUser, isHostedPnUser, isLidUser, isPnUser } from '../WABinary/jid-utils.ts'
-import { Boom } from './boom.ts'
 import { toNumber } from './generics.ts'
 import type { ILogger } from './logger.ts'
 import { downloadContentFromMessage, normalizeMessageContent } from './messages.ts'
@@ -234,12 +233,17 @@ export const downloadAndProcessHistorySyncNotification = async (
 	return processHistoryMessage(historyMsg, logger)
 }
 
-/** Extract a history-sync notification through the same wrapper normalization as upstream. */
-export const getHistoryMsg = (message: proto.IMessage): proto.Message.IHistorySyncNotification => {
+/**
+ * Extract a history-sync notification through the same wrapper normalization as
+ * upstream.
+ *
+ * Returns `undefined` when the message carries none. It used to throw a Boom
+ * 400, which breaks the shape every caller writes against a drop-in API —
+ * `const h = getHistoryMsg(msg); if (!h) return` crashed instead of returning.
+ * "Absent" is the ordinary case here, not an error: any message that is not a
+ * history sync takes this path.
+ */
+export const getHistoryMsg = (message: proto.IMessage): proto.Message.IHistorySyncNotification | undefined => {
 	const normalizedContent = message ? normalizeMessageContent(message) : undefined
-	const historySyncNotification = normalizedContent?.protocolMessage?.historySyncNotification
-	if (!historySyncNotification) {
-		throw new Boom('Message does not contain a history sync notification', { statusCode: 400 })
-	}
-	return historySyncNotification
+	return normalizedContent?.protocolMessage?.historySyncNotification ?? undefined
 }

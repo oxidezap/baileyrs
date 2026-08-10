@@ -960,25 +960,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		review: '2026-11-01'
 	},
 	{
-		id: 'get-history-msg-throws-instead-of-undefined',
-		target: 'pure:getHistoryMsg',
-		status: 'open',
-		// The generator now emits valid history-sync notifications, so the entry has
-		// to say which half of that it covers: only the *missing* one. Read
-		// structurally rather than by searching the serialised input — a
-		// notification nested under `deviceSentMessage` appears in the text but is
-		// not where either helper looks, and both correctly ignore it.
-		when: divergence => {
-			if (!isThrow(divergence.local) || divergence.upstream !== undefined) return false
-			const message = Array.isArray(divergence.input) ? divergence.input[0] : undefined
-			const protocol = (message as { protocolMessage?: Record<string, unknown> } | undefined)?.protocolMessage
-			return protocol?.historySyncNotification === undefined
-		},
-		reason:
-			'Upstream returns `undefined` when the message carries no history-sync notification; baileyrs throws a Boom 400. Drop-in consumer code written as `const h = getHistoryMsg(msg); if (!h) return` therefore crashes against baileyrs. The fix is a signature change on a published API, so it belongs in its own commit rather than in the change that found it.',
-		review: '2026-11-01'
-	},
-	{
 		id: 'clean-message-empty-jid-normalisation',
 		target: /^pure:cleanMessage/u,
 		status: 'open',
