@@ -1,0 +1,14 @@
+[
+	{
+		"note": "repeated scalars: unpacked from the bridge (08 00 08 01), packed from protobufjs (0a 02 00 01)",
+		"input": {
+			"path": "BotCapabilityMetadata",
+			"message": {
+				"capabilities": [
+					0,
+					1
+				]
+			}
+		}
+	}
+]

@@ -72,6 +72,15 @@ export interface FuzzOptions<T> {
 	 * as a wrong answer, only as a stalled socket.
 	 */
 	readonly slowMs?: number
+	/**
+	 * Marks a finite sweep that must run to completion.
+	 *
+	 * A random target that stops early has simply sampled less. A sweep that stops
+	 * early has answered a different question than the one it claims to answer —
+	 * "every field is named correctly" becomes "the first 747 are", while still
+	 * reporting a pass. The time budget is therefore not applied to these.
+	 */
+	readonly exhaustive?: boolean
 }
 
 export interface FuzzReport {
@@ -81,6 +90,8 @@ export interface FuzzReport {
 	readonly runs: number
 	readonly corpusReplayed: number
 	readonly excused: number
+	/** Set when the time budget cut the run short, so a partial pass is never silent. */
+	readonly truncated?: { readonly ran: number; readonly planned: number }
 	readonly findings: readonly Divergence[]
 }
 
@@ -204,11 +215,15 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		findings.push(...produced)
 	}
 
+	let truncatedAt: number | undefined
 	if (!skipped) {
-		const deadline = performance.now() + timeBudgetMs
+		const deadline = performance.now() + (options.exhaustive ? Number.POSITIVE_INFINITY : timeBudgetMs)
 		const random = makeRandom(`${FUZZ_SEED}:${target}`)
 		for (let index = 0; index < runs; index++) {
-			if (performance.now() > deadline) break
+			if (performance.now() > deadline) {
+				truncatedAt = index
+				break
+			}
 			let input: T
 			try {
 				input = generate(random)
@@ -249,9 +264,18 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		runs: executed,
 		corpusReplayed: corpus.length,
 		excused,
+		truncated: truncatedAt === undefined ? undefined : { ran: truncatedAt, planned: runs },
 		findings: outcome.unexcused
 	}
 	writeReport(report)
+
+	// Never let a budget cap pass for coverage. A run that checked 747 of 1734
+	// inputs and printed nothing reads exactly like one that checked them all.
+	if (truncatedAt !== undefined) {
+		console.warn(
+			`fuzz: ${target} stopped at ${truncatedAt}/${runs} inputs after ${timeBudgetMs}ms — raise FUZZ_TIME_BUDGET_MS to cover the rest`
+		)
+	}
 
 	// Open findings are printed on every single run. They are recorded so the
 	// suite stays green and does not re-report them as news, never so they can be

@@ -1,0 +1,12 @@
+[
+	{
+		"note": "FLT_MAX, the largest finite float32, is rejected by the bridge as an invalid float32",
+		"input": {
+			"path": "Message.AudioMessage",
+			"message": {
+				"seconds": 1,
+				"duration": 3.4028235e+38
+			}
+		}
+	}
+]

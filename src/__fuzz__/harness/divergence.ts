@@ -56,6 +56,36 @@ export interface KnownDivergence {
 	readonly when?: (divergence: Divergence) => boolean
 }
 
+/**
+ * The exact fields the bridge round-trips under another name.
+ *
+ * Enumerated rather than pattern-matched: "the names differ" would excuse any
+ * future rename, which is the failure this entry exists to catch. The list comes
+ * from the exhaustive `proto:field-names` sweep, so it is complete as of writing
+ * and any addition to it will fail the suite first.
+ */
+const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string])[] = [
+	['deviceAgentID', 'deviceAgentId'],
+	['deviceID', 'deviceId'],
+	['oldestMessageTimestamp', 'oldestMessageTimestampInWindow']
+]
+
+/**
+ * Renders either side of a divergence for a predicate to match against.
+ *
+ * `String(value)` yields "[object Object]" for the decoded objects these
+ * predicates inspect, which silently makes every `includes` check false — the
+ * entry then excuses nothing and the finding reappears as unexplained.
+ */
+const text = (value: unknown): string => {
+	if (typeof value === 'string') return value
+	try {
+		return JSON.stringify(value, (_key, nested: unknown) => (typeof nested === 'bigint' ? nested.toString() : nested)) ?? ''
+	} catch {
+		return ''
+	}
+}
+
 const isLongPair = (value: unknown): boolean =>
 	typeof value === 'object' && value !== null && 'low' in value && 'high' in value
 
@@ -118,6 +148,89 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller\'s own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to.',
 		review: '2026-11-01'
+	},
+	{
+		id: 'proto-decode-above-max-safe-integer',
+		target: /^proto:/u,
+		status: 'open',
+		reason:
+			'The bridge decoder throws "Value is larger than Number.MAX_SAFE_INTEGER" (or the MIN_SAFE_INTEGER counterpart) for any 64-bit field outside +/-(2^53-1), where protobufjs decodes it to a Long. The boundary is exact: 9007199254740991 decodes, 9007199254740992 throws. This is not a precision difference — the whole message fails to decode, so a legitimate server payload with a large fileLength or a microsecond timestamp becomes an error rather than a message. The most severe finding in this suite.',
+		review: '2026-10-01',
+		when: divergence =>
+			[divergence.local, divergence.upstream].some(side => text(side).includes('SAFE_INTEGER'))
+	},
+	{
+		id: 'proto-field-renamed-and-dropped',
+		// Also matches on the decode side, where the rename surfaces as two objects
+		// carrying the same value under different keys.
+		target: /^proto:(field-names|decode-parity)$/u,
+		status: 'open',
+		when: divergence =>
+			RENAMED_PROTO_FIELDS.some(
+				([upstreamName, bridgeName]) =>
+					text(divergence.local).includes(bridgeName) && text(divergence.upstream).includes(upstreamName)
+			),
+		reason:
+			'Three fields round-trip under a different property name than upstream declares, and the bridge encoder silently drops the upstream spelling: SyncActionValue.ChatAssignmentAction.deviceAgentID becomes deviceAgentId, SyncActionValue.AgentAction.deviceID becomes deviceId, and Message.MessageHistoryMetadata.oldestMessageTimestamp becomes oldestMessageTimestampInWindow. The property name is the public API — code written against the upstream types reads undefined, and writes are lost with no error at all.',
+		review: '2026-10-01'
+	},
+	{
+		id: 'proto-explicit-presence-zero-dropped',
+		target: 'proto:presence',
+		status: 'open',
+		reason:
+			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry.',
+		review: '2026-10-01'
+	},
+	{
+		id: 'proto-field-omission',
+		target: 'proto:field-omission',
+		status: 'open',
+		reason:
+			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Almost certainly the same root cause as the presence and unknown-type entries; kept separate until someone confirms that.',
+		review: '2026-10-01'
+	},
+	{
+		id: 'proto-float32-max-rejected',
+		target: /^proto:/u,
+		status: 'open',
+		reason:
+			'The bridge rejects 3.4028235e+38 with "invalid float32" — that value is FLT_MAX, the largest finite float32 there is, and protobufjs encodes it without complaint. A legitimate value at the top of the declared range cannot be sent.',
+		review: '2026-11-01',
+		when: divergence => text(divergence.local).includes('invalid float32')
+	},
+	{
+		id: 'proto-repeated-scalars-unpacked',
+		target: 'proto:field-packing',
+		status: 'open',
+		reason:
+			'Repeated scalar and enum fields are written unpacked by the bridge (08 00 08 01) and packed by protobufjs (0a 02 00 01). proto3 defaults to packed and every decoder must accept both, so no data is lost — but the wire bytes differ for every repeated scalar the library sends, which rules out byte-identical comparison against upstream and is worth a deliberate decision rather than a discovery.',
+		review: '2026-11-01'
+	},
+	{
+		id: 'proto-field-order-follows-input-keys',
+		target: 'proto:field-order',
+		status: 'intended',
+		reason:
+			'The bridge emits fields in the order the keys appear on the object it was given; protobufjs emits them in schema declaration order. Protobuf explicitly permits any order and requires decoders to accept it, so this is a representation difference with no observable consequence for a conforming peer.',
+		review: '2027-02-01'
+	},
+	{
+		id: 'proto-unknown-type-dropped',
+		target: /^proto:(unknown-type-dropped|type-coverage)$/u,
+		status: 'open',
+		reason:
+			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. Silent omission is the problem more than the gap — a missing type should be visible. The unknown-type set is probed at runtime, so this entry stops matching by itself once the bridge implements them.',
+		review: '2026-10-01'
+	},
+	{
+		id: 'proto-empty-string-for-numeric-field',
+		target: /^proto:/u,
+		status: 'open',
+		reason:
+			'Given an empty string where the schema declares an integer, the bridge coerces to 0 and protobufjs throws "empty string". Same shape as the toNumber difference: baileyrs is the tolerant one. Tolerant is defensible, but it means a caller\'s type error is silently encoded as a real value instead of surfacing.',
+		review: '2026-11-01',
+		when: divergence => text(divergence.upstream).includes('empty string')
 	},
 	{
 		id: 'poll-vote-aggregation-order',

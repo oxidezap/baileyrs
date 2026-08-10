@@ -1,0 +1,13 @@
+[
+	{
+		"note": "a field whose type the bridge does not implement is silently omitted rather than reported",
+		"input": {
+			"path": "MessageContextInfo",
+			"message": {
+				"botMetadata": {
+					"avatarMetadata": {}
+				}
+			}
+		}
+	}
+]

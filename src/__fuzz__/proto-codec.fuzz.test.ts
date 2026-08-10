@@ -1,0 +1,561 @@
+/**
+ * Differential fuzzing of the protobuf codec: Rust/WASM against protobufjs.
+ *
+ * This is the largest behavioural surface baileyrs replaced. Every message the
+ * library sends goes through `encodeProto` (`src/Socket/messages.ts:101,191,307`
+ * and `src/Socket/index.ts:887,975`) instead of the protobufjs runtime upstream
+ * uses, and the declaration audits cannot see inside it: a codec that silently
+ * drops a field scores 100% compatible, because only the bytes differ.
+ *
+ * Four properties, each a separate target so a failure names the layer:
+ *
+ *   encode-bytes   the two encoders emit byte-identical output
+ *   decode-parity  both decoders read the same bytes to the same object
+ *   round-trip     encode with one, decode with the other, get the input back
+ *   type-coverage  every message type upstream declares is known to the bridge
+ *
+ * Byte equality is checked as its own target rather than folded into the others
+ * because it is the strictest claim and the one most likely to have a legitimate
+ * exception (field ordering, packed repeated encoding). Keeping it separate means
+ * excusing that exception never blinds the semantic checks.
+ */
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
+import { canonicalWire, differsOnlyByPacking, isWireSubset, orderedWire, sameWireContent } from './harness/wire.ts'
+import type { Divergence } from './harness/divergence.ts'
+import { fuzz } from './harness/runner.ts'
+import type { Random } from './harness/random.ts'
+import {
+	fieldsOfPath,
+	generateProtoCase,
+	generateProtoObject,
+	HOT_PROTO_PATHS,
+	oneofGroups,
+	pickProtoPath,
+	proto3OptionalFields,
+	PROTO_PATHS,
+	reachableTypes,
+	type ProtoCase
+} from './generators/proto.ts'
+
+const upstream = (await import('baileys')) as unknown as { proto: Record<string, unknown> }
+
+interface UpstreamType {
+	encode(message: unknown): { finish(): Uint8Array }
+	decode(bytes: Uint8Array): unknown
+	toObject(message: unknown, options: Record<string, unknown>): Record<string, unknown>
+}
+
+/**
+ * Rejects a candidate the shrinker invented that is not a valid case at all.
+ *
+ * Shrinking drops object keys, so it will happily propose `{}` — and a property
+ * that then throws on `path.split` reports a crash in the fuzzer instead of a
+ * finding in the codec. Every check below is total over the candidate space
+ * because of this guard.
+ */
+const isUsableCase = (value: ProtoCase): boolean =>
+	typeof value?.path === 'string' && value.path.length > 0 && typeof value.message === 'object' && value.message !== null
+
+/**
+ * protobufjs namespaces nest, so a schema path is a lookup chain.
+ *
+ * The intermediate segments are *functions*, not objects: `proto.Message` is the
+ * generated Type constructor, and `Message.ExtendedTextMessage` hangs off it as a
+ * static. A `typeof === 'object'` guard here silently skips every nested type,
+ * which is most of the schema — `resolves nested message types` pins that.
+ */
+const upstreamType = (path: string): UpstreamType | undefined => {
+	let cursor: unknown = upstream.proto
+	for (const segment of path.split('.')) {
+		if (cursor === null || (typeof cursor !== 'object' && typeof cursor !== 'function')) return undefined
+		cursor = (cursor as Record<string, unknown>)[segment]
+	}
+	return typeof cursor === 'function' && typeof (cursor as UpstreamType).encode === 'function'
+		? (cursor as unknown as UpstreamType)
+		: undefined
+}
+
+/**
+ * The one shape both decoders can be compared in.
+ *
+ * `defaults: false` matters: with defaults on, protobufjs invents `0`/`''` for
+ * every unset field and the comparison stops being able to see a dropped one.
+ */
+const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false, objects: false, oneofs: false }
+
+type Outcome = { ok: true; value: unknown } | { ok: false; error: string }
+
+const attempt = (call: () => unknown): Outcome => {
+	try {
+		return { ok: true, value: call() }
+	} catch (error) {
+		return { ok: false, error: `${(error as Error)?.name ?? 'Error'}: ${(error as Error)?.message ?? String(error)}` }
+	}
+}
+
+const hex = (bytes: unknown): string =>
+	bytes instanceof Uint8Array ? Buffer.from(bytes).toString('hex') : String(bytes)
+
+const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.value : `<throw ${outcome.error}>`)
+
+/**
+ * Message types upstream declares that the bridge codec has never heard of.
+ *
+ * Computed once by probing, not hard-coded: when the bridge gains a type this set
+ * shrinks by itself, the allowlist entry that depended on it stops matching, and
+ * the stale-entry check surfaces it for deletion. A hard-coded list would instead
+ * keep excusing a gap that had already been closed.
+ */
+const BRIDGE_UNKNOWN_TYPES: ReadonlySet<string> = new Set(
+	PROTO_PATHS.filter(path => upstreamType(path) !== undefined && !attempt(() => encodeProto(path, {})).ok)
+)
+
+const unknownTypeCache = new Map<string, boolean>()
+
+/** Whether a message can transitively hold a field the bridge cannot encode. */
+const touchesUnknownType = (path: string): boolean => {
+	const cached = unknownTypeCache.get(path)
+	if (cached !== undefined) return cached
+	const result =
+		BRIDGE_UNKNOWN_TYPES.has(path) || [...reachableTypes(path)].some(nested => BRIDGE_UNKNOWN_TYPES.has(nested))
+	unknownTypeCache.set(path, result)
+	return result
+}
+
+/**
+ * Routes a difference to the target that names its cause.
+ *
+ * A message whose schema reaches a type the bridge does not implement will
+ * differ for that reason and no other, and reporting it as a generic encoder
+ * mismatch would bury the actual defect (the missing type) under its symptom.
+ */
+const encodeTarget = (path: string, fallback: string): string =>
+	touchesUnknownType(path) ? 'proto:unknown-type-dropped' : fallback
+
+/**
+ * As above, but for a difference where both sides produced bytes: when the
+ * bridge's output is upstream's minus some fields, the defect is omission, and
+ * saying so is more useful than "the bytes differ".
+ */
+const byteTarget = (path: string, local: Uint8Array, remote: Uint8Array, fallback: string): string => {
+	if (touchesUnknownType(path)) return 'proto:unknown-type-dropped'
+	if (isWireSubset(local, remote)) return 'proto:field-omission'
+	return fallback
+}
+
+describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
+	it('resolves nested message types, not only top-level ones', () => {
+		// A guard on the fuzzers themselves. Nested types are the majority of the
+		// schema and all of the interesting traffic; if the lookup stops resolving
+		// them, every target below keeps passing while testing half of what it says.
+		const nested = PROTO_PATHS.filter(path => path.includes('.'))
+		const resolved = nested.filter(path => upstreamType(path) !== undefined)
+		assert.ok(nested.length > 200, `expected the schema to be mostly nested types, found ${nested.length}`)
+		assert.ok(
+			resolved.length > nested.length * 0.9,
+			`only ${resolved.length}/${nested.length} nested types resolve — the lookup is skipping them`
+		)
+		assert.ok(upstreamType('Message.ExtendedTextMessage') !== undefined)
+	})
+
+	it('knows every message type upstream declares', async () => {
+		await fuzz<string>({
+			target: 'proto:type-coverage',
+			runs: PROTO_PATHS.length,
+			shrinkFailures: false,
+			exhaustive: true,
+			// Walk the type list rather than sampling it: coverage is a finite
+			// question and there is no reason to answer it probabilistically.
+			generate: (() => {
+				let cursor = 0
+				return () => PROTO_PATHS[cursor++ % PROTO_PATHS.length]!
+			})(),
+			check: path => {
+				const upstreamSide = upstreamType(path)
+				if (!upstreamSide) return []
+				const local = attempt(() => encodeProto(path, {}))
+				if (local.ok) return []
+				return {
+					target: 'proto:type-coverage',
+					input: path,
+					local: describeOutcome(local),
+					upstream: '<encodes an empty message>',
+					detail: 'the bridge codec does not know a message type upstream declares'
+				}
+			}
+		})
+	})
+
+	it('names every decoded field the way upstream names it', async () => {
+		// A sweep rather than a sample: this is a finite question over the schema,
+		// and the answer for one field says nothing about the next.
+		//
+		// It matters more than it looks. The property name is the public API — a
+		// caller writes `chatAssignment.deviceAgentID` because that is what the
+		// upstream types declare. If the bridge calls it `deviceAgentId`, reads
+		// return undefined and, worse, writes are dropped on the way out with no
+		// error at all.
+		const pairs: { path: string; field: string; kind: number }[] = []
+		for (const path of PROTO_PATHS) {
+			if (!upstreamType(path)) continue
+			for (const field of fieldsOfPath(path)) {
+				if ((field[3] & 3) !== 0) continue // skip repeated and map: one scalar per field is enough
+				if (field[1] === 0) continue // skip nested messages: their own entry covers them
+				pairs.push({ path, field: field[0], kind: field[1] })
+			}
+		}
+
+		let cursor = 0
+		await fuzz<{ path: string; field: string; kind: number }>({
+			target: 'proto:field-names',
+			runs: pairs.length,
+			shrinkFailures: false,
+			exhaustive: true,
+			generate: () => pairs[cursor++ % pairs.length]!,
+			check: ({ path, field, kind }) => {
+				const type = upstreamType(path)
+				if (!type) return []
+
+				const sample = kind === 2 ? 'x' : kind === 3 ? true : kind === 4 ? new Uint8Array([1]) : 7
+				const encoded = attempt(() => type.encode({ [field]: sample }).finish())
+				if (!encoded.ok) return []
+
+				const decoded = attempt(() => decodeProto(path, encoded.value as Uint8Array))
+				if (!decoded.ok) return []
+
+				const keys = Object.keys(decoded.value as Record<string, unknown>)
+				if (keys.length === 0 || keys.includes(field)) return []
+
+				// The bridge round-trips the field under another name. Confirm the
+				// consequence rather than just the symptom: the upstream spelling is
+				// dropped on encode.
+				const upstreamSpelling = attempt(() => encodeProto(path, { [field]: sample }))
+				const dropped = upstreamSpelling.ok && (upstreamSpelling.value as Uint8Array).length === 0
+
+				return {
+					target: 'proto:field-names',
+					input: `${path}.${field}`,
+					local: keys.join(', '),
+					upstream: field,
+					detail: dropped
+						? 'the bridge renames the field, and silently drops the upstream spelling on encode'
+						: 'the bridge decodes the field under a different name'
+				}
+			}
+		})
+	})
+
+	it('encodes to identical bytes', async () => {
+		await fuzz<ProtoCase>({
+			target: 'proto:encode-bytes',
+			runs: 400,
+			generate: random => generateProtoCase(random),
+			check: value => {
+				if (!isUsableCase(value)) return []
+				const { path, message } = value
+				const type = upstreamType(path)
+				if (!type) return []
+
+				const local = attempt(() => encodeProto(path, message))
+				const remote = attempt(() => type.encode(message).finish())
+
+				if (local.ok !== remote.ok) {
+					return {
+						target: encodeTarget(path, 'proto:encode-bytes'),
+						input: { path, message },
+						local: describeOutcome(local),
+						upstream: describeOutcome(remote),
+						detail: 'one encoder accepted the message and the other rejected it'
+					}
+				}
+				if (!local.ok || !remote.ok) return []
+
+				const localBytes = local.value as Uint8Array
+				const remoteBytes = remote.value as Uint8Array
+				if (hex(localBytes) === hex(remoteBytes)) return []
+
+				// Same fields, different order: valid protobuf either way, so it is its
+				// own target rather than a failure of this one.
+				if (sameWireContent(localBytes, remoteBytes)) {
+					return {
+						target: 'proto:field-order',
+						input: { path, message },
+						local: orderedWire(localBytes) ?? hex(localBytes),
+						upstream: orderedWire(remoteBytes) ?? hex(remoteBytes),
+						detail: 'same fields and values, emitted in a different order'
+					}
+				}
+
+				// Packed vs unpacked repeated scalars: also legal either way, also its
+				// own target, for the same reason.
+				if (differsOnlyByPacking(localBytes, remoteBytes)) {
+					return {
+						target: 'proto:field-packing',
+						input: { path, message },
+						local: canonicalWire(localBytes) ?? hex(localBytes),
+						upstream: canonicalWire(remoteBytes) ?? hex(remoteBytes),
+						detail: 'repeated scalars encoded unpacked on one side and packed on the other'
+					}
+				}
+
+				return {
+					target: byteTarget(path, local.value as Uint8Array, remote.value as Uint8Array, 'proto:encode-bytes'),
+					input: { path, message },
+					local: canonicalWire(localBytes) ?? hex(localBytes),
+					upstream: canonicalWire(remoteBytes) ?? hex(remoteBytes),
+					detail: 'encoders put different fields or values on the wire'
+				}
+			}
+		})
+	})
+
+	it('decodes the same bytes to the same object', async () => {
+		await fuzz<ProtoCase>({
+			target: 'proto:decode-parity',
+			runs: 400,
+			generate: random => generateProtoCase(random),
+			check: value => {
+				if (!isUsableCase(value)) return []
+				const { path, message } = value
+				const type = upstreamType(path)
+				if (!type) return []
+
+				// Both decoders are shown bytes produced by *each* encoder: a decoder
+				// bug can hide behind its own encoder's output.
+				const sources: [string, Outcome][] = [
+					['rust-encoded', attempt(() => encodeProto(path, message))],
+					['js-encoded', attempt(() => type.encode(message).finish())]
+				]
+
+				const findings: Divergence[] = []
+				for (const [origin, source] of sources) {
+					if (!source.ok) continue
+					const bytes = source.value as Uint8Array
+					const local = attempt(() => decodeProto(path, bytes))
+					const remote = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+
+					if (local.ok !== remote.ok) {
+						findings.push({
+							target: 'proto:decode-parity',
+							input: { path, origin, bytes: hex(bytes) },
+							local: describeOutcome(local),
+							upstream: describeOutcome(remote),
+							detail: 'one decoder accepted the bytes and the other rejected them'
+						})
+						continue
+					}
+					if (!local.ok || !remote.ok) continue
+					if (!equivalent(local.value, remote.value)) {
+						findings.push({
+							// Same classification as the encode side: a decoder that drops
+							// a field and a decoder that reads a different value are two
+							// different defects and must not share one allowlist entry.
+							target: touchesUnknownType(path)
+								? 'proto:unknown-type-dropped'
+								: omitsKeysOnly(local.value, remote.value)
+									? 'proto:field-omission'
+									: 'proto:decode-parity',
+							input: { path, origin, message, bytes: hex(bytes) },
+							local: normalise(local.value),
+							upstream: normalise(remote.value),
+							detail: 'decoders read the same bytes differently'
+						})
+					}
+				}
+				return findings
+			}
+		})
+	})
+
+	it('round-trips a message through the other implementation', async () => {
+		await fuzz<ProtoCase>({
+			target: 'proto:round-trip',
+			runs: 400,
+			generate: random => generateProtoCase(random),
+			check: value => {
+				if (!isUsableCase(value)) return []
+				const { path, message } = value
+				const type = upstreamType(path)
+				if (!type) return []
+
+				const findings: Divergence[] = []
+
+				// Rust encodes → protobufjs reads it back.
+				const encodedLocally = attempt(() => encodeProto(path, message))
+				if (encodedLocally.ok) {
+					const readBack = attempt(() => type.toObject(type.decode(encodedLocally.value as Uint8Array), TO_OBJECT))
+					if (!readBack.ok) {
+						findings.push({
+							target: 'proto:round-trip',
+							input: { path, message, direction: 'rust-encode → js-decode' },
+							local: hex(encodedLocally.value),
+							upstream: describeOutcome(readBack),
+							detail: 'upstream cannot decode what the bridge encoded'
+						})
+					}
+				}
+
+				// protobufjs encodes → Rust reads it back.
+				const encodedUpstream = attempt(() => type.encode(message).finish())
+				if (encodedUpstream.ok) {
+					const readBack = attempt(() => decodeProto(path, encodedUpstream.value as Uint8Array))
+					if (!readBack.ok) {
+						findings.push({
+							target: 'proto:round-trip',
+							input: { path, message, direction: 'js-encode → rust-decode' },
+							local: describeOutcome(readBack),
+							upstream: hex(encodedUpstream.value),
+							detail: 'the bridge cannot decode what upstream encoded'
+						})
+					}
+				}
+
+				return findings
+			}
+		})
+	})
+
+	it('agrees on explicit presence for proto3 optional fields', async () => {
+		// The highest-value check in this file, and a finite one — so it sweeps every
+		// explicit-presence scalar in the schema rather than sampling.
+		//
+		// A `proto3Optional` field set to its zero value must still reach the wire:
+		// that is the entire meaning of explicit presence. An encoder that treats it
+		// as unset drops it silently, and nothing in the declaration audits can see
+		// that happen because the signature is identical either way.
+		const pairs: { path: string; field: string; kind: number }[] = []
+		for (const path of PROTO_PATHS) {
+			if (!upstreamType(path)) continue
+			for (const field of proto3OptionalFields(path)) {
+				if (field[1] === 0) continue // nested messages have no zero value to speak of
+				pairs.push({ path, field: field[0], kind: field[1] })
+			}
+		}
+
+		let cursor = 0
+		await fuzz<{ path: string; field: string; kind: number }>({
+			target: 'proto:presence',
+			runs: pairs.length,
+			shrinkFailures: false,
+			exhaustive: true,
+			generate: () => pairs[cursor++ % pairs.length]!,
+			check: ({ path, field, kind }) => {
+				const type = upstreamType(path)
+				if (!type) return []
+
+				const zero = defaultFor(kind)
+				const remote = attempt(() => type.encode({ [field]: zero }).finish())
+				const local = attempt(() => encodeProto(path, { [field]: zero }))
+				if (!remote.ok || !local.ok) return []
+
+				const localBytes = local.value as Uint8Array
+				const remoteBytes = remote.value as Uint8Array
+				if (sameWireContent(localBytes, remoteBytes)) return []
+
+				return {
+					target: byteTarget(path, localBytes, remoteBytes, 'proto:presence'),
+					input: `${path}.${field} = ${JSON.stringify(zero instanceof Uint8Array ? '<empty bytes>' : zero)}`,
+					local: hex(localBytes) || '<nothing encoded>',
+					upstream: hex(remoteBytes) || '<nothing encoded>',
+					detail:
+						localBytes.length === 0
+							? 'an explicit-presence field set to its zero value is dropped by the bridge encoder'
+							: 'an explicit-presence field set to its zero value encodes differently'
+				}
+			}
+		})
+	})
+
+	it('agrees on which member of a oneof wins', async () => {
+		const paths = PROTO_PATHS.filter(path => {
+			for (const members of oneofGroups(path).values()) if (members.length > 1) return true
+			return false
+		})
+
+		await fuzz<ProtoCase>({
+			target: 'proto:oneof',
+			runs: 300,
+			generate: (random: Random) => {
+				const path = paths.length > 0 ? random.pick(paths) : pickProtoPath(random)
+				// multiOneof puts several members of the same oneof on the object at
+				// once. Which one survives is unspecified by protobuf itself, which is
+				// exactly why the two implementations can disagree.
+				return { path, message: generateProtoObject(random, path, 2, { multiOneof: true, fieldProbability: 0.8 }) }
+			},
+			check: value => {
+				if (!isUsableCase(value)) return []
+				const { path, message } = value
+				const type = upstreamType(path)
+				if (!type) return []
+
+				const local = attempt(() => encodeProto(path, message))
+				const remote = attempt(() => type.encode(message).finish())
+				if (!local.ok || !remote.ok) return []
+				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				return {
+					target: byteTarget(path, local.value as Uint8Array, remote.value as Uint8Array, 'proto:oneof'),
+					input: { path, message },
+					local: canonicalWire(local.value as Uint8Array) ?? hex(local.value),
+					upstream: canonicalWire(remote.value as Uint8Array) ?? hex(remote.value),
+					detail: 'a oneof with several members set resolves differently'
+				}
+			}
+		})
+	})
+
+	it('agrees on 64-bit integer boundaries', async () => {
+		await fuzz<ProtoCase>({
+			target: 'proto:integers',
+			runs: 400,
+			generate: random =>
+				generateProtoCase(random, { extremeIntegers: true, fieldProbability: 0.7, defaultBias: 0.05, maxDepth: 2 }),
+			check: value => {
+				if (!isUsableCase(value)) return []
+				const { path, message } = value
+				const type = upstreamType(path)
+				if (!type) return []
+
+				const local = attempt(() => encodeProto(path, message))
+				const remote = attempt(() => type.encode(message).finish())
+				if (local.ok !== remote.ok) {
+					return {
+						target: encodeTarget(path, 'proto:integers'),
+						input: { path, message },
+						local: describeOutcome(local),
+						upstream: describeOutcome(remote),
+						detail: 'one encoder accepted an integer the other rejected'
+					}
+				}
+				if (!local.ok || !remote.ok) return []
+				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				return {
+					target: byteTarget(path, local.value as Uint8Array, remote.value as Uint8Array, 'proto:integers'),
+					input: { path, message },
+					local: canonicalWire(local.value as Uint8Array) ?? hex(local.value),
+					upstream: canonicalWire(remote.value as Uint8Array) ?? hex(remote.value),
+					detail: 'integer fields encode differently'
+				}
+			}
+		})
+	})
+})
+
+/** The proto3 default for a field kind, used to force explicit-presence cases. */
+function defaultFor(kind: number): unknown {
+	switch (kind) {
+		case 2:
+			return ''
+		case 3:
+			return false
+		case 4:
+			return new Uint8Array(0)
+		default:
+			return 0
+	}
+}

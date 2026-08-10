@@ -146,3 +146,37 @@ export const compareOutcomes = (local: Outcome, upstream: Outcome): OutcomeCompa
 /** Renders an outcome for a failure report. */
 export const showOutcome = (outcome: Outcome): unknown =>
 	outcome.kind === 'throw' ? `<throw ${outcome.name}: ${outcome.message.slice(0, 160)}>` : outcome.value
+
+/**
+ * True when `local` is `upstream` with some keys missing, and nothing changed.
+ *
+ * The decode-side twin of `isWireSubset`: it tells "the decoder dropped a field"
+ * apart from "the decoder read a different value". Only the first is a single
+ * defect that one allowlist entry may reasonably cover.
+ */
+export const omitsKeysOnly = (local: unknown, upstream: unknown): boolean => {
+	const a = normalise(local)
+	const b = normalise(upstream)
+	if (deepSame(a, b)) return false
+
+	const walk = (left: unknown, right: unknown): boolean => {
+		if (deepSame(left, right)) return true
+		if (Array.isArray(left) || Array.isArray(right)) {
+			if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+			return left.every((item, index) => walk(item, right[index]))
+		}
+		if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
+		const record = left as Record<string, unknown>
+		const reference = right as Record<string, unknown>
+		// Every key the local side has must exist upstream and match. Extra keys
+		// upstream are the omission being described, at whatever depth they appear —
+		// the values already differ (checked above), so subset alone is the question.
+		for (const key of Object.keys(record)) {
+			if (!Object.hasOwn(reference, key)) return false
+			if (!walk(record[key], reference[key])) return false
+		}
+		return Object.keys(reference).length >= Object.keys(record).length
+	}
+
+	return walk(a, b)
+}
