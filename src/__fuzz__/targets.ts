@@ -177,7 +177,23 @@ export const EXCLUDED_EXPORTS: Readonly<Record<string, string>> = {
 	debouncedTimeout: 'schedules work on a timer and returns a live handle',
 	bindWaitForEvent: 'subscribes to an emitter and resolves on a future event',
 	bindWaitForConnectionUpdate: 'subscribes to an emitter and resolves on a future event',
-	makeEventBuffer: 'stateful; covered by bridge-events.fuzz.test.ts',
+	// Scoped deliberately. `bridge-events.fuzz.test.ts` drives `emit`, `buffer`
+	// and `flush` differentially against upstream, which is the consolidation
+	// logic and the bulk of the surface. `createBufferedFunction` is *not*
+	// covered: its distinguishing behaviour is a nesting count released in a
+	// `finally` and an automatic flush 100ms after the last concurrent job
+	// settles, and every property of it that can be asserted without racing that
+	// timer is either already implied by the emit/buffer/flush targets or
+	// vacuous — `flush()` resets `buffering` unconditionally, so asserting
+	// `isBuffering()` after a flush can never fail. A differential over it was
+	// written and withdrawn: it surfaced several distinct consolidation
+	// differences (groups.update entries with no id, blank fields kept on one
+	// side) that are real findings needing characterisation, and landing it would
+	// have meant an allowlist entry broad enough to excuse whatever else turned
+	// up. `Socket/groups.ts` and `Socket/internals.ts` use the method in
+	// production, so this gap is worth closing — in a change that can do it
+	// justice.
+	makeEventBuffer: 'emit/buffer/flush covered by bridge-events.fuzz.test.ts; createBufferedFunction is not',
 	makeCacheableSignalKeyStore: 'stateful keystore; covered by the store test suite',
 	addTransactionCapability: 'stateful keystore wrapper; covered by the store test suite',
 	handleIdentityChange: 'mutates live session state',

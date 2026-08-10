@@ -77,7 +77,13 @@ export const relayedBytes = async (
 		structuredClone(message) as WAProto.IMessage,
 		{ messageId: options.messageId ?? '3EB0FUZZ0000000000' }
 	)
-	const bytes = captured[0]
-	if (!bytes) throw new Error('the send path handed no bytes to the bridge')
-	return bytes
+	// Exactly one, not the first of however many. Returning `captured[0]` and
+	// ignoring the rest means a regression that sends the same message twice —
+	// or sends a second, malformed one after a valid first — passes all three
+	// wire-fidelity targets while users receive duplicates.
+	if (captured.length === 0) throw new Error('the send path handed no bytes to the bridge')
+	if (captured.length > 1) {
+		throw new Error(`the send path made ${captured.length} bridge calls for one message; expected exactly one`)
+	}
+	return captured[0]!
 }

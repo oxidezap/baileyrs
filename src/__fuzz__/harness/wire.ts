@@ -72,8 +72,30 @@ const readVarint = (cursor: Cursor): bigint | undefined => {
 	return undefined
 }
 
-const scan = (bytes: Uint8Array, depth: number, schema?: SchemaContext): WireField[] | undefined => {
-	const cursor: Cursor = { bytes, offset: 0 }
+const scan = (bytes: Uint8Array, depth: number, schema?: SchemaContext): WireField[] | undefined =>
+	scanFrom({ bytes, offset: 0 }, depth, schema)
+
+/**
+ * Reads fields from `cursor` until the buffer ends, or until the group named by
+ * `groupField` is closed.
+ *
+ * Groups (wire types 3 and 4) are the deprecated encoding, and nothing in these
+ * protos declares one — but "no schema uses it" is not the same as "it is not
+ * protobuf". A *balanced* group is well-formed on the wire, and returning
+ * `undefined` for it told `canonicalWire` the bytes were unframed, which routes a
+ * disagreement between two decoders that both accepted the payload into
+ * `proto:mutation-interpretation` (a strictness difference on bytes with no
+ * meaning) instead of `proto:mutation-agreement` (a real codec bug). So balanced
+ * groups are parsed and skipped; an unmatched open or close is still malformed,
+ * which is the honest answer for those.
+ */
+const scanFrom = (
+	cursor: Cursor,
+	depth: number,
+	schema?: SchemaContext,
+	groupField?: number
+): WireField[] | undefined => {
+	const bytes = cursor.bytes
 	const fields: WireField[] = []
 
 	while (cursor.offset < bytes.length) {
@@ -131,15 +153,29 @@ const scan = (bytes: Uint8Array, depth: number, schema?: SchemaContext): WireFie
 				fields.push({ field, wireType, value: Buffer.from(slice).toString('hex') })
 				break
 			}
+			case 3: {
+				// Start of a group: its fields are read from the same cursor until the
+				// matching close tag.
+				if (depth <= 0) return undefined
+				const nested = scanFrom(cursor, depth - 1, descend(schema, field), field)
+				if (nested === undefined) return undefined
+				fields.push({ field, wireType, value: `{${render(nested)}}`, nested })
+				break
+			}
+			case 4:
+				// End of a group. Legal only as the close of the one being read; a
+				// stray close tag is malformed.
+				if (groupField === undefined || field !== groupField) return undefined
+				return fields
 			default:
-				// Wire types 3 and 4 are the deprecated group encoding; nothing in these
-				// protos uses them, so treat their presence as "not parseable" rather
-				// than guessing.
+				// Wire types 6 and 7 have never been assigned a meaning.
 				return undefined
 		}
 	}
 
-	return fields
+	// Running out of bytes ends the message at the top level, but leaves a group
+	// unterminated — which is exactly the malformed case this still rejects.
+	return groupField === undefined ? fields : undefined
 }
 
 const render = (fields: readonly WireField[]): string =>

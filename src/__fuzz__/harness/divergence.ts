@@ -337,6 +337,29 @@ const replaceLoneSurrogates = (value: unknown, depth = 0): unknown => {
 	return out
 }
 
+/** The largest finite float32; anything above it is what the bridge refuses. */
+const FLT_MAX = 3.4028234663852886e38
+
+/**
+ * True when the generated input carries a number the float32 range cannot hold.
+ *
+ * Walked structurally rather than matched in the serialised text: the codec
+ * targets pass `{ path, message }` and the presence sweep passes a
+ * `Path.field = value` string, and in both the interesting part is a magnitude,
+ * not a substring.
+ */
+const carriesOutOfRangeFloat = (value: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (typeof value === 'number') return !Number.isFinite(value) || Math.abs(value) > FLT_MAX
+	if (typeof value === 'string') {
+		const parsed = Number(value.split(' = ').at(-1))
+		return Number.isFinite(parsed) ? Math.abs(parsed) > FLT_MAX : false
+	}
+	if (Array.isArray(value)) return value.some(item => carriesOutOfRangeFloat(item, depth + 1))
+	if (typeof value !== 'object' || value === null) return false
+	return Object.values(value as Record<string, unknown>).some(nested => carriesOutOfRangeFloat(nested, depth + 1))
+}
+
 /**
  * True when two poll aggregates hold the same options and voters, in any order.
  *
@@ -817,9 +840,11 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'For a 32-bit float field given a double above FLT_MAX (3.4028234663852886e38), the bridge throws "invalid float32" and protobufjs encodes it anyway — silently, to Infinity. baileyrs is the stricter and arguably the correct one here, but the difference is caller-visible: the same value sends on Baileys and throws on baileyrs. Exact FLT_MAX itself is accepted by both; an earlier version of this entry claimed otherwise because the generator emitted the rounded literal 3.4028235e38, which is a larger double.',
 		review: '2026-11-01',
-		// Keyed on the message *and* on the bridge being the rejecting side, so a
-		// rejection of an in-range float stays visible.
-		when: divergence => text(divergence.local).includes('invalid float32')
+		// The message, the rejecting side, *and* a value that is actually out of
+		// range. The message alone let a regression that started rejecting an
+		// in-range 1.5, 0.1 or exact FLT_MAX with the same generic error be
+		// classified as this known difference, on every proto target.
+		when: divergence => text(divergence.local).includes('invalid float32') && carriesOutOfRangeFloat(divergence.input)
 	},
 	{
 		id: 'proto-decode-invalid-utf8',

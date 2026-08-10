@@ -23,6 +23,8 @@ const BYTES_TAG = '__bytes__'
 const BIGINT_TAG = '__bigint__'
 const UNDEFINED_TAG = '__undefined__'
 const NUMBER_TAG = '__number__'
+const FUNCTION_TAG = '__function__'
+const SYMBOL_TAG = '__symbol__'
 const BUFFER_TAG = '__buffer__'
 const DATE_TAG = '__date__'
 const ERROR_TAG = '__error__'
@@ -41,6 +43,8 @@ const TAGS: readonly string[] = [
 	BIGINT_TAG,
 	UNDEFINED_TAG,
 	NUMBER_TAG,
+	FUNCTION_TAG,
+	SYMBOL_TAG,
 	BUFFER_TAG,
 	DATE_TAG,
 	ERROR_TAG,
@@ -93,6 +97,14 @@ const encode = (value: unknown): unknown => {
 		if (keys.length === 1 && TAGS.includes(keys[0]!)) return { [ESCAPE_TAG]: out }
 		return out
 	}
+	// Functions and symbols are generated on purpose — `generateOffDomainValue`
+	// emits both as off-domain arguments — and JSON drops a property whose value
+	// is either one. Without a tag, `FUZZ_RECORD` wrote a corpus entry with no
+	// `input` at all, which reloads as `undefined` and replays a different case
+	// than the one that failed. Neither round-trips as the original object; what
+	// matters for the closed-domain checks is the *type*, so that is what is kept.
+	if (typeof value === 'function') return { [FUNCTION_TAG]: value.name || 'anonymous' }
+	if (typeof value === 'symbol') return { [SYMBOL_TAG]: value.description ?? '' }
 	return value
 }
 
@@ -120,6 +132,12 @@ const decode = (value: unknown): unknown => {
 		if (taggedAs(record, ESCAPE_TAG)) return decodeProperties(record[ESCAPE_TAG] as Record<string, unknown>)
 		if (taggedAs(record, UNDEFINED_TAG)) return undefined
 		if (taggedAs(record, BIGINT_TAG)) return BigInt(String(record[BIGINT_TAG]))
+		// Rebuilt as a fresh function/symbol carrying the recorded name. The
+		// identity is gone either way; the type is the part the check reads.
+		if (taggedAs(record, FUNCTION_TAG)) {
+			return Object.defineProperty(() => undefined, 'name', { value: String(record[FUNCTION_TAG]) })
+		}
+		if (taggedAs(record, SYMBOL_TAG)) return Symbol(String(record[SYMBOL_TAG]))
 		if (taggedAs(record, BYTES_TAG)) return new Uint8Array(Buffer.from(String(record[BYTES_TAG]), 'base64'))
 		if (taggedAs(record, BUFFER_TAG)) return Buffer.from(String(record[BUFFER_TAG]), 'base64')
 		if (taggedAs(record, DATE_TAG)) return new Date(Number(record[DATE_TAG]))

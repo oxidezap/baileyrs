@@ -335,13 +335,18 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			// lose the bug. So excusability is carried too — a finding the allowlist
 			// does not cover may only ever be minimised into another one it does not
 			// cover.
-			const originalTargets = new Set(produced.map(finding => finding.target))
-			const hadUnexcused = applyAllowlist(produced, new Date()).unexcused.length > 0
+			// Every class, not any one of them. A check may return several findings —
+			// `proto:decode-parity` reports one per encoder source — and requiring
+			// only that *some* finding of an original class survive let shrinking
+			// discard a second, independent defect: the minimised findings replace
+			// the whole original set below, so the dropped one was never reported and
+			// `FUZZ_RECORD` froze an input that no longer reproduces it.
+			const classOf = (finding: Divergence): string =>
+				`${finding.target}\u0000${applyAllowlist([finding], new Date()).unexcused.length > 0 ? 'open' : 'excused'}`
+			const originalClasses = new Set(produced.map(classOf))
 			const preservesClass = (found: readonly Divergence[]): boolean => {
-				const sameTarget = found.filter(finding => originalTargets.has(finding.target))
-				if (sameTarget.length === 0) return false
-				if (!hadUnexcused) return true
-				return applyAllowlist(sameTarget, new Date()).unexcused.length > 0
+				const classes = new Set(found.map(classOf))
+				return [...originalClasses].every(original => classes.has(original))
 			}
 
 			const minimised = shrinkFailures
@@ -352,7 +357,7 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 				: input
 
 			const rerun = await runOne(minimised, 'minimised', false)
-			const minimisedFindings = rerun.filter(finding => originalTargets.has(finding.target))
+			const minimisedFindings = rerun.filter(finding => originalClasses.has(classOf(finding)))
 			// Keep the original when minimisation did not hold the class. Reporting a
 			// smaller input that no longer shows the defect is worse than a large one
 			// that does.
