@@ -192,7 +192,8 @@ export const EXCLUDED_EXPORTS: Readonly<Record<string, string>> = {
 	// have meant an allowlist entry broad enough to excuse whatever else turned
 	// up. `Socket/groups.ts` and `Socket/internals.ts` use the method in
 	// production, so this gap is worth closing — in a change that can do it
-	// justice.
+	// justice. Also listed under "What this does not cover" in README.md, because
+	// a comment in an exclusion table is not somewhere anyone planning work looks.
 	makeEventBuffer: 'emit/buffer/flush covered by bridge-events.fuzz.test.ts; createBufferedFunction is not',
 	makeCacheableSignalKeyStore: 'stateful keystore; covered by the store test suite',
 	addTransactionCapability: 'stateful keystore wrapper; covered by the store test suite',

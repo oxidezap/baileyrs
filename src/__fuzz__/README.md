@@ -95,6 +95,23 @@ are marked `exhaustive` so the budget cannot truncate them. A run that checked
 747 of 1734 inputs and printed nothing reads exactly like one that checked
 them all — that happened during development, and the warning exists because of it.
 
+## What this does not cover
+
+Two lists of known gaps, and this section exists because neither was findable
+from outside the source. The `open` entries in `harness/divergence.ts` are the
+first: real differences nobody has decided about, printed on every run and
+carrying a review date. This is the second — surfaces the suite does not reach
+at all, which no run will ever remind anyone about.
+
+| Surface                                                                           | Why it is not fuzzed                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createBufferedFunction`                                                          | A differential was written and withdrawn. It surfaced consolidation differences that are real findings needing characterisation — `groups.update` entries with no `id`, and blank fields kept on one side but not the other — and landing it would have meant an allowlist entry broad enough to excuse whatever else turned up. `Socket/groups.ts` and `Socket/internals.ts` use it in production, so this is worth closing. |
+| `generateWAMessage`, `generateWAMessageContent`                                   | Both are async and reach media upload. A differential needs a paired upload stub that returns identically on both sides first, or every draw diverges on an upload URL. Only the synchronous `generateWAMessageFromContent` is covered, by `wire-fidelity.fuzz.test.ts`.                                                                                                                                                      |
+| Keyed crypto (`decryptPollVote`, `decryptEventResponse`, `decryptMediaRetryData`) | Random input only ever reaches the shared reject branch, so the differential proves nothing. Needs real key material fixtures.                                                                                                                                                                                                                                                                                                |
+
+`targets.ts` carries the same reasons per export, since that is where the
+suite enforces them; this table is the version somebody planning work can find.
+
 ## Adding a target
 
 ```ts
