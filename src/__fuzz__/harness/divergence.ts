@@ -57,14 +57,6 @@ export interface KnownDivergence {
 }
 
 /**
- * The exact fields the bridge round-trips under another name.
- *
- * Enumerated rather than pattern-matched: "the names differ" would excuse any
- * future rename, which is the failure this entry exists to catch. The list comes
- * from the exhaustive `proto:field-names` sweep, so it is complete as of writing
- * and any addition to it will fail the suite first.
- */
-/**
  * Fields upstream encodes and the bridge writes nothing for.
  *
  * Listed exactly, so a twelfth one fails the suite instead of joining them
@@ -85,6 +77,14 @@ const NOT_ENCODED_FIELDS: readonly string[] = [
 	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
 ]
 
+/**
+ * The exact fields the bridge round-trips under another name.
+ *
+ * Enumerated rather than pattern-matched: "the names differ" would excuse any
+ * future rename, which is the failure this entry exists to catch. The list comes
+ * from the exhaustive `proto:field-names` sweep, so it is complete as of writing
+ * and any addition to it will fail the suite first.
+ */
 const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string])[] = [
 	['deviceAgentID', 'deviceAgentId'],
 	['deviceID', 'deviceId'],
@@ -342,7 +342,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// Enumerated, not pattern-matched: the value of the sweep is that it covers
 		// every non-map field, so a twelfth field joining this list has to fail
 		// rather than be absorbed.
-		when: divergence => NOT_ENCODED_FIELDS.some(field => text(divergence.input).includes(field)),
+		//
+		// And the outcome is pinned as well as the field. `proto:field-numbers`
+		// reports three different things — nothing encoded, a one-sided rejection,
+		// and a wrong field number — so matching on the field name alone would have
+		// excused a *renumbering* of any of these eleven, which is a different and
+		// worse defect that has its own entry.
+		when: divergence =>
+			divergence.local === '<nothing encoded>' &&
+			NOT_ENCODED_FIELDS.some(field => text(divergence.input).includes(field)),
 		reason:
 			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, PaymentExtendedMetadata.messageParamsJson, SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
 		review: '2026-10-01'
