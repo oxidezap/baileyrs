@@ -131,6 +131,14 @@ if (truncated.length > 0) {
 	for (const report of truncated) {
 		lines.push(`- ${report.target}: ${report.truncated!.ran} of ${report.truncated!.planned}`)
 	}
+	if (failOnStale) {
+		lines.push('')
+		lines.push(
+			'Under `--fail-on-stale` this fails the run. A target that silently shrinks to a prefix reports a pass ' +
+				'having searched a fraction of what it claims — which is how a slow regression hides. Either the budget ' +
+				'is too low for the machine, or something got slower; both need a person.'
+		)
+	}
 }
 
 if (totals.findings > 0) {
@@ -203,6 +211,22 @@ if (!complete) {
 
 console.log(lines.join('\n'))
 
+/**
+ * Truncation fails the run, but only under `--fail-on-stale`.
+ *
+ * The runner only warns about it, and a warning is not enough on its own: a
+ * target reduced to an arbitrarily small prefix still writes a report with no
+ * findings, so a regression that makes a decoder ten times slower shows up as a
+ * green run with less coverage rather than as a failure.
+ *
+ * Gated on the same flag as the other strict checks because the two callers want
+ * different things. The nightly passes it and gives every target 180s, so
+ * truncation there means something actually got slower. A local `npm run fuzz`
+ * has a 6s smoke budget and truncates routinely on a busy machine; failing that
+ * would train people to ignore the signal.
+ */
 const failed =
-	totals.findings > 0 || totals.crashes > 0 || (failOnStale && (expired.length > 0 || candidates.length > 0))
+	totals.findings > 0 ||
+	totals.crashes > 0 ||
+	(failOnStale && (expired.length > 0 || candidates.length > 0 || truncated.length > 0))
 process.exit(failed ? 1 : 0)

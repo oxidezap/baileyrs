@@ -28,6 +28,8 @@ import {
 	generateErrorNode,
 	generateMediaRetryNode,
 	generateMessageStanza,
+	generateResponseNode,
+	generateTaggedNode,
 	generateRetryReceiptNode,
 	generateStreamErrorNode
 } from './generators/binary-node.ts'
@@ -43,6 +45,9 @@ import { PURE_TARGET_NAMES } from './targets.ts'
 
 /** The option-name digest the poll aggregator buckets votes by. */
 const sha256 = (value: Buffer): Buffer => createHash('sha256').update(value).digest()
+
+/** The child tags the content accessors are asked for, shared by generator and query. */
+const CONTENT_TAGS = ['error', 'item', 'enc', 'skmsg', 'missing'] as const
 
 const upstream = (await import('baileys')) as unknown as Record<string, unknown>
 const local = (await import('../index.ts')) as unknown as Record<string, unknown>
@@ -617,21 +622,25 @@ const TARGETS: readonly PureTarget[] = [
 		runs: 250
 	},
 	{ name: 'getAllBinaryNodeChildren', generate: random => [generateBinaryNode(random)], runs: 250 },
+	// These three read the *content* of the child they find, so the child has to
+	// carry the tag being queried and bytes to read. Drawing the tag and the
+	// content independently left every case returning undefined — see
+	// `generateTaggedNode`.
 	{
 		name: 'getBinaryNodeChildBuffer',
-		generate: random => [generateBinaryNode(random), random.pick(['error', 'item', 'enc', 'missing'])],
+		generate: random => [generateTaggedNode(random, CONTENT_TAGS), random.pick(CONTENT_TAGS)],
 		runs: 250
 	},
 	{
 		name: 'getBinaryNodeChildString',
-		generate: random => [generateBinaryNode(random), random.pick(['error', 'item', 'enc', 'missing'])],
+		generate: random => [generateTaggedNode(random, CONTENT_TAGS), random.pick(CONTENT_TAGS)],
 		runs: 250
 	},
 	{
 		name: 'getBinaryNodeChildUInt',
 		generate: random => [
-			generateBinaryNode(random),
-			random.pick(['error', 'item', 'enc', 'missing']),
+			generateTaggedNode(random, CONTENT_TAGS),
+			random.pick(CONTENT_TAGS),
 			random.pick([1, 2, 3, 4, 8, 0])
 		],
 		runs: 250
@@ -641,7 +650,13 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [generateDictionaryNode(random), random.pick(['item', 'missing'])],
 		runs: 250
 	},
-	{ name: 'assertNodeErrorFree', generate: random => [generateErrorNode(random)], runs: 250 },
+	{
+		// Both shapes: `generateErrorNode` always carries an `<error>` child, so on
+		// its own it only ever exercised the throwing path.
+		name: 'assertNodeErrorFree',
+		generate: random => [random.bool(0.8) ? generateResponseNode(random) : generateErrorNode(random)],
+		runs: 250
+	},
 	{
 		name: 'binaryNodeToString',
 		generate: random => [generateBinaryNode(random) as unknown as BinaryNode['content']],

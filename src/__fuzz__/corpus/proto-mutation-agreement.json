@@ -1,0 +1,10 @@
+[
+	{
+		"note": "field 1 of SyncActionValue is `optional int64 timestamp`, written here as wire type 2 wrapping the legal `08 20`. protobufjs runs its generated `reader.int64()` regardless of the wire type, flattens the wrapper and reports timestamp 32; the bridge treats the mismatched field as unknown and reports {}. Pinned here because the nesting-bomb mutator only reaches it on some seeds, and proto-wire-type-mismatch-ignored-upstream would otherwise be reported as an allowlist entry that excuses nothing.",
+		"input": {
+			"path": "SyncActionValue",
+			"mutator": "nesting-bomb",
+			"bytes": { "__bytes__": "CgIIIA==" }
+		}
+	}
+]

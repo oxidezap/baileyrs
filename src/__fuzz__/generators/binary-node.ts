@@ -140,6 +140,76 @@ export const generateErrorNode = (random: Random): BinaryNode => ({
 	]
 })
 
+/**
+ * An IQ reply that carries an `<error>` child only some of the time.
+ *
+ * `assertNodeErrorFree` throws exactly when that child is present, and
+ * `generateErrorNode` always builds one — so all 250 inputs took the throwing
+ * path, both sides threw, and the comparator called it agreement. The successful
+ * path was never compared at all: an implementation that started rejecting every
+ * ordinary error-free stanza would have passed this target.
+ *
+ * The error case stays the common one, since that is where the status-code
+ * parsing lives; roughly a third are clean replies.
+ */
+export const generateResponseNode = (random: Random): BinaryNode => {
+	const children: BinaryNode[] = []
+	if (random.bool(0.65)) {
+		children.push({
+			tag: 'error',
+			attrs: { code: random.pick(ATTRIBUTE_VALUES), text: random.pick(['forbidden', 'not-acceptable', '']) }
+		})
+	}
+	// Ordinary siblings, so a clean reply is a realistic stanza rather than an
+	// empty one — `assertNodeErrorFree` has to ignore all of them.
+	for (let index = random.int(0, 2); index > 0; index--) {
+		children.push({ tag: random.pick(['item', 'participant', 'list', 'enc']), attrs: generateAttributes(random) })
+	}
+
+	return {
+		tag: random.pick(['iq', 'ack', 'result', 'message']),
+		attrs: { id: String(random.int(1, 9999)), ...(random.bool(0.5) ? { type: 'error' } : {}) },
+		content: random.bool(0.9) ? random.shuffle(children) : random.pick([[], undefined])
+	}
+}
+
+/**
+ * A parent whose children actually carry the tag the accessor will query.
+ *
+ * `generateBinaryNode` draws the child tag and the child content independently,
+ * and the target draws the queried tag independently again — so on the fixed
+ * seed none of the 250 `getBinaryNodeChildBuffer` cases and none of the 250
+ * `getBinaryNodeChildUInt` cases found a child with byte content, and
+ * `getBinaryNodeChildString` found one. Every one of those compared `undefined`
+ * against `undefined`: the buffer extraction, the UTF-8 decode and the
+ * big-endian accumulation were never run.
+ *
+ * So the child tag is drawn from the same pool the query is, and the content is
+ * weighted toward the types these accessors are about — with the wrong types
+ * still drawn, since returning `undefined` for a string is also behaviour worth
+ * pinning.
+ */
+export const generateTaggedNode = (random: Random, tags: readonly string[]): BinaryNode => ({
+	tag: random.pick(['iq', 'notification', 'message']),
+	attrs: generateAttributes(random),
+	content: Array.from({ length: random.int(1, 4) }, () => ({
+		// Mostly a tag the caller will ask for; sometimes one it will not, so the
+		// "no such child" path stays covered.
+		tag: random.bool(0.8) ? random.pick(tags) : random.pick(TAGS),
+		attrs: generateAttributes(random),
+		content: random.weighted<BinaryNode['content']>([
+			// Lengths span the widths getBinaryNodeChildUInt is asked for, including
+			// buffers shorter than the requested length.
+			[5, random.bytes(random.pick([0, 1, 2, 3, 4, 8, 16]))],
+			[3, Buffer.from(random.bytes(random.pick([1, 2, 4, 8])))],
+			[3, generateString(random)],
+			[2, random.pick(ATTRIBUTE_VALUES)],
+			[1, undefined],
+			[1, []]
+		])
+	}))
+})
+
 /** A node whose children are `<item>`s carrying key/value attributes, for the dictionary reducer. */
 export const generateDictionaryNode = (random: Random): BinaryNode => ({
 	tag: random.pick(['props', 'list', 'dict']),

@@ -370,6 +370,13 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 
 	// Never let a budget cap pass for coverage. A run that checked 747 of 1734
 	// inputs and printed nothing reads exactly like one that checked them all.
+	//
+	// A warning here rather than a finding, because the two callers want different
+	// things: the PR smoke run has a 6s budget and truncates on a busy machine, so
+	// failing on it would be flaky. The count also goes into the report, and
+	// `scripts/fuzz/report.ts` fails the nightly on it under `--fail-on-stale` —
+	// where the budget is 180s per target and truncation means something is slower
+	// than it was.
 	if (truncatedAt !== undefined) {
 		console.warn(
 			`fuzz: ${target} stopped at ${truncatedAt}/${runs} inputs after ${timeBudgetMs}ms — raise FUZZ_TIME_BUDGET_MS to cover the rest`
