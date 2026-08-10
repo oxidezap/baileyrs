@@ -64,6 +64,27 @@ export interface KnownDivergence {
  * from the exhaustive `proto:field-names` sweep, so it is complete as of writing
  * and any addition to it will fail the suite first.
  */
+/**
+ * Fields upstream encodes and the bridge writes nothing for.
+ *
+ * Listed exactly, so a twelfth one fails the suite instead of joining them
+ * quietly. Found by the `proto:field-numbers` sweep once it stopped skipping the
+ * case where only the bridge produced no bytes.
+ */
+const NOT_ENCODED_FIELDS: readonly string[] = [
+	'Message.AudioMessage.mediaKeyDomain',
+	'Message.DocumentMessage.mediaKeyDomain',
+	'Message.ImageMessage.mediaKeyDomain',
+	'Message.MMSThumbnailMetadata.mediaKeyDomain',
+	'Message.StickerMessage.mediaKeyDomain',
+	'Message.VideoMessage.mediaKeyDomain',
+	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
+	'Message.PaymentExtendedMetadata.messageParamsJson',
+	'SyncActionValue.businessBroadcastAssociationAction',
+	'SyncActionValue.AgentAction.deviceID',
+	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
+]
+
 const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string])[] = [
 	['deviceAgentID', 'deviceAgentId'],
 	['deviceID', 'deviceId'],
@@ -312,6 +333,18 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		status: 'open',
 		reason:
 			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
+		review: '2026-10-01'
+	},
+	{
+		id: 'proto-field-not-encoded',
+		target: 'proto:field-numbers',
+		status: 'open',
+		// Enumerated, not pattern-matched: the value of the sweep is that it covers
+		// every non-map field, so a twelfth field joining this list has to fail
+		// rather than be absorbed.
+		when: divergence => NOT_ENCODED_FIELDS.some(field => text(divergence.input).includes(field)),
+		reason:
+			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, PaymentExtendedMetadata.messageParamsJson, SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
 		review: '2026-10-01'
 	},
 	{

@@ -135,6 +135,24 @@ const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.val
  * — encode the field alone, read the tag back. Built per message, lazily, so a
  * run only pays for the types it actually compares.
  */
+/**
+ * The field kinds protobuf actually packs, and that unpack as varints.
+ *
+ * "Repeated" is not the same as "packable": a repeated string or bytes field is
+ * always one length-delimited entry per element and is never packed, so a
+ * wire-type change on one is a codec regression rather than a spelling
+ * difference. Floats are packable but fixed-width, so they never appear as the
+ * varint run this comparison looks for.
+ */
+const PACKABLE_KINDS: ReadonlySet<number> = new Set([
+	PROTO_FIELD_KIND.enum,
+	PROTO_FIELD_KIND.bool,
+	PROTO_FIELD_KIND.signed32,
+	PROTO_FIELD_KIND.unsigned32,
+	PROTO_FIELD_KIND.signed64,
+	PROTO_FIELD_KIND.unsigned64
+])
+
 interface FieldFacts {
 	readonly repeated: ReadonlySet<number>
 	readonly messages: ReadonlyMap<number, string>
@@ -159,7 +177,7 @@ const factsFor = (path: string): FieldFacts => {
 			if (!encoded.ok) continue
 			const number = firstFieldNumber(encoded.value as Uint8Array)
 			if (number === undefined) continue
-			if ((field[3] & PROTO_FIELD_FLAG.repeated) !== 0 && !isMessage) repeated.add(number)
+			if ((field[3] & PROTO_FIELD_FLAG.repeated) !== 0 && PACKABLE_KINDS.has(field[1])) repeated.add(number)
 			const nested = messagePathOfField(field)
 			if (nested !== undefined) messages.set(number, nested)
 		}
@@ -391,10 +409,35 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				const sample = repeated ? [one] : one
 				const local = attempt(() => encodeProto(path, { [field]: sample }))
 				const remote = attempt(() => type.encode({ [field]: sample }).finish())
+				// One side rejecting a field the schema declares is a finding of its
+				// own, not a reason to drop the case.
+				if (remote.ok !== local.ok) {
+					return {
+						target: encodeTarget(path, { [field]: sample }, 'proto:field-numbers'),
+						input: `${path}.${field}`,
+						local: describeOutcome(local),
+						upstream: describeOutcome(remote),
+						detail: 'one encoder accepted a schema-declared field and the other rejected it'
+					}
+				}
 				if (!local.ok || !remote.ok) return []
 
 				const localBytes = local.value as Uint8Array
 				const remoteBytes = remote.value as Uint8Array
+
+				// Upstream encoding a field its own schema declares while the bridge
+				// rejects it or writes nothing is how a missing or unsupported field
+				// shows up. Skipping it let this sweep report exhaustive coverage of a
+				// field it never actually checked.
+				if (remoteBytes.length > 0 && localBytes.length === 0) {
+					return {
+						target: encodeTarget(path, { [field]: sample }, 'proto:field-numbers'),
+						input: `${path}.${field}`,
+						local: '<nothing encoded>',
+						upstream: `field ${firstFieldNumber(remoteBytes) ?? '?'}`,
+						detail: 'upstream encodes this field and the bridge writes nothing for it'
+					}
+				}
 				if (localBytes.length === 0 || remoteBytes.length === 0) return []
 
 				const localNumber = firstFieldNumber(localBytes)

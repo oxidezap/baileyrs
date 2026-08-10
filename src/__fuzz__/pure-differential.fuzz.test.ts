@@ -14,6 +14,7 @@
  * in neither the table nor the exclusion list fails the suite.
  */
 
+import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 import type { BinaryNode } from '../Types/index.ts'
 import { compareOutcomes, runOutcome, showOutcome } from './harness/compare.ts'
@@ -22,9 +23,11 @@ import { fuzz } from './harness/runner.ts'
 import type { Random } from './harness/random.ts'
 import {
 	generateBinaryNode,
+	generateCallNode,
 	generateDictionaryNode,
 	generateErrorNode,
-	generateMediaRetryNode
+	generateMediaRetryNode,
+	generateRetryReceiptNode
 } from './generators/binary-node.ts'
 import { generateJid, generateJidPair, generateMaybeJid, JID_SERVERS } from './generators/jid.ts'
 import {
@@ -35,6 +38,9 @@ import {
 	HOSTILE_STRINGS
 } from './generators/values.ts'
 import { PURE_TARGET_NAMES } from './targets.ts'
+
+/** The option-name digest the poll aggregator buckets votes by. */
+const sha256 = (value: Buffer): Buffer => createHash('sha256').update(value).digest()
 
 const upstream = (await import('baileys')) as unknown as Record<string, unknown>
 const local = (await import('../index.ts')) as unknown as Record<string, unknown>
@@ -112,6 +118,86 @@ const wsError = (random: Random): Error => {
 		])
 	)
 	return error
+}
+
+/**
+ * A poll message plus updates, with votes that actually match its options.
+ *
+ * `getAggregateVotesInPollMessage` buckets a vote by `sha256(optionName)`.
+ * Drawing `selectedOptions` from random bytes gives that match no chance at all,
+ * so every vote landed in the "Unknown" bucket and the helper's normal behaviour
+ * — assigning voters to the declared options — was never compared. Most hashes
+ * are therefore derived from the generated option names, with unknown and
+ * malformed ones still drawn often enough to keep those paths covered.
+ */
+const pollWithVotes = (random: Random) => {
+	const options = Array.from({ length: random.int(0, 4) }, () => ({ optionName: generateString(random) }))
+	const knownHashes = options.map(option => sha256(Buffer.from(option.optionName || '')))
+
+	const selected = () => {
+		if (knownHashes.length > 0 && random.bool(0.75)) {
+			return Array.from({ length: random.int(1, Math.min(2, knownHashes.length)) }, () => random.pick(knownHashes))
+		}
+		return random.bool(0.5) ? [Buffer.from(generateBytes(random))] : []
+	}
+
+	return {
+		message: { pollCreationMessage: { options } },
+		pollUpdates: Array.from({ length: random.int(0, 4) }, () => ({
+			pollUpdateMessageKey: messageKey(random),
+			vote: { selectedOptions: selected() },
+			senderTimestampMs: generateNumber(random)
+		}))
+	}
+}
+
+/**
+ * A protocol message carrying a history-sync notification, sometimes wrapped.
+ *
+ * `getHistoryMsg` normalises the content and then reads
+ * `protocolMessage.historySyncNotification`. The generic content generator never
+ * produces that field, so all 200 inputs took the missing-notification throw and
+ * neither the wrapper normalisation nor the returned notification was compared.
+ */
+const historyNotificationContent = (random: Random): Record<string, unknown> => {
+	const notification = random.bool(0.85)
+		? {
+				fileSha256: generateBytes(random),
+				mediaKey: generateBytes(random),
+				fileLength: generateNumber(random),
+				syncType: random.int(0, 6),
+				chunkOrder: random.int(0, 3),
+				directPath: generateString(random)
+			}
+		: random.pick([{}, undefined])
+
+	const inner = { protocolMessage: { type: random.int(0, 8), historySyncNotification: notification } }
+	// Wrapped as often as not: the normalisation step is half of what this reads.
+	if (random.bool(0.4)) {
+		return { [random.pick(['ephemeralMessage', 'viewOnceMessage', 'deviceSentMessage'])]: { message: inner } }
+	}
+	return inner
+}
+
+/**
+ * A media message with a `fileSha256`, which is the only field the digest helper
+ * reads.
+ *
+ * The generic content generator populates `url` and `mimetype` and nothing else,
+ * so `mediaMessageSHA256B64` compared `undefined` against `undefined` on every
+ * input and could not have caught a difference in the byte conversion or the
+ * base64 encoding.
+ */
+const mediaWithDigest = (random: Random): Record<string, unknown> => {
+	const kind = random.pick(['imageMessage', 'videoMessage', 'documentMessage', 'audioMessage', 'stickerMessage'])
+	const digest = random.pick([
+		generateBytes(random),
+		Buffer.from(generateBytes(random)),
+		new Uint8Array(0),
+		new Uint8Array(32),
+		undefined
+	])
+	return { [kind]: { url: generateString(random), mimetype: generateString(random), fileSha256: digest } }
 }
 
 interface PureTarget {
@@ -294,7 +380,13 @@ const TARGETS: readonly PureTarget[] = [
 			])
 		]
 	},
-	{ name: 'getCallStatusFromNode', generate: random => [generateBinaryNode(random, 1)], runs: 250 },
+	{
+		name: 'getCallStatusFromNode',
+		// Call tags, not the generic pool: none of the tags this switches on appear
+		// there, so every input fell to the `ringing` default.
+		generate: random => [random.bool(0.85) ? generateCallNode(random) : generateBinaryNode(random, 1)],
+		runs: 250
+	},
 	{ name: 'getErrorCodeFromStreamError', generate: random => [generateErrorNode(random)], runs: 250 },
 	{
 		name: 'isWABusinessPlatform',
@@ -384,10 +476,33 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'updateMessageWithPollUpdate',
-		generate: random => [
-			{ pollUpdates: random.bool(0.5) ? [] : undefined },
-			{ pollUpdateMessageKey: messageKey(random), senderTimestampMs: generateNumber(random) }
-		]
+		// The helper replaces any prior update from the same author and keeps the new
+		// one only when it carries a non-empty vote. With no stored updates and no
+		// selectedOptions, every input took the empty-vote path and left the list
+		// empty — neither insertion nor replacement was ever compared. So the message
+		// starts with an update, often from the same author as the incoming one.
+		generate: random => {
+			const author = messageKey(random)
+			const existing = random.bool(0.7)
+				? [
+						{
+							pollUpdateMessageKey: random.bool(0.6) ? author : messageKey(random),
+							vote: { selectedOptions: [Buffer.from(generateBytes(random))] },
+							senderTimestampMs: generateNumber(random)
+						}
+					]
+				: random.pick([[], undefined])
+			return [
+				{ pollUpdates: existing },
+				{
+					pollUpdateMessageKey: author,
+					vote: random.bool(0.7)
+						? { selectedOptions: Array.from({ length: random.int(1, 2) }, () => Buffer.from(generateBytes(random))) }
+						: random.pick([{ selectedOptions: [] }, {}, undefined]),
+					senderTimestampMs: generateNumber(random)
+				}
+			]
+		}
 	},
 	{
 		name: 'prepareDisappearingMessageSettingContent',
@@ -559,7 +674,13 @@ const TARGETS: readonly PureTarget[] = [
 		],
 		runs: 200
 	},
-	{ name: 'extractE2ESessionFromRetryReceipt', generate: random => [generateBinaryNode(random)], runs: 200 },
+	{
+		name: 'extractE2ESessionFromRetryReceipt',
+		// A real key bundle most of the time: the generic generator has no `keys`
+		// child, so every input returned null at the first lookup.
+		generate: random => [random.bool(0.85) ? generateRetryReceiptNode(random) : generateBinaryNode(random)],
+		runs: 200
+	},
 	{ name: 'getChatId', generate: random => [messageKey(random)], runs: 200 },
 	{
 		name: 'isRealMessage',
@@ -583,7 +704,11 @@ const TARGETS: readonly PureTarget[] = [
 		],
 		runs: 200
 	},
-	{ name: 'getHistoryMsg', generate: random => [messageContent(random)], runs: 200 },
+	{
+		name: 'getHistoryMsg',
+		generate: random => [random.bool(0.8) ? historyNotificationContent(random) : messageContent(random)],
+		runs: 200
+	},
 	{
 		name: 'getPlatformId',
 		generate: random => [random.pick(['Chrome', 'Firefox', 'Safari', 'Edge', 'Opera', 'Desktop', '', 'unknown'])]
@@ -614,7 +739,11 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [generateString(random), random.bool(0.5) ? generateString(random) : undefined]
 	},
 	{ name: 'extensionForMediaMessage', generate: random => [messageContent(random)], runs: 200 },
-	{ name: 'mediaMessageSHA256B64', generate: random => [messageContent(random)], runs: 200 },
+	{
+		name: 'mediaMessageSHA256B64',
+		generate: random => [random.bool(0.85) ? mediaWithDigest(random) : messageContent(random)],
+		runs: 200
+	},
 	{ name: 'encodeBase64EncodedStringForUpload', generate: random => [generateString(random)], runs: 200 },
 	{
 		name: 'xmppPreKey',
@@ -643,30 +772,20 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'getAggregateVotesInPollMessage',
-		generate: random => [
-			{
-				message: {
-					pollCreationMessage: {
-						options: Array.from({ length: random.int(0, 4) }, () => ({ optionName: generateString(random) }))
-					}
-				},
-				pollUpdates: Array.from({ length: random.int(0, 4) }, () => ({
-					pollUpdateMessageKey: messageKey(random),
-					vote: { selectedOptions: [generateBytes(random)] },
-					senderTimestampMs: generateNumber(random)
-				}))
-			},
-			random.bool(0.6) ? generateMaybeJid(random) : undefined
-		],
+		generate: random => [pollWithVotes(random), random.bool(0.6) ? generateMaybeJid(random) : undefined],
 		runs: 200
 	},
 	{
 		name: 'getAggregateResponsesInEventMessage',
+		// The aggregator reads `eventResponse` off each update — a convenience field
+		// the runtime attaches after decryption, deliberately absent from the wire
+		// protobuf. Generating the wire shape instead meant every update read as
+		// UNKNOWN and the GOING / NOT_GOING / MAYBE buckets were never filled.
 		generate: random => [
 			{
 				eventResponses: Array.from({ length: random.int(0, 4) }, () => ({
 					eventResponseMessageKey: messageKey(random),
-					eventResponseMessage: { response: random.pick(['GOING', 'NOT_GOING', 'MAYBE', 'UNKNOWN', 0, 1, 2]) },
+					eventResponse: random.pick(['GOING', 'NOT_GOING', 'MAYBE', 'UNKNOWN', '', undefined]),
 					timestampMs: generateNumber(random)
 				}))
 			},

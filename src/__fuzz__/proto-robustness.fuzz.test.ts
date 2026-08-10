@@ -326,6 +326,15 @@ describe('protobuf decoder robustness under mutation', () => {
 
 		run(warmupCases)
 		collect()
+		// The helper records a trap but nothing here consulted it, so a trap reached
+		// only by this fixed corpus would let all 4,200 calls complete and the test
+		// pass on memory growth alone — with the module already unusable, which also
+		// makes the measurement meaningless.
+		const assertNoTrap = (stage: string) => {
+			const trap = firstTrap
+			assert.ok(trap === undefined, `a ${stage} payload trapped the WASM module: ${trap?.message ?? ''}`)
+		}
+		assertNoTrap('warmup')
 
 		/**
 		 * Measured as a slope across batches, not as one before/after delta.
@@ -352,6 +361,8 @@ describe('protobuf decoder robustness under mutation', () => {
 		// The baseline is the mark that *ends* the first half, so the window measured
 		// is exactly the second half. Taking `marks[length / 2]` instead would start
 		// one batch late and measure a window smaller than the message claimed.
+		assertNoTrap('measured')
+
 		const baseline = Math.ceil(marks.length / 2) - 1
 		const measuredInWindow = (marks.length - 1 - baseline) * size
 		const tailGrowthMb = (marks.at(-1)! - marks[baseline]!) / (1024 * 1024)

@@ -204,3 +204,90 @@ export const generateMediaRetryNode = (random: Random): BinaryNode => {
 		content
 	}
 }
+
+/**
+ * A call stanza, using the tags `getCallStatusFromNode` actually switches on.
+ *
+ * The generic tag pool contains none of them, so every generated node fell to
+ * the `default` arm and the helper returned `ringing` for all 250 inputs — the
+ * whole mapping, including the `terminate` timeout branch, was untested while
+ * the target reported coverage of it.
+ */
+const CALL_TAGS = [
+	'offer',
+	'offer_notice',
+	'terminate',
+	'preaccept',
+	'transport',
+	'relaylatency',
+	'reject',
+	'accept',
+	'call',
+	''
+] as const
+
+export const generateCallNode = (random: Random): BinaryNode => ({
+	tag: random.pick(CALL_TAGS),
+	attrs: {
+		// `terminate` splits on exactly this value, so it has to be drawn often.
+		...(random.bool(0.6) ? { reason: random.pick(['timeout', 'declined', 'busy', '', 'TIMEOUT']) } : {}),
+		'call-id': random.pick(['ABC123', '']),
+		from: random.pick(['15551234567@s.whatsapp.net', ''])
+	},
+	content: random.bool(0.3) ? [{ tag: random.pick(TAGS), attrs: {} }] : undefined
+})
+
+/**
+ * A retry receipt carrying a session key bundle.
+ *
+ * `extractE2ESessionFromRetryReceipt` bails at the first `keys` lookup, and the
+ * generic node generator has no `keys` tag — so all 200 inputs returned `null`
+ * and none of the length validation, the registration-id parsing, the optional
+ * pre-key or the prefixed-public-key construction was ever compared.
+ *
+ * The lengths and the type byte are the interesting boundaries, so they are the
+ * thing that varies: 32 is the only accepted key length and 5 the only accepted
+ * bundle type, and each is drawn off-value often enough to exercise the reject
+ * paths as well as the accept one.
+ */
+export const generateRetryReceiptNode = (random: Random): BinaryNode => {
+	const key = (length: number) => random.bytes(length)
+	const keyLength = () => random.pick([32, 32, 32, 31, 33, 0])
+	const uint = (bytes: number) => Buffer.from(random.bytes(bytes))
+
+	const keys: BinaryNode[] = [
+		// Type byte 5 is the only one accepted; anything else must reject.
+		{ tag: 'type', attrs: {}, content: Buffer.from([random.pick([5, 5, 5, 4, 6])]) },
+		{ tag: 'identity', attrs: {}, content: key(keyLength()) },
+		{
+			tag: 'skey',
+			attrs: {},
+			content: [
+				{ tag: 'id', attrs: {}, content: uint(3) },
+				{ tag: 'value', attrs: {}, content: key(keyLength()) },
+				{ tag: 'signature', attrs: {}, content: key(random.pick([64, 0, 32])) }
+			]
+		}
+	]
+
+	// The optional pre-key: present about half the time, sometimes malformed.
+	if (random.bool(0.5)) {
+		keys.push({
+			tag: 'key',
+			attrs: {},
+			content: [
+				{ tag: 'id', attrs: {}, content: uint(3) },
+				{ tag: 'value', attrs: {}, content: key(keyLength()) }
+			]
+		})
+	}
+
+	return {
+		tag: 'receipt',
+		attrs: { type: 'retry', from: '15551234567@s.whatsapp.net', id: String(random.int(1, 9999)) },
+		content: [
+			{ tag: 'registration', attrs: {}, content: uint(4) },
+			{ tag: 'keys', attrs: {}, content: random.bool(0.9) ? keys : keys.slice(0, random.int(0, 2)) }
+		]
+	}
+}
