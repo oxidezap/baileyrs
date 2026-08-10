@@ -41,6 +41,7 @@ import {
 	generateProtoCase,
 	generateProtoObject,
 	oneofGroups,
+	textFieldPredicate,
 	pickProtoPath,
 	messagePathOfField,
 	proto3OptionalFields,
@@ -597,7 +598,16 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						continue
 					}
 					if (!local.ok || !remote.ok) continue
-					if (!equivalent(local.value, remote.value)) {
+					// The schema, so the scalar coercion knows which decimal strings are
+					// actually 64-bit integers. Without it `{ text: "0" }` and
+					// `{ text: 0 }` compare equal, and a decoder that turned a
+					// numeric-looking *string* field into a number is invisible here.
+					//
+					// The gate only. The reported values stay coerced the ordinary way,
+					// because the allowlist reads them: the rename entry undoes
+					// `deviceAgentId` to `deviceAgentID` and then demands equality, and
+					// it can only do that if both sides were normalised alike.
+					if (!equivalent(local.value, remote.value, { isTextField: textFieldPredicate(path) })) {
 						findings.push({
 							// Same classification as the encode side: a decoder that drops
 							// a field and a decoder that reads a different value are two

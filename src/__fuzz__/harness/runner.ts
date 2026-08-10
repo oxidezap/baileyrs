@@ -32,7 +32,20 @@ const environment = (name: string): string | undefined => {
 }
 
 export const FUZZ_SEED = environment('FUZZ_SEED') ?? 'baileyrs-fuzz-v1'
-export const FUZZ_MODE = environment('FUZZ_MODE') === 'deep' ? 'deep' : 'smoke'
+/**
+ * Validated, not coerced. Anything that was not exactly `deep` used to become
+ * `smoke`, and the manual workflow takes the mode as free text — so a typo like
+ * `depe` finished green having run roughly 25 times fewer cases than the
+ * operator asked for, which is the most expensive kind of quiet pass.
+ */
+const readMode = (): 'smoke' | 'deep' => {
+	const raw = environment('FUZZ_MODE')
+	if (raw === undefined || raw === 'smoke') return 'smoke'
+	if (raw === 'deep') return 'deep'
+	throw new Error(`fuzz: FUZZ_MODE=${JSON.stringify(raw)} is not "smoke" or "deep"`)
+}
+
+export const FUZZ_MODE = readMode()
 
 /**
  * Parses a numeric override, refusing anything that is not a positive finite
@@ -341,12 +354,23 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			// discard a second, independent defect: the minimised findings replace
 			// the whole original set below, so the dropped one was never reported and
 			// `FUZZ_RECORD` froze an input that no longer reproduces it.
+			// The class carries the detail as well as the target and the allowlist
+			// verdict, and the count as well as the set. A check can emit two findings
+			// with the same target and status — `proto:decode-parity` reports one per
+			// encoder source — and a Set collapsed them, so a candidate keeping just
+			// one satisfied the check and the other defect vanished from the report
+			// and from the recorded corpus input.
 			const classOf = (finding: Divergence): string =>
-				`${finding.target}\u0000${applyAllowlist([finding], new Date()).unexcused.length > 0 ? 'open' : 'excused'}`
-			const originalClasses = new Set(produced.map(classOf))
+				`${finding.target}\u0000${finding.detail ?? ''}\u0000${applyAllowlist([finding], new Date()).unexcused.length > 0 ? 'open' : 'excused'}`
+			const tally = (found: readonly Divergence[]): Map<string, number> => {
+				const counts = new Map<string, number>()
+				for (const finding of found) counts.set(classOf(finding), (counts.get(classOf(finding)) ?? 0) + 1)
+				return counts
+			}
+			const originalCounts = tally(produced)
 			const preservesClass = (found: readonly Divergence[]): boolean => {
-				const classes = new Set(found.map(classOf))
-				return [...originalClasses].every(original => classes.has(original))
+				const counts = tally(found)
+				return [...originalCounts].every(([id, count]) => (counts.get(id) ?? 0) >= count)
 			}
 
 			const minimised = shrinkFailures
@@ -357,7 +381,7 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 				: input
 
 			const rerun = await runOne(minimised, 'minimised', false)
-			const minimisedFindings = rerun.filter(finding => originalClasses.has(classOf(finding)))
+			const minimisedFindings = rerun.filter(finding => originalCounts.has(classOf(finding)))
 			// Keep the original when minimisation did not hold the class. Reporting a
 			// smaller input that no longer shows the defect is worse than a large one
 			// that does.

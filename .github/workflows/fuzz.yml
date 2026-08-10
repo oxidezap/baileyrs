@@ -26,7 +26,12 @@ on:
         description: 'smoke or deep'
         required: false
         default: 'deep'
-        type: string
+        # A choice, not free text: the runner rejects anything else outright, and
+        # a rejected dispatch is better than one that silently runs a smoke pass.
+        type: choice
+        options:
+          - deep
+          - smoke
 
 permissions:
   contents: read

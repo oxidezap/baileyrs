@@ -189,13 +189,18 @@ const scanFrom = (
  * identically, so an encoder that reversed an array was classified as
  * `proto:field-order` and excused as harmless.
  *
- * Sorting on the field number alone fixes both halves: `Array.prototype.sort` is
- * stable, so occurrences of one field keep their relative order, and the numeric
- * comparison also stops field 10 sorting before field 2.
+ * Sorting on the field number *alone* fixes both halves: `Array.prototype.sort`
+ * is stable, so occurrences of one field keep their relative order, and the
+ * numeric comparison also stops field 10 sorting before field 2.
+ *
+ * No wire-type tiebreaker. One repeated scalar can legally mix packed and
+ * unpacked occurrences, and a tiebreaker reorders those against each other:
+ * unpacked `1` then packed `[2]` and packed `[2]` then unpacked `1`
+ * canonicalised identically, though decoders read `[1, 2]` and `[2, 1]`.
  */
 const render = (fields: readonly WireField[]): string =>
 	[...fields]
-		.toSorted((left, right) => left.field - right.field || left.wireType - right.wireType)
+		.toSorted((left, right) => left.field - right.field)
 		.map(entry => `${entry.field}:${entry.wireType}:${entry.value}`)
 		.join(',')
 

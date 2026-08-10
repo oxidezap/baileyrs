@@ -280,6 +280,44 @@ export const reachableTypes = (path: string): ReadonlySet<string> => {
 export const messagePathOfField = (field: ProtoFieldSchema): string | undefined =>
 	field[1] === PROTO_FIELD_KIND.message ? messageSchemas[field[2]]?.[0] : undefined
 
+/**
+ * A predicate over a decoded object's property path: is this field declared as text?
+ *
+ * Needed because `normalise`'s scalar coercion folds a decimal string into a
+ * bigint, which is right for a 64-bit integer (protobufjs renders it as a
+ * string, the bridge as a bigint) and wrong for a declared `string` field — with
+ * it, `{ text: "0" }` and `{ text: 0 }` compare equal and a decoder that turned
+ * a numeric-looking string into a number would be invisible. The schema is what
+ * tells the two apart, so the comparison has to carry it.
+ *
+ * `bytes` counts as text here for the same reason: the two sides spell it
+ * differently but neither spells it as a number.
+ */
+export const textFieldPredicate = (rootPath: string): ((propertyPath: readonly string[]) => boolean) => {
+	const fieldNamed = (path: string, name: string): ProtoFieldSchema | undefined =>
+		fieldsOfPath(path).find(field => field[0] === name)
+
+	// A name the schema does not declare answers `false`: nothing is known about
+	// it, and the bridge's own spellings live there — it writes `deviceAgentId`
+	// for the declared `deviceAgentID` — so answering `true` would treat one side
+	// of a known rename as text and the other as a number, manufacturing a
+	// difference out of the rename. Both sides being coerced the same way is what
+	// keeps the rename entry able to see past it.
+	return propertyPath => {
+		let current: string | undefined = rootPath
+		for (const [index, name] of propertyPath.entries()) {
+			if (current === undefined) return false
+			const field: ProtoFieldSchema | undefined = fieldNamed(current, name)
+			if (!field) return false
+			if (index === propertyPath.length - 1) {
+				return field[1] === PROTO_FIELD_KIND.string || field[1] === PROTO_FIELD_KIND.bytes
+			}
+			current = messagePathOfField(field)
+		}
+		return false
+	}
+}
+
 /** The `oneof` groups declared on `path`, for the oneof fuzzer. */
 export const oneofGroups = (path: string): Map<string, ProtoFieldSchema[]> => {
 	const groups = new Map<string, ProtoFieldSchema[]>()

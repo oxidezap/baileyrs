@@ -67,6 +67,17 @@ export interface NormaliseOptions {
 	 */
 	readonly coerceScalars?: boolean
 	/**
+	 * Names a field the schema declares as text, by its property path.
+	 *
+	 * Without it `coerceScalars` folds *every* decimal string into a bigint, so
+	 * `{ text: "0" }` and `{ text: 0 }` compare equal and a decoder that turned a
+	 * numeric-looking string into a number is invisible. The coercion is right for
+	 * a 64-bit integer — protobufjs renders one as a string, the bridge as a
+	 * bigint — and wrong for a declared string, and only the schema tells them
+	 * apart. Omit it and the behaviour is unchanged.
+	 */
+	readonly isTextField?: (propertyPath: readonly string[]) => boolean
+	/**
 	 * Keep an own property whose value is `undefined` distinct from an absent one
 	 * (default false).
 	 *
@@ -138,9 +149,17 @@ const sortKey = (value: unknown): string => {
 	}
 }
 
-export const normalise = (value: unknown, depth = 0, options: NormaliseOptions = {}): unknown => {
+export const normalise = (
+	value: unknown,
+	depth = 0,
+	options: NormaliseOptions = {},
+	// The property path of `value` within the object being normalised, so
+	// `isTextField` can be asked about the field this value came from. Array
+	// elements keep their field's path — the index is not part of the schema.
+	propertyPath: readonly string[] = []
+): unknown => {
 	const coerce = options.coerceScalars ?? true
-	const nested = (item: unknown) => normalise(item, depth + 1, options)
+	const nested = (item: unknown) => normalise(item, depth + 1, options, propertyPath)
 
 	if (depth > 12) return describeDeep(value, options)
 	if (value === null) return null
@@ -159,7 +178,9 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 	}
 	if (typeof value === 'string') {
 		// Only pure decimal integers; a JID or a base64 blob must stay a string.
-		if (coerce && /^-?\d{1,20}$/u.test(value)) return BigInt(value)
+		// And never a field the schema declares as text: folding `"0"` into `0n`
+		// there would make a decoder that turned a string into a number invisible.
+		if (coerce && /^-?\d{1,20}$/u.test(value) && options.isTextField?.(propertyPath) !== true) return BigInt(value)
 		return value
 	}
 	if (isBytes(value)) return { __bytes__: Buffer.from(value).toString('base64') }
@@ -207,7 +228,9 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 			// caller can still tell them apart, so `preservePresence` keeps the key.
 			if (entry === undefined && !(options.preservePresence ?? false)) continue
 			Object.defineProperty(out, key, {
-				value: entry === undefined ? UNDEFINED_PRESENT : nested(entry),
+				// The key extends the property path, so `isTextField` is asked about
+				// the field this value actually came from.
+				value: entry === undefined ? UNDEFINED_PRESENT : normalise(entry, depth + 1, options, [...propertyPath, key]),
 				enumerable: true,
 				writable: true,
 				configurable: true

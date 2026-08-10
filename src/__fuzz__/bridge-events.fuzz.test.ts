@@ -178,7 +178,7 @@ describe('bridge event adaptation', () => {
 		// third of the table was declared covered while none of its mapping ran.
 		// So the return value is recorded per type and asserted after the sweep.
 		const adapted = new Map(BRIDGE_EVENT_TYPES.map(type => [type, 0]))
-		await fuzz<{ type: string; data: unknown }>({
+		const report = await fuzz<{ type: string; data: unknown }>({
 			target: 'bridge:adapt-coverage',
 			// Sixteen tries per type, not eight: the shaped payload still fuzzes the
 			// fields inside the shape, so a type gated on three of them at once needs
@@ -206,6 +206,11 @@ describe('bridge event adaptation', () => {
 				}
 			}
 		})
+
+		// Not when the target was filtered out. `FUZZ_ONLY=proto:` skips this sweep
+		// entirely, and the counter would then report every declared type as inert —
+		// a failure about a run that never happened.
+		if (report.runs === 0) return
 
 		// Asserted here rather than reported as a divergence: this is a statement
 		// about the *generator*, not about a disagreement between two libraries, and
