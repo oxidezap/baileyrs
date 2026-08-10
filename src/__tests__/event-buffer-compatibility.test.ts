@@ -161,4 +161,31 @@ describe('event buffer — upstream process() contract', () => {
 		// ...and the upsert is released separately rather than summed into it.
 		expect(upserts.length).toEqual(1)
 	})
+	/**
+	 * Consolidation accumulates; it does not keep only the first update.
+	 *
+	 * Upstream guards its whole group merge with `if (!data.groupUpdates[id])`,
+	 * which makes the merge unreachable: only the first update for an id survives
+	 * and every later one is discarded, disjoint fields included. This buffer
+	 * merges, like its own chat and message branches do. Pinned because it is a
+	 * deliberate divergence — a future "align with upstream" would silently drop
+	 * updates a consumer sent.
+	 */
+	it('merges every groups.update for an id, rather than keeping only the first', () => {
+		const ev = makeEventBuffer(logger)
+		const released: BaileysEventMap['groups.update'] = []
+		ev.on('groups.update', updates => released.push(...updates))
+
+		ev.buffer()
+		ev.emit('groups.update', [{ id: '120@g.us', subject: 'first' }])
+		ev.emit('groups.update', [{ id: '120@g.us', announce: true }])
+		ev.emit('groups.update', [{ id: '120@g.us', subject: 'second' }])
+		ev.flush()
+
+		expect(released.length).toEqual(1)
+		// The later subject wins...
+		expect(released[0]?.subject).toEqual('second')
+		// ...and the field that only the middle update carried is still there.
+		expect(released[0]?.announce).toEqual(true)
+	})
 })
