@@ -13,7 +13,14 @@ import { applyAllowlist, staleEntries, type Divergence, type KnownDivergence } f
 import { corpusSlug } from '../corpus.ts'
 import { makeRandom } from '../random.ts'
 import { shrink } from '../shrink.ts'
-import { canonicalWire, differsOnlyByPacking, isWireSubset, sameWireContent, type SchemaContext } from '../wire.ts'
+import {
+	canonicalWire,
+	differsOnlyByPacking,
+	isWireSubset,
+	sameWireContent,
+	sameWireOrdering,
+	type SchemaContext
+} from '../wire.ts'
 
 describe('fuzz harness — deterministic randomness', () => {
 	it('replays an identical stream for an identical seed', () => {
@@ -533,6 +540,39 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.equal(differsOnlyByPacking(lengthDelimited(3, [...ascending]), lengthDelimited(3, [...descending])), false)
 		// And the genuinely identical pair still short-circuits.
 		assert.equal(differsOnlyByPacking(ascending, ascending), true)
+	})
+
+	/**
+	 * The field-order class excuses a whole target, so it has to be asked the
+	 * strict question.
+	 *
+	 * `sameWireContent` keeps only a varint's decoded value, so field 1 holding 1
+	 * written `08 81 00` looks identical to `08 01` — nothing was reordered, yet the
+	 * pair canonicalised the same and the encode-bytes target routed it to
+	 * `proto:field-order`, whose intended divergence waves it through. A codec that
+	 * began emitting non-minimal tag, length or value varints could stay green.
+	 */
+	it('does not call a re-spelled varint a field-order difference', () => {
+		const minimal = concat(varint(1, [0x01]), varint(2, [0x02]))
+		const swapped = concat(varint(2, [0x02]), varint(1, [0x01]))
+		const respelledValue = concat(varint(1, [0x81, 0x00]), varint(2, [0x02]))
+		const respelledTag = concat(Uint8Array.from([0x88, 0x00, 0x01]), varint(2, [0x02]))
+
+		// Reordering is still reordering, on the old question and the new one.
+		assert.equal(sameWireContent(minimal, swapped), true)
+		assert.equal(sameWireOrdering(minimal, swapped), true)
+
+		// Re-spelling is not, though the old question could not tell.
+		assert.equal(sameWireContent(minimal, respelledValue), true)
+		assert.equal(sameWireOrdering(minimal, respelledValue), false)
+		assert.equal(sameWireContent(minimal, respelledTag), true)
+		assert.equal(sameWireOrdering(minimal, respelledTag), false)
+
+		// A submessage whose fields merely moved still reads as ordering: the
+		// spelling recurses rather than comparing the parent's payload wholesale.
+		const nested = (payload: Uint8Array) => lengthDelimited(3, [...payload])
+		assert.equal(sameWireOrdering(nested(minimal), nested(swapped)), true)
+		assert.equal(sameWireOrdering(nested(minimal), nested(respelledValue)), false)
 	})
 
 	it('reads a packing difference alongside a dropped field as an omission', () => {

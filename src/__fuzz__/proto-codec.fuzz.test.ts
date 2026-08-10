@@ -30,6 +30,7 @@ import {
 	isWireSubset,
 	orderedWire,
 	sameWireContent,
+	sameWireOrdering,
 	type SchemaContext
 } from './harness/wire.ts'
 import { undoRenames, type Divergence } from './harness/divergence.ts'
@@ -837,7 +838,14 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 
 				// Same fields, different order: valid protobuf either way, so it is its
 				// own target rather than a failure of this one.
-				if (sameWireContent(localBytes, remoteBytes, schemaAt(path))) {
+				//
+				// `sameWireOrdering`, not `sameWireContent`: the latter compares decoded
+				// values, so an encoder that merely re-spelled a varint — field 1's value
+				// 1 as `08 81 00` instead of `08 01` — reorders nothing yet canonicalises
+				// the same, and this branch would hand it the ordering entry's
+				// target-wide excuse. The stricter question is the one the class claims
+				// to be asking anyway: are these the same field records, moved.
+				if (sameWireOrdering(localBytes, remoteBytes, schemaAt(path))) {
 					return {
 						target: 'proto:field-order',
 						input: { path, message },
@@ -928,7 +936,13 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 							// different defects and must not share one allowlist entry.
 							target: populatedTouchesUnknownType(path, message)
 								? 'proto:unknown-type-dropped'
-								: omitsKeysOnly(local.value, remote.value)
+								: // The same predicate the gate above used. Without it this
+									// re-normalisation folds `text: '0'` and `text: 0` back
+									// together, so a text-type regression that co-occurs with an
+									// already-known omission is classified as the omission and
+									// excused — decode findings carry no `omits ...` tag, so that
+									// entry accepts them unconditionally.
+									omitsKeysOnly(local.value, remote.value, { isTextField: textFieldPredicate(path) })
 									? 'proto:field-omission'
 									: 'proto:decode-parity',
 							input: { path, origin, message, bytes: hex(bytes) },
@@ -971,7 +985,12 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
 					const a = undoRenames(localView)
 					const b = undoRenames(upstreamView)
-					return omitsKeysOnly(a, b) || omitsKeysOnly(b, a) ? 'proto:field-omission' : 'proto:round-trip'
+					// Under `compare`'s rules, not the default ones — for the reason
+					// spelled out on the decode-parity classifier: the weaker
+					// normalisation folds a changed text field back into agreement and
+					// hands a co-occurring text regression the omission entry's excuse.
+					const shape = { isTextField: textFieldPredicate(path) }
+					return omitsKeysOnly(a, b, shape) || omitsKeysOnly(b, a, shape) ? 'proto:field-omission' : 'proto:round-trip'
 				}
 
 				// The same schema-aware comparison decode-parity uses. Without it, a

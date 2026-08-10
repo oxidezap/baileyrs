@@ -36,6 +36,8 @@ import { generateNumber, generateString } from './generators/values.ts'
 
 const upstream = (await import('baileys')) as unknown as {
 	makeEventBuffer: (logger: unknown) => UpstreamBuffer
+	/** The oracle for `isGroup`, so the envelope check does not restate ours. */
+	isJidGroup: (jid: string) => boolean | undefined
 }
 
 interface UpstreamBuffer {
@@ -91,6 +93,16 @@ const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
 	// A changed contact number is how the runtime tells us about a LID mapping.
 	contact_number_changed: 'lidMappingUpdate'
 }
+
+/**
+ * The `edit` attribute values that survive into `editAttribute`.
+ *
+ * Written down rather than read from the adapter, which is the point: this is a
+ * protocol constant, and a new value silently starting or stopping to pass
+ * through should be a deliberate edit here. `generateMessageWire` also draws
+ * `''` and `'x'`, which must come back as undefined.
+ */
+const EDIT_ATTRIBUTES: ReadonlySet<string> = new Set(['1', '2', '3', '7', '8'])
 
 const camelCase = (value: string): string =>
 	value.replaceAll(/_([a-z])/gu, (_match, letter: string) => letter.toUpperCase())
@@ -455,6 +467,56 @@ describe('bridge event adaptation', () => {
 					envelope.isFromMe = canonical.isFromMe
 					expected.isFromMe = info.isFromMe
 				}
+
+				// The rest of the envelope. The generator populates every one of these
+				// on purpose, and with only type/chat/id/pushName/timestamp/isFromMe
+				// compared, an adapter that dropped `isViewOnce`, mis-mapped
+				// `participantAlt`, or stopped routing `senderAlt` by direction passed
+				// all 400 cases — the alternate-JID mapping is the part most likely to
+				// rot, and it was the part nothing looked at.
+				//
+				// `isGroup` comes first because four of the others are conditioned on it,
+				// and it is derived from upstream's own `isJidGroup` rather than from the
+				// adapter's. That keeps it an oracle: restating `src/WABinary`'s helper
+				// here would compare the adapter against a copy of its own dependency.
+				const isGroup = info.isGroup === true || upstream.isJidGroup(String(info.chat)) === true
+				const senderAlt = typeof info.senderAlt === 'string' ? info.senderAlt : undefined
+				const recipientAlt = typeof info.recipientAlt === 'string' ? info.recipientAlt : undefined
+				const isFromMe = info.isFromMe === true
+
+				envelope.isGroup = canonical.isGroup
+				expected.isGroup = isGroup
+
+				// A group carries a participant; a one-to-one chat has none to carry.
+				envelope.senderJid = canonical.senderJid
+				expected.senderJid = isGroup && typeof info.sender === 'string' ? info.sender : undefined
+
+				// The alternate-JID pair, which is the whole reason both fields exist:
+				// in a group the sender's alt is the *participant*, outside one it is the
+				// *chat*, and outgoing messages carry the recipient's alt instead.
+				envelope.participantAlt = canonical.participantAlt
+				expected.participantAlt = isGroup ? senderAlt : undefined
+				envelope.remoteJidAlt = canonical.remoteJidAlt
+				expected.remoteJidAlt = isGroup ? undefined : isFromMe ? recipientAlt : senderAlt
+
+				// Tri-state on purpose: these are `true` or absent, never `false`, so a
+				// regression to `asBoolOr(..., false)` shows up here rather than passing
+				// as "close enough". `strict` keeps `preservePresence` on, which is what
+				// makes `undefined` distinguishable from `false`.
+				envelope.isViewOnce = canonical.isViewOnce
+				expected.isViewOnce = info.isViewOnce === true ? true : undefined
+				envelope.isOffline = canonical.isOffline
+				expected.isOffline = info.isOffline === true ? true : undefined
+
+				envelope.unavailableRequestId = canonical.unavailableRequestId
+				expected.unavailableRequestId =
+					typeof info.unavailableRequestId === 'string' ? info.unavailableRequestId : undefined
+
+				// The accepted set written down rather than re-derived: the generator
+				// also draws `''` and `'x'`, which have to come back as undefined.
+				envelope.editAttribute = canonical.editAttribute
+				expected.editAttribute = EDIT_ATTRIBUTES.has(info.edit as string) ? info.edit : undefined
+
 				if (equivalent(envelope, expected, strict)) return []
 				return {
 					target: 'bridge:message-wire',

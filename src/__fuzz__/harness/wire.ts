@@ -38,6 +38,25 @@ export interface WireField {
 	 */
 	readonly raw?: string
 	/**
+	 * The field's bytes exactly as they were written, tag varint included.
+	 *
+	 * `value` is the *decoded* number for a varint, so `08 81 00` and `08 01` both
+	 * render as `1:0:1` — two spellings of field 1 holding 1, one of them
+	 * non-minimal. That is what makes the field-order class unsafe on `value`
+	 * alone: nothing was reordered, yet the two payloads canonicalise identically
+	 * and the difference is classified as ordering, whose intended divergence
+	 * excuses it target-wide. The tag and length varints have the same freedom.
+	 *
+	 * Nested messages recurse, so a reordering *inside* a submessage still reads as
+	 * ordering. Groups do not: their whole record is kept verbatim, which reports a
+	 * reordered group rather than excusing it — nothing in this schema declares one.
+	 *
+	 * Absent on fields rebuilt by `parseNested`, which reads a rendering rather than
+	 * bytes and so cannot know how they were written. `spell` refuses to answer for
+	 * those instead of treating "no spelling" as a spelling they share.
+	 */
+	readonly spelled?: string
+	/**
 	 * For wire type 2 that parsed as a nested message, the parsed children.
 	 *
 	 * Kept from the original scan rather than recovered by re-parsing `value`:
@@ -51,6 +70,10 @@ interface Cursor {
 	readonly bytes: Uint8Array
 	offset: number
 }
+
+/** The bytes of one span, exactly as written — the raw material for `spelled`. */
+const hexBetween = (bytes: Uint8Array, start: number, end: number): string =>
+	Buffer.from(bytes.slice(start, end)).toString('hex')
 
 const readVarint = (cursor: Cursor): bigint | undefined => {
 	let result = 0n
@@ -99,8 +122,10 @@ const scanFrom = (
 	const fields: WireField[] = []
 
 	while (cursor.offset < bytes.length) {
+		const recordStart = cursor.offset
 		const tag = readVarint(cursor)
 		if (tag === undefined) return undefined
+		const tagHex = hexBetween(bytes, recordStart, cursor.offset)
 
 		const fieldNumber = tag >> 3n
 		// Protobuf caps field numbers at 2^29-1. Past 2^53 `Number()` also rounds,
@@ -113,21 +138,30 @@ const scanFrom = (
 
 		switch (wireType) {
 			case 0: {
+				const valueStart = cursor.offset
 				const value = readVarint(cursor)
 				if (value === undefined) return undefined
-				fields.push({ field, wireType, value: value.toString() })
+				fields.push({
+					field,
+					wireType,
+					value: value.toString(),
+					spelled: `${tagHex}${hexBetween(bytes, valueStart, cursor.offset)}`
+				})
 				break
 			}
 			case 1: {
 				if (cursor.offset + 8 > bytes.length) return undefined
 				const slice = bytes.slice(cursor.offset, cursor.offset + 8)
 				cursor.offset += 8
-				fields.push({ field, wireType, value: Buffer.from(slice).toString('hex') })
+				const rendered = Buffer.from(slice).toString('hex')
+				fields.push({ field, wireType, value: rendered, spelled: `${tagHex}${rendered}` })
 				break
 			}
 			case 2: {
+				const lengthStart = cursor.offset
 				const length = readVarint(cursor)
 				if (length === undefined) return undefined
+				const lengthHex = hexBetween(bytes, lengthStart, cursor.offset)
 				const size = Number(length)
 				if (!Number.isSafeInteger(size) || size < 0 || cursor.offset + size > bytes.length) return undefined
 				const slice = bytes.slice(cursor.offset, cursor.offset + size)
@@ -143,14 +177,25 @@ const scanFrom = (
 				const parseNestedHere = schema === undefined || child !== undefined
 				const nested = size > 0 && depth > 0 && parseNestedHere ? scan(slice, depth - 1, child) : undefined
 				const raw = Buffer.from(slice).toString('hex')
-				fields.push({ field, wireType, value: nested ? `{${render(nested)}}` : raw, raw, nested })
+				fields.push({
+					field,
+					wireType,
+					value: nested ? `{${render(nested)}}` : raw,
+					raw,
+					nested,
+					// The length varint is kept as written and the payload recursed into,
+					// so a submessage whose fields were merely reordered still spells the
+					// same while a re-spelled length does not.
+					spelled: `${tagHex}${lengthHex}${nested ? `{${spell(nested)}}` : raw}`
+				})
 				break
 			}
 			case 5: {
 				if (cursor.offset + 4 > bytes.length) return undefined
 				const slice = bytes.slice(cursor.offset, cursor.offset + 4)
 				cursor.offset += 4
-				fields.push({ field, wireType, value: Buffer.from(slice).toString('hex') })
+				const rendered = Buffer.from(slice).toString('hex')
+				fields.push({ field, wireType, value: rendered, spelled: `${tagHex}${rendered}` })
 				break
 			}
 			case 3: {
@@ -159,7 +204,17 @@ const scanFrom = (
 				if (depth <= 0) return undefined
 				const nested = scanFrom(cursor, depth - 1, descend(schema, field), field)
 				if (nested === undefined) return undefined
-				fields.push({ field, wireType, value: `{${render(nested)}}`, nested })
+				fields.push({
+					field,
+					wireType,
+					value: `{${render(nested)}}`,
+					nested,
+					// Verbatim, close tag included: the recursive call has already moved
+					// the cursor past it. Reordering inside a group is therefore not
+					// excused as ordering — the safe direction for an encoding no message
+					// in this schema declares.
+					spelled: hexBetween(bytes, recordStart, cursor.offset)
+				})
 				break
 			}
 			case 4:
@@ -204,6 +259,15 @@ const render = (fields: readonly WireField[]): string =>
 		.map(entry => `${entry.field}:${entry.wireType}:${entry.value}`)
 		.join(',')
 
+/**
+ * `render`'s exact twin: same ordering rule, but each field written out as the
+ * bytes that actually carried it rather than as its decoded value.
+ */
+const spell = (fields: readonly WireField[]): string | undefined => {
+	const ordered = [...fields].toSorted((left, right) => left.field - right.field)
+	return ordered.some(entry => entry.spelled === undefined) ? undefined : ordered.map(entry => entry.spelled).join(',')
+}
+
 /** Order-insensitive rendering of a message's fields, or undefined if it does not parse. */
 export const canonicalWire = (bytes: Uint8Array, schema?: SchemaContext): string | undefined => {
 	const fields = scan(bytes, 12, schema)
@@ -224,6 +288,29 @@ export const sameWireContent = (left: Uint8Array, right: Uint8Array, schema?: Sc
 	const b = canonicalWire(right, schema)
 	if (a === undefined || b === undefined) return Buffer.from(left).equals(Buffer.from(right))
 	return a === b
+}
+
+/**
+ * True when two payloads are the same field records in a different order — every
+ * field written with the same bytes, only their positions moved.
+ *
+ * Strictly stronger than `sameWireContent`, and the one the field-order class has
+ * to ask. `sameWireContent` compares decoded values, so it also answers true when
+ * an encoder re-spelled a varint: field 1's value 1 as `08 81 00` rather than
+ * `08 01` reorders nothing, yet canonicalises identically and would be waved
+ * through by the ordering entry's intended divergence. A codec that started
+ * emitting non-minimal tag, length or value varints could then keep the run green.
+ */
+export const sameWireOrdering = (left: Uint8Array, right: Uint8Array, schema?: SchemaContext): boolean => {
+	const a = scan(left, 12, schema)
+	const b = scan(right, 12, schema)
+	if (a === undefined || b === undefined) return Buffer.from(left).equals(Buffer.from(right))
+	const spelledA = spell(a)
+	const spelledB = spell(b)
+	// Byte equality, not `undefined === undefined`: an unanswerable question must
+	// not read as "yes, only the order moved".
+	if (spelledA === undefined || spelledB === undefined) return Buffer.from(left).equals(Buffer.from(right))
+	return spelledA === spelledB
 }
 
 /** The varints packed inside a length-delimited payload, or undefined if it is not one. */

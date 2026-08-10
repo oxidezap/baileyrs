@@ -313,10 +313,19 @@ export const showOutcome = (outcome: Outcome): unknown =>
  * The decode-side twin of `isWireSubset`: it tells "the decoder dropped a field"
  * apart from "the decoder read a different value". Only the first is a single
  * defect that one allowlist entry may reasonably cover.
+ *
+ * `options` must carry whatever the caller's own comparison used. Callers reach
+ * here *because* their comparison already said the two sides differ, so
+ * re-normalising under weaker rules can only re-fold a difference they had
+ * deliberately kept apart: with the default coercion a declared string field
+ * holding `'0'` and a decoder that returned the number `0` both become `0n`, the
+ * changed value vanishes, and what is left — a genuinely dropped field — makes
+ * the whole finding read as `proto:field-omission`. That entry is the broader
+ * one, so a new text-type regression rode in on a known omission unnoticed.
  */
-export const omitsKeysOnly = (local: unknown, upstream: unknown): boolean => {
-	const a = normalise(local)
-	const b = normalise(upstream)
+export const omitsKeysOnly = (local: unknown, upstream: unknown, options: NormaliseOptions = {}): boolean => {
+	const a = normalise(local, 0, options)
+	const b = normalise(upstream, 0, options)
 	if (deepSame(a, b)) return false
 
 	const walk = (left: unknown, right: unknown): boolean => {

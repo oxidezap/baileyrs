@@ -47,9 +47,19 @@ const local = (await import('../index.ts')) as unknown as {
 
 const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false, objects: false, oneofs: false }
 
-/** Everything in `reference` is present and equal in `actual`; extras are allowed. */
-const preserves = (actual: unknown, reference: unknown): boolean =>
-	equivalent(actual, reference) || omitsKeysOnly(reference, actual)
+/**
+ * Everything in `reference` is present and equal in `actual`; extras are allowed.
+ *
+ * Schema-aware, like every other comparison in this file: both sides are rooted
+ * at `Message`, and without the predicate the default coercion folds a declared
+ * string field holding `'0'` together with the number `0`. That is the readability
+ * regression these targets exist to catch, and it would have passed here as
+ * "preserved" — `generateProtoObject` emits `'0'` on purpose.
+ */
+const preserves = (actual: unknown, reference: unknown): boolean => {
+	const shape = { isTextField: textFieldPredicate('Message') }
+	return equivalent(actual, reference, shape) || omitsKeysOnly(reference, actual, shape)
+}
 
 interface WireCase {
 	readonly jid: string
