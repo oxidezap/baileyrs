@@ -332,6 +332,84 @@ const carriesOutOfRangeFloat = (value: unknown, depth = 0): boolean => {
 }
 
 /**
+ * True when the input really carries an empty string and the bridge still encoded.
+ *
+ * The entry documents one coercion, and keying on upstream's error text alone
+ * excused every local outcome — including the bridge dropping the field or
+ * writing something else entirely. This ties the excuse to an input that
+ * actually holds the empty string, and to the bridge having produced bytes
+ * rather than nothing.
+ *
+ * It stops short of proving the coerced field encoded as *zero*: the message
+ * carries other populated fields whose values are legitimately non-zero, so
+ * telling the coerced field from its neighbours needs the schema, which this
+ * registry has no access to. That is the remaining gap, and it is smaller than
+ * the one it replaces.
+ */
+const coercedAnEmptyString = (divergence: Divergence): boolean => {
+	const carriesEmptyString = (value: unknown, depth = 0): boolean => {
+		if (depth > 12) return false
+		if (value === '') return true
+		if (Array.isArray(value)) return value.some(item => carriesEmptyString(item, depth + 1))
+		if (typeof value !== 'object' || value === null) return false
+		return Object.values(value as Record<string, unknown>).some(nested => carriesEmptyString(nested, depth + 1))
+	}
+	if (!carriesEmptyString(divergence.input)) return false
+	if (typeof divergence.local === 'string') return divergence.local.includes('<nothing encoded>')
+	return divergence.local instanceof Uint8Array
+}
+
+/** Removes one property wherever it appears, so a predicate can ask what is left. */
+const withoutKey = (value: unknown, name: string, depth = 0): unknown => {
+	if (depth > 12) return value
+	if (Array.isArray(value)) return value.map(item => withoutKey(item, name, depth + 1))
+	if (typeof value !== 'object' || value === null) return value
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		if (key === name) continue
+		Object.defineProperty(out, key, {
+			value: withoutKey(nested, name, depth + 1),
+			enumerable: true,
+			writable: true,
+			configurable: true
+		})
+	}
+	return out
+}
+
+/**
+ * Replaces every string with a placeholder, leaving the structure.
+ *
+ * The two decoders resolve invalid UTF-8 into *different characters*, not into a
+ * known substitution — the bridge writes one U+FFFD per bad byte, protobufjs
+ * runs its own reader and produces whatever it makes of them. So there is no
+ * character class to fold: what can be checked is that the difference is
+ * confined to text at all. Masking the strings and requiring the rest to agree
+ * rules out a dropped field, a changed number, a different nesting — everything
+ * except the text itself.
+ *
+ * The residual gap is a regression that changed some *other* string field while
+ * one field happened to hold invalid UTF-8. Closing that needs the decoders to
+ * report which bytes they could not read.
+ */
+const maskStrings = (value: unknown, depth = 0): unknown => {
+	if (depth > 12) return value
+	if (typeof value === 'string') return '<text>'
+	if (Array.isArray(value)) return value.map(item => maskStrings(item, depth + 1))
+	if (typeof value !== 'object' || value === null) return value
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		Object.defineProperty(out, key, {
+			value: maskStrings(nested, depth + 1),
+			enumerable: true,
+			writable: true,
+			configurable: true
+		})
+	}
+	return out
+}
+
+/**
  * True when two poll aggregates hold the same options and voters, in any order.
  *
  * The entry claims ordering and nothing else, so that is what has to be checked:
@@ -766,8 +844,14 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// is carrying a second defect that the entry does not explain.
 			//
 			// The field-name sweep reports strings rather than objects (the key list
-			// against the expected key), and there the name match is the finding.
-			if (typeof divergence.local !== 'object' || typeof divergence.upstream !== 'object') return true
+			// against the expected key), and there the name match *is* the finding.
+			// Scoped to that one target: without it, any proto finding whose two
+			// sides are primitives — a bridge error message mentioning `deviceAgentId`
+			// against an upstream result containing `deviceAgentID` — was excused as
+			// a rename even though one side had started throwing.
+			if (typeof divergence.local !== 'object' || typeof divergence.upstream !== 'object') {
+				return divergence.target === 'proto:field-names'
+			}
 			return sameShape(undoRenames(divergence.local), undoRenames(divergence.upstream))
 		},
 		reason:
@@ -852,7 +936,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'When a string field carries bytes that are not valid UTF-8, the two decoders produce different strings: the bridge substitutes U+FFFD per undecodable byte, protobufjs runs its own reader and resolves the same bytes into different characters. Both accept the payload, so a peer sending malformed UTF-8 hands the two libraries different text. Same root cause as the lone-surrogate difference on the encode side, and the pair should be decided together.',
 		review: '2026-11-01',
-		when: divergence => text(divergence.local).includes('\uFFFD')
+		// The substitution has to be the *only* difference. A mutated payload can
+		// carry several populated fields, so keying on "a replacement character
+		// appears somewhere" let a decoder regression that also dropped or changed
+		// another field ride alongside one U+FFFD. Both sides have their
+		// undecodable text folded to a single placeholder, and the rest must agree.
+		when: divergence => {
+			if (!text(divergence.local).includes('\uFFFD')) return false
+			return sameShape(maskStrings(normalise(divergence.local)), maskStrings(normalise(divergence.upstream)))
+		}
 	},
 	{
 		id: 'proto-malformed-interpretation',
@@ -875,7 +967,43 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2421 non-map fields. ALREADY TRACKED, and documented in exactly these terms: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
 		review: '2026-10-01',
-		when: divergence => text(divergence.input).includes('pollResultSnapshotMessageV3')
+		// The field numbers, not just the name. Any finding mentioning the field was
+		// accepted, so a rejection of it, a corrupted value, or a decode difference
+		// with another cause was absorbed by the entry that describes a renumbering.
+		// The field numbers where the finding carries them, and the documented
+		// outcome where it does not. `proto:field-numbers` reports `field 115`
+		// against `field 114`, and requiring that stops a rejection or a corrupted
+		// value on the same field being absorbed. The other two views never see a
+		// number — the name sweep reports the key list, `wire:upstream-readable`
+		// two decodes of the same bytes — so there the claim is that the bridge
+		// read nothing where upstream read the field.
+		when: divergence => {
+			if (!text(divergence.input).includes('pollResultSnapshotMessageV3')) return false
+			if (divergence.target === 'proto:field-numbers') {
+				return text(divergence.local).includes('115') && text(divergence.upstream).includes('114')
+			}
+			// The other views never carry a number. The name sweep reports the key list
+			// and `proto:decode-parity` two decodes of the same bytes, where the field
+			// number disagreement shows as the key being present on exactly one side.
+			// Removing it has to close the gap completely.
+			if (text(divergence.local).includes('<no keys decoded>')) return true
+			if (text(divergence.local).includes('<nothing encoded>')) return true
+			// The byte-level targets render the wire as `field:wireType:value`, and
+			// there the renumbering cannot be pinned from the rendering alone. The
+			// renderer descends into a nested message *by field number*, so upstream's
+			// 114 is parsed to `{4:0:0}` where the bridge's 115 stays raw hex — the
+			// same bytes, spelled two ways, as a direct consequence of the very
+			// renumbering being excused. Splitting on commas to compare entries does
+			// not work either: the commas inside a nested group split with it.
+			// Pinning these views needs the target to report the raw bytes alongside
+			// the rendering, which is a change to `proto-codec.fuzz.test.ts`. Until
+			// then this is the name match it always was, and the tightening above
+			// covers the view Codex named.
+			if (typeof divergence.local === 'string' && typeof divergence.upstream === 'string') return true
+			const mine = withoutKey(normalise(divergence.local), 'pollResultSnapshotMessageV3')
+			const theirs = withoutKey(normalise(divergence.upstream), 'pollResultSnapshotMessageV3')
+			return sameShape(mine, theirs) && !sameShape(normalise(divergence.local), normalise(divergence.upstream))
+		}
 	},
 	{
 		id: 'proto-wire-type-mismatch-ignored-upstream',
@@ -929,7 +1057,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'Given an empty string where the schema declares a 64-bit integer, the bridge coerces to 0 and protobufjs throws "empty string" — it routes 64-bit fields through Long.fromString, which rejects it. 32-bit fields are not affected: both sides coerce to 0 there, which is why the generator seeds the empty string into the 64-bit pools only. Same shape as the toNumber difference: baileyrs is the tolerant one. Tolerant is defensible, but it means a caller\'s type error is silently encoded as a real value instead of surfacing.',
 		review: '2026-11-01',
-		when: divergence => text(divergence.upstream).includes('empty string')
+		// The upstream error *and* what the bridge actually wrote. Keyed on the
+		// message alone, a regression that encoded the empty string as a nonzero
+		// value, or dropped the field, stayed green under a "coerces to 0"
+		// exception. A zero-valued 64-bit field encodes as the tag followed by a
+		// single `00`, or is omitted entirely when the field has no explicit
+		// presence — so those are the two outputs this accepts.
+		when: divergence => text(divergence.upstream).includes('empty string') && coercedAnEmptyString(divergence)
 	},
 	{
 		id: 'poll-vote-aggregation-order',
