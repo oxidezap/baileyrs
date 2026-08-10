@@ -165,7 +165,18 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 			return {
 				__map__: [...value.entries()]
 					.map(([key, entry]) => [nested(key), nested(entry)] as const)
-					.toSorted((left, right) => (sortKey(left[0]) < sortKey(right[0]) ? -1 : 1))
+					// The value is part of the ordering key, and the comparator returns 0
+					// on a tie. Two distinct keys can share one `sortKey` — a function
+					// serialises to `undefined`, an unserialisable object to the `x:`
+					// fallback — and ordering those by input order alone would let two
+					// Maps holding the same entries in a different insertion order
+					// normalise differently, so the oracle would report a difference
+					// that is not there.
+					.toSorted((left, right) => {
+						const a = `${sortKey(left[0])}\u0000${sortKey(left[1])}`
+						const b = `${sortKey(right[0])}\u0000${sortKey(right[1])}`
+						return a < b ? -1 : a > b ? 1 : 0
+					})
 			}
 		}
 		if (value instanceof Set) return { __set__: [...value].map(nested) }

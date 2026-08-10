@@ -74,7 +74,11 @@ const clone = <T>(value: T): T => {
 		for (const key of Object.getOwnPropertyNames(value)) {
 			if (key === 'stack' || key === 'message') continue
 			Object.defineProperty(copy, key, {
-				value: (value as unknown as Record<string, unknown>)[key],
+				// Recursed, like the object branch below: copying a nested object by
+				// reference would give both sides the same one, so a helper mutating
+				// `error.data.code` would change it for both and the mutation check
+				// would compare two identical objects and call it agreement.
+				value: clone((value as unknown as Record<string, unknown>)[key]),
 				enumerable: true,
 				writable: true,
 				configurable: true
@@ -93,6 +97,21 @@ const clone = <T>(value: T): T => {
 		return out as T
 	}
 	return value
+}
+
+/**
+ * A real AES-256-CBC ciphertext, so the decrypt targets reach their success path.
+ *
+ * Generating ciphertext, key and IV independently means the block and PKCS#7
+ * padding checks reject essentially every input — and the comparator reads two
+ * throws as agreement, so plaintext recovery was never compared.
+ */
+const cbcTuple = (random: Random): { sealed: Buffer; key: Buffer; iv: Buffer } => {
+	const key = Buffer.from(random.bytes(32))
+	const iv = Buffer.from(random.bytes(16))
+	const cipher = createCipheriv('aes-256-cbc', key, iv)
+	const plaintext = Buffer.from(random.bytes(random.pick([0, 1, 15, 16, 17, 32, 100])))
+	return { sealed: Buffer.concat([cipher.update(plaintext), cipher.final()]), key, iv }
 }
 
 /** Flips one byte, so an otherwise valid ciphertext fails authentication. */
@@ -422,10 +441,12 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'unixTimestampSeconds',
+		// No `undefined`: the two implementations would each call `Date.now()`, and a
+		// pair of calls straddling a second boundary reports a difference that is not
+		// one — a flake no seed can reproduce.
 		generate: random => [
 			random.weighted<unknown>([
 				[4, new Date(random.int(0, 4_102_444_800_000))],
-				[2, undefined],
 				[1, new Date(Number.NaN)],
 				[1, new Date(-1)]
 			])
@@ -577,10 +598,25 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'aesDecryptWithIV',
-		generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)],
+		generate: random => {
+			if (random.bool(0.3)) return [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)]
+			const { sealed, key, iv } = cbcTuple(random)
+			return random.bool(0.75) ? [sealed, key, iv] : [corrupt(random, sealed), key, iv]
+		},
 		runs: 200
 	},
-	{ name: 'aesDecrypt', generate: random => [cryptoBuffer(random), cryptoKey(random)], runs: 200 },
+	{
+		name: 'aesDecrypt',
+		// The IV is the first 16 bytes of the buffer here, so the tuple is prefixed
+		// rather than passed separately.
+		generate: random => {
+			if (random.bool(0.3)) return [cryptoBuffer(random), cryptoKey(random)]
+			const { sealed, key, iv } = cbcTuple(random)
+			const framed = Buffer.concat([iv, sealed])
+			return random.bool(0.75) ? [framed, key] : [corrupt(random, framed), key]
+		},
+		runs: 200
+	},
 	{ name: 'aesEncryptCTR', generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)], runs: 200 },
 	{ name: 'aesDecryptCTR', generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)], runs: 200 },
 	{

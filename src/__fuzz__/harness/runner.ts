@@ -61,6 +61,14 @@ const recording = environment('FUZZ_RECORD') === '1'
 const strictAllowlist = environment('FUZZ_STRICT_ALLOWLIST') === '1'
 const reportDirectory = environment('FUZZ_REPORT_DIR')
 
+/**
+ * Expiries already reported in this process.
+ *
+ * The expired set is global to the registry, not per target, so without this
+ * every target repeats every expiry.
+ */
+const reportedExpiries = new Set<string>()
+
 /** Wall-clock ceiling per target: keeps `npm test` predictable on a busy runner. */
 const defaultTimeBudgetMs = FUZZ_MODE === 'deep' ? 180_000 : 6_000
 
@@ -325,10 +333,15 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			// Keep the original when minimisation did not hold the class. Reporting a
 			// smaller input that no longer shows the defect is worse than a large one
 			// that does.
-			findings.push(...(preservesClass(rerun) ? minimisedFindings : produced))
+			const held = preservesClass(rerun)
+			findings.push(...(held ? minimisedFindings : produced))
 
 			if (recording) {
-				recordCorpus(target, { note: `seed ${FUZZ_SEED}, run ${index}`, input: minimised })
+				// The same input the findings above describe. Freezing the minimised one
+				// after falling back to the original would commit a corpus entry that
+				// replays clean — a regression test for nothing, and worse than none
+				// because it looks like coverage.
+				recordCorpus(target, { note: `seed ${FUZZ_SEED}, run ${index}`, input: held ? minimised : input })
 			}
 		}
 	}
@@ -352,7 +365,14 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		console.warn(`fuzz: open finding "${id}" still reproduces on ${target} (review by ${entry?.review ?? 'unknown'})`)
 	}
 
+	// Once per process, not once per target. `outcome.expired` is the whole global
+	// registry's expired set, so pushing it into every target's crashes turned nine
+	// expired entries into well over a thousand duplicate records across the run —
+	// enough to bury the actual findings and to push the nightly issue body past
+	// what GitHub will accept. `report.ts` lists each expired entry once anyway.
 	for (const entry of outcome.expired) {
+		if (reportedExpiries.has(entry.id)) continue
+		reportedExpiries.add(entry.id)
 		const message = `fuzz: known-divergence "${entry.id}" was due for review on ${entry.review} — re-argue it or delete it`
 		if (strictAllowlist) crashes.push(`  [allowlist] ${message}`)
 		else console.warn(message)

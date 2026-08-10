@@ -98,7 +98,10 @@ const used = [...new Set(reports.flatMap(report => report.excusedBy ?? []))]
 // A truncated target may simply not have reached the input that would have used
 // an entry, so "excused nothing" proves nothing this run. Expired entries are
 // still enforced — that check does not depend on coverage.
-const complete = truncated.length === 0 && !runFailed
+// A target filter has the same effect as a crash on this question: the targets
+// it skipped wrote no report, so an entry only they would have used looks unused.
+const filtered = Boolean(process.env.FUZZ_ONLY?.trim())
+const complete = truncated.length === 0 && !runFailed && !filtered
 const candidates = complete ? staleEntries(used) : []
 
 const today = new Date().toISOString().slice(0, 10)
@@ -162,7 +165,9 @@ if (!complete) {
 	lines.push(
 		runFailed
 			? 'The fuzz step did not exit cleanly, so some targets may have written no report at all and this run cannot establish which entries are unused.'
-			: 'At least one target was truncated, so this run cannot establish which entries are unused.'
+			: filtered
+				? 'FUZZ_ONLY selected a subset of targets, so this run cannot establish which entries are unused.'
+				: 'At least one target was truncated, so this run cannot establish which entries are unused.'
 	)
 } else if (candidates.length > 0) {
 	heading('Registry entries that excused nothing')

@@ -26,6 +26,17 @@ const NUMBER_TAG = '__number__'
 const BUFFER_TAG = '__buffer__'
 const DATE_TAG = '__date__'
 const ERROR_TAG = '__error__'
+const ESCAPE_TAG = '__escaped__'
+
+/**
+ * Every tag `decode` recognises.
+ *
+ * `taggedAs` requires the tag be the object's only key, which makes a multi-key
+ * payload safe — but a payload that *is* exactly `{ __bytes__: 'AA' }` would
+ * round-trip as a Uint8Array. No generator emits those keys today; a new key pool
+ * would open it silently, so encode escapes the collision instead.
+ */
+const TAGS: readonly string[] = [BYTES_TAG, BIGINT_TAG, UNDEFINED_TAG, NUMBER_TAG, BUFFER_TAG, DATE_TAG, ERROR_TAG]
 
 /**
  * JSON cannot hold the values these fuzzers care most about, so tag them.
@@ -49,7 +60,11 @@ const encode = (value: unknown): unknown => {
 	// generic object branch below would flatten either one to `{}` — and both are
 	// generated deliberately (`getCodeFromWSError` takes an Error; the value
 	// generator emits Dates).
-	if (value instanceof Date) return { [DATE_TAG]: value.getTime() }
+	// Stringified for the same reason the NUMBER_TAG branch stringifies: an invalid
+	// Date has a `NaN` time, JSON writes that as `null`, and `Number(null)` is 0 —
+	// so a reproducer recorded with `new Date(NaN)` would replay as the epoch. The
+	// generators emit invalid dates, so this path is reachable.
+	if (value instanceof Date) return { [DATE_TAG]: String(value.getTime()) }
 	if (value instanceof Error) {
 		return { [ERROR_TAG]: { name: value.name, message: value.message } }
 	}
@@ -61,6 +76,10 @@ const encode = (value: unknown): unknown => {
 			// and plain assignment would move the prototype instead.
 			Object.defineProperty(out, key, { value: encode(nested), enumerable: true, writable: true, configurable: true })
 		}
+		// An ordinary object that happens to be exactly one tag key would decode as
+		// the tagged value, so it is wrapped once and unwrapped on the way back.
+		const keys = Object.keys(out)
+		if (keys.length === 1 && TAGS.includes(keys[0]!)) return { [ESCAPE_TAG]: out }
 		return out
 	}
 	return value
@@ -71,10 +90,23 @@ const encode = (value: unknown): unknown => {
 const taggedAs = (record: Record<string, unknown>, tag: string): boolean =>
 	Object.hasOwn(record, tag) && Object.keys(record).length === 1
 
+/** Decodes an object's values without re-testing the object itself for a tag. */
+const decodeProperties = (record: Record<string, unknown>): Record<string, unknown> => {
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(record)) {
+		Object.defineProperty(out, key, { value: decode(nested), enumerable: true, writable: true, configurable: true })
+	}
+	return out
+}
+
 const decode = (value: unknown): unknown => {
 	if (Array.isArray(value)) return value.map(decode)
 	if (typeof value === 'object' && value !== null) {
 		const record = value as Record<string, unknown>
+		// Unwrapped straight into the plain-object path, never back through `decode`:
+		// recursing would re-apply the tag checks one level down and hand back
+		// exactly the value the escape exists to prevent.
+		if (taggedAs(record, ESCAPE_TAG)) return decodeProperties(record[ESCAPE_TAG] as Record<string, unknown>)
 		if (taggedAs(record, UNDEFINED_TAG)) return undefined
 		if (taggedAs(record, BIGINT_TAG)) return BigInt(String(record[BIGINT_TAG]))
 		if (taggedAs(record, BYTES_TAG)) return new Uint8Array(Buffer.from(String(record[BYTES_TAG]), 'base64'))
@@ -90,11 +122,7 @@ const decode = (value: unknown): unknown => {
 			const raw = String(record[NUMBER_TAG])
 			return raw === '-0' ? -0 : Number(raw)
 		}
-		const out: Record<string, unknown> = {}
-		for (const [key, nested] of Object.entries(record)) {
-			Object.defineProperty(out, key, { value: decode(nested), enumerable: true, writable: true, configurable: true })
-		}
-		return out
+		return decodeProperties(record)
 	}
 	return value
 }

@@ -184,18 +184,27 @@ describe('send-path wire fidelity on generated messages', () => {
 						detail: 'baileyrs cannot read back the bytes it handed the bridge'
 					}
 				}
-				// Only one direction is harmless: the bridge seeing a field upstream does
-				// not model. The reverse — upstream reading a field the bridge does not
-				// return — is data the library sent and cannot read back, and the
-				// fidelity check above cannot catch it because its reference goes
-				// through the same bridge encode/decode pair and lacks the field too.
-				if (!preserves(bridgeView, upstreamView)) {
+				// Both views decode the *same* bytes, so neither side can legitimately
+				// hold a field the other lacks — which makes exact equality the right
+				// test in both directions.
+				//
+				// The bridge-side superset was the one previously let through, and it is
+				// the case this target is named for: a field the bridge writes at a
+				// number upstream does not declare is discarded by upstream as unknown
+				// and read straight back by the bridge, so a subset check in that
+				// direction reports nothing. The reverse is data the library sent and
+				// cannot read back, which the fidelity check above cannot catch either
+				// — its reference goes through the same bridge encode/decode pair and
+				// lacks the field too.
+				if (!equivalent(bridgeView, upstreamView)) {
 					findings.push({
 						target: 'wire:upstream-readable',
 						input: { jid, message },
 						local: normalise(bridgeView),
 						upstream: normalise(upstreamView),
-						detail: 'upstream read fields from the sent bytes that the bridge does not return'
+						detail: preserves(bridgeView, upstreamView)
+							? 'the bridge read fields from the sent bytes that upstream discards as unknown'
+							: 'upstream read fields from the sent bytes that the bridge does not return'
 					})
 				}
 				return findings

@@ -395,10 +395,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-field-number-mismatch',
-		target: /^proto:/u,
+		// `wire:` too, since tightening wire:upstream-readable to exact equality made
+		// this visible from the send path for the first time: the bridge writes the
+		// field at 115 and reads it straight back, upstream decodes 115 as unknown
+		// and discards it, so the two views of the same sent bytes differ by exactly
+		// this field.
+		target: /^(proto|wire):/u,
 		status: 'open',
 		reason:
-			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2275 singular fields. ALREADY TRACKED, and documented in exactly these terms: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
+			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2421 non-map fields. ALREADY TRACKED, and documented in exactly these terms: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
 		review: '2026-10-01',
 		when: divergence => text(divergence.input).includes('pollResultSnapshotMessageV3')
 	},

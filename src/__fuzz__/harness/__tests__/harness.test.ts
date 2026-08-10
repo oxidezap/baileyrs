@@ -13,7 +13,7 @@ import { applyAllowlist, staleEntries, type Divergence, type KnownDivergence } f
 import { corpusSlug } from '../corpus.ts'
 import { makeRandom } from '../random.ts'
 import { shrink } from '../shrink.ts'
-import { canonicalWire, differsOnlyByPacking, isWireSubset } from '../wire.ts'
+import { canonicalWire, differsOnlyByPacking, isWireSubset, sameWireContent, type SchemaContext } from '../wire.ts'
 
 describe('fuzz harness — deterministic randomness', () => {
 	it('replays an identical stream for an identical seed', () => {
@@ -300,6 +300,37 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		const packed = lengthDelimited(22, [0x80, 0x80, 0x40, 0x00])
 		const loose = concat(varint(22, [0x80, 0x80, 0x40]), varint(22, [0x00]))
 		assert.equal(isWireSubset(packed, concat(loose, varint(2, [0x09]))), true)
+	})
+
+	/**
+	 * The single-value rule only takes effect with a schema, so without this the
+	 * behaviour that decides between "excused packing" and "reported wrong wire
+	 * type" — the distinction the schema context exists for — went untested.
+	 */
+	const schemaFor = (repeated: readonly number[]): SchemaContext => ({
+		path: 'Test',
+		isRepeated: (_path, field) => repeated.includes(field),
+		messageAt: () => undefined
+	})
+
+	it('separates a one-element packed run from a wrong wire type using the schema', () => {
+		const packed = lengthDelimited(22, [0x07])
+		const loose = varint(22, [0x07])
+		assert.equal(differsOnlyByPacking(packed, loose, schemaFor([22])), true, 'field 22 is repeated: packing')
+		assert.equal(differsOnlyByPacking(packed, loose, schemaFor([])), false, 'field 22 is singular: wrong wire type')
+		// Without a schema the pair is ambiguous, so it is reported rather than excused.
+		assert.equal(differsOnlyByPacking(packed, loose), false)
+	})
+
+	it('parses a length-delimited field as a message only where the schema says so', () => {
+		// The payload frames as protobuf but the schema calls field 1 bytes, so
+		// reordering the bytes inside it is a changed value, not a field order.
+		const a = Uint8Array.from([0x0a, 0x04, 0x08, 0x01, 0x10, 0x02])
+		const b = Uint8Array.from([0x0a, 0x04, 0x10, 0x02, 0x08, 0x01])
+		const asBytes: SchemaContext = { path: 'Test', isRepeated: () => false, messageAt: () => undefined }
+		const asMessage: SchemaContext = { path: 'Test', isRepeated: () => false, messageAt: () => 'Nested' }
+		assert.equal(sameWireContent(a, b, asBytes), false)
+		assert.equal(sameWireContent(a, b, asMessage), true)
 	})
 
 	it('does not call a changed value a packing difference', () => {

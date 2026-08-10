@@ -120,22 +120,6 @@ const hex = (bytes: unknown): string =>
 const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.value : `<throw ${outcome.error}>`)
 
 /**
- * Per-message field-number metadata, for telling packing apart from a wrong wire
- * type.
- *
- * `differsOnlyByPacking` cannot distinguish a one-element packed run from a
- * singular scalar written length-delimited — the bytes are identical — so it asks
- * the schema. Field numbers are unique per message, not globally, and this schema
- * has 30 repeated scalar fields against 1734 singular ones drawing from the same
- * small numbers: a global set would answer "repeated" for nearly every singular
- * field and excuse exactly the regression this exists to catch.
- *
- * The compact schema records the repeated flag and the nested type but not the
- * number, so each number is recovered the way the field-number sweep recovers it
- * — encode the field alone, read the tag back. Built per message, lazily, so a
- * run only pays for the types it actually compares.
- */
-/**
  * The field kinds protobuf actually packs, and that unpack as varints.
  *
  * "Repeated" is not the same as "packable": a repeated string or bytes field is
@@ -153,6 +137,22 @@ const PACKABLE_KINDS: ReadonlySet<number> = new Set([
 	PROTO_FIELD_KIND.unsigned64
 ])
 
+/**
+ * Per-message field-number metadata, for telling packing apart from a wrong wire
+ * type.
+ *
+ * `differsOnlyByPacking` cannot distinguish a one-element packed run from a
+ * singular scalar written length-delimited — the bytes are identical — so it asks
+ * the schema. Field numbers are unique per message, not globally, and this schema
+ * has 30 repeated scalar fields against 1734 singular ones drawing from the same
+ * small numbers: a global set would answer "repeated" for nearly every singular
+ * field and excuse exactly the regression this exists to catch.
+ *
+ * The compact schema records the repeated flag and the nested type but not the
+ * number, so each number is recovered the way the field-number sweep recovers it
+ * — encode the field alone, read the tag back. Built per message, lazily, so a
+ * run only pays for the types it actually compares.
+ */
 interface FieldFacts {
 	readonly repeated: ReadonlySet<number>
 	readonly messages: ReadonlyMap<number, string>

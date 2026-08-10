@@ -136,7 +136,13 @@ const isUsable = (value: MutationCase): boolean =>
  * rule out. So the flag is set by whichever target hits it first, and they all
  * consult it.
  */
-let firstTrap: WebAssembly.RuntimeError | undefined
+type WasmTrap = WebAssembly.RuntimeError | WebAssembly.CompileError
+
+/** Both trap types, matching what `compareOutcomes` already treats as a trap. */
+const isTrap = (error: unknown): error is WasmTrap =>
+	error instanceof WebAssembly.RuntimeError || error instanceof WebAssembly.CompileError
+
+let firstTrap: WasmTrap | undefined
 
 /**
  * Every bridge decode in this file goes through here.
@@ -146,14 +152,14 @@ let firstTrap: WebAssembly.RuntimeError | undefined
  */
 const decodeThroughBridge = (path: string, bytes: Uint8Array): Attempt => {
 	const result = attempt(() => decodeProto(path, bytes))
-	if (!result.ok && result.error instanceof WebAssembly.RuntimeError) {
+	if (!result.ok && isTrap(result.error)) {
 		firstTrap ??= result.error
 	}
 	return result
 }
 
 /** Reports the trap once, from whichever target reached it first. */
-const trapFinding = (path: string, mutator: string, bytes: Uint8Array, failure: WebAssembly.RuntimeError) => ({
+const trapFinding = (path: string, mutator: string, bytes: Uint8Array, failure: WasmTrap) => ({
 	target: 'proto:mutation-safety',
 	input: { path, mutator, bytes: hex(bytes) },
 	local: `<WASM trap: ${failure.message.slice(0, 160)}>`,
@@ -191,7 +197,7 @@ describe('protobuf decoder robustness under mutation', () => {
 				// phrase itself that way into a trap report, and there is no allowlist
 				// entry for this target — a false positive here is a hard suite failure.
 				const failure = result.error
-				if (failure instanceof WebAssembly.RuntimeError) {
+				if (isTrap(failure)) {
 					return trapFinding(path, mutator, bytes, failure)
 				}
 
@@ -223,7 +229,7 @@ describe('protobuf decoder robustness under mutation', () => {
 
 				if (firstTrap) return []
 				const local = decodeThroughBridge(path, bytes)
-				if (!local.ok && local.error instanceof WebAssembly.RuntimeError) {
+				if (!local.ok && isTrap(local.error)) {
 					return trapFinding(path, mutator, bytes, local.error)
 				}
 				const remote = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
@@ -266,7 +272,7 @@ describe('protobuf decoder robustness under mutation', () => {
 
 				if (firstTrap) return []
 				const first = decodeThroughBridge(path, bytes)
-				if (!first.ok && first.error instanceof WebAssembly.RuntimeError) {
+				if (!first.ok && isTrap(first.error)) {
 					return trapFinding(path, mutator, bytes, first.error)
 				}
 				if (!first.ok) return []
