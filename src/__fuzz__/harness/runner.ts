@@ -364,7 +364,13 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 				`${finding.target}\u0000${finding.detail ?? ''}\u0000${applyAllowlist([finding], new Date()).unexcused.length > 0 ? 'open' : 'excused'}`
 			const tally = (found: readonly Divergence[]): Map<string, number> => {
 				const counts = new Map<string, number>()
-				for (const finding of found) counts.set(classOf(finding), (counts.get(classOf(finding)) ?? 0) + 1)
+				// Once per finding: `classOf` runs `applyAllowlist`, which scans the whole
+				// registry and evaluates `when` predicates that recurse over normalised
+				// values — and `tally` runs on every shrink candidate, up to 1200 deep.
+				for (const finding of found) {
+					const id = classOf(finding)
+					counts.set(id, (counts.get(id) ?? 0) + 1)
+				}
 				return counts
 			}
 			const originalCounts = tally(produced)

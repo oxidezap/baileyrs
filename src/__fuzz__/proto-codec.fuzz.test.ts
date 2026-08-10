@@ -855,8 +855,22 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				// group: `type.oneofs` is empty for all of them, `decode` keeps every
 				// member it meets, and `toObject` shows them all. So a check comparing
 				// the decoded winners could not fail, and a check that cannot fail is
-				// worse than none. If the generated protos ever carry runtime oneofs,
-				// this is the place to compare `decoded[oneofName]` on both sides.
+				// worse than none.
+				//
+				// The premise is checked rather than trusted. If the generated protos
+				// ever gain a runtime oneof, this reports instead of silently skipping
+				// the comparison, and the fix is to compare `decoded[oneofName]` on
+				// both sides here.
+				const runtimeOneofs = Object.keys((type as { oneofs?: Record<string, unknown> }).oneofs ?? {})
+				if (runtimeOneofs.length > 0) {
+					return {
+						target: 'proto:oneof',
+						input: { path, message },
+						local: `<${runtimeOneofs.length} runtime oneof(s): ${runtimeOneofs.join(', ')}>`,
+						upstream: '<no runtime oneof, which is what the ordering skip assumes>',
+						detail: 'the schema now declares a runtime oneof, so encoding order decides a winner and has to be compared'
+					}
+				}
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {

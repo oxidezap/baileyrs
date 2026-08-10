@@ -33,6 +33,14 @@ on:
           - deep
           - smoke
 
+# One fuzz run at a time on a branch. A manual dispatch during the nightly would
+# otherwise run the full 45-minute suite twice and have both comment on the same
+# `fuzz` issue. Queued rather than cancelled: the in-flight nightly's result is
+# the one worth keeping.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: write

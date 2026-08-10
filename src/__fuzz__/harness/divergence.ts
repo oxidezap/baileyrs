@@ -652,12 +652,18 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 				// surrogate. Both spellings collapse to the same placeholder, and what
 				// is left has to be identical.
 				const fold = (bytes: Uint8Array) =>
-					Buffer.from(bytes)
-						.toString('hex')
+					// Byte pairs, space-separated, so a match can never begin on an odd
+					// nibble. Unanchored, `ed[ab][0-9a-f]{3}` matched inside `0edab012`
+					// and consumed the low half of one byte plus part of the next —
+					// removing bytes that are not substitutions, on one side only, so
+					// the two folds no longer cancel and a real byte difference could
+					// pass as this entry.
+					(Buffer.from(bytes).toString('hex').match(/../gu) ?? [])
+						.join(' ')
 						// The Rust encoder's U+FFFD, and protobufjs's WTF-8 surrogate
 						// (ed a0 80 .. ed bf bf), which is the only other three-byte
 						// sequence starting `ed a`/`ed b`.
-						.replaceAll(/efbfbd|ed[ab][0-9a-f]{3}/gu, '<sub>')
+						.replaceAll(/ef bf bd|ed [ab][0-9a-f] [0-9a-f]{2}/gu, '<sub>')
 				const mine = fold(divergence.local)
 				return mine === fold(divergence.upstream) && mine.includes('<sub>')
 			}
