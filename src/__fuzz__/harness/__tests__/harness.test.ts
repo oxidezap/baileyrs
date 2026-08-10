@@ -546,9 +546,9 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-field-renamed-and-dropped')
 		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
 
-		const excused = (local: unknown, upstream: unknown): boolean =>
+		const excused = (local: unknown, upstream: unknown, path = 'SyncActionValue'): boolean =>
 			applyAllowlist(
-				[{ target: 'proto:decode-parity', input: { path: 'SyncActionValue' }, local, upstream }],
+				[{ target: 'proto:decode-parity', input: { path }, local, upstream }],
 				new Date('2026-01-01'),
 				registry
 			).unexcused.length === 0
@@ -569,6 +569,32 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(
 			!excused({ ...renamed, businessBroadcastAssociationAction: {} }, declared),
 			'a key upstream never produced is a different defect'
+		)
+
+		// A renamed field is decoded under another name, not dropped, so its leaf
+		// must never license an absence. Here `deviceID` is the real rename and
+		// `deviceAgentID` has genuinely gone missing beside it — taking the leaves
+		// of the encoder-gap list let the first stand in for the second.
+		assert.ok(
+			!excused({ ...renamed, chatAssignment: {} }, { ...declared, chatAssignment: { deviceAgentID: '' } }),
+			'a valid rename does not license a deviceAgentID that genuinely went missing'
+		)
+		// And the absence is pinned to where it was measured. `messageParamsJson`
+		// is documented unwritten on PaymentExtendedMetadata; the schema declares
+		// another on NativeFlowMessage, and a new drop of that one is a finding.
+		assert.ok(
+			!excused(
+				{
+					messageHistoryMetadata: { oldestMessageTimestampInWindow: '1n' },
+					interactiveMessage: { nativeFlowMessage: {} }
+				},
+				{
+					messageHistoryMetadata: { oldestMessageTimestamp: '1n' },
+					interactiveMessage: { nativeFlowMessage: { messageParamsJson: '{}' } }
+				},
+				'Message'
+			),
+			'a documented leaf dropped at an undocumented path still fails'
 		)
 	})
 
