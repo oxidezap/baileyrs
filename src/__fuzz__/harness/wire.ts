@@ -11,12 +11,14 @@
  * question worth asking: *are the same fields carrying the same values on the
  * wire*. Ordering is then reported separately, where it can be judged on its own.
  *
- * One documented imprecision: a length-delimited field is a nested message, a
- * string or a byte string, and the wire format does not distinguish them. This
- * parses one as a nested message whenever it parses cleanly end-to-end, and
- * treats it as opaque bytes otherwise. Both sides get the identical heuristic, so
- * the worst case is a missed difference between two strings that each happen to
- * be valid protobuf and are permutations of one another — never a false report.
+ * A length-delimited field is a nested message, a string or a byte string, and
+ * the wire format does not distinguish them. Given a `SchemaContext` this asks
+ * the schema, which is exact. Without one it falls back to parsing as a nested
+ * message whenever the payload frames cleanly — and that heuristic is not merely
+ * imprecise, it can misclassify: reordering the bytes *inside* a string that
+ * happens to be valid protobuf would then compare equal under canonicalisation
+ * and be routed to the allowlisted field-order class, excusing a changed value as
+ * a spelling difference. Every caller that has a schema passes it.
  */
 
 export interface WireField {
@@ -70,7 +72,7 @@ const readVarint = (cursor: Cursor): bigint | undefined => {
 	return undefined
 }
 
-const scan = (bytes: Uint8Array, depth: number): WireField[] | undefined => {
+const scan = (bytes: Uint8Array, depth: number, schema?: SchemaContext): WireField[] | undefined => {
 	const cursor: Cursor = { bytes, offset: 0 }
 	const fields: WireField[] = []
 
@@ -109,7 +111,15 @@ const scan = (bytes: Uint8Array, depth: number): WireField[] | undefined => {
 				const slice = bytes.slice(cursor.offset, cursor.offset + size)
 				cursor.offset += size
 
-				const nested = size > 0 && depth > 0 ? scan(slice, depth - 1) : undefined
+				// With a schema, a length-delimited field is parsed as a nested message
+				// only when the schema says it is one. Without that, a string or bytes
+				// value whose contents happen to frame as protobuf gets its apparent
+				// fields sorted — so reordering the *bytes of a string* would compare
+				// equal and be routed to the allowlisted field-order class, which is a
+				// changed value excused as a spelling difference.
+				const child = descend(schema, field)
+				const parseNestedHere = schema === undefined || child !== undefined
+				const nested = size > 0 && depth > 0 && parseNestedHere ? scan(slice, depth - 1, child) : undefined
 				const raw = Buffer.from(slice).toString('hex')
 				fields.push({ field, wireType, value: nested ? `{${render(nested)}}` : raw, raw, nested })
 				break
@@ -139,23 +149,23 @@ const render = (fields: readonly WireField[]): string =>
 		.join(',')
 
 /** Order-insensitive rendering of a message's fields, or undefined if it does not parse. */
-export const canonicalWire = (bytes: Uint8Array): string | undefined => {
-	const fields = scan(bytes, 12)
+export const canonicalWire = (bytes: Uint8Array, schema?: SchemaContext): string | undefined => {
+	const fields = scan(bytes, 12, schema)
 	return fields === undefined ? undefined : render(fields)
 }
 
 /** Order-sensitive rendering, for telling a pure ordering difference from a real one. */
-export const orderedWire = (bytes: Uint8Array): string | undefined => {
-	const fields = scan(bytes, 12)
+export const orderedWire = (bytes: Uint8Array, schema?: SchemaContext): string | undefined => {
+	const fields = scan(bytes, 12, schema)
 	return fields === undefined
 		? undefined
 		: fields.map(entry => `${entry.field}:${entry.wireType}:${entry.value}`).join(',')
 }
 
 /** True when two payloads carry the same fields and values, whatever the order. */
-export const sameWireContent = (left: Uint8Array, right: Uint8Array): boolean => {
-	const a = canonicalWire(left)
-	const b = canonicalWire(right)
+export const sameWireContent = (left: Uint8Array, right: Uint8Array, schema?: SchemaContext): boolean => {
+	const a = canonicalWire(left, schema)
+	const b = canonicalWire(right, schema)
 	if (a === undefined || b === undefined) return Buffer.from(left).equals(Buffer.from(right))
 	return a === b
 }
@@ -213,8 +223,8 @@ export interface SchemaContext {
 }
 
 export const differsOnlyByPacking = (left: Uint8Array, right: Uint8Array, schema?: SchemaContext): boolean => {
-	const a = scan(left, 12)
-	const b = scan(right, 12)
+	const a = scan(left, 12, schema)
+	const b = scan(right, 12, schema)
 	if (!a || !b) return false
 	return nestedDiffersOnlyByPacking(a, b, schema)
 }
@@ -301,8 +311,8 @@ const nestedDiffersOnlyByPacking = (
  * omission rather than a mismatch.
  */
 export const isWireSubset = (left: Uint8Array, right: Uint8Array, schema?: SchemaContext): boolean => {
-	const a = scan(left, 12)
-	const b = scan(right, 12)
+	const a = scan(left, 12, schema)
+	const b = scan(right, 12, schema)
 	if (!a || !b) return false
 	return subsetOf(a, b, schema) && render(a) !== render(b)
 }

@@ -14,7 +14,7 @@
  * in neither the table nor the exclusion list fails the suite.
  */
 
-import { createHash } from 'node:crypto'
+import { createCipheriv, createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 import type { BinaryNode } from '../Types/index.ts'
 import { compareOutcomes, runOutcome, showOutcome } from './harness/compare.ts'
@@ -93,6 +93,15 @@ const clone = <T>(value: T): T => {
 		return out as T
 	}
 	return value
+}
+
+/** Flips one byte, so an otherwise valid ciphertext fails authentication. */
+const corrupt = (random: Random, bytes: Buffer): Buffer => {
+	if (bytes.length === 0) return bytes
+	const copy = Buffer.from(bytes)
+	const index = random.below(copy.length)
+	copy[index] = copy[index]! ^ 0xff
+	return copy
 }
 
 /** Byte sizes chosen to straddle every AES/HMAC block and key boundary. */
@@ -581,7 +590,29 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'aesDecryptGCM',
-		generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoNonce(random), cryptoBuffer(random)],
+		// Most cases are a real encrypt-then-decrypt tuple, sometimes with one piece
+		// corrupted. Generating the four arguments independently means the tag can
+		// never authenticate, so both sides only ever threw — and the comparator
+		// reads two throws as agreement, so successful plaintext recovery, which is
+		// the entire point of the helper, was never compared.
+		generate: random => {
+			const key = Buffer.from(random.bytes(32))
+			const nonce = Buffer.from(random.bytes(12))
+			const additional = cryptoBuffer(random)
+			const plaintext = cryptoBuffer(random)
+			const cipher = createCipheriv('aes-256-gcm', key, nonce)
+			if (additional.length > 0) cipher.setAAD(additional)
+			const sealed = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()])
+
+			if (random.bool(0.7)) return [sealed, key, nonce, additional]
+			// One piece off, so the reject path stays covered too.
+			return random.pick([
+				[corrupt(random, sealed), key, nonce, additional],
+				[sealed, cryptoKey(random), nonce, additional],
+				[sealed, key, cryptoNonce(random), additional],
+				[sealed, key, nonce, cryptoBuffer(random)]
+			])
+		},
 		runs: 200
 	},
 	{
@@ -795,10 +826,28 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'updateMessageWithEventResponse',
-		generate: random => [
-			{ eventResponses: random.bool(0.5) ? [] : undefined },
-			{ eventResponseMessageKey: messageKey(random), timestampMs: generateNumber(random) }
-		]
+		// The defining branch is the replacement: it filters out any existing
+		// response from the same author before appending. With the list always empty
+		// only the append ran, so a regression that left duplicates from one author,
+		// or dropped a different author's response, compared equal.
+		generate: random => {
+			const author = messageKey(random)
+			return [
+				{
+					eventResponses: random.bool(0.75)
+						? [
+								{ eventResponseMessageKey: random.bool(0.6) ? author : messageKey(random), eventResponse: 'GOING' },
+								...(random.bool(0.4) ? [{ eventResponseMessageKey: messageKey(random), eventResponse: 'MAYBE' }] : [])
+							]
+						: random.pick([[], undefined])
+				},
+				{
+					eventResponseMessageKey: author,
+					eventResponse: random.pick(['GOING', 'NOT_GOING', 'MAYBE', undefined]),
+					timestampMs: generateNumber(random)
+				}
+			]
+		}
 	},
 	{ name: 'getCodeFromWSError', generate: random => [wsError(random)], runs: 200 }
 ]

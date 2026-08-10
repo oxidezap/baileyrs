@@ -31,7 +31,7 @@ import { canonicalWire } from './harness/wire.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, HOT_PROTO_PATHS } from './generators/proto.ts'
-import { mutate, MUTATORS } from './generators/mutation.ts'
+import { mutate, MUTATORS, type MessageCycle } from './generators/mutation.ts'
 
 const upstream = (await import('baileys')) as unknown as { proto: Record<string, unknown> }
 
@@ -65,6 +65,23 @@ const attempt = (call: () => unknown): Attempt => {
 
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex')
 
+/**
+ * The tag bytes of a message cycle, per schema path.
+ *
+ * `Message` reaches itself through `ephemeralMessage` (field 40, a
+ * `FutureProofMessage`) and that type's `message` (field 1). Wrapping along those
+ * two tags gives the nesting bomb a real recursive *message* descent instead of
+ * one message holding a deeply nested length-delimited value — the latter tests
+ * the length and bounds path, which is worth doing, but a decoder with unbounded
+ * recursion passes it at any depth.
+ *
+ * Only `Message` has a cheap two-hop cycle worth hard-coding; everything else
+ * falls back to the flat wrap, and the mutator says so.
+ */
+const MESSAGE_CYCLE: MessageCycle = [[0xc2, 0x02], [0x0a]]
+
+const cycleFor = (path: string): MessageCycle | undefined => (path === 'Message' ? MESSAGE_CYCLE : undefined)
+
 /** The paths robustness cares about: what a peer can actually put on the wire. */
 const PATHS = HOT_PROTO_PATHS.filter(path => upstreamType(path) !== undefined)
 
@@ -88,11 +105,11 @@ const generateCase = (random: Random): MutationCase => {
 	const first = random.pick(MUTATORS)
 	// A couple of rounds of mutation reach states one round cannot: a truncated
 	// message whose surviving length prefix is then made to lie, and so on.
-	let bytes = mutate(random, base, other, first).bytes
+	let bytes = mutate(random, base, other, first, cycleFor(path)).bytes
 	const applied: string[] = [first]
 	if (random.bool(0.3)) {
 		const second = random.pick(MUTATORS)
-		bytes = mutate(random, bytes, other, second).bytes
+		bytes = mutate(random, bytes, other, second, cycleFor(path)).bytes
 		applied.push(second)
 	}
 	// The whole chain is recorded, not just the first: the later mutation usually
@@ -315,13 +332,17 @@ describe('protobuf decoder robustness under mutation', () => {
 		 *
 		 * A leaked WASM linear-memory allocation or a retained bridge buffer lives
 		 * outside the V8 managed heap, so `heapUsed` can stay flat while the memory
-		 * this probe exists to catch grows without bound. `external` and
-		 * `arrayBuffers` are where a WebAssembly.Memory backing store shows up, so
-		 * the budget is applied to the total.
+		 * this probe exists to catch grows without bound. `external` is where a
+		 * WebAssembly.Memory backing store shows up, so the budget covers it too.
+		 *
+		 * `arrayBuffers` is deliberately not added: Node reports it as a *subset* of
+		 * `external`, not alongside it. Measured directly — allocating one 64MB
+		 * Buffer moves both by 64MB — so summing the two would score 20MB of real
+		 * growth as 40MB and fail the 32MB budget on a run that never leaked.
 		 */
 		const footprint = () => {
 			const usage = process.memoryUsage()
-			return usage.heapUsed + usage.external + usage.arrayBuffers
+			return usage.heapUsed + usage.external
 		}
 
 		run(warmupCases)

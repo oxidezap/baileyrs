@@ -354,10 +354,32 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				if (!encoded.ok) return []
 
 				const decoded = attempt(() => decodeProto(path, encoded.value as Uint8Array))
-				if (!decoded.ok) return []
+				// Upstream encoded a field its own schema declares and the bridge cannot
+				// read the result. Skipping that let the sweep claim exhaustive coverage
+				// of a field whose decode path it never checked.
+				if (!decoded.ok) {
+					return {
+						target: encodeTarget(path, { [field]: sample }, 'proto:field-names'),
+						input: `${path}.${field}`,
+						local: describeOutcome(decoded),
+						upstream: field,
+						detail: 'the bridge cannot decode a field upstream encoded from its own schema'
+					}
+				}
 
 				const keys = Object.keys(decoded.value as Record<string, unknown>)
-				if (keys.length === 0 || keys.includes(field)) return []
+				// No keys at all is the field vanishing on decode, not a rename — same
+				// severity, and previously indistinguishable from a clean pass.
+				if (keys.length === 0) {
+					return {
+						target: encodeTarget(path, { [field]: sample }, 'proto:field-names'),
+						input: `${path}.${field}`,
+						local: '<no keys decoded>',
+						upstream: field,
+						detail: 'the bridge decodes nothing at all from a field upstream encoded'
+					}
+				}
+				if (keys.includes(field)) return []
 
 				// The bridge round-trips the field under another name. Confirm the
 				// consequence rather than just the symptom: the upstream spelling is
@@ -486,12 +508,12 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 
 				// Same fields, different order: valid protobuf either way, so it is its
 				// own target rather than a failure of this one.
-				if (sameWireContent(localBytes, remoteBytes)) {
+				if (sameWireContent(localBytes, remoteBytes, schemaAt(path))) {
 					return {
 						target: 'proto:field-order',
 						input: { path, message },
-						local: orderedWire(localBytes) ?? hex(localBytes),
-						upstream: orderedWire(remoteBytes) ?? hex(remoteBytes),
+						local: orderedWire(localBytes, schemaAt(path)) ?? hex(localBytes),
+						upstream: orderedWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
 						detail: 'same fields and values, emitted in a different order'
 					}
 				}
@@ -502,8 +524,8 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					return {
 						target: 'proto:field-packing',
 						input: { path, message },
-						local: canonicalWire(localBytes) ?? hex(localBytes),
-						upstream: canonicalWire(remoteBytes) ?? hex(remoteBytes),
+						local: canonicalWire(localBytes, schemaAt(path)) ?? hex(localBytes),
+						upstream: canonicalWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
 						detail: 'repeated scalars encoded unpacked on one side and packed on the other'
 					}
 				}
@@ -511,8 +533,8 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				return {
 					target: byteTarget(path, message, localBytes, remoteBytes, 'proto:encode-bytes'),
 					input: { path, message },
-					local: canonicalWire(localBytes) ?? hex(localBytes),
-					upstream: canonicalWire(remoteBytes) ?? hex(remoteBytes),
+					local: canonicalWire(localBytes, schemaAt(path)) ?? hex(localBytes),
+					upstream: canonicalWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
 					detail: 'encoders put different fields or values on the wire'
 				}
 			}
@@ -739,7 +761,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 
 				const localBytes = local.value as Uint8Array
 				const remoteBytes = remote.value as Uint8Array
-				if (sameWireContent(localBytes, remoteBytes)) return []
+				if (sameWireContent(localBytes, remoteBytes, schemaAt(path))) return []
 
 				return {
 					// Not routed through byteTarget: this sweep already knows precisely
@@ -796,13 +818,13 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					}
 				}
 				if (!local.ok || !remote.ok) return []
-				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
 					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:oneof'),
 					input: { path, message },
-					local: canonicalWire(local.value as Uint8Array) ?? hex(local.value),
-					upstream: canonicalWire(remote.value as Uint8Array) ?? hex(remote.value),
+					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
+					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
 					detail: 'a oneof with several members set resolves differently'
 				}
 			}
@@ -833,13 +855,13 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					}
 				}
 				if (!local.ok || !remote.ok) return []
-				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
 					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:integers'),
 					input: { path, message },
-					local: canonicalWire(local.value as Uint8Array) ?? hex(local.value),
-					upstream: canonicalWire(remote.value as Uint8Array) ?? hex(remote.value),
+					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
+					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
 					detail: 'integer fields encode differently'
 				}
 			}

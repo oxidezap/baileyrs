@@ -66,27 +66,46 @@ const lyingLength = (random: Random, bytes: Uint8Array): Uint8Array =>
 	Uint8Array.from([0x0a, random.pick([0x7f, 0xff]), ...bytes])
 
 /**
- * A message nested `depth` times inside field 1.
+ * The tag bytes of each step in a message cycle, for the nesting bomb.
  *
- * The shape that turns a recursive-descent parser into a stack overflow, and the
- * one a hostile peer would send. Kept under a few thousand so the test measures
- * the decoder's own limit rather than the harness's.
- *
- * Field 1 is hard-coded, so on a schema whose field 1 is a scalar the decoder
- * sees a deeply nested *length-delimited* value rather than a chain of nested
- * messages. That still exercises the length/bounds path at depth, which is the
- * point, but it is not a recursive message descent — reaching that would need
- * the bomb to pick a self-referencing message field per schema.
+ * `Message` reaches itself in two hops — `ephemeralMessage` (field 40) holds a
+ * `FutureProofMessage`, whose `message` (field 1) is a `Message` again — so a
+ * chain built along those two tags is a genuine recursive *message* descent.
  */
-const nestingBomb = (random: Random, bytes: Uint8Array): Uint8Array => {
-	let payload = bytes.slice(0, Math.min(bytes.length, 8))
+export type MessageCycle = readonly (readonly number[])[]
+
+/** Length-delimited framing for one wrap: tag, varint length, payload. */
+const wrap = (tag: readonly number[], payload: Uint8Array): Uint8Array => {
+	const length: number[] = []
+	let size = payload.length
+	do {
+		length.push(size > 0x7f ? (size & 0x7f) | 0x80 : size & 0x7f)
+		size >>>= 7
+	} while (size > 0)
+	return Uint8Array.from([...tag, ...length, ...payload])
+}
+
+/**
+ * A message nested `depth` times, following a real cycle in the schema when one
+ * is supplied.
+ *
+ * This is the shape that turns a recursive-descent parser into a stack overflow,
+ * and the one a hostile peer would send.
+ *
+ * The cycle matters. Wrapping everything in a hard-coded field 1 produces a
+ * deeply nested *length-delimited value* on any schema whose field 1 is a scalar
+ * — which exercises the length and bounds path at depth, but is one message deep,
+ * so a decoder with an unbounded recursive descent passes it at any advertised
+ * depth. Given a cycle, each wrap is another message the decoder must actually
+ * recurse into.
+ */
+const nestingBomb = (random: Random, bytes: Uint8Array, cycle?: MessageCycle): Uint8Array => {
+	let payload: Uint8Array = Uint8Array.from(bytes.slice(0, Math.min(bytes.length, 8)))
 	const depth = random.pick([16, 64, 256, 1_024, 4_096])
+	const steps: MessageCycle = cycle && cycle.length > 0 ? cycle : [[0x0a]]
 	for (let level = 0; level < depth; level++) {
 		if (payload.length > 0x3f_ff) break
-		const length = payload.length
-		// Field 1, wire type 2, two-byte varint length: enough for the payloads here.
-		const header = length < 128 ? [0x0a, length] : [0x0a, (length & 0x7f) | 0x80, length >> 7]
-		payload = Uint8Array.from([...header, ...payload])
+		for (let step = steps.length - 1; step >= 0; step--) payload = wrap(steps[step]!, payload)
 	}
 	return payload
 }
@@ -117,7 +136,13 @@ export const MUTATORS = [
 
 export type MutatorName = (typeof MUTATORS)[number]
 
-export const mutate = (random: Random, bytes: Uint8Array, other: Uint8Array, mutator: MutatorName): Mutation => {
+export const mutate = (
+	random: Random,
+	bytes: Uint8Array,
+	other: Uint8Array,
+	mutator: MutatorName,
+	cycle?: MessageCycle
+): Mutation => {
 	switch (mutator) {
 		case 'flip-bit':
 			return { label: mutator, bytes: flipBit(random, bytes) }
@@ -136,7 +161,7 @@ export const mutate = (random: Random, bytes: Uint8Array, other: Uint8Array, mut
 		case 'lying-length':
 			return { label: mutator, bytes: lyingLength(random, bytes) }
 		case 'nesting-bomb':
-			return { label: mutator, bytes: nestingBomb(random, bytes) }
+			return { label: mutator, bytes: nestingBomb(random, bytes, cycle) }
 		case 'concatenate':
 			return { label: mutator, bytes: concatenate(bytes, other) }
 		case 'empty':

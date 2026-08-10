@@ -23,6 +23,9 @@ const BYTES_TAG = '__bytes__'
 const BIGINT_TAG = '__bigint__'
 const UNDEFINED_TAG = '__undefined__'
 const NUMBER_TAG = '__number__'
+const BUFFER_TAG = '__buffer__'
+const DATE_TAG = '__date__'
+const ERROR_TAG = '__error__'
 
 /**
  * JSON cannot hold the values these fuzzers care most about, so tag them.
@@ -37,7 +40,19 @@ const encode = (value: unknown): unknown => {
 	if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) {
 		return { [NUMBER_TAG]: Object.is(value, -0) ? '-0' : String(value) }
 	}
+	// Buffer before Uint8Array: `Buffer.isBuffer` is the narrower test, and the
+	// crypto helpers call Buffer methods on their arguments, so a recorded failure
+	// that replayed as a plain Uint8Array would exercise a different call.
+	if (Buffer.isBuffer(value)) return { [BUFFER_TAG]: value.toString('base64') }
 	if (value instanceof Uint8Array) return { [BYTES_TAG]: Buffer.from(value).toString('base64') }
+	// Date and Error have no enumerable own properties worth speaking of, so the
+	// generic object branch below would flatten either one to `{}` — and both are
+	// generated deliberately (`getCodeFromWSError` takes an Error; the value
+	// generator emits Dates).
+	if (value instanceof Date) return { [DATE_TAG]: value.getTime() }
+	if (value instanceof Error) {
+		return { [ERROR_TAG]: { name: value.name, message: value.message } }
+	}
 	if (Array.isArray(value)) return value.map(encode)
 	if (typeof value === 'object' && value !== null) {
 		const out: Record<string, unknown> = {}
@@ -63,6 +78,14 @@ const decode = (value: unknown): unknown => {
 		if (taggedAs(record, UNDEFINED_TAG)) return undefined
 		if (taggedAs(record, BIGINT_TAG)) return BigInt(String(record[BIGINT_TAG]))
 		if (taggedAs(record, BYTES_TAG)) return new Uint8Array(Buffer.from(String(record[BYTES_TAG]), 'base64'))
+		if (taggedAs(record, BUFFER_TAG)) return Buffer.from(String(record[BUFFER_TAG]), 'base64')
+		if (taggedAs(record, DATE_TAG)) return new Date(Number(record[DATE_TAG]))
+		if (taggedAs(record, ERROR_TAG)) {
+			const shape = record[ERROR_TAG] as { name?: string; message?: string }
+			const error = new Error(String(shape?.message ?? ''))
+			error.name = String(shape?.name ?? 'Error')
+			return error
+		}
 		if (taggedAs(record, NUMBER_TAG)) {
 			const raw = String(record[NUMBER_TAG])
 			return raw === '-0' ? -0 : Number(raw)

@@ -13,7 +13,7 @@
  *
  * Usage:
  *   FUZZ_REPORT_DIR=./fuzz-reports npm run fuzz:deep
- *   node scripts/fuzz/report.ts ./fuzz-reports [--markdown] [--fail-on-stale]
+ *   node scripts/fuzz/report.ts ./fuzz-reports [--markdown] [--fail-on-stale] [--run-failed]
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -40,6 +40,16 @@ const directory = resolve(
 )
 const markdown = argv.includes('--markdown')
 const failOnStale = argv.includes('--fail-on-stale')
+/**
+ * Set by the caller when the fuzz step itself did not exit cleanly.
+ *
+ * A file that dies during import or on a suite-level assertion writes no report
+ * at all, and a report that was never written cannot be marked truncated — so
+ * the aggregate looks complete and every entry those targets would have excused
+ * gets called stale. That turns one unrelated crash into a recommendation to
+ * delete working allowlist entries.
+ */
+const runFailed = argv.includes('--run-failed')
 
 if (!existsSync(directory)) {
 	console.error(`fuzz report: no such directory ${directory}`)
@@ -88,7 +98,7 @@ const used = [...new Set(reports.flatMap(report => report.excusedBy ?? []))]
 // A truncated target may simply not have reached the input that would have used
 // an entry, so "excused nothing" proves nothing this run. Expired entries are
 // still enforced — that check does not depend on coverage.
-const complete = truncated.length === 0
+const complete = truncated.length === 0 && !runFailed
 const candidates = complete ? staleEntries(used) : []
 
 const today = new Date().toISOString().slice(0, 10)
@@ -149,7 +159,11 @@ if (expired.length > 0) {
 
 if (!complete) {
 	heading('Registry stale-entry check skipped')
-	lines.push('At least one target was truncated, so this run cannot establish which entries are unused.')
+	lines.push(
+		runFailed
+			? 'The fuzz step did not exit cleanly, so some targets may have written no report at all and this run cannot establish which entries are unused.'
+			: 'At least one target was truncated, so this run cannot establish which entries are unused.'
+	)
 } else if (candidates.length > 0) {
 	heading('Registry entries that excused nothing')
 	lines.push('These excused nothing anywhere in this run — fixed, or no longer reachable. Either way, delete them:')

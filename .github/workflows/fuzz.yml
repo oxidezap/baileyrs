@@ -69,7 +69,8 @@ jobs:
         if: always()
         run: |
           {
-            node scripts/fuzz/report.ts fuzz-reports --markdown --fail-on-stale
+            node scripts/fuzz/report.ts fuzz-reports --markdown --fail-on-stale \
+              ${{ steps.fuzz.outcome == 'success' && ' ' || '--run-failed' }}
           } > fuzz-summary.md 2>&1 && echo "clean=true" >> "$GITHUB_OUTPUT" || echo "clean=false" >> "$GITHUB_OUTPUT"
           cat fuzz-summary.md >> "$GITHUB_STEP_SUMMARY"
 

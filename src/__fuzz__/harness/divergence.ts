@@ -337,19 +337,21 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-field-not-encoded',
-		target: 'proto:field-numbers',
+		// Both finite sweeps see it: the number sweep as "nothing encoded", the name
+		// sweep as "nothing decoded". One absent field, two views of it.
+		target: /^proto:field-(names|numbers)$/u,
 		status: 'open',
 		// Enumerated, not pattern-matched: the value of the sweep is that it covers
 		// every non-map field, so a twelfth field joining this list has to fail
 		// rather than be absorbed.
 		//
-		// And the outcome is pinned as well as the field. `proto:field-numbers`
-		// reports three different things — nothing encoded, a one-sided rejection,
-		// and a wrong field number — so matching on the field name alone would have
-		// excused a *renumbering* of any of these eleven, which is a different and
-		// worse defect that has its own entry.
+		// And the outcome is pinned as well as the field. Each sweep reports several
+		// different things — a wrong field number, a rename, a one-sided rejection —
+		// so matching on the field name alone would have excused a *renumbering* of
+		// any of these eleven, which is a different and worse defect with its own
+		// entry.
 		when: divergence =>
-			divergence.local === '<nothing encoded>' &&
+			(divergence.local === '<nothing encoded>' || divergence.local === '<no keys decoded>') &&
 			NOT_ENCODED_FIELDS.some(field => text(divergence.input).includes(field)),
 		reason:
 			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, PaymentExtendedMetadata.messageParamsJson, SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
