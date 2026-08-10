@@ -115,6 +115,44 @@ const appendBytes = (writer: unknown, bytes: Uint8Array): ProtoWriter => {
 	return appendable as ProtoWriter
 }
 
+/**
+ * Deep enough for the schema's real nesting and bounded so a cyclic object
+ * cannot spin here. Only reached after an encode already threw.
+ */
+const MAX_REPAIR_DEPTH = 24
+
+/**
+ * A UTF-16 code unit with no partner. There is no UTF-8 form for one, so the
+ * codec refuses it rather than letting `TextEncoder` substitute silently.
+ */
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu
+
+/**
+ * Puts back what the codec used to do with an input it now refuses.
+ *
+ * Two cases, both measured against upstream Baileys, which still encodes both:
+ *
+ * - An empty string where the schema declares a 64-bit integer. Every one of the
+ *   134 send-path failures this addresses carried exactly `''`; a string that is
+ *   merely not a number — `'abc'`, `'1.5'` — is left to throw, because that was
+ *   never accepted and silently writing a value nobody sent is the worse answer.
+ * - An unpaired surrogate in a text field, replaced with U+FFFD. That is the
+ *   substitution `TextEncoder` used to make, so the bytes are unchanged from what
+ *   this library sent before.
+ *
+ * Returns `item` itself when it has nothing to do, so the caller can tell a
+ * repair from a failure it does not understand.
+ */
+const repairScalar = (kind: number, item: unknown): unknown => {
+	if (typeof item !== 'string') return item
+	if (kind === PROTO_FIELD_KIND.signed64 || kind === PROTO_FIELD_KIND.unsigned64) {
+		return item === '' ? 0 : item
+	}
+	if (kind !== PROTO_FIELD_KIND.string) return item
+	const replaced = item.replace(UNPAIRED_SURROGATE, '\uFFFD')
+	return replaced === item ? item : replaced
+}
+
 const longFromWords = (low: number, high: number, unsigned: boolean): Long => LongRuntime.fromBits(low, high, unsigned)
 
 /**
@@ -431,7 +469,30 @@ class ProtoCompatibilityRuntime {
 		}
 		constructor.encode = (message, writer) => {
 			if (!sourceCodec) throw new Error(`protobuf codec unavailable for ${path}`)
-			const encoded = sourceCodec.encode(this.projectForEncode(schemaId, message))
+			const projected = this.projectForEncode(schemaId, message)
+			const encoded = sourceCodec.encode(projected)
+			// The bridge refuses two inputs it used to accept silently, and upstream
+			// Baileys still encodes both. Repairing on failure rather than checking
+			// every field on the way in is what keeps the ordinary encode free: a
+			// message the codec accepts never reaches the repair, and one that does
+			// not was already going to throw.
+			//
+			// The retry hangs off `finish` because the bridge's writer is lazy —
+			// `encode` queues the fields and `finish` is what writes them, so a
+			// refused value surfaces there. Re-encoding from the repaired message is
+			// safe for the same reason it would not be inside an overridden
+			// `string()`: that would have to resume after a tag and a length were
+			// already emitted, where this starts from a fresh writer.
+			const raw = encoded.finish
+			encoded.finish = () => {
+				try {
+					return raw.call(encoded)
+				} catch (error) {
+					const repaired = this.repairForEncode(schemaId, projected)
+					if (repaired === projected) throw error
+					return sourceCodec.encode(repaired).finish()
+				}
+			}
 			return writer === undefined ? encoded : appendBytes(writer, encoded.finish())
 		}
 		constructor.decode = (input, length) => {
@@ -695,6 +756,57 @@ class ProtoCompatibilityRuntime {
 			}
 		}
 		return instance
+	}
+
+	/**
+	 * Coerces the two inputs the bridge codec stopped accepting back to what it
+	 * used to write, and returns `value` itself when there was nothing to coerce.
+	 *
+	 * Reference equality is the signal: the caller only reaches here after an
+	 * encode threw, and an unchanged result means the failure was something else
+	 * — a genuinely invalid number, a missing codec — which must keep propagating.
+	 *
+	 * Copy-on-write throughout, like `projectForEncode`: a branch with nothing to
+	 * fix is shared, not rebuilt.
+	 */
+	private repairForEncode(schemaId: number, value: unknown, depth = 0): unknown {
+		if (depth > MAX_REPAIR_DEPTH || !isObject(value)) return value
+		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]?.[1]
+		if (!fields) return value
+		let output: DynamicObject | undefined
+		for (const field of fields) {
+			if (!hasOwn(value, field[0])) continue
+			const current = value[field[0]]
+			if (current === null || current === undefined) continue
+			const repair = (item: unknown): unknown =>
+				field[1] === PROTO_FIELD_KIND.message
+					? this.repairForEncode(field[2], item, depth + 1)
+					: repairScalar(field[1], item)
+			let converted: unknown = current
+			if (field[3] & PROTO_FIELD_FLAG.repeated) {
+				if (Array.isArray(current)) {
+					let items: unknown[] | undefined
+					for (let index = 0; index < current.length; index++) {
+						const item = repair(current[index])
+						if (item !== current[index]) (items ??= current.slice())[index] = item
+					}
+					converted = items ?? current
+				}
+			} else if (field[3] & PROTO_FIELD_FLAG.map) {
+				if (isObject(current)) {
+					let entries: DynamicObject | undefined
+					for (const key in current) {
+						const item = repair(current[key])
+						if (item !== current[key]) (entries ??= { ...current })[key] = item
+					}
+					converted = entries ?? current
+				}
+			} else {
+				converted = repair(current)
+			}
+			if (converted !== current) (output ??= { ...value })[field[0]] = converted
+		}
+		return output ?? value
 	}
 
 	private projectForEncode(schemaId: number, value: unknown): unknown {
