@@ -123,55 +123,55 @@ const ADAPTERS = {
 		reason: asString(data?.reason)
 	}),
 
-	qr: data => (data.code ? { type: 'qr', code: data.code } : null),
-	pairing_code: data => (data.code ? { type: 'qr', code: data.code } : null),
+	qr: data => (data?.code ? { type: 'qr', code: data?.code } : null),
+	pairing_code: data => (data?.code ? { type: 'qr', code: data?.code } : null),
 	pairing_code_refresh: data => ({
 		type: 'noop',
 		bridgeType: 'pairing_code_refresh',
-		detail: data.force_manual ? 'force_manual' : 'automatic'
+		detail: data?.force_manual ? 'force_manual' : 'automatic'
 	}),
 	pair_passkey_request: () => ({ type: 'noop', bridgeType: 'pair_passkey_request' }),
 	pair_passkey_confirmation: data => ({
 		type: 'noop',
 		bridgeType: 'pair_passkey_confirmation',
-		detail: data.skip_handoff_ux ? 'handoff_verified' : 'confirmation_required'
+		detail: data?.skip_handoff_ux ? 'handoff_verified' : 'confirmation_required'
 	}),
 	pair_passkey_error: data => ({
 		type: 'noop',
 		bridgeType: 'pair_passkey_error',
-		detail: asString(data.error)
+		detail: asString(data?.error)
 	}),
 
 	pair_success: data => {
 		// `id` and `lid` come typed as `Jid` in the bridge .d.ts, but the
 		// bridge actually serializes pair_success.{id,lid} as strings (see
 		// the wire log) — accept both shapes.
-		const id = typeof data.id === 'string' ? data.id : asJidString(data.id)
+		const id = typeof data?.id === 'string' ? data?.id : asJidString(data?.id)
 		if (!id) return null
 		return {
 			type: 'pairSuccess',
 			id,
-			lid: typeof data.lid === 'string' ? data.lid : asJidString(data.lid),
-			platform: asString(data.platform),
-			businessName: asString(data.business_name)
+			lid: typeof data?.lid === 'string' ? data?.lid : asJidString(data?.lid),
+			platform: asString(data?.platform),
+			businessName: asString(data?.business_name)
 		}
 	},
 
 	pair_error: data => ({
 		type: 'pairError',
-		error: asString(data.error) ?? 'Unknown pairing error',
-		id: typeof data.id === 'string' ? data.id : asJidString(data.id),
-		lid: typeof data.lid === 'string' ? data.lid : asJidString(data.lid),
-		businessName: asString(data.business_name),
-		platform: asString(data.platform)
+		error: asString(data?.error) ?? 'Unknown pairing error',
+		id: typeof data?.id === 'string' ? data?.id : asJidString(data?.id),
+		lid: typeof data?.lid === 'string' ? data?.lid : asJidString(data?.lid),
+		businessName: asString(data?.business_name),
+		platform: asString(data?.platform)
 	}),
 
 	connect_failure: data =>
 		isObject(data)
-			? { type: 'connectFailure', message: asString(data.message), reason: asNumber(data.reason) }
+			? { type: 'connectFailure', message: asString(data?.message), reason: asNumber(data?.reason) }
 			: { type: 'connectFailure' },
 
-	stream_error: data => ({ type: 'streamError', code: asString(data.code) ?? 'unknown' }),
+	stream_error: data => ({ type: 'streamError', code: asString(data?.code) ?? 'unknown' }),
 
 	// ── Messages ──
 	message: (data, logger) => adaptMessage(data, logger),
@@ -181,15 +181,15 @@ const ADAPTERS = {
 	// while NACKs become `messages.update` with status ERROR. Preserve every
 	// typed field here so the dispatcher can reproduce both surfaces.
 	server_ack: data => {
-		const id = asString(data.id)
+		const id = asString(data?.id)
 		if (!id) return null
 		return {
 			type: 'serverAck',
 			id,
-			class: asString(data.class),
-			from: asJidString(data.from),
-			timestamp: asNumber(data.timestamp),
-			error: asString(data.error)
+			class: asString(data?.class),
+			from: asJidString(data?.from),
+			timestamp: asNumber(data?.timestamp),
+			error: asString(data?.error)
 		}
 	},
 	undecryptable_message: data => {
@@ -199,7 +199,7 @@ const ADAPTERS = {
 		// can synthesize a CIPHERTEXT stub matching upstream
 		// `messages-recv.ts:1352`.
 		if (!isObject(data)) return null
-		const info = isObject(data.info) ? data.info : undefined
+		const info = isObject(data?.info) ? data?.info : undefined
 		if (!info) return null
 		const src = isObject(info.source) ? info.source : undefined
 		const chat = src && asJidString(src.chat)
@@ -220,58 +220,58 @@ const ADAPTERS = {
 			pushName: asString(info.push_name),
 			participantAlt: resolveParticipantAlt(senderAlt, isGroup),
 			remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
-			isUnavailable: asBoolOr(data.is_unavailable, false),
-			unavailableType: asString(data.unavailable_type),
-			decryptFailMode: asString(data.decrypt_fail_mode),
+			isUnavailable: asBoolOr(data?.is_unavailable, false),
+			unavailableType: asString(data?.unavailable_type),
+			decryptFailMode: asString(data?.decrypt_fail_mode),
 			raw: data
 		}
 	},
 
 	// ── Contacts ──
 	push_name_update: data => {
-		const jid = asJidString(data.jid)
-		return jid ? { type: 'pushNameUpdate', jid, newPushName: asString(data.new_push_name) } : null
+		const jid = asJidString(data?.jid)
+		return jid ? { type: 'pushNameUpdate', jid, newPushName: asString(data?.new_push_name) } : null
 	},
 	contact_update: data => adaptContactUpdate(data),
 	contact_updated: data => adaptContactUpdate(data),
 
 	picture_update: data => {
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		if (!jid) return null
 		return {
 			type: 'pictureUpdate',
 			jid,
-			removed: asBoolOr(data.removed, false),
-			author: asJidString(data.author),
-			pictureId: asString(data.picture_id)
+			removed: asBoolOr(data?.removed, false),
+			author: asJidString(data?.author),
+			pictureId: asString(data?.picture_id)
 		}
 	},
 
 	// ── Presence ──
 	presence: data => {
-		const from = asJidString(data.from)
+		const from = asJidString(data?.from)
 		if (!from) return null
 		return {
 			type: 'presence',
 			from,
-			unavailable: asBoolOr(data.unavailable, false),
-			lastSeen: asNumber(data.last_seen)
+			unavailable: asBoolOr(data?.unavailable, false),
+			lastSeen: asNumber(data?.last_seen)
 		}
 	},
 
 	chat_presence: data => {
-		const src = isObject(data.source) ? data.source : undefined
+		const src = isObject(data?.source) ? data?.source : undefined
 		if (!src) return null
 		const chat = asJidString(src.chat)
 		const sender = asJidString(src.sender)
 		if (!chat || !sender) return null
 		// Bridge sends `media: ''` for "no media" — normalize to undefined
 		// so consumers can rely on field omission as the absence signal.
-		const media = asString(data.media)
+		const media = asString(data?.media)
 		// Bridge `state` MUST be one of the two canonical values; defaulting
 		// to 'composing' on an unknown/missing value would synthesize a
 		// false typing indicator. Drop the event instead.
-		const rawState = asString(data.state)
+		const rawState = asString(data?.state)
 		if (rawState !== 'composing' && rawState !== 'paused') return null
 		return {
 			type: 'chatPresence',
@@ -287,40 +287,40 @@ const ADAPTERS = {
 
 	// ── Chat state ──
 	archive_update: data => {
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		if (!jid) return null
 		return { type: 'archiveUpdate', jid, archived: asBoolOr(extractAction(data)?.archived, true) }
 	},
 	pin_update: data => {
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		if (!jid) return null
 		return {
 			type: 'pinUpdate',
 			jid,
-			timestamp: asNumber(data.timestamp),
+			timestamp: asNumber(data?.timestamp),
 			pinned: asBoolOr(extractAction(data)?.pinned, true)
 		}
 	},
 	mute_update: data => {
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		if (!jid) return null
 		const action = extractAction(data)
 		return {
 			type: 'muteUpdate',
 			jid,
-			timestamp: asNumber(data.timestamp),
+			timestamp: asNumber(data?.timestamp),
 			muted: asBoolOr(action?.muted, true),
 			muteEndTimestamp: asNumber(action?.muteEndTimestamp) ?? asNumber(action?.mute_end_timestamp)
 		}
 	},
 	star_update: data => adaptStarUpdate(data),
 	mark_chat_as_read_update: data => {
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		if (!jid) return null
 		return { type: 'markChatAsReadUpdate', jid, read: asBoolOr(extractAction(data)?.read, true) }
 	},
 	label_edit_update: data => {
-		const labelId = asString(data.label_id)
+		const labelId = asString(data?.label_id)
 		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }
 		const action = extractAction(data)
 		// `predefinedId` is proto `predefined_id` (a number); upstream `Label`
@@ -336,8 +336,8 @@ const ADAPTERS = {
 		}
 	},
 	label_association_update: data => {
-		const labelId = asString(data.label_id)
-		const chatJid = asJidString(data.chat_jid)
+		const labelId = asString(data?.label_id)
+		const chatJid = asJidString(data?.chat_jid)
 		if (!labelId || !chatJid) return { type: 'noop', bridgeType: 'label_association_update' }
 		// `action.labeled === true` → label added to the chat, else removed.
 		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
@@ -346,27 +346,27 @@ const ADAPTERS = {
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
 	missed_call: data => {
-		const from = asJidString(data.from)
-		const callId = asString(data.call_id)
+		const from = asJidString(data?.from)
+		const callId = asString(data?.call_id)
 		if (!from || !callId) return null
 		return {
 			type: 'incomingCall',
 			from,
-			timestamp: toUnixSeconds(data.timestamp),
-			offline: data.reason === 'offline',
+			timestamp: toUnixSeconds(data?.timestamp),
+			offline: data?.reason === 'offline',
 			action: { type: 'timeout', callId }
 		}
 	},
 	call_ended_elsewhere: data => {
-		const from = asJidString(data.from)
-		const callId = asString(data.call_id)
+		const from = asJidString(data?.from)
+		const callId = asString(data?.call_id)
 		if (!from || !callId) return null
 		return {
 			type: 'incomingCall',
 			from,
-			timestamp: toUnixSeconds(data.timestamp),
+			timestamp: toUnixSeconds(data?.timestamp),
 			offline: false,
-			action: { type: data.outcome === 'accepted' ? 'accept' : 'reject', callId }
+			action: { type: data?.outcome === 'accepted' ? 'accept' : 'reject', callId }
 		}
 	},
 
@@ -412,32 +412,32 @@ const ADAPTERS = {
 	self_push_name_updated: () => ({ type: 'noop', bridgeType: 'self_push_name_updated' }),
 	offline_sync_completed: data => ({
 		type: 'offlineSyncCompleted',
-		count: asNumber(data.count) ?? 0
+		count: asNumber(data?.count) ?? 0
 	}),
 	offline_sync_preview: () => ({ type: 'noop', bridgeType: 'offline_sync_preview' }),
 	dirty_state: data => {
-		const dirtyType = asString(data.dirty_type)
+		const dirtyType = asString(data?.dirty_type)
 		if (!dirtyType) return null
-		return { type: 'dirtyState', dirtyType, timestamp: asNumber(data.timestamp) }
+		return { type: 'dirtyState', dirtyType, timestamp: asNumber(data?.timestamp) }
 	},
 	device_list_update: () => ({ type: 'noop', bridgeType: 'device_list_update' }),
 	identity_change: () => ({ type: 'noop', bridgeType: 'identity_change' }),
 	disappearing_mode_changed: data => {
-		const jid = asJidString(data.from)
-		const duration = asNumber(data.duration)
+		const jid = asJidString(data?.from)
+		const duration = asNumber(data?.duration)
 		if (!jid || duration == null) return { type: 'noop', bridgeType: 'disappearing_mode_changed' }
 		return {
 			type: 'disappearingModeChanged',
 			jid,
 			duration,
-			settingTimestamp: asNumber(data.setting_timestamp)
+			settingTimestamp: asNumber(data?.setting_timestamp)
 		}
 	},
 	business_status_update: () => ({ type: 'noop', bridgeType: 'business_status_update' }),
 	newsletter_live_update: data => {
-		const newsletterJid = asJidString(data.newsletter_jid)
+		const newsletterJid = asJidString(data?.newsletter_jid)
 		if (!newsletterJid) return { type: 'noop', bridgeType: 'newsletter_live_update' }
-		const rawMessages = Array.isArray(data.messages) ? data.messages : []
+		const rawMessages = Array.isArray(data?.messages) ? data?.messages : []
 		const messages = rawMessages
 			.map(m => {
 				if (!isObject(m)) return null
@@ -466,10 +466,10 @@ const ADAPTERS = {
 		// (old_lid, old_jid) and (new_lid, new_jid). We learn whatever's
 		// present and let the dispatcher fan out one upstream event per
 		// pair. Mirrors upstream `messages-recv.ts:287`.
-		const oldJid = asJidString(data.old_jid)
-		const newJid = asJidString(data.new_jid)
-		const oldLid = asJidString(data.old_lid)
-		const newLid = asJidString(data.new_lid)
+		const oldJid = asJidString(data?.old_jid)
+		const newJid = asJidString(data?.new_jid)
+		const oldLid = asJidString(data?.old_lid)
+		const newLid = asJidString(data?.new_lid)
 		const mappings: { lid: string; pn: string }[] = []
 		if (oldLid && oldJid) mappings.push({ lid: oldLid, pn: oldJid })
 		if (newLid && newJid) mappings.push({ lid: newLid, pn: newJid })
@@ -479,29 +479,29 @@ const ADAPTERS = {
 	contact_sync_requested: () => ({ type: 'noop', bridgeType: 'contact_sync_requested' }),
 	user_about_update: () => ({ type: 'noop', bridgeType: 'user_about_update' }),
 	delete_chat_update: data => {
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		return jid ? { type: 'chatDelete', jid } : { type: 'noop', bridgeType: 'delete_chat_update' }
 	},
 	clear_chat_update: data => {
 		// Clear = drop all messages but keep the chat. Maps to upstream
 		// `messages.delete` `{ jid, all: true }` (the chat-clear surface noted in
 		// the messageDelete dispatcher), distinct from chatDelete (whole chat gone).
-		const jid = asJidString(data.jid)
+		const jid = asJidString(data?.jid)
 		return jid ? { type: 'chatClear', jid } : { type: 'noop', bridgeType: 'clear_chat_update' }
 	},
 	// Muting a contact's status (stories) updates. Forwarded for surface completeness,
 	// but noop'd: upstream Baileys has no status-mute event/chatModify to map it onto.
 	user_status_mute_update: () => ({ type: 'noop', bridgeType: 'user_status_mute_update' }),
 	delete_message_for_me_update: data => {
-		const chatJid = asJidString(data.chat_jid)
-		const messageId = asString(data.message_id)
+		const chatJid = asJidString(data?.chat_jid)
+		const messageId = asString(data?.message_id)
 		if (!chatJid || !messageId) return { type: 'noop', bridgeType: 'delete_message_for_me_update' }
 		return {
 			type: 'messageDelete',
 			chatJid,
 			messageId,
-			fromMe: asBoolOr(data.from_me, false),
-			participantJid: asJidString(data.participant_jid)
+			fromMe: asBoolOr(data?.from_me, false),
+			participantJid: asJidString(data?.participant_jid)
 		}
 	},
 
@@ -514,34 +514,34 @@ const ADAPTERS = {
 		// CanonicalNotification.attrs (typed `Record<string, string>`).
 		// Drop non-string values, coerce the rest.
 		const attrs: Record<string, string> = {}
-		if (isObject(data.attrs)) {
-			for (const [k, v] of Object.entries(data.attrs)) {
+		if (isObject(data?.attrs)) {
+			for (const [k, v] of Object.entries(data?.attrs)) {
 				if (typeof v === 'string') attrs[k] = v
 				else if (typeof v === 'number' || typeof v === 'boolean') attrs[k] = String(v)
 				// Drop nested objects / null silently — they wouldn't make
 				// sense on a flat attrs map anyway.
 			}
 		}
-		return { type: 'notification', tag: asString(data.tag) ?? 'notification', attrs }
+		return { type: 'notification', tag: asString(data?.tag) ?? 'notification', attrs }
 	},
 
 	raw_node: data => {
 		// `BinaryNode` is shaped exactly like the bridge payload
 		// (`{ tag, attrs, content }`). Minimal sanity check on `tag`.
-		if (!isObject(data) || typeof data.tag !== 'string') return null
+		if (!isObject(data) || typeof data?.tag !== 'string') return null
 		return { type: 'rawNode', node: data as never }
 	},
 
 	mex_notification: data => {
-		const opName = asString(data.op_name)
+		const opName = asString(data?.op_name)
 		if (!opName) return null
-		const payload = isObject(data.payload) ? (data.payload as Record<string, unknown>) : {}
+		const payload = isObject(data?.payload) ? (data?.payload as Record<string, unknown>) : {}
 		return {
 			type: 'mexNotification',
 			opName,
-			from: asJidString(data.from),
-			stanzaId: asString(data.stanza_id),
-			offline: asBoolOr(data.offline, false),
+			from: asJidString(data?.from),
+			stanzaId: asString(data?.stanza_id),
+			offline: asBoolOr(data?.offline, false),
 			payload
 		}
 	}
@@ -569,25 +569,25 @@ export const adaptBridgeEventViaSchema = (event: WhatsAppEvent, logger?: ILogger
 		return null
 	}
 	const adapter = (ADAPTERS as Record<string, AdapterFn<BridgeEventType>>)[typed.type]!
-	// A missing data slot reads as an empty one.
+	// The slot is passed through exactly as it arrived, nullish included.
 	//
 	// The contract these adapters are documented under is "null on unrecoverable
 	// shape mismatch, never a throw", and a throw here does not stay local: it
 	// propagates into the socket's event dispatch and takes down the whole event
 	// loop rather than the one event. 30 of the 58 declared types threw on an
-	// event that arrived with no data — `data.code` on `undefined`.
+	// event that arrived with no data — `data.code` on `undefined` — so every
+	// adapter in the table now reads its slot optionally.
 	//
-	// Normalised rather than rejected, because rejecting would change behaviour
-	// the adapters already define. Measured on those 30 with an empty slot: 16
-	// return null of their own accord, 11 return a `noop`, and the remaining three
-	// return the fallback their own author wrote — `stream_error` its
-	// `?? 'unknown'`, `pair_error` its 'Unknown pairing error', and
-	// `offline_sync_completed` its `count: 0`. Nothing is invented here; the throw
-	// simply becomes whatever the adapter already does with `{}`.
-	const data = typed.data ?? {}
+	// Substituting an empty object here instead was tried and reverted: `{}` is a
+	// perfectly good object, so it walks straight past the `isObject(data)` guard
+	// that several adapters use to decide the payload is unrecoverable.
+	// `history_sync` then built an empty final batch and the socket emitted a
+	// spurious `messaging-history.set` where it had previously dropped the event.
+	// Each adapter owns that decision; the dispatch must not pre-empt it.
+	//
 	// `data` cast here is the only `as` in the public path — the bridge
 	// runtime is the source of truth that the type matches the discriminator.
-	return adapter(data as never, logger)
+	return adapter(typed.data as never, logger)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

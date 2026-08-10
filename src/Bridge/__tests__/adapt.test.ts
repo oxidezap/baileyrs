@@ -811,6 +811,20 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			}
 		})
 
+		/**
+		 * The dispatch must not answer this question on an adapter's behalf.
+		 *
+		 * Substituting `{}` for a missing slot was tried and reverted: `{}` is a
+		 * perfectly good object, so it walks past the `isObject(data)` guard several
+		 * adapters use to decide a payload is unrecoverable. `history_sync` then
+		 * built an empty final batch and the socket emitted a spurious
+		 * `messaging-history.set` where it had previously dropped the event.
+		 */
+		it("leaves an adapter's own object guard the last word", () => {
+			expect(adaptBridgeEvent({ type: 'history_sync' } as never)).toBe(null)
+			expect(adaptBridgeEvent({ type: 'history_sync', data: null } as never)).toBe(null)
+		})
+
 		it('drops the events that need their data, and keeps the ones that do not', () => {
 			// `qr` reads a code it has not been given, so there is nothing to emit.
 			expect(adaptBridgeEvent({ type: 'qr' } as never)).toBe(null)
