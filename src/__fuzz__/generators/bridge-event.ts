@@ -343,9 +343,19 @@ const SHAPED: Record<string, (random: Random) => Record<string, unknown>> = {
 // `contact_updated` is the same adapter under the older spelling.
 SHAPED.contact_updated = SHAPED.contact_update!
 
-/** The payload an adapter reads for `type`, or a generic one where none is declared. */
+/**
+ * The payload an adapter reads for `type`, or a generic one where none is declared.
+ *
+ * `Object.hasOwn`, not a bracket lookup. `SHAPED` is an object literal and so
+ * inherits `Object.prototype`: `SHAPED['constructor']` is `Object` and returns
+ * the `Random` itself, `SHAPED['toString']` returns the string `'[object
+ * Undefined]'`, and `SHAPED['__proto__']` is not callable at all. Those three
+ * names are exactly what `generateUnknownBridgeEvent` emits as event types, and
+ * the registry already carries `bridge-adapter-prototype-chain-lookup` for this
+ * class of defect in the adapter — the generator must not reproduce it.
+ */
 export const shapedBridgePayload = (random: Random, type: string): Record<string, unknown> =>
-	(SHAPED[type] ?? payload)(random)
+	(Object.hasOwn(SHAPED, type) ? SHAPED[type]! : payload)(random)
 
 export interface BridgeEventCase {
 	readonly type: string

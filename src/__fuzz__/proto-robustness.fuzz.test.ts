@@ -289,6 +289,14 @@ describe('protobuf decoder robustness under mutation', () => {
 				}
 
 				const second = decodeThroughBridge(path, reencoded.value as Uint8Array)
+				// The same check the first decode gets. A trap is not "cannot read back
+				// what it just wrote" — it leaves the module unusable for every later
+				// decode in the process, and reporting it as an ordinary stability
+				// finding buries the one failure mode this file exists to catch under a
+				// description that does not name it.
+				if (!second.ok && isTrap(second.error)) {
+					return trapFinding(path, mutator, bytes, second.error)
+				}
 				if (!second.ok) {
 					return {
 						target: 'proto:mutation-stability',

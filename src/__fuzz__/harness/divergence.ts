@@ -139,13 +139,28 @@ const plainObject = (value: unknown): string[] | undefined =>
  * ones — so a one-directional subset test does not describe it. Any *value* the
  * two both carry and disagree on still fails.
  */
-const differsOnlyByKeyPresence = (left: unknown, right: unknown, depth = 0): boolean => {
+const differsOnlyByKeyPresence = (left: unknown, right: unknown): boolean => {
+	// Counts the shared keys the walk actually compared. Without it the object
+	// branch returns `true` vacuously for two objects that share no key at all —
+	// the loop body never runs — so `{ conversation: 'x' }` against
+	// `{ imageMessage: {} }` reads as "differs only by key presence" and a
+	// content object replaced wholesale would be excused. Nothing was compared,
+	// so nothing was verified, and the entry must not claim otherwise.
+	const state = { compared: 0 }
+	return walkKeyPresence(left, right, 0, state) && state.compared > 0
+}
+
+const walkKeyPresence = (left: unknown, right: unknown, depth: number, state: { compared: number }): boolean => {
 	if (depth > 12) return false
 	if (Array.isArray(left) || Array.isArray(right)) {
 		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
-		return left.every(
-			(item, index) => sameShape(item, right[index]) || differsOnlyByKeyPresence(item, right[index], depth + 1)
-		)
+		return left.every((item, index) => {
+			if (sameShape(item, right[index])) {
+				state.compared++
+				return true
+			}
+			return walkKeyPresence(item, right[index], depth + 1, state)
+		})
 	}
 	if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) {
 		return sameShape(left, right)
@@ -154,7 +169,8 @@ const differsOnlyByKeyPresence = (left: unknown, right: unknown, depth = 0): boo
 	const b = right as Record<string, unknown>
 	for (const key of Object.keys(a)) {
 		if (!Object.hasOwn(b, key)) continue
-		if (!sameShape(a[key], b[key]) && !differsOnlyByKeyPresence(a[key], b[key], depth + 1)) return false
+		state.compared++
+		if (!sameShape(a[key], b[key]) && !walkKeyPresence(a[key], b[key], depth + 1, state)) return false
 	}
 	return true
 }
