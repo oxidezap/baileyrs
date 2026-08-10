@@ -325,6 +325,82 @@ const defineLazyValue = (target: DynamicObject, key: string, build: () => unknow
 	})
 }
 
+/**
+ * Type path to schema index, built on first use.
+ *
+ * Only the repair path needs it, and that path is only reached after an encode
+ * has already failed — so an importer that never sends a refused value never
+ * pays for the 498 entries.
+ */
+let schemaIdsByPath: Map<string, number> | undefined
+const schemaIdFor = (path: string): number | undefined => {
+	schemaIdsByPath ??= new Map(PROTO_MESSAGE_SCHEMAS.map(([name], index) => [name, index]))
+	return schemaIdsByPath.get(path)
+}
+
+/**
+ * Coerces the two inputs the bridge codec stopped accepting back to what it
+ * used to write, and returns `value` itself when there was nothing to coerce.
+ *
+ * Reference equality is the signal: the caller only reaches here after an
+ * encode threw, and an unchanged result means the failure was something else
+ * — a genuinely invalid number, a missing codec — which must keep propagating.
+ *
+ * Copy-on-write throughout, like `projectForEncode`: a branch with nothing to
+ * fix is shared, not rebuilt.
+ */
+const repairMessage = (schemaId: number, value: unknown, depth = 0): unknown => {
+	if (depth > MAX_REPAIR_DEPTH || !isObject(value)) return value
+	const fields = PROTO_MESSAGE_SCHEMAS[schemaId]?.[1]
+	if (!fields) return value
+	let output: DynamicObject | undefined
+	for (const field of fields) {
+		if (!hasOwn(value, field[0])) continue
+		const current = value[field[0]]
+		if (current === null || current === undefined) continue
+		const repair = (item: unknown): unknown =>
+			field[1] === PROTO_FIELD_KIND.message ? repairMessage(field[2], item, depth + 1) : repairScalar(field[1], item)
+		let converted: unknown = current
+		if (field[3] & PROTO_FIELD_FLAG.repeated) {
+			if (Array.isArray(current)) {
+				let items: unknown[] | undefined
+				for (let index = 0; index < current.length; index++) {
+					const item = repair(current[index])
+					if (item !== current[index]) (items ??= current.slice())[index] = item
+				}
+				converted = items ?? current
+			}
+		} else if (field[3] & PROTO_FIELD_FLAG.map) {
+			if (isObject(current)) {
+				let entries: DynamicObject | undefined
+				for (const key in current) {
+					const item = repair(current[key])
+					if (item !== current[key]) (entries ??= { ...current })[key] = item
+				}
+				converted = entries ?? current
+			}
+		} else {
+			converted = repair(current)
+		}
+		if (converted !== current) (output ??= { ...value })[field[0]] = converted
+	}
+	return output ?? value
+}
+
+/**
+ * Repairs a message for a codec addressed by type name rather than schema index.
+ *
+ * The send path calls the neutral `encodeProto` directly instead of going
+ * through this facade's constructors, so it cannot reach the repair the way
+ * `proto.Message.encode` does. Same coercion, same copy-on-write contract:
+ * reference equality still means "nothing to fix", so a caller can tell a
+ * repair from a failure it does not understand.
+ */
+export const repairProtoMessage = (path: string, message: unknown): unknown => {
+	const schemaId = schemaIdFor(path)
+	return schemaId === undefined ? message : repairMessage(schemaId, message)
+}
+
 class ProtoCompatibilityRuntime {
 	/** Sparse: filled by `constructorFor`, never by the constructor. */
 	readonly constructors: Array<ProtoConstructor | undefined>
@@ -483,17 +559,16 @@ class ProtoCompatibilityRuntime {
 			// safe for the same reason it would not be inside an overridden
 			// `string()`: that would have to resume after a tag and a length were
 			// already emitted, where this starts from a fresh writer.
-			const raw = encoded.finish
-			encoded.finish = () => {
+			const finish = (): Uint8Array => {
 				try {
-					return raw.call(encoded)
+					return encoded.finish()
 				} catch (error) {
-					const repaired = this.repairForEncode(schemaId, projected)
+					const repaired = repairMessage(schemaId, projected)
 					if (repaired === projected) throw error
 					return sourceCodec.encode(repaired).finish()
 				}
 			}
-			return writer === undefined ? encoded : appendBytes(writer, encoded.finish())
+			return writer === undefined ? { finish } : appendBytes(writer, finish())
 		}
 		constructor.decode = (input, length) => {
 			if (!sourceCodec) throw new Error(`protobuf codec unavailable for ${path}`)
@@ -756,57 +831,6 @@ class ProtoCompatibilityRuntime {
 			}
 		}
 		return instance
-	}
-
-	/**
-	 * Coerces the two inputs the bridge codec stopped accepting back to what it
-	 * used to write, and returns `value` itself when there was nothing to coerce.
-	 *
-	 * Reference equality is the signal: the caller only reaches here after an
-	 * encode threw, and an unchanged result means the failure was something else
-	 * — a genuinely invalid number, a missing codec — which must keep propagating.
-	 *
-	 * Copy-on-write throughout, like `projectForEncode`: a branch with nothing to
-	 * fix is shared, not rebuilt.
-	 */
-	private repairForEncode(schemaId: number, value: unknown, depth = 0): unknown {
-		if (depth > MAX_REPAIR_DEPTH || !isObject(value)) return value
-		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]?.[1]
-		if (!fields) return value
-		let output: DynamicObject | undefined
-		for (const field of fields) {
-			if (!hasOwn(value, field[0])) continue
-			const current = value[field[0]]
-			if (current === null || current === undefined) continue
-			const repair = (item: unknown): unknown =>
-				field[1] === PROTO_FIELD_KIND.message
-					? this.repairForEncode(field[2], item, depth + 1)
-					: repairScalar(field[1], item)
-			let converted: unknown = current
-			if (field[3] & PROTO_FIELD_FLAG.repeated) {
-				if (Array.isArray(current)) {
-					let items: unknown[] | undefined
-					for (let index = 0; index < current.length; index++) {
-						const item = repair(current[index])
-						if (item !== current[index]) (items ??= current.slice())[index] = item
-					}
-					converted = items ?? current
-				}
-			} else if (field[3] & PROTO_FIELD_FLAG.map) {
-				if (isObject(current)) {
-					let entries: DynamicObject | undefined
-					for (const key in current) {
-						const item = repair(current[key])
-						if (item !== current[key]) (entries ??= { ...current })[key] = item
-					}
-					converted = entries ?? current
-				}
-			} else {
-				converted = repair(current)
-			}
-			if (converted !== current) (output ??= { ...value })[field[0]] = converted
-		}
-		return output ?? value
 	}
 
 	private projectForEncode(schemaId: number, value: unknown): unknown {

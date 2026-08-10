@@ -3,10 +3,10 @@ import { randomBytes } from 'node:crypto'
 import {
 	createWhatsAppClient,
 	type DevicePlatformType,
-	encodeProto,
 	initWasmEngine,
 	type UploadMediaResult
 } from '@oxidezap/whatsapp-rust-bridge'
+import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
@@ -884,7 +884,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 					{ statusCode: 501 }
 				)
 			}
-			const bytes = encodeProto('Message', message as Record<string, unknown>)
+			const bytes = encodeProtoCompat('Message', message as Record<string, unknown>)
 			return (await ctx.getClient()).createParticipantNodesBytes(jids, bytes, extraAttrs ?? {})
 		},
 		signalRepository,
@@ -972,7 +972,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			)
 		},
 		sendStatusMessage: async (message: Record<string, unknown>, recipients: string[]): Promise<string> => {
-			const bytes = encodeProto('Message', message)
+			const bytes = encodeProtoCompat('Message', message)
 			return (await ctx.getClient()).sendStatusMessageBytes(bytes, recipients)
 		},
 		...makeMessageMethods(ctx),

@@ -1,4 +1,4 @@
-import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { planMessageRelay } from '../Compatibility/message-relay.ts'
 import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
 import type {
@@ -98,7 +98,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		}
 
 		let msgId: string
-		const msgBytes = encodeProto('Message', msg as Record<string, unknown>)
+		const msgBytes = encodeProtoCompat('Message', msg as Record<string, unknown>)
 		if (jid === 'status@broadcast' && options?.statusJidList?.length) {
 			msgId = await client.sendStatusMessageBytes(msgBytes, options.statusJidList)
 		} else {
@@ -188,7 +188,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		// The message goes to the bridge as the caller built it: the core settles
 		// messageSecret / reportingTokenVersion itself, reusing a caller-set secret
 		// rather than replacing it, so nothing here has to be dropped.
-		const bytes = encodeProto('Message', message)
+		const bytes = encodeProtoCompat('Message', message)
 		if (plan.kind === 'retransmission') {
 			await client.retransmitMessageBytes(jid, bytes, plan.input)
 			return plan.messageId
@@ -304,7 +304,7 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		const bytes = encodeProto('Message', message)
+		const bytes = encodeProtoCompat('Message', message)
 		return (await ctx.getClient()).relayMessageBytes(messageKey.remoteJid!, bytes, null)
 	}
 })
