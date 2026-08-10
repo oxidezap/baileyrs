@@ -264,10 +264,12 @@ describe('send-path wire fidelity on generated messages', () => {
 						// runner over; compare what can be read instead.
 						record = { ...(built as Record<string, unknown>) }
 					}
-					// `messageTimestamp` is the clock, and the two stamp it independently
-					// even with a fixed `timestamp` option. Everything else in the envelope
-					// — key, participant, status, message — is compared.
-					delete record.messageTimestamp
+					// Nothing is stripped. `messageTimestamp` looked like a clock read and
+					// was deleted, but both calls are given the same fixed `timestamp`
+					// option and both honour it — measured, both return 1700000000.
+					// Dropping it meant a builder that ignored, rounded or re-derived the
+					// caller's timestamp compared equal, in the one target that claims to
+					// compare the generated envelope.
 					return normalise(record)
 				}
 

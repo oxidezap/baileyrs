@@ -27,7 +27,9 @@ import {
 	generateDictionaryNode,
 	generateErrorNode,
 	generateMediaRetryNode,
-	generateRetryReceiptNode
+	generateMessageStanza,
+	generateRetryReceiptNode,
+	generateStreamErrorNode
 } from './generators/binary-node.ts'
 import { generateJid, generateJidPair, generateMaybeJid, JID_SERVERS } from './generators/jid.ts'
 import {
@@ -459,7 +461,14 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [random.bool(0.85) ? generateCallNode(random) : generateBinaryNode(random, 1)],
 		runs: 250
 	},
-	{ name: 'getErrorCodeFromStreamError', generate: random => [generateErrorNode(random)], runs: 250 },
+	{
+		name: 'getErrorCodeFromStreamError',
+		// A real stream error most of the time: the generic error node names its
+		// child `error` and puts the code on the child, so every case took the same
+		// bad-session default.
+		generate: random => [random.bool(0.85) ? generateStreamErrorNode(random) : generateErrorNode(random)],
+		runs: 250
+	},
 	{
 		name: 'isWABusinessPlatform',
 		generate: random => [
@@ -539,7 +548,15 @@ const TARGETS: readonly PureTarget[] = [
 	{ name: 'hasNonNullishProperty', generate: random => [generateAnyValue(random), random.pick(HOSTILE_STRINGS)] },
 	{
 		name: 'updateMessageWithReceipt',
-		generate: random => [{ userReceipt: random.bool(0.5) ? [receipt(random)] : undefined }, receipt(random)]
+		// The helper merges in place when a receipt for the same `userJid` is already
+		// stored, and appends otherwise. Two independently generated receipts almost
+		// never share a jid, so the merge branch — the one that can duplicate a user
+		// or fail to overwrite their timestamps — was effectively never taken.
+		generate: random => {
+			const incoming = receipt(random)
+			const stored = { ...receipt(random), userJid: random.bool(0.6) ? incoming.userJid : generateJid(random) }
+			return [{ userReceipt: random.bool(0.75) ? [stored] : random.pick([[], undefined]) }, incoming]
+		}
 	},
 	{
 		name: 'updateMessageWithReaction',
@@ -630,7 +647,11 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [generateBinaryNode(random) as unknown as BinaryNode['content']],
 		runs: 200
 	},
-	{ name: 'getBinaryNodeMessages', generate: random => [generateBinaryNode(random)], runs: 200 },
+	{
+		name: 'getBinaryNodeMessages',
+		generate: random => [random.bool(0.85) ? generateMessageStanza(random) : generateBinaryNode(random)],
+		runs: 200
+	},
 
 	// ---- src/Utils/crypto.ts (the deterministic half) ----------------------
 	// Sizes are generated off-spec on purpose: a 31-byte AES key has to fail the

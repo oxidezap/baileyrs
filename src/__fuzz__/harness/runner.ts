@@ -95,9 +95,21 @@ export interface FuzzOptions<T> {
 	 */
 	readonly shrinkRoot?: boolean
 	/**
-	 * Reports an input that takes longer than this to check. Catches the
-	 * algorithmic blow-ups (deep nesting, quadratic parsing) that never surface
-	 * as a wrong answer, only as a stalled socket.
+	 * Reports an input whose check *finished* but took longer than this. Catches
+	 * the algorithmic blow-ups (deep nesting, quadratic parsing) that never
+	 * surface as a wrong answer, only as a stalled socket.
+	 *
+	 * It is a post-hoc measurement, not a ceiling: the elapsed time is read after
+	 * `check` returns, so an input that never returns — a synchronous WASM loop,
+	 * an unbounded recursion inside the runtime — is not reported here at all.
+	 * Interrupting one would mean running every check in a worker or a
+	 * subprocess, which costs a WASM instantiation per input and is a different
+	 * harness. What bounds that case instead is `--test-timeout` on the fuzz
+	 * scripts: `node --test` runs each file in its own process and the parent
+	 * kills one that stops reporting, so a synchronous spin fails the run with
+	 * `test timed out after Nms` naming the file, rather than sitting there until
+	 * the job's own 45-minute ceiling. Verified against a `for(;;){}` test — the
+	 * timer is in the parent, so a blocked child event loop does not defeat it.
 	 */
 	readonly slowMs?: number
 	/**
@@ -178,10 +190,17 @@ const preview = (value: unknown, limit = 900): string => {
 	return text.length > limit ? `${text.slice(0, limit)}… (${text.length} chars)` : text
 }
 
-// FUZZ_RUNS is left out for exhaustive targets on purpose: they ignore it, and
-// printing it in the replay line would suggest a knob that silently does nothing.
+/**
+ * The command that reproduces a finding — which has to actually run.
+ *
+ * It printed `FUZZ_RUNS=as-configured` when there was no override, and
+ * `positiveNumber` rejects that at module load: the advertised reproduction
+ * failed before reaching a single target. The variable is now omitted unless
+ * there is a real value to pass, and omitted for exhaustive targets, which
+ * ignore it.
+ */
 const replayHint = (target: string, exhaustive: boolean): string => {
-	const runs = exhaustive ? '' : ` FUZZ_RUNS=${runsOverride ?? 'as-configured'}`
+	const runs = exhaustive || runsOverride === undefined ? '' : ` FUZZ_RUNS=${runsOverride}`
 	return `FUZZ_SEED=${FUZZ_SEED} FUZZ_ONLY=${JSON.stringify(target)}${runs} npm test`
 }
 
@@ -263,7 +282,7 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 					input,
 					local: `${elapsed.toFixed(0)}ms`,
 					upstream: `<= ${options.slowMs}ms`,
-					detail: 'single input exceeded the per-check time ceiling'
+					detail: 'a single input took longer than the target expects to check'
 				}
 			]
 		}

@@ -61,7 +61,11 @@ jobs:
           FUZZ_REPORT_DIR: fuzz-reports
           FUZZ_STRICT_ALLOWLIST: '1'
         # --expose-gc turns on the WASM handle-leak probe, which skips without it.
-        run: node --expose-gc --test "./src/__fuzz__/**/*.test.ts"
+        # --test-timeout bounds a decoder that stops returning: the runner's own
+        # slowMs is measured after the check completes, so it cannot see an input
+        # that never completes. The parent process owns this timer, so it fires
+        # even when the child's event loop is blocked by a synchronous WASM loop.
+        run: node --expose-gc --test --test-timeout=1800000 "./src/__fuzz__/**/*.test.ts"
         continue-on-error: true
 
       - name: Summarise

@@ -172,10 +172,17 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 					// Maps holding the same entries in a different insertion order
 					// normalise differently, so the oracle would report a difference
 					// that is not there.
+					// Key first, value only to break a tie. Concatenating the two with a
+					// separator would let a key containing that separator collide with a
+					// different key/value split, which is the same false-difference the
+					// comparator is here to avoid.
 					.toSorted((left, right) => {
-						const a = `${sortKey(left[0])}\u0000${sortKey(left[1])}`
-						const b = `${sortKey(right[0])}\u0000${sortKey(right[1])}`
-						return a < b ? -1 : a > b ? 1 : 0
+						const keyA = sortKey(left[0])
+						const keyB = sortKey(right[0])
+						if (keyA !== keyB) return keyA < keyB ? -1 : 1
+						const valueA = sortKey(left[1])
+						const valueB = sortKey(right[1])
+						return valueA < valueB ? -1 : valueA > valueB ? 1 : 0
 					})
 			}
 		}

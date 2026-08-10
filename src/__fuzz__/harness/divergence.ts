@@ -16,6 +16,8 @@
  * divergence it excused is how a real regression slips back in unnoticed.
  */
 
+import { normalise } from './compare.ts'
+
 export interface Divergence {
 	/** Fuzzer-scoped identity, e.g. `jid:jidDecode` or `proto:Message.roundTrip`. */
 	readonly target: string
@@ -117,6 +119,46 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
 	return out
 }
 
+/**
+ * The keys of a plain object, or `undefined` for anything else.
+ *
+ * Predicates that want to say "decoded nothing" have to distinguish an empty
+ * message from a `null`, a string or an array — `Object.keys` answers all four
+ * and only one of them is the claim being made.
+ */
+const plainObject = (value: unknown): string[] | undefined =>
+	typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.keys(value) : undefined
+
+/**
+ * True when two values agree on every key they share, differing only by which
+ * keys are present.
+ *
+ * Neither side needs to be a subset of the other. The two copy strategies in
+ * `generateForwardMessageContent` differ in both directions at once — upstream's
+ * protobuf round trip materialises empty repeated fields and drops undeclared
+ * ones — so a one-directional subset test does not describe it. Any *value* the
+ * two both carry and disagree on still fails.
+ */
+const differsOnlyByKeyPresence = (left: unknown, right: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (Array.isArray(left) || Array.isArray(right)) {
+		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+		return left.every(
+			(item, index) => sameShape(item, right[index]) || differsOnlyByKeyPresence(item, right[index], depth + 1)
+		)
+	}
+	if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) {
+		return sameShape(left, right)
+	}
+	const a = left as Record<string, unknown>
+	const b = right as Record<string, unknown>
+	for (const key of Object.keys(a)) {
+		if (!Object.hasOwn(b, key)) continue
+		if (!sameShape(a[key], b[key]) && !differsOnlyByKeyPresence(a[key], b[key], depth + 1)) return false
+	}
+	return true
+}
+
 /** Structural equality over the plain values a divergence carries. */
 const sameShape = (left: unknown, right: unknown): boolean => {
 	if (typeof left !== typeof right) return false
@@ -160,6 +202,15 @@ const text = (value: unknown): string => {
 // the whole of its prototype chain. Including Function.prototype names would
 // excuse a genuine unrecognised event type called `bind` or `name`.
 const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(Object.getOwnPropertyNames(Object.prototype))
+
+/**
+ * An unpaired UTF-16 surrogate, which is what the newsletter encoder differs on.
+ *
+ * Serialised input renders surrogates as `\udXXX` escapes, so the check runs
+ * against both the raw character and its escaped form.
+ */
+const LONE_SURROGATE =
+	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
 
 /** The TypeError shapes a missing or short `data` slot produces. */
 const MISSING_DATA_THROWS =
@@ -220,10 +271,20 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'newsletter-encode-lone-surrogate',
-		target: 'pure:encodeNewsletterMessage',
+		// Two helpers, one encoder behaviour. `generateForwardMessageContent` copies
+		// upstream's content through the protobuf codec, so a lone surrogate in any
+		// string field comes back as U+FFFD there too — measured, `\ud800` becomes
+		// three replacement characters upstream and stays raw in baileyrs, which does
+		// not round-trip. The predicate keeps this to inputs that actually carry one.
+		target: /^pure:(encodeNewsletterMessage|generateForwardMessageContent)$/u,
 		status: 'open',
+		// Scoped to the surrogate, not the whole helper. Without a predicate this
+		// excused every return-value difference from the encoder, so a regression
+		// that changed ordinary text or dropped a field would have been counted as
+		// the known WTF-8 case.
+		when: divergence => LONE_SURROGATE.test(text(divergence.input)),
 		reason:
-			'A string field holding an unpaired UTF-16 surrogate encodes to different bytes: protobufjs emits the WTF-8 form (U+DFFF becomes ed bf bf, which is not valid UTF-8), the Rust encoder substitutes U+FFFD (ef bf bd). The Rust output is the well-formed one, but the wire bytes differ, so a message whose text carries a lone surrogate is not byte-identical across the two libraries. Needs a maintainer call on whether to match upstream or keep sanitising.',
+			'A string field holding an unpaired UTF-16 surrogate is handled differently on each side. Encoding: protobufjs emits the WTF-8 form (U+DFFF becomes ed bf bf, which is not valid UTF-8) where the Rust encoder substitutes U+FFFD (ef bf bd) — the Rust output is the well-formed one, but the wire bytes differ. Copying: `generateForwardMessageContent` shows the same thing from the other side, because upstream copies content through the protobuf codec and baileyrs does not, so `\ud800` survives in baileyrs and becomes U+FFFD upstream. Needs a maintainer call on whether to match upstream or keep sanitising.',
 		review: '2026-11-01'
 	},
 	{
@@ -252,10 +313,26 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'forward-message-content-mutates-input',
-		target: /^pure:generateForwardMessageContent/u,
+		// The mutation target exactly, not the family: the pattern also matched the
+		// base return-value target, so a helper that started returning different
+		// forwarded content was excused as the known mutation. Narrowing it revealed
+		// the second difference below, which had been hiding there.
+		target: 'pure:generateForwardMessageContent#mutation',
 		status: 'open',
 		reason:
-			"baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller's own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to.",
+			"baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller's own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to. Root cause is the copy: baileyrs shallow-clones with `{ ...content }`, so the nested message object is shared with the caller, where upstream rebuilds it via `proto.Message.decode(proto.Message.encode(content))`.",
+		review: '2026-11-01'
+	},
+	{
+		id: 'forward-message-content-copy-shape',
+		target: 'pure:generateForwardMessageContent',
+		status: 'open',
+		// Confined to key presence, in either direction — which is exactly what the
+		// two copy strategies differ by. A changed *value*, a dropped body or wrong
+		// forwarding metadata is not a subset either way round, and still fails.
+		when: divergence => differsOnlyByKeyPresence(normalise(divergence.local), normalise(divergence.upstream)),
+		reason:
+			"The same root cause as the mutation entry, seen in the return value: upstream copies the content through `proto.Message.decode(proto.Message.encode(content))` while baileyrs shallow-clones with `{ ...content }`. The round trip changes the key set in both directions — it drops properties the schema does not declare, and it materialises empty repeated fields the schema does declare. Measured on `{ extendedTextMessage: {} }`: upstream's result carries `endCardTiles: []`, baileyrs' does not; on `{ extendedTextMessage: { text: 'x', notAField: 1 } }` baileyrs keeps `notAField` and upstream loses it. Schema-valid content with no empty repeated fields agrees exactly, so callers are largely unaffected — but it is a second observable of one defect, and the mutation entry's over-broad target had been excusing it.",
 		review: '2026-11-01'
 	},
 	{
@@ -395,17 +472,35 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-field-number-mismatch',
-		// `wire:` too, since tightening wire:upstream-readable to exact equality made
-		// this visible from the send path for the first time: the bridge writes the
-		// field at 115 and reads it straight back, upstream decodes 115 as unknown
-		// and discards it, so the two views of the same sent bytes differ by exactly
-		// this field.
-		target: /^(proto|wire):/u,
+		// `wire:upstream-readable` specifically, not every wire target. That one
+		// compares two decodes of the *same* bytes, which is the only place a field
+		// number disagreement can be the cause: `wire:fidelity` compares the bridge
+		// against itself and `wire:message-builder` compares objects keyed by name,
+		// so a real regression on either would have been excused whenever the
+		// generated input happened to carry this field.
+		target: /^proto:|^wire:upstream-readable$/u,
 		status: 'open',
 		reason:
 			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2421 non-map fields. ALREADY TRACKED, and documented in exactly these terms: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
 		review: '2026-10-01',
 		when: divergence => text(divergence.input).includes('pollResultSnapshotMessageV3')
+	},
+	{
+		id: 'proto-wire-type-mismatch-ignored-upstream',
+		target: 'proto:mutation-agreement',
+		status: 'intended',
+		reason:
+			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
+		review: '2027-02-01',
+		when: divergence =>
+			text(divergence.input).includes('nesting-bomb') &&
+			// Narrow to the direction the reason argues: the bridge decoded an empty
+			// message, upstream decoded a non-empty one. The reverse, and any
+			// disagreement over a field both sides read, is not this and must still
+			// be reported. `plainObject` rather than a truthiness check so a `null`
+			// or a string from either side falls through instead of being excused.
+			plainObject(normalise(divergence.local))?.length === 0 &&
+			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
 	},
 	{
 		id: 'proto-repeated-scalars-unpacked',

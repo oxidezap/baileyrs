@@ -100,7 +100,13 @@ const used = [...new Set(reports.flatMap(report => report.excusedBy ?? []))]
 // still enforced — that check does not depend on coverage.
 // A target filter has the same effect as a crash on this question: the targets
 // it skipped wrote no report, so an entry only they would have used looks unused.
-const filtered = Boolean(process.env.FUZZ_ONLY?.trim())
+//
+// Read from the reports, not from `process.env`: the filter is consumed by the
+// runner, and `FUZZ_ONLY=x npm run fuzz:deep` followed by a separate `node
+// scripts/fuzz/report.ts` leaves it unset here. A skipped target writes a report
+// with `runs: 0`, which survives the process boundary.
+const filtered =
+	Boolean(process.env.FUZZ_ONLY?.trim()) || reports.some(report => report.runs === 0 && !report.truncated)
 const complete = truncated.length === 0 && !runFailed && !filtered
 const candidates = complete ? staleEntries(used) : []
 
@@ -145,9 +151,29 @@ if (totals.findings > 0) {
 // broken workflow rather than a real result.
 if (totals.crashes > 0) {
 	heading('Crashes')
+	// Bounded and deduplicated. A check that starts throwing systematically records
+	// one crash per generated input, and this body is used verbatim as the GitHub
+	// issue — thousands of near-identical lines would push it past the size limit
+	// and lose the notification exactly when the harness is most broken.
+	const LIMIT = 25
+	const seen = new Set<string>()
+	let shown = 0
+	let omitted = 0
 	for (const report of reports) {
-		for (const crash of report.crashes ?? []) lines.push(`- **${report.target}** — ${crash.trim()}`)
+		for (const crash of report.crashes ?? []) {
+			// Keyed on the first line: the input preview varies per case, the failure
+			// itself does not.
+			const key = `${report.target}\u0000${crash.trim().split('\n')[0]}`
+			if (seen.has(key) || shown >= LIMIT) {
+				omitted++
+				continue
+			}
+			seen.add(key)
+			shown++
+			lines.push(`- **${report.target}** — ${crash.trim()}`)
+		}
 	}
+	if (omitted > 0) lines.push(`- …and ${omitted} more (repeats of the above, or past the ${LIMIT}-line cap)`)
 }
 
 if (open.length > 0) {

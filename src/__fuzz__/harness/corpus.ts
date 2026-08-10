@@ -36,7 +36,18 @@ const ESCAPE_TAG = '__escaped__'
  * round-trip as a Uint8Array. No generator emits those keys today; a new key pool
  * would open it silently, so encode escapes the collision instead.
  */
-const TAGS: readonly string[] = [BYTES_TAG, BIGINT_TAG, UNDEFINED_TAG, NUMBER_TAG, BUFFER_TAG, DATE_TAG, ERROR_TAG]
+const TAGS: readonly string[] = [
+	BYTES_TAG,
+	BIGINT_TAG,
+	UNDEFINED_TAG,
+	NUMBER_TAG,
+	BUFFER_TAG,
+	DATE_TAG,
+	ERROR_TAG,
+	// The escape itself: a payload that is exactly `{ __escaped__: ... }` would
+	// otherwise be unwrapped on decode into whatever it wraps.
+	ESCAPE_TAG
+]
 
 /**
  * JSON cannot hold the values these fuzzers care most about, so tag them.

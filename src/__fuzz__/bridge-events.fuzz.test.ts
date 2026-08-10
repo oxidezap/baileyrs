@@ -28,6 +28,7 @@ import {
 	generateBridgeEvent,
 	generateBridgeEventSequence,
 	generateMessageWire,
+	shapedBridgePayload,
 	type BridgeEventCase
 } from './generators/bridge-event.ts'
 import { generateJid } from './generators/jid.ts'
@@ -170,18 +171,29 @@ describe('bridge event adaptation', () => {
 	it('handles every declared event type without throwing', async () => {
 		// Finite and exhaustive: the table declares these, so all of them are checked.
 		let cursor = 0
+		// Not throwing is a low bar: an adapter that returns `null` for every input
+		// it is ever shown clears it, and so does one whose guard clause rejects a
+		// payload the generator can never satisfy. Measured before this counter
+		// existed, 22 of the 58 declared types adapted to `null` on every run — a
+		// third of the table was declared covered while none of its mapping ran.
+		// So the return value is recorded per type and asserted after the sweep.
+		const adapted = new Map(BRIDGE_EVENT_TYPES.map(type => [type, 0]))
 		await fuzz<{ type: string; data: unknown }>({
 			target: 'bridge:adapt-coverage',
-			runs: BRIDGE_EVENT_TYPES.length * 8,
+			// Sixteen tries per type, not eight: the shaped payload still fuzzes the
+			// fields inside the shape, so a type gated on three of them at once needs
+			// the headroom to clear the guard at least once on every seed.
+			runs: BRIDGE_EVENT_TYPES.length * 16,
 			exhaustive: true,
 			shrinkFailures: false,
-			generate: (random: Random) => ({
-				type: BRIDGE_EVENT_TYPES[cursor++ % BRIDGE_EVENT_TYPES.length]!,
-				data: generateBridgeEvent(random).data
-			}),
+			generate: (random: Random) => {
+				const type = BRIDGE_EVENT_TYPES[cursor++ % BRIDGE_EVENT_TYPES.length]!
+				return { type, data: shapedBridgePayload(random, type) }
+			},
 			check: event => {
 				try {
-					adaptBridgeEvent(event as never, silentLogger)
+					const canonical = adaptBridgeEvent(event as never, silentLogger)
+					if (canonical != null) adapted.set(event.type, (adapted.get(event.type) ?? 0) + 1)
 					return []
 				} catch (error) {
 					return {
@@ -194,6 +206,16 @@ describe('bridge event adaptation', () => {
 				}
 			}
 		})
+
+		// Asserted here rather than reported as a divergence: this is a statement
+		// about the *generator*, not about a disagreement between two libraries, and
+		// no allowlist entry should be able to excuse it.
+		const inert = [...adapted].filter(([, count]) => count === 0).map(([type]) => type)
+		assert.deepEqual(
+			inert,
+			[],
+			`these declared event types adapted to null on every run — the generator never produces a payload their adapter accepts, so their mapping is untested:\n  ${inert.join('\n  ')}`
+		)
 	})
 
 	it('never throws on a message-wire payload', async () => {

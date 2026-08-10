@@ -291,3 +291,142 @@ export const generateRetryReceiptNode = (random: Random): BinaryNode => {
 		]
 	}
 }
+
+/**
+ * A `<message>` stanza whose child content is a real, populated `WebMessageInfo`.
+ *
+ * `getBinaryNodeMessages` is the only accessor that decodes rather than reads:
+ * it picks every `<message>` child and runs `WebMessageInfo.decode(...).toJSON()`
+ * over its bytes. The generic node generator never produces the tag and the
+ * payload together — the `message` tag exists in its pool, but its content is
+ * drawn independently, so it is a string, `undefined` or a couple of random bytes
+ * essentially every time. Both sides then throw, or both return `[]`, and the
+ * comparator reads that as agreement. The decoder and the JSON projection — where
+ * a divergence in field naming, int64 rendering or bytes encoding would actually
+ * show — were never reached.
+ *
+ * The bytes are written here by hand rather than by either library's encoder. An
+ * encoder-produced payload would make the target circular: a bug shared by the
+ * encoder and the decoder cancels out, and a bug in only one library's encoder
+ * feeds the two sides different-looking-but-equally-broken input. A literal wire
+ * encoding is what the server sends, so it is what the fixture is.
+ */
+const varint = (value: bigint): number[] => {
+	const bytes: number[] = []
+	let remaining = value
+	do {
+		const byte = Number(remaining & 0x7fn)
+		remaining >>= 7n
+		bytes.push(remaining > 0n ? byte | 0x80 : byte)
+	} while (remaining > 0n)
+	return bytes
+}
+
+const varintField = (field: number, value: bigint): number[] => [...varint(BigInt(field) << 3n), ...varint(value)]
+
+const bytesField = (field: number, payload: Uint8Array | number[]): number[] => [
+	...varint((BigInt(field) << 3n) | 2n),
+	...varint(BigInt(payload.length)),
+	...payload
+]
+
+const stringField = (field: number, value: string): number[] => [...bytesField(field, Buffer.from(value, 'utf8'))]
+
+/** Timestamps span the boundary where a 64-bit field stops fitting in a JS number. */
+const TIMESTAMPS = [0n, 1n, 1700000000n, 4294967296n, 9007199254740991n, 9007199254740993n, 18446744073709551615n]
+
+/** Statuses 0-5 are defined; the rest are the unknown values a newer server sends. */
+const STATUSES = [0n, 1n, 2n, 3n, 4n, 5n, 6n, 99n]
+
+const webMessageInfo = (random: Random): number[] => {
+	const key = [
+		...stringField(1, random.pick(['15551234567@s.whatsapp.net', '120363000000000000@g.us', ''])),
+		...varintField(2, random.bool() ? 1n : 0n),
+		...stringField(3, random.bool(0.85) ? `3EB0${random.int(0, 0xffffff).toString(16).toUpperCase()}` : ''),
+		...(random.bool(0.3) ? stringField(4, generateString(random)) : [])
+	]
+
+	// `conversation` and `extendedTextMessage` are the two shapes the accessor's
+	// callers actually read, and the second is nested — so a projection that
+	// flattens or renames a nested field shows up here and not in the first.
+	const message = random.bool(0.6)
+		? stringField(1, generateString(random))
+		: bytesField(6, [
+				...stringField(1, generateString(random)),
+				...(random.bool(0.5) ? stringField(2, generateString(random)) : [])
+			])
+
+	return [
+		...bytesField(1, key),
+		...(random.bool(0.9) ? bytesField(2, message) : []),
+		...varintField(3, random.pick(TIMESTAMPS)),
+		...(random.bool(0.7) ? varintField(4, random.pick(STATUSES)) : []),
+		...(random.bool(0.4) ? stringField(5, random.pick(['15550000000@s.whatsapp.net', ''])) : []),
+		...(random.bool(0.5) ? stringField(19, generateString(random)) : []),
+		// Repeated string: written unpacked, which is the only legal form for it.
+		...(random.bool(0.3)
+			? Array.from({ length: random.int(1, 3) }, () => stringField(26, generateString(random))).flat()
+			: []),
+		// A bytes field, so the JSON projection's base64/array choice is compared.
+		...(random.bool(0.4) ? bytesField(49, random.bytes(random.pick([0, 1, 32]))) : [])
+	]
+}
+
+export const generateMessageStanza = (random: Random): BinaryNode => {
+	const child = (): BinaryNode => {
+		const payload = webMessageInfo(random)
+		return {
+			tag: 'message',
+			attrs: { id: String(random.int(1, 9999)) },
+			content: random.weighted<BinaryNode['content']>([
+				[8, Buffer.from(payload)],
+				// Truncated mid-field: the decoder has to reject rather than return a
+				// half-built message.
+				[1, Buffer.from(payload.slice(0, Math.max(0, payload.length - random.int(1, 4))))],
+				[1, Buffer.from(random.bytes(random.int(0, 16)))],
+				[1, generateString(random)],
+				[1, undefined]
+			])
+		}
+	}
+
+	return {
+		tag: random.pick(['message', 'notification', 'iq']),
+		attrs: generateAttributes(random),
+		content: random.weighted<() => BinaryNode['content']>([
+			[
+				8,
+				() => [
+					// Non-`message` siblings have to be skipped, not decoded.
+					...(random.bool(0.5) ? [{ tag: 'enc', attrs: {}, content: random.bytes(8) } as BinaryNode] : []),
+					...Array.from({ length: random.int(1, 3) }, child),
+					...(random.bool(0.3) ? [{ tag: 'participant', attrs: { jid: '' } } as BinaryNode] : [])
+				]
+			],
+			[1, () => []],
+			[1, () => undefined],
+			[1, () => Buffer.from(webMessageInfo(random))]
+		])()
+	}
+}
+
+/**
+ * A stream error shaped the way `getErrorCodeFromStreamError` reads one.
+ *
+ * That helper takes the *first child's tag* as the reason and the *parent's*
+ * `code` attribute as the status. `generateErrorNode` always names its child
+ * `error` and puts the code on the child, so every input resolved to reason
+ * `error` with no parent code and fell to the same bad-session default — the
+ * `conflict` mapping, the explicit status codes and the restart-required rewrite
+ * were never compared.
+ */
+const STREAM_REASONS = ['conflict', 'not-authorized', 'gone', 'bad-request', 'system-shutdown', 'xml-not-well-formed']
+
+export const generateStreamErrorNode = (random: Random): BinaryNode => ({
+	tag: 'stream:error',
+	// 515 is the restart-required code the helper rewrites the reason for.
+	attrs: random.bool(0.6) ? { code: random.pick(['401', '403', '408', '428', '440', '500', '515', '', 'nope']) } : {},
+	content: random.bool(0.85)
+		? [{ tag: random.pick(STREAM_REASONS), attrs: random.bool(0.4) ? { code: random.pick(ATTRIBUTE_VALUES) } : {} }]
+		: random.pick([[], undefined])
+})
