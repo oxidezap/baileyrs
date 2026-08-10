@@ -508,6 +508,70 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		)
 	})
 
+	// Two entries reach the generative decode target now, and both had to be
+	// pinned there rather than widened: the sweeps report one classified shape,
+	// `decode-parity` reports every kind of disagreement there is.
+	it('excuses an unimplemented codec on decode parity only when the bridge refused the bytes', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-unknown-type-dropped')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (target: string, input: unknown, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist([{ target, input, local, upstream }], new Date('2026-01-01'), registry).unexcused.length === 0
+
+		const parity = 'proto:decode-parity'
+		const refusal = '<throw Error: unknown proto type: BotAvatarMetadata>'
+		const bytes = { path: 'BotAvatarMetadata', origin: 'js-encoded', bytes: '' }
+
+		assert.ok(excused(parity, bytes, refusal, {}), 'the bridge refusing a type it does not implement')
+		// The type is named either way, so only the outcome tells these apart.
+		assert.ok(!excused(parity, bytes, { wordCount: 3 }, {}), 'returning data for an unimplemented type is not this')
+		assert.ok(!excused(parity, bytes, refusal, refusal), 'both refusing is not a divergence to explain')
+		assert.ok(
+			!excused(
+				parity,
+				{ path: 'Message', origin: 'js-encoded', bytes: '' },
+				'<throw Error: unknown proto type: Message>',
+				{}
+			),
+			'a refusal naming a type the bridge does implement is unexplained'
+		)
+		// The sweeps are unchanged: their classifier has already established the
+		// shape, so naming the type is the whole test there.
+		assert.ok(excused('proto:type-coverage', 'BotAvatarMetadata', 'a', 'b'), 'the sweeps still match by name alone')
+	})
+
+	it('composes the field rename with a field the bridge never writes, and nothing else', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-field-renamed-and-dropped')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (local: unknown, upstream: unknown): boolean =>
+			applyAllowlist(
+				[{ target: 'proto:decode-parity', input: { path: 'SyncActionValue' }, local, upstream }],
+				new Date('2026-01-01'),
+				registry
+			).unexcused.length === 0
+
+		const renamed = { agentAction: { deviceId: '0n' } }
+		const declared = { agentAction: { deviceID: '0n' } }
+
+		assert.ok(excused(renamed, declared), 'the rename alone')
+		assert.ok(
+			excused(renamed, { ...declared, businessBroadcastAssociationAction: {} }),
+			'the rename beside a field the bridge never writes — the shape deep mode draws'
+		)
+		// A field that is not on the list is a new gap, not this one.
+		assert.ok(!excused(renamed, { ...declared, chatLockSettings: {} }), 'an undocumented missing field still fails')
+		// A value that differs where both sides have the key is a misread.
+		assert.ok(!excused({ agentAction: { deviceId: '1n' } }, declared), 'a changed value is never this entry')
+		// And the absence is directional: a key only this side has is invention.
+		assert.ok(
+			!excused({ ...renamed, businessBroadcastAssociationAction: {} }, declared),
+			'a key upstream never produced is a different defect'
+		)
+	})
+
 	it('keeps every shipped registry entry well-formed', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const ids = new Set<string>()

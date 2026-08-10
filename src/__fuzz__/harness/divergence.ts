@@ -120,6 +120,50 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
 }
 
 /**
+ * The leaf names of the fields the bridge never writes.
+ *
+ * `NOT_ENCODED_FIELDS` is qualified by declaring type, which is the shape the
+ * finite sweeps report. A *decoded object* carries bare keys, so a generative
+ * finding can only be matched on the leaf — and deriving it from the qualified
+ * list keeps one source of truth: a twelfth field joining that list is covered
+ * here too, and nothing else ever is.
+ */
+const NOT_ENCODED_LEAF_NAMES: ReadonlySet<string> = new Set(
+	NOT_ENCODED_FIELDS.map(field => field.slice(field.lastIndexOf('.') + 1))
+)
+
+/**
+ * True when the two decodes agree once the fields the bridge never writes are
+ * allowed to be missing from *its* side, and nothing else differs.
+ *
+ * Directional on purpose. Upstream may carry a key this side lacks, and only if
+ * that key is one of the documented eleven; this side carrying a key upstream
+ * lacks is a decoder inventing a property, which is a different defect. Any
+ * value that differs where both sides have the key fails outright, so this can
+ * never excuse a misread — only an absence that is already on the record.
+ */
+const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, depth = 0): boolean => {
+	if (depth > 12) return sameShape(local, upstream)
+	if (Array.isArray(local) || Array.isArray(upstream)) {
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
+		return local.every((item, index) => sameExceptUnwrittenFields(item, upstream[index], depth + 1))
+	}
+	const ourKeys = plainObject(local)
+	const theirKeys = plainObject(upstream)
+	if (ourKeys === undefined || theirKeys === undefined) return sameShape(local, upstream)
+	const ours = local as Record<string, unknown>
+	const theirs = upstream as Record<string, unknown>
+	for (const key of theirKeys) {
+		if (!Object.hasOwn(ours, key)) {
+			if (!NOT_ENCODED_LEAF_NAMES.has(key)) return false
+			continue
+		}
+		if (!sameExceptUnwrittenFields(ours[key], theirs[key], depth + 1)) return false
+	}
+	return ourKeys.every(key => Object.hasOwn(theirs, key))
+}
+
+/**
  * The keys of a plain object, or `undefined` for anything else.
  *
  * Predicates that want to say "decoded nothing" have to distinguish an empty
@@ -1190,10 +1234,19 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 					)
 				)
 			}
-			return sameShape(undoRenames(divergence.local), undoRenames(divergence.upstream))
+			// `sameExceptUnwrittenFields`, not bare `sameShape`: the generative decode
+			// targets draw whole messages, so a SyncActionValue carrying a renamed
+			// field usually carries `businessBroadcastAssociationAction` as well —
+			// which the bridge never writes, and which `proto-field-not-encoded`
+			// already documents. Two known gaps in one message explained neither, and
+			// the finite sweeps never saw the pair because they vary one field at a
+			// time. Composing here is what the buffer entries do, for the same reason.
+			// The composition stays exact: only the eleven enumerated fields may be
+			// absent, only from this side, and any value both sides carry must match.
+			return sameExceptUnwrittenFields(undoRenames(divergence.local), undoRenames(divergence.upstream))
 		},
 		reason:
-			'Three fields round-trip under a different property name than upstream declares, and the bridge encoder silently drops the upstream spelling: SyncActionValue.ChatAssignmentAction.deviceAgentID becomes deviceAgentId, SyncActionValue.AgentAction.deviceID becomes deviceId, and Message.MessageHistoryMetadata.oldestMessageTimestamp becomes oldestMessageTimestampInWindow. The property name is the public API — code written against the upstream types reads undefined, and writes are lost with no error at all. ALREADY TRACKED: all three are in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts; the sweep rediscovered them from generated input rather than finding them.',
+			'Three fields round-trip under a different property name than upstream declares, and the bridge encoder silently drops the upstream spelling: SyncActionValue.ChatAssignmentAction.deviceAgentID becomes deviceAgentId, SyncActionValue.AgentAction.deviceID becomes deviceId, and Message.MessageHistoryMetadata.oldestMessageTimestamp becomes oldestMessageTimestampInWindow. The property name is the public API — code written against the upstream types reads undefined, and writes are lost with no error at all. On the generative decode targets the rename arrives beside a field the bridge never writes, because one drawn message carries both; that half is NOT_ENCODED_FIELDS and has its own entry, and this predicate composes with it rather than either one covering the pair alone. ALREADY TRACKED: all three renames are in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts; the sweep rediscovered them from generated input rather than finding them.',
 		review: '2026-10-01'
 	},
 	{
@@ -1408,9 +1461,26 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-unknown-type-dropped',
-		target: /^proto:(unknown-type-dropped|type-coverage)$/u,
+		// `decode-parity` as well as the two sweeps. The sweeps reach the type
+		// through a field that holds one, where the bridge silently omits it; the
+		// generative target hands the type's own bytes to both decoders and the
+		// bridge *throws* instead. One missing codec, two ways of meeting it.
+		target: /^proto:(unknown-type-dropped|type-coverage|decode-parity)$/u,
 		status: 'open',
-		when: divergence => namesUnknownCodecType(divergence.input),
+		when: divergence => {
+			if (!namesUnknownCodecType(divergence.input)) return false
+			// Naming the type is the whole test on the sweeps, whose classifier has
+			// already established the shape. Not on decode-parity, which reports
+			// every kind of disagreement: without the outcome pinned, this entry
+			// would excuse the bridge returning *wrong data* for a type it does not
+			// implement just as readily as refusing to decode it.
+			if (divergence.target !== 'proto:decode-parity') return true
+			return (
+				isThrow(divergence.local) &&
+				UNKNOWN_CODEC_TYPES.some(type => divergence.local === `<throw Error: unknown proto type: ${type}>`) &&
+				plainObject(divergence.upstream) !== undefined
+			)
+		},
 		reason:
 			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. ALREADY TRACKED: BotAvatarMetadata is in KNOWN_UNSUPPORTED_CODECS and its fields in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. The unknown-type set here is probed at runtime rather than listed, so this entry stops matching by itself once the bridge implements them.',
 		review: '2026-10-01'
