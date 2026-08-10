@@ -1,0 +1,139 @@
+/**
+ * The schema a wire scan needs to read a payload the way a real decoder does.
+ *
+ * `wire.ts` states the rule this exists to serve: the wire format does not
+ * distinguish a nested message from a `bytes` field, so a scan without a schema
+ * has to guess, and *every caller that has a schema passes it*. This module is
+ * what makes that possible from more than one fuzzer — it used to live inside
+ * the codec differential, which is why the robustness fuzzer framed only the top
+ * level of a mutated payload and called a submessage corruption "well-formed".
+ *
+ * The schema records the repeated flag and the nested type but not the field
+ * *number*, so each number is recovered the way the field-number sweep recovers
+ * it: encode the field alone and read the tag back. Built per message, lazily,
+ * so a run only pays for the types it actually looks at.
+ */
+
+import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND } from '../../WAProto/compatibility-schema.ts'
+import { fieldsOfPath, messagePathOfField } from '../generators/proto.ts'
+import type { SchemaContext } from './wire.ts'
+
+const upstream = (await import('baileys')) as unknown as { proto: Record<string, unknown> }
+
+export interface UpstreamType {
+	encode(message: unknown): { finish(): Uint8Array }
+	decode(bytes: Uint8Array): unknown
+	toObject(message: unknown, options: Record<string, unknown>): Record<string, unknown>
+}
+
+/**
+ * protobufjs namespaces nest, so a schema path is a lookup chain.
+ *
+ * The intermediate segments are *functions*, not objects: `proto.Message` is the
+ * generated Type constructor, and `Message.ExtendedTextMessage` hangs off it as a
+ * static. A `typeof === 'object'` guard here silently skips every nested type,
+ * which is most of the schema.
+ */
+export const upstreamType = (path: string): UpstreamType | undefined => {
+	let cursor: unknown = upstream.proto
+	for (const segment of path.split('.')) {
+		if (cursor === null || (typeof cursor !== 'object' && typeof cursor !== 'function')) return undefined
+		cursor = (cursor as Record<string, unknown>)[segment]
+	}
+	const candidate = cursor as unknown as UpstreamType | undefined
+	return typeof cursor === 'function' && typeof candidate?.encode === 'function' ? candidate : undefined
+}
+
+/** The field number of the first tag in a payload, or undefined if it does not parse. */
+export const firstFieldNumber = (bytes: Uint8Array): number | undefined => {
+	let result = 0n
+	let shift = 0n
+	for (let index = 0; index < bytes.length && index < 10; index++) {
+		const byte = bytes[index]!
+		result |= BigInt(byte & 0x7f) << shift
+		if ((byte & 0x80) === 0) {
+			const field = result >> 3n
+			return field >= 1n && field <= 536_870_911n ? Number(field) : undefined
+		}
+		shift += 7n
+	}
+	return undefined
+}
+
+/** A non-default sample for a field kind, so the encode below emits the tag. */
+export const sampleFor = (kind: number): unknown => {
+	switch (kind) {
+		case PROTO_FIELD_KIND.string:
+			return 'x'
+		case PROTO_FIELD_KIND.bool:
+			return true
+		case PROTO_FIELD_KIND.bytes:
+			return new Uint8Array([1])
+		default:
+			return 7
+	}
+}
+
+/** The kinds protobuf may pack, which is what makes a repeated field ambiguous. */
+const PACKABLE_KINDS: ReadonlySet<number> = new Set([
+	PROTO_FIELD_KIND.enum,
+	PROTO_FIELD_KIND.bool,
+	PROTO_FIELD_KIND.signed32,
+	PROTO_FIELD_KIND.unsigned32,
+	PROTO_FIELD_KIND.signed64,
+	PROTO_FIELD_KIND.unsigned64
+])
+
+/**
+ * Per-message field-number metadata, for telling packing apart from a wrong wire
+ * type and a nested message apart from a `bytes` field.
+ *
+ * Field numbers are unique per message, not globally: this schema has 30
+ * repeated scalar fields against 1734 singular ones drawing from the same small
+ * numbers, so a global set would answer "repeated" for nearly every singular
+ * field.
+ */
+interface FieldFacts {
+	readonly repeated: ReadonlySet<number>
+	readonly messages: ReadonlyMap<number, string>
+}
+
+const fieldFactsByPath = new Map<string, FieldFacts>()
+
+const factsFor = (path: string): FieldFacts => {
+	const cached = fieldFactsByPath.get(path)
+	if (cached) return cached
+
+	const repeated = new Set<number>()
+	const messages = new Map<number, string>()
+	const type = upstreamType(path)
+	if (type) {
+		for (const field of fieldsOfPath(path)) {
+			if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
+			const isMessage = field[1] === PROTO_FIELD_KIND.message
+			const one = isMessage ? {} : sampleFor(field[1])
+			const value = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 ? [one] : one
+			let encoded: Uint8Array | undefined
+			try {
+				encoded = type.encode({ [field[0]]: value }).finish()
+			} catch {
+				continue
+			}
+			const number = firstFieldNumber(encoded)
+			if (number === undefined) continue
+			if ((field[3] & PROTO_FIELD_FLAG.repeated) !== 0 && PACKABLE_KINDS.has(field[1])) repeated.add(number)
+			const nested = messagePathOfField(field)
+			if (nested !== undefined) messages.set(number, nested)
+		}
+	}
+
+	const facts: FieldFacts = { repeated, messages }
+	fieldFactsByPath.set(path, facts)
+	return facts
+}
+
+export const schemaAt = (path: string): SchemaContext => ({
+	path,
+	isRepeated: (at, field) => factsFor(at).repeated.has(field),
+	messageAt: (at, field) => factsFor(at).messages.get(field)
+})

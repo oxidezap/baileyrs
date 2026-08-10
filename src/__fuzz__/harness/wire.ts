@@ -175,7 +175,19 @@ const scanFrom = (
 				// changed value excused as a spelling difference.
 				const child = descend(schema, field)
 				const parseNestedHere = schema === undefined || child !== undefined
-				const nested = size > 0 && depth > 0 && parseNestedHere ? scan(slice, depth - 1, child) : undefined
+				const attempted = size > 0 && depth > 0 && parseNestedHere
+				const nested = attempted ? scan(slice, depth - 1, child) : undefined
+				// A field the schema *declares* a message, whose payload does not frame,
+				// makes the whole record malformed. Falling back to the raw hex is right
+				// without a schema — the bytes could be a string or a `bytes` field that
+				// merely looks like protobuf — but with one it called a payload
+				// well-formed whose submessage was corrupt, which is where a
+				// `lying-length` or a `flip-bit` usually lands. Measured: three of the
+				// four findings that motivated this framed at the top level and not
+				// inside, and belong to the interpretation class rather than the
+				// agreement one. `depth > 0` is part of `attempted` so exhausting the
+				// recursion budget is not mistaken for corruption.
+				if (attempted && child !== undefined && nested === undefined) return undefined
 				const raw = Buffer.from(slice).toString('hex')
 				fields.push({
 					field,
