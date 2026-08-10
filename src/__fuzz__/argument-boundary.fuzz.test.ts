@@ -1,0 +1,659 @@
+/**
+ * The public argument boundary, fuzzed.
+ *
+ * `src/__tests__/closed-domain-arguments.test.ts` documents why this boundary
+ * exists, from a production report: `groupParticipantsUpdate(from, [id], '☠️')`
+ * called fire-and-forget, the value crossing into the bridge untouched, and the
+ * consumer getting an `unhandledRejection` whose every frame reads
+ * `wasm://wasm/<hash>`. Nothing in it points at the line that made the call.
+ *
+ * That test checks the contract for values somebody chose. This one generates
+ * them — every off-domain shape a JavaScript caller can produce, not just the
+ * near-misses — and asserts the same contract on all of them:
+ *
+ *   - the rejection is a Boom carrying statusCode 400
+ *   - it names the parameter and lists what is accepted, in `data`
+ *   - its message shows what actually arrived
+ *   - **its stack contains no `wasm://` frames**
+ *
+ * The last is the one that matters and the one only a real socket can answer, so
+ * these drive the real public socket pointed at a port nothing listens on: a
+ * value that passes validation fails downstream as "not connected" rather than
+ * reaching a server, which is exactly the distinction being tested —
+ * rejected-by-us versus not-rejected-by-us.
+ *
+ * A source scan keeps the table honest: every `assertArgumentDomain` call site in
+ * `src/` must appear below, so guarding a new parameter without fuzzing it fails
+ * the suite.
+ */
+
+import assert from 'node:assert/strict'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { after, before, describe, it } from 'node:test'
+
+import makeWASocket from '../Socket/index.ts'
+import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
+import type { Divergence } from './harness/divergence.ts'
+import { fuzz } from './harness/runner.ts'
+import type { Random } from './harness/random.ts'
+import { generateNumber, generateString } from './generators/values.ts'
+
+type Socket = ReturnType<typeof makeWASocket>
+
+/** Pass an off-union value through a typed parameter, the way plain JS does. */
+const off = <T>(value: unknown): T => value as T
+
+const GROUP = '120363000000000000@g.us'
+const USER = '15550000000@s.whatsapp.net'
+
+interface BoundaryCase {
+	/** The method name the rejection must use. */
+	readonly method: string
+	/** The parameter name the rejection must name. */
+	readonly parameter: string
+	/** `path/to/file.ts:method:parameter`, relative to `src/`, matching the scan. */
+	readonly source: string
+	readonly call: (socket: Socket, value: unknown) => Promise<unknown>
+}
+
+const CASES: readonly BoundaryCase[] = [
+	{
+		method: 'updateBlockStatus',
+		parameter: 'action',
+		source: 'Socket/blocking.ts:updateBlockStatus:action',
+		call: (s, v) => s.updateBlockStatus(USER, off(v))
+	},
+	{
+		method: 'sendPresenceUpdate',
+		parameter: 'type',
+		source: 'Socket/index.ts:sendPresenceUpdate:type',
+		call: (s, v) => s.sendPresenceUpdate(off(v), USER)
+	},
+	{
+		method: 'waUploadToServer',
+		parameter: 'mediaType',
+		source: 'Socket/index.ts:waUploadToServer:mediaType',
+		call: (s, v) =>
+			s.waUploadToServer(off(Buffer.from('x')), off({ mediaType: v, fileEncSha256B64: '', mediaType2: undefined }))
+	},
+	{
+		method: 'groupSettingUpdate',
+		parameter: 'setting',
+		source: 'Socket/groups.ts:groupSettingUpdate:setting',
+		call: (s, v) => s.groupSettingUpdate(GROUP, off(v))
+	},
+	{
+		method: 'groupRequestParticipantsUpdate',
+		parameter: 'action',
+		source: 'Socket/groups.ts:groupRequestParticipantsUpdate:action',
+		call: (s, v) => s.groupRequestParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'groupParticipantsUpdate',
+		parameter: 'action',
+		source: 'Socket/groups.ts:groupParticipantsUpdate:action',
+		call: (s, v) => s.groupParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'groupMemberAddMode',
+		parameter: 'mode',
+		source: 'Socket/groups.ts:groupMemberAddMode:mode',
+		call: (s, v) => s.groupMemberAddMode(GROUP, off(v))
+	},
+	{
+		method: 'groupJoinApprovalMode',
+		parameter: 'mode',
+		source: 'Socket/groups.ts:groupJoinApprovalMode:mode',
+		call: (s, v) => s.groupJoinApprovalMode(GROUP, off(v))
+	},
+	{
+		method: 'sendReceipt',
+		parameter: 'type',
+		source: 'Socket/messages.ts:sendReceipt:type',
+		call: (s, v) => s.sendReceipt(USER, undefined, ['ABC'], off(v))
+	},
+	{
+		method: 'sendReceipts',
+		parameter: 'type',
+		source: 'Socket/messages.ts:sendReceipts:type',
+		call: (s, v) => s.sendReceipts([{ remoteJid: USER, id: 'ABC', fromMe: false }], off(v))
+	},
+	{
+		method: 'newsletterMetadata',
+		parameter: 'type',
+		source: 'Socket/newsletter.ts:newsletterMetadata:type',
+		call: (s, v) => s.newsletterMetadata(off(v), 'key')
+	},
+	{
+		method: 'cleanDirtyBits',
+		parameter: 'type',
+		source: 'Socket/server-queries.ts:cleanDirtyBits:type',
+		call: (s, v) => s.cleanDirtyBits(off(v))
+	},
+	{
+		method: 'sendPresence',
+		parameter: 'status',
+		source: 'Socket/presence.ts:sendPresence:status',
+		call: (s, v) => s.sendPresence(off(v))
+	},
+	{
+		method: 'sendChatState',
+		parameter: 'state',
+		source: 'Socket/presence.ts:sendChatState:state',
+		call: (s, v) => s.sendChatState(USER, off(v))
+	},
+	{
+		method: 'updateLastSeenPrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateLastSeenPrivacy:value',
+		call: (s, v) => s.updateLastSeenPrivacy(off(v))
+	},
+	{
+		method: 'updateOnlinePrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateOnlinePrivacy:value',
+		call: (s, v) => s.updateOnlinePrivacy(off(v))
+	},
+	{
+		method: 'updateProfilePicturePrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateProfilePicturePrivacy:value',
+		call: (s, v) => s.updateProfilePicturePrivacy(off(v))
+	},
+	{
+		method: 'updateStatusPrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateStatusPrivacy:value',
+		call: (s, v) => s.updateStatusPrivacy(off(v))
+	},
+	{
+		method: 'updateReadReceiptsPrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateReadReceiptsPrivacy:value',
+		call: (s, v) => s.updateReadReceiptsPrivacy(off(v))
+	},
+	{
+		method: 'updateGroupsAddPrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateGroupsAddPrivacy:value',
+		call: (s, v) => s.updateGroupsAddPrivacy(off(v))
+	},
+	{
+		method: 'updateCallPrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateCallPrivacy:value',
+		call: (s, v) => s.updateCallPrivacy(off(v))
+	},
+	{
+		method: 'updateMessagesPrivacy',
+		parameter: 'value',
+		source: 'Socket/privacy.ts:updateMessagesPrivacy:value',
+		call: (s, v) => s.updateMessagesPrivacy(off(v))
+	},
+	{
+		method: 'profilePictureUrl',
+		parameter: 'type',
+		source: 'Socket/contacts.ts:profilePictureUrl:type',
+		call: (s, v) => s.profilePictureUrl(USER, off(v))
+	},
+	{
+		method: 'communityRequestParticipantsUpdate',
+		parameter: 'action',
+		source: 'Socket/communities.ts:communityRequestParticipantsUpdate:action',
+		call: (s, v) => s.communityRequestParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'communityParticipantsUpdate',
+		parameter: 'action',
+		source: 'Socket/communities.ts:communityParticipantsUpdate:action',
+		call: (s, v) => s.communityParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'communitySettingUpdate',
+		parameter: 'setting',
+		source: 'Socket/communities.ts:communitySettingUpdate:setting',
+		call: (s, v) => s.communitySettingUpdate(GROUP, off(v))
+	},
+	{
+		method: 'communityMemberAddMode',
+		parameter: 'mode',
+		source: 'Socket/communities.ts:communityMemberAddMode:mode',
+		call: (s, v) => s.communityMemberAddMode(GROUP, off(v))
+	},
+	{
+		method: 'communityJoinApprovalMode',
+		parameter: 'mode',
+		source: 'Socket/communities.ts:communityJoinApprovalMode:mode',
+		call: (s, v) => s.communityJoinApprovalMode(GROUP, off(v))
+	},
+	{
+		method: 'downloadMedia',
+		parameter: 'type',
+		source: 'Socket/index.ts:downloadMedia:type',
+		call: (s, v) =>
+			s.downloadMedia(
+				off({
+					url: 'https://example.invalid/x',
+					mediaKey: new Uint8Array(32),
+					directPath: '/x',
+					mimetype: 'image/jpeg'
+				}),
+				off<'buffer' | 'stream'>(v)
+			)
+	}
+]
+
+/**
+ * Values a JavaScript caller can actually put in a closed-domain parameter.
+ *
+ * The near-misses matter most: a valid value with different casing or a trailing
+ * space is the mistake people really make, and it must be rejected as loudly as
+ * an emoji.
+ */
+const generateOffDomainValue = (random: Random): unknown =>
+	random.weighted<unknown>([
+		[4, random.pick(['☠️', 'ADD', 'Add', 'add ', ' add', 'add\n', 'remove;', 'aDd', 'true', 'null', 'undefined', '0'])],
+		[3, generateString(random)],
+		[2, generateNumber(random)],
+		// `undefined` is deliberately absent: it means the argument was omitted, so
+		// for a defaulted or optional parameter it is not an off-domain *value* at
+		// all. Optionality is closed-domain-arguments.test.ts's subject.
+		[2, random.pick([null, true, false])],
+		[1, {}],
+		[1, []],
+		[1, () => undefined],
+		[1, Symbol('off-domain')],
+		[1, 'x'.repeat(4_096)],
+		[1, Object.create(null)],
+		[
+			1,
+			new Proxy(
+				{},
+				{
+					get: () => {
+						throw new Error('hostile getter')
+					}
+				}
+			)
+		]
+	])
+
+interface BoundaryFinding {
+	readonly ok: boolean
+	readonly detail?: string
+	readonly observed?: unknown
+}
+
+/** Everything the rejection contract requires, checked in one place. */
+/**
+ * This file's own name, as it appears in a V8 stack frame.
+ *
+ * Derived rather than written down: a rename would otherwise turn the
+ * caller-frame check into one that can never fail.
+ */
+const CALLER_FILE = import.meta.filename.split('/').at(-1)!
+
+const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFinding => {
+	if (!(error instanceof Error)) {
+		return { ok: false, detail: 'the rejection is not an Error', observed: String(error) }
+	}
+
+	const boom = error as Error & { isBoom?: boolean; output?: { statusCode?: number }; data?: Record<string, unknown> }
+
+	// The stack is the whole point: a wasm-only stack is the production bug this
+	// boundary was built to prevent, and it is invisible to a type checker.
+	const stack = String(error.stack ?? '')
+	if (stack.includes('wasm://')) {
+		return {
+			ok: false,
+			detail: 'the rejection stack contains wasm frames',
+			observed: stack.split('\n').slice(0, 4).join(' | ')
+		}
+	}
+
+	if (boom.isBoom !== true) {
+		return {
+			ok: false,
+			detail: 'the rejection is not a Boom',
+			observed: `${error.name}: ${error.message.slice(0, 120)}`
+		}
+	}
+	if (boom.output?.statusCode !== 400) {
+		return { ok: false, detail: 'the rejection does not carry statusCode 400', observed: boom.output?.statusCode }
+	}
+	if (boom.data?.parameter !== testCase.parameter) {
+		return { ok: false, detail: 'the rejection names the wrong parameter', observed: boom.data?.parameter }
+	}
+	if (!Array.isArray(boom.data?.accepted) || boom.data.accepted.length === 0) {
+		return { ok: false, detail: 'the rejection does not list the accepted values', observed: boom.data?.accepted }
+	}
+	if (!error.message.startsWith(`${testCase.method}: `)) {
+		return {
+			ok: false,
+			detail: 'the message does not open with the method the consumer called',
+			observed: error.message.slice(0, 120)
+		}
+	}
+	// The caller's own frame, which is the point of guarding at the boundary at
+	// all. A guard that rejects only after an internal `await` produces a stack
+	// rooted in the socket's internals: a fire-and-forget caller —
+	// `sock.sendReceipt(...)` with no await — then gets an unhandled rejection
+	// with nothing pointing at the line that made the call. That is invisible to a
+	// type checker and it is exactly what this boundary exists to prevent.
+	//
+	// Only meaningful because the call above is not awaited at its call site;
+	// awaiting re-adds this frame whether the guard earned it or not.
+	if (!stack.includes(CALLER_FILE)) {
+		return {
+			ok: false,
+			detail: 'the rejection stack has lost the caller frame',
+			observed: stack.split('\n').slice(0, 4).join(' | ')
+		}
+	}
+	return { ok: true }
+}
+
+/**
+ * What each guarded parameter is supposed to accept, written down here.
+ *
+ * Written down, not read from the guard. The domains used to come only from the
+ * guard's own rejection — `data.accepted` — which made the oracle circular: a
+ * guard that accidentally widened its list to include `'add '` would report that
+ * wider list, the fuzzer would treat `'add '` as valid and skip it, and the
+ * off-domain acceptance this target exists to catch became unobservable.
+ *
+ * The reason for reading it at runtime was real, though, and is kept: a
+ * hand-copied table drifts, and a drifted table makes the fuzzer call a *valid*
+ * value off-domain and report the resulting "not connected" failure as a bug.
+ * So both exist and are compared — `pins every guarded domain` below fails if
+ * they disagree, naming the parameter. A widening is then a test failure rather
+ * than a silent loss of coverage, and drift is a test failure rather than a
+ * false positive.
+ */
+const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
+	'Socket/blocking.ts:updateBlockStatus:action': ['block', 'unblock'],
+	'Socket/index.ts:sendPresenceUpdate:type': ['unavailable', 'available', 'composing', 'recording', 'paused'],
+	'Socket/index.ts:waUploadToServer:mediaType': [
+		'audio',
+		'document',
+		'gif',
+		'image',
+		'ppic',
+		'product',
+		'ptt',
+		'sticker',
+		'video',
+		'thumbnail-document',
+		'thumbnail-image',
+		'thumbnail-video',
+		'thumbnail-link',
+		'md-msg-hist',
+		'md-app-state',
+		'product-catalog-image',
+		'payment-bg-image',
+		'ptv',
+		'biz-cover-photo'
+	],
+	'Socket/index.ts:downloadMedia:type': ['buffer', 'stream'],
+	'Socket/groups.ts:groupSettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
+	'Socket/groups.ts:groupRequestParticipantsUpdate:action': ['approve', 'reject'],
+	'Socket/groups.ts:groupParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
+	'Socket/groups.ts:groupMemberAddMode:mode': ['admin_add', 'all_member_add'],
+	'Socket/groups.ts:groupJoinApprovalMode:mode': ['on', 'off'],
+	'Socket/messages.ts:sendReceipt:type': [
+		'read',
+		'read-self',
+		'hist_sync',
+		'peer_msg',
+		'sender',
+		'inactive',
+		'played',
+		// `undefined`, not `null`: omitting the type is how a caller sends a plain
+		// delivery receipt, and the two are different values to `includes`.
+		undefined
+	],
+	'Socket/messages.ts:sendReceipts:type': [
+		'read',
+		'read-self',
+		'hist_sync',
+		'peer_msg',
+		'sender',
+		'inactive',
+		'played',
+		// `undefined`, not `null`: omitting the type is how a caller sends a plain
+		// delivery receipt, and the two are different values to `includes`.
+		undefined
+	],
+	'Socket/newsletter.ts:newsletterMetadata:type': ['invite', 'jid'],
+	'Socket/server-queries.ts:cleanDirtyBits:type': ['account_sync', 'groups'],
+	'Socket/presence.ts:sendPresence:status': ['unavailable', 'available'],
+	'Socket/presence.ts:sendChatState:state': ['composing', 'recording', 'paused'],
+	'Socket/privacy.ts:updateLastSeenPrivacy:value': ['all', 'contacts', 'contact_blacklist', 'none'],
+	'Socket/privacy.ts:updateOnlinePrivacy:value': ['all', 'match_last_seen'],
+	'Socket/privacy.ts:updateProfilePicturePrivacy:value': ['all', 'contacts', 'contact_blacklist', 'none'],
+	'Socket/privacy.ts:updateStatusPrivacy:value': ['all', 'contacts', 'contact_blacklist', 'none'],
+	'Socket/privacy.ts:updateReadReceiptsPrivacy:value': ['all', 'none'],
+	'Socket/privacy.ts:updateGroupsAddPrivacy:value': ['all', 'contacts', 'contact_blacklist'],
+	'Socket/privacy.ts:updateCallPrivacy:value': ['all', 'known'],
+	'Socket/privacy.ts:updateMessagesPrivacy:value': ['all', 'contacts'],
+	'Socket/contacts.ts:profilePictureUrl:type': ['preview', 'image'],
+	'Socket/communities.ts:communityRequestParticipantsUpdate:action': ['approve', 'reject'],
+	'Socket/communities.ts:communityParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
+	'Socket/communities.ts:communitySettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
+	'Socket/communities.ts:communityMemberAddMode:mode': ['admin_add', 'all_member_add'],
+	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off']
+}
+
+/** The same values as reported by the guard itself, for the pin below. */
+const acceptedValues = new Map<string, readonly unknown[]>()
+
+const learnDomain = async (socket: Socket, testCase: BoundaryCase): Promise<void> => {
+	try {
+		await testCase.call(socket, '\u2620\uFE0F-definitely-not-a-member')
+	} catch (error) {
+		const accepted = (error as { data?: { accepted?: unknown } })?.data?.accepted
+		if (Array.isArray(accepted)) acceptedValues.set(testCase.source, accepted)
+	}
+}
+
+describe('closed-domain argument boundary, fuzzed', () => {
+	let socket: Socket
+	let folder: string
+
+	before(async () => {
+		folder = await mkdtemp(path.join(tmpdir(), 'baileyrs-fuzz-domains-'))
+		const { state } = await useMultiFileAuthState(folder)
+		// Self-referencing rather than closing over `socket`: `makeWASocket` calls
+		// `logger.child(...)` during construction, before the assignment below has
+		// happened, so a closure would dereference `undefined`.
+		const silentLogger: Record<string, unknown> = {
+			level: 'silent',
+			trace: () => {},
+			debug: () => {},
+			info: () => {},
+			warn: () => {},
+			error: () => {}
+		}
+		silentLogger.child = () => silentLogger
+
+		socket = makeWASocket({
+			auth: state,
+			logger: silentLogger as never,
+			// Nothing listens here, so a value that survives validation fails as
+			// "not connected" instead of reaching a server.
+			waWebSocketUrl: 'ws://127.0.0.1:1'
+		})
+		for (const testCase of CASES) await learnDomain(socket, testCase)
+	})
+
+	after(async () => {
+		try {
+			// Awaited: teardown flushes the auth stores asynchronously, and removing
+			// the folder underneath an in-flight write recreates it or throws after
+			// the test has already reported success.
+			await socket.end(undefined)
+		} catch {
+			// The socket never connected; ending it is best-effort cleanup.
+		}
+		await rm(folder, { recursive: true, force: true })
+	})
+
+	it('guards every assertArgumentDomain call site in the source', async () => {
+		// Auto-discovery, so a new guarded parameter cannot be added without also
+		// being fuzzed — the same ledger discipline as the pure-helper coverage test.
+		// The whole of `src`, recursively, and all three quote styles: the claim in
+		// this file's header is "every call site in src/", and a scan of two
+		// directories' immediate children would let a guard in a new subdirectory
+		// pass without a fuzz case — the exact gap this test exists to close.
+		// Keyed on the path relative to `src`, not the basename: the scan is
+		// recursive, and two guards in different directories sharing a file name and
+		// the same method and parameter would otherwise collapse into one entry —
+		// letting a single fuzz case satisfy both and a guard ship unfuzzed.
+		const sourceRoot = path.join(import.meta.dirname, '..')
+		const scanned: string[] = []
+		for (const entry of await readdir(sourceRoot, { withFileTypes: true, recursive: true })) {
+			if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
+			if (entry.parentPath.includes('__fuzz__') || entry.parentPath.includes('__tests__')) continue
+			const file = path.join(entry.parentPath, entry.name)
+			const relative = path.relative(sourceRoot, file).split(path.sep).join('/')
+			const source = await readFile(file, 'utf8')
+			for (const match of source.matchAll(/assertArgumentDomain\(\s*['"`]([^'"`]+)['"`],\s*['"`]([^'"`]+)['"`]/gu)) {
+				scanned.push(`${relative}:${match[1]}:${match[2]}`)
+			}
+		}
+
+		assert.ok(
+			scanned.length > 20,
+			`the source scan found only ${scanned.length} guarded parameters — has the pattern changed?`
+		)
+
+		const covered = new Set(CASES.map(testCase => testCase.source))
+		// downloadMediaMessage is a standalone helper rather than a socket method;
+		// closed-domain-arguments.test.ts drives it directly.
+		const exempt = new Set(['Utils/messages.ts:downloadMediaMessage:type'])
+		const missing = scanned.filter(entry => !covered.has(entry) && !exempt.has(entry))
+		assert.deepEqual(missing, [], `guarded parameters with no fuzz case: ${missing.join(', ')}`)
+
+		const stale = [...covered].filter(entry => !scanned.includes(entry))
+		assert.deepEqual(stale, [], `fuzz cases for guards that no longer exist: ${stale.join(', ')}`)
+	})
+
+	it('pins every guarded domain to a written-down list', () => {
+		// The two halves of the oracle, compared. `EXPECTED_DOMAINS` is what the
+		// fuzzer treats as valid; `acceptedValues` is what the guard reports at
+		// runtime. Equal, or one of them is wrong — and which one is a question for
+		// whoever changed it, which is why this fails rather than reconciling.
+		//
+		// Order-insensitive, since the guard may list its domain in any order, but
+		// membership-exact: a value in one and not the other is the whole point.
+		const mismatched: string[] = []
+		const unreported: string[] = []
+		for (const testCase of CASES) {
+			const expected = EXPECTED_DOMAINS[testCase.source]
+			if (expected === undefined) {
+				mismatched.push(`${testCase.source}: no entry in EXPECTED_DOMAINS`)
+				continue
+			}
+			const reported = acceptedValues.get(testCase.source)
+			if (reported === undefined) {
+				// The guard never reported a domain — it may not have been reached, or
+				// it rejected without `data.accepted`. Surfaced separately, because it
+				// means the pin proved nothing for that parameter rather than failing.
+				unreported.push(testCase.source)
+				continue
+			}
+			// Tagged with the type, not stringified. `String(undefined)` is the same
+			// six characters as the literal string `'undefined'`, and three of these
+			// domains end in an optional `undefined` member — so a guard that started
+			// accepting the *string* instead of the absent value matched this pin
+			// exactly. Only the randomised off-domain target could have caught it, and
+			// only if a seed happened to draw that one string.
+			const key = (values: readonly unknown[]) =>
+				JSON.stringify([...values].map(item => `${typeof item}:${String(item)}`).toSorted())
+			if (key(expected) !== key(reported)) {
+				mismatched.push(
+					`${testCase.source}: guard accepts ${JSON.stringify(reported)}, table says ${JSON.stringify(expected)}`
+				)
+			}
+		}
+		assert.deepEqual(mismatched, [], `guarded domains disagree with the table:\n  ${mismatched.join('\n  ')}`)
+		assert.deepEqual(
+			unreported,
+			[],
+			`these guards never reported an accepted list, so their domain is unpinned:\n  ${unreported.join('\n  ')}`
+		)
+	})
+
+	for (const testCase of CASES) {
+		it(`${testCase.method}(${testCase.parameter})`, async () => {
+			await fuzz<unknown>({
+				target: `args:${testCase.method}`,
+				runs: 60,
+				shrinkFailures: false,
+				generate: generateOffDomainValue,
+				check: async value => {
+					const findings: Divergence[] = []
+					// A generated value that happens to be in the domain (`undefined` for
+					// an optional or defaulted parameter) is not off-domain, and what it
+					// does downstream is not this test's subject.
+					//
+					// Read from `EXPECTED_DOMAINS`, never from the guard's own report: a
+					// guard that widened its accepted list would otherwise vouch for the
+					// very value that proves it widened.
+					if ((EXPECTED_DOMAINS[testCase.source] ?? []).includes(value)) return findings
+					// Invoked without `await` at the call site, and the outcome taken from
+					// handlers attached to the returned promise.
+					//
+					// `await socket.method(...)` lets V8 splice the awaiting frame into the
+					// rejection's stack, so a guard that had moved past an internal await —
+					// losing the caller's frame for every real fire-and-forget caller —
+					// still produced a stack naming this file, and the checks below passed
+					// on a trace the guard had not actually produced. Attaching handlers
+					// instead means what is inspected is the stack as it was thrown.
+					const settled = await new Promise<{ readonly ok: boolean; readonly error?: unknown }>(resolve => {
+						let pending: unknown
+						try {
+							pending = testCase.call(socket, value)
+						} catch (error) {
+							// A guard that rejects synchronously, before returning a promise.
+							resolve({ ok: false, error })
+							return
+						}
+						Promise.resolve(pending).then(
+							() => resolve({ ok: true }),
+							(error: unknown) => resolve({ ok: false, error })
+						)
+					})
+
+					if (settled.ok) {
+						// Reaching here means the value was accepted. It cannot have been
+						// valid — everything generated is off-domain — so the guard let it
+						// through and it is on its way to the bridge.
+						findings.push({
+							target: `args:${testCase.method}`,
+							input: value,
+							local: '<accepted>',
+							upstream: '<Boom 400 naming the parameter>',
+							detail: 'an off-domain value passed the guard'
+						})
+						return findings
+					}
+
+					const verdict = inspectRejection(settled.error, testCase)
+					if (!verdict.ok) {
+						findings.push({
+							target: `args:${testCase.method}`,
+							input: value,
+							local: verdict.observed,
+							upstream: '<Boom 400 naming the parameter, with a wasm-free stack>',
+							detail: verdict.detail
+						})
+					}
+					return findings
+				}
+			})
+		})
+	}
+})

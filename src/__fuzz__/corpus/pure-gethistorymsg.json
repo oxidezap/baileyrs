@@ -1,0 +1,8 @@
+[
+	{
+		"note": "no history-sync notification present: upstream returns undefined, baileyrs throws Boom 400",
+		"input": [
+			{}
+		]
+	}
+]

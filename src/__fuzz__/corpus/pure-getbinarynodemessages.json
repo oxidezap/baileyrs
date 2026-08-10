@@ -1,0 +1,18 @@
+[
+	{
+		"note": "a <message> child whose content is not a decodable WebMessageInfo: upstream throws \"illegal buffer\", baileyrs returns an empty message",
+		"input": [
+			{
+				"tag": "iq",
+				"attrs": {},
+				"content": [
+					{
+						"tag": "message",
+						"attrs": {},
+						"content": ""
+					}
+				]
+			}
+		]
+	}
+]

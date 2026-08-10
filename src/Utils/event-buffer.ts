@@ -181,7 +181,14 @@ const append = (
 		case 'chats.upsert': {
 			for (const chat of eventData as Chat[]) {
 				const id = chat.id || ''
-				let existing = data.chatUpserts[id] || data.historySets.chats[id]
+				// The history set is only consulted for a chat that *has* an id.
+				// Upstream guards the lookup with `id &&`, and this port had dropped
+				// it: an id-less chat then folded into whatever id-less entry a
+				// buffered history set happened to carry, summing their unread counts,
+				// where upstream releases it as its own `chats.upsert`. Found by the
+				// buffer differential once history rows started drawing from the same
+				// identity pool as live traffic.
+				let existing = data.chatUpserts[id] || (id ? data.historySets.chats[id] : undefined)
 				if (existing) concatChats(existing, chat)
 				else {
 					existing = chat

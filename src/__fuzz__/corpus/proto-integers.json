@@ -1,0 +1,11 @@
+[
+	{
+		"note": "a double above FLT_MAX in a 32-bit float field: the bridge throws \"invalid float32\", protobufjs encodes it silently. Exact FLT_MAX is accepted by both.",
+		"input": {
+			"path": "AIRichResponseLatexMetadata.AIRichResponseLatexExpression",
+			"message": {
+				"fontHeight": 3.5e+38
+			}
+		}
+	}
+]

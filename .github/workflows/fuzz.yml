@@ -1,0 +1,296 @@
+name: Nightly Fuzz
+
+# Two modes, on purpose.
+#
+# Every pull request already runs the fuzz suite through `npm test`, with a fixed
+# seed and small per-target budgets. That run is deterministic: it cannot fail
+# because of an unlucky draw, which is the only way a fuzz suite survives contact
+# with a CI system people have to trust.
+#
+# This job is where the searching happens. It varies the seed per run, raises the
+# budgets, and enforces the parts of the known-divergence registry that would be
+# hostile on a pull request — entries past their review date, and entries that no
+# longer excuse anything.
+
+on:
+  schedule:
+    # 03:17 UTC, off the hour so it does not queue behind everything else.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Fuzz seed (defaults to the run id)'
+        required: false
+        type: string
+      mode:
+        description: 'smoke or deep'
+        required: false
+        default: 'deep'
+        # A choice, not free text: the runner rejects anything else outright, and
+        # a rejected dispatch is better than one that silently runs a smoke pass.
+        type: choice
+        options:
+          - deep
+          - smoke
+
+# One fuzz run at a time in the *repository*, not per ref. The tracking issue is
+# repository-wide, so two runs on different refs — a nightly and a manual
+# dispatch on a branch — would each look it up, each find nothing, and each
+# create one. Every later run then comments on and closes only the lowest
+# number, leaving the duplicate open forever holding a stale report. Queued
+# rather than cancelled: the in-flight run's result is the one worth keeping.
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the fuzz suite
+        id: fuzz
+        env:
+          # A fresh seed per run is the point: the fixed-seed smoke run on every
+          # PR has already searched its own corner exhaustively.
+          FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+          FUZZ_MODE: ${{ inputs.mode || 'deep' }}
+          FUZZ_TIME_BUDGET_MS: '180000'
+          FUZZ_REPORT_DIR: fuzz-reports
+          FUZZ_STRICT_ALLOWLIST: '1'
+        # --expose-gc turns on the WASM handle-leak probe, which skips without it.
+        # --test-timeout bounds a decoder that stops returning: the runner's own
+        # slowMs is measured after the check completes, so it cannot see an input
+        # that never completes. The parent process owns this timer, so it fires
+        # even when the child's event loop is blocked by a synchronous WASM loop.
+        run: node --expose-gc --test --test-timeout=1800000 "./src/__fuzz__/**/*.test.ts"
+        continue-on-error: true
+
+      - name: Summarise
+        id: report
+        if: always()
+        run: |
+          {
+            node scripts/fuzz/report.ts fuzz-reports --markdown --fail-on-stale \
+              ${{ steps.fuzz.outcome == 'success' && ' ' || '--run-failed' }}
+          } > fuzz-summary.md 2>&1 && echo "clean=true" >> "$GITHUB_OUTPUT" || echo "clean=false" >> "$GITHUB_OUTPUT"
+          cat fuzz-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-reports-${{ github.run_id }}
+          path: |
+            fuzz-reports/
+            fuzz-summary.md
+          retention-days: 30
+
+      # The fuzz outcome is part of the condition, not just the report: a run can
+      # fail on something the report has no findings for — a harness crash, a
+      # suite-level assertion — and an issue is exactly what those need too.
+      #
+      # Runs on every outcome, not only failures. A clean run has something to
+      # record too — but only that, and it never closes the issue: a different
+      # seed reaching nothing is not evidence the finding is gone. Closing is a
+      # person's call, made against the reproducer in the report.
+      - name: Update the tracking issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs')
+            const summary = fs.readFileSync('fuzz-summary.md', 'utf8')
+            // The seed is a free-form workflow input, so the reproduction command
+            // has to quote it or it is not the command that ran: `nightly run`
+            // would make the shell treat `run` as the program, and a `;` would
+            // append a second command to whatever the reader pastes. Same rule as
+            // the runner's own replay hint.
+            const shellQuote = value =>
+              /^[\w.:@/+=-]+$/.test(value) ? value : `'${String(value).replaceAll("'", String.raw`'\''`)}'`
+            // The same condition the step used to be gated on, now a value: the
+            // report found nothing *and* the run itself did not fail.
+            const clean = ${{ steps.report.outputs.clean == 'true' && steps.fuzz.outcome == 'success' }}
+            const seed = process.env.FUZZ_SEED
+            const mode = process.env.FUZZ_MODE
+            const budget = process.env.FUZZ_TIME_BUDGET_MS
+            // Stable across runs, so the issue this job owns is identifiable by
+            // something other than a label anyone can apply. The seed moved into
+            // the body: it changes nightly, and a title that changes cannot be a key.
+            const title = 'Nightly fuzz: open findings'
+            const marker = '<!-- nightly-fuzz-tracking-issue -->'
+            // Marks a clean-run note, so those can be counted and capped without
+            // mistaking them for the reports they are attached to.
+            const cleanMarker = '<!-- nightly-fuzz-clean-run -->'
+
+            // One open issue per topic, updated rather than duplicated: a fuzzer
+            // that opens a fresh issue every night trains people to close them
+            // unread.
+            //
+            // Three things have to agree before this job will write to an issue:
+            // the marker in the body, the title it files under, and an author that
+            // is this workflow's own bot identity.
+            //
+            // The marker is public — it is visible in every report this job posts —
+            // so anyone who can open an issue can paste it. On its own it is a claim
+            // of ownership, not proof of one: an issue carrying it with a lower
+            // number would collect the nightly's reports, and a clean night would
+            // comment on and close it. Authorship is the part a repository user
+            // cannot forge, so it is the part that decides.
+            //
+            // `listForRepo` returns pull requests as well as issues, and the generic
+            // `fuzz` label is one anybody can put on anything — so the label by
+            // itself would let the nightly report land in an unrelated thread, or on
+            // a PR, and the API's default ordering makes which one unstable as more
+            // labelled items are opened.
+            //
+            // And the label cannot be part of the *query* either, only of the
+            // answer. A label is editable by anyone with write access: strip `fuzz`
+            // from the open tracking issue and a label-scoped search stops returning
+            // it before the marker is ever consulted, so the next failing night files
+            // a duplicate and no clean night can ever find and close the original.
+            // The marker lives in the body, which is the one part of the issue this
+            // job writes and nothing routine edits. It still *applies* the label on
+            // creation, for people who browse that way — it just never trusts it.
+            //
+            // The cost is listing open issues rather than a label slice, which is
+            // why it paginates. The lowest number wins, so the choice does not depend
+            // on page order either.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            })
+            // `github-actions[bot]` is who `GITHUB_TOKEN` posts as, which is what
+            // creates the issue below. A repository user cannot author as it.
+            const owned = open
+              .filter(
+                item =>
+                  !item.pull_request &&
+                  (item.body ?? '').includes(marker) &&
+                  item.title === title &&
+                  item.user?.type === 'Bot' &&
+                  item.user?.login === 'github-actions[bot]'
+              )
+              .sort((left, right) => left.number - right.number)
+
+            const body = [
+              marker,
+              `Seed: \`${seed}\` · mode \`${mode}\``,
+              '',
+              summary,
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              // The run's own flags, or the reproduction can pass where the run
+              // failed: without --expose-gc the leak probe skips, without
+              // FUZZ_STRICT_ALLOWLIST an expired entry is a warning rather than a
+              // failure, and the budget decides how many inputs each target gets
+              // through before it truncates. The mode is read back rather than
+              // hard-coded to `deep`, because a manual dispatch can run `smoke`
+              // and `npm run fuzz:deep` would then reproduce a different run.
+              `Reproduce locally: \`FUZZ_SEED=${shellQuote(seed)} FUZZ_MODE=${mode} FUZZ_TIME_BUDGET_MS=${budget} FUZZ_STRICT_ALLOWLIST=1 node --expose-gc --test --test-timeout=1800000 "./src/__fuzz__/**/*.test.ts"\``,
+              '',
+              '---',
+              '_Generated by [Claude Code](https://claude.ai/code)_'
+            ].join('\n')
+
+            // A clean run records itself on the issue. It does not close it.
+            //
+            // Closing was wrong, and wrong in the direction that loses bugs. Each
+            // night draws a different seed, so a clean run samples different inputs
+            // than the one that filed the report — it never replays the failing
+            // input, because the workflow does not set `FUZZ_RECORD` and so nothing
+            // freezes a reproducer into the corpus. A manual `mode: smoke` dispatch
+            // is worse again: roughly a twenty-fifth of the inputs, and it could
+            // close a finding the nightly's deep run had taken 4,000 iterations to
+            // reach. "Tonight's seed did not hit it" is not "it is fixed", and an
+            // unresolved regression silently leaving the tracker is the one outcome
+            // this issue exists to prevent.
+            //
+            // So a clean night appends evidence and leaves the issue open. Whoever
+            // reads it decides — after replaying the reproducer, or after the fix
+            // lands — and closing by hand is deliberate rather than incidental. The
+            // comment is capped: the point is a record, not a nightly heartbeat that
+            // buries the report under a year of "still clean".
+            if (clean) {
+              for (const issue of owned) {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  per_page: 100
+                })
+                const cleanRuns = comments.filter(item => (item.body ?? '').includes(cleanMarker)).length
+                if (cleanRuns >= 5) continue
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: [
+                    marker,
+                    cleanMarker,
+                    `The nightly is clean on seed \`${seed}\` (mode \`${mode}\`).`,
+                    '',
+                    'This does **not** close the issue. Each run draws a different seed and the failing input is not replayed, so a clean night says the finding was not reached — not that it was fixed. Close this by hand once the reproducer above no longer reproduces, or once the fix lands.',
+                    '',
+                    `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                    '',
+                    '---',
+                    '_Generated by [Claude Code](https://claude.ai/code)_'
+                  ].join('\n')
+                })
+              }
+              return
+            }
+
+            if (owned.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: owned[0].number,
+                body
+              })
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['fuzz']
+              })
+            }
+        env:
+          FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+          # Mirrored from the run step, so the reproduction command names the mode
+          # and budget the findings were actually produced under.
+          FUZZ_MODE: ${{ inputs.mode || 'deep' }}
+          FUZZ_TIME_BUDGET_MS: '180000'
+
+      # The fuzz and summarise steps deliberately do not fail on the spot, so the
+      # artifacts get uploaded and the issue gets filed first. Without a final gate
+      # the job would then finish green holding findings, which is the one outcome
+      # that would make the whole nightly pointless.
+      - name: Fail the job when the run was not clean
+        if: always() && (steps.fuzz.outcome != 'success' || steps.report.outputs.clean != 'true')
+        run: |
+          echo "fuzz outcome: ${{ steps.fuzz.outcome }}"
+          echo "report clean: ${{ steps.report.outputs.clean }}"
+          exit 1

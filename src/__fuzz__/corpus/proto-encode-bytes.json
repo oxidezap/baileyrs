@@ -1,0 +1,25 @@
+[
+	{
+		"note": "a field whose type the bridge does not implement is silently omitted rather than reported",
+		"input": {
+			"path": "MessageContextInfo",
+			"message": {
+				"botMetadata": {
+					"avatarMetadata": {}
+				}
+			}
+		}
+	},
+	{
+		"note": "repeated scalars: unpacked from the bridge (08 00 08 01), packed from protobufjs (0a 02 00 01). Lives here, not in proto-field-packing.json: `proto:field-packing` is a finding target the encode-bytes run emits, and the corpus is keyed on the fuzz() target, so a file named after it is never replayed.",
+		"input": {
+			"path": "BotCapabilityMetadata",
+			"message": {
+				"capabilities": [
+					0,
+					1
+				]
+			}
+		}
+	}
+]

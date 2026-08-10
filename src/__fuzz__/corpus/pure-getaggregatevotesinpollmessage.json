@@ -1,0 +1,33 @@
+[
+	{
+		"note": "same votes aggregated into the same buckets, emitted in a different order",
+		"input": [
+			{
+				"pollUpdates": [
+					{
+						"vote": {
+							"selectedOptions": [
+								{
+									"__bytes__": ""
+								}
+							]
+						}
+					},
+					{
+						"pollUpdateMessageKey": {
+							"remoteJid": " "
+						},
+						"vote": {
+							"selectedOptions": [
+								{
+									"__bytes__": "XA=="
+								}
+							]
+						}
+					}
+				]
+			},
+			""
+		]
+	}
+]

@@ -1,0 +1,277 @@
+#!/usr/bin/env node
+
+/**
+ * Aggregates the per-target JSON reports a fuzz run writes into FUZZ_REPORT_DIR.
+ *
+ * The nightly job needs three things a test runner cannot give it. First, one
+ * readable summary instead of eight TAP streams. Second, the *stale* entries in
+ * the known-divergence registry — an entry that excused nothing across a whole
+ * deep run is either fixed or no longer reachable, and either way it should be
+ * deleted rather than left to excuse a future regression. That question can only
+ * be answered across targets, and `node --test` runs each file in its own
+ * process. Third, an issue body worth opening.
+ *
+ * Usage:
+ *   FUZZ_REPORT_DIR=./fuzz-reports npm run fuzz:deep
+ *   node scripts/fuzz/report.ts ./fuzz-reports [--markdown] [--fail-on-stale] [--run-failed]
+ */
+
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { KNOWN_DIVERGENCES, staleEntries } from '../../src/__fuzz__/harness/divergence.ts'
+
+interface Report {
+	target: string
+	seed: string
+	mode: string
+	runs: number
+	corpusReplayed: number
+	excused: number
+	excusedBy?: string[]
+	openFindings?: string[]
+	truncated?: { ran: number; planned: number }
+	findings: { target: string; detail?: string }[]
+	crashes?: string[]
+	/**
+	 * The real crash count. `crashes` holds a capped, deduplicated sample — a
+	 * systemic failure throws once per input and the runner stores five details for
+	 * it — so the array length understates a run by orders of magnitude. Older
+	 * reports carry no such field, hence the fallback.
+	 */
+	crashCount?: number
+}
+
+/**
+ * A value the reader can paste into a shell and get back verbatim.
+ *
+ * The seed reaches here from the report files, which take it from a free-form
+ * workflow input. The runner's replay hint and the tracking-issue body already
+ * quote it; this summary is embedded verbatim in that same issue, so leaving it
+ * unquoted advertised the unsafe command right beside the safe one. Single
+ * quotes rather than JSON, because double quotes still expand `$` and backticks.
+ */
+const shellQuote = (value: string): string =>
+	/^[\w.:@/+=-]+$/u.test(value) ? value : `'${value.replaceAll("'", String.raw`'\''`)}'`
+
+const argv = process.argv.slice(2)
+const directory = resolve(
+	argv.find(argument => !argument.startsWith('--')) ?? process.env.FUZZ_REPORT_DIR ?? 'fuzz-reports'
+)
+const markdown = argv.includes('--markdown')
+const failOnStale = argv.includes('--fail-on-stale')
+/**
+ * Set by the caller when the fuzz step itself did not exit cleanly.
+ *
+ * A file that dies during import or on a suite-level assertion writes no report
+ * at all, and a report that was never written cannot be marked truncated — so
+ * the aggregate looks complete and every entry those targets would have excused
+ * gets called stale. That turns one unrelated crash into a recommendation to
+ * delete working allowlist entries.
+ */
+const runFailed = argv.includes('--run-failed')
+
+if (!existsSync(directory)) {
+	console.error(`fuzz report: no such directory ${directory}`)
+	console.error('Run the suite with FUZZ_REPORT_DIR set to collect per-target reports first.')
+	process.exit(2)
+}
+
+const reports: Report[] = readdirSync(directory)
+	.filter(name => name.endsWith('.json'))
+	.map(name => JSON.parse(readFileSync(join(directory, name), 'utf8')) as Report)
+	.toSorted((left, right) => left.target.localeCompare(right.target))
+
+if (reports.length === 0) {
+	console.error(`fuzz report: ${directory} holds no reports`)
+	process.exit(2)
+}
+
+const totals = reports.reduce(
+	(accumulator, report) => ({
+		runs: accumulator.runs + report.runs,
+		corpus: accumulator.corpus + report.corpusReplayed,
+		excused: accumulator.excused + report.excused,
+		findings: accumulator.findings + report.findings.length,
+		crashes: accumulator.crashes + (report.crashCount ?? report.crashes?.length ?? 0)
+	}),
+	{ runs: 0, corpus: 0, excused: 0, findings: 0, crashes: 0 }
+)
+
+const truncated = reports.filter(report => report.truncated)
+const seeds = [...new Set(reports.map(report => report.seed))]
+const mode = reports[0]?.mode ?? 'smoke'
+
+/**
+ * Registry entries that excused nothing anywhere in this run.
+ *
+ * Each report names the exact entry ids that fired, which is why this can be
+ * stated rather than guessed. It is the one question a per-file test runner
+ * cannot answer on its own: `node --test` gives every file its own process, so
+ * no single run sees the whole registry being exercised.
+ *
+ * An entry that excuses nothing is either fixed or no longer reachable. Both are
+ * reasons to delete it — an allowlist that outlives its divergence is how the
+ * same bug comes back unnoticed.
+ */
+const used = [...new Set(reports.flatMap(report => report.excusedBy ?? []))]
+// A truncated target may simply not have reached the input that would have used
+// an entry, so "excused nothing" proves nothing this run. Expired entries are
+// still enforced — that check does not depend on coverage.
+// A target filter has the same effect as a crash on this question: the targets
+// it skipped wrote no report, so an entry only they would have used looks unused.
+//
+// Read from the reports, not from `process.env`: the filter is consumed by the
+// runner, and `FUZZ_ONLY=x npm run fuzz:deep` followed by a separate `node
+// scripts/fuzz/report.ts` leaves it unset here. A skipped target writes a report
+// with `runs: 0`, which survives the process boundary.
+const filtered =
+	Boolean(process.env.FUZZ_ONLY?.trim()) || reports.some(report => report.runs === 0 && !report.truncated)
+// And a smoke run is the same question again, from sample size rather than from
+// coverage: it draws roughly a twenty-fifth of the inputs deep mode does — 201
+// against 5001 on `pure:cleanMessage`, measured — so an entry it never reached
+// is not thereby unreachable. Nothing else about smoke changes; findings,
+// crashes and expired entries still fail exactly as before.
+//
+// Read from the reports rather than from the mode this process was told about,
+// for the same reason the filter is: the runner owns `FUZZ_MODE`, and a separate
+// `node scripts/fuzz/report.ts` invocation does not see it.
+const sampled = mode !== 'deep'
+const complete = truncated.length === 0 && !runFailed && !filtered && !sampled
+const candidates = complete ? staleEntries(used) : []
+
+const today = new Date().toISOString().slice(0, 10)
+const expired = KNOWN_DIVERGENCES.filter(entry => entry.review < today)
+const open = KNOWN_DIVERGENCES.filter(entry => entry.status === 'open')
+
+const lines: string[] = []
+const heading = (text: string) => lines.push(markdown ? `## ${text}` : `\n${text}`)
+
+lines.push(markdown ? '# Fuzz run' : 'fuzz run')
+lines.push(
+	`mode ${mode} · seed${seeds.length > 1 ? 's' : ''} ${seeds.join(', ')} · ${totals.runs} inputs across ${reports.length} targets`
+)
+lines.push(
+	`${totals.findings} unexcused finding(s) · ${totals.crashes} crash(es) · ${totals.excused} excused · ${totals.corpus} replayed from the corpus`
+)
+
+if (truncated.length > 0) {
+	heading('Truncated targets')
+	lines.push('These did not finish inside their time budget, so their coverage is partial:')
+	for (const report of truncated) {
+		lines.push(`- ${report.target}: ${report.truncated!.ran} of ${report.truncated!.planned}`)
+	}
+	if (failOnStale) {
+		lines.push('')
+		lines.push(
+			'Under `--fail-on-stale` this fails the run. A target that silently shrinks to a prefix reports a pass ' +
+				'having searched a fraction of what it claims — which is how a slow regression hides. Either the budget ' +
+				'is too low for the machine, or something got slower; both need a person.'
+		)
+	}
+}
+
+if (totals.findings > 0) {
+	heading('Unexcused findings')
+	for (const report of reports) {
+		if (report.findings.length === 0) continue
+		lines.push(`- **${report.target}** — ${report.findings.length}`)
+		const details = [...new Set(report.findings.map(finding => finding.detail ?? 'no detail'))]
+		for (const detail of details.slice(0, 5)) lines.push(`  - ${detail}`)
+	}
+	lines.push('')
+	// The mode is part of the reproduction, not decoration. `npm run fuzz` sets no
+	// `FUZZ_MODE` and so runs smoke — roughly a twenty-fifth of the inputs — which
+	// replays the same deterministic prefix and can finish clean before reaching a
+	// finding the nightly's deep run only got to on its 4000th input. Right seed,
+	// right target, wrong answer.
+	lines.push(
+		`Reproduce with \`FUZZ_SEED=${shellQuote(String(seeds[0] ?? ''))} FUZZ_ONLY="<target>" npm run ${mode === 'deep' ? 'fuzz:deep' : 'fuzz'}\`.`
+	)
+}
+
+// A crash is a failure with no divergence attached — a check or generator that
+// threw, or an expired allowlist entry under strict mode. Without this section a
+// crash-only run printed "0 findings" while the job went red, which reads as a
+// broken workflow rather than a real result.
+if (totals.crashes > 0) {
+	heading('Crashes')
+	// Bounded and deduplicated. A check that starts throwing systematically records
+	// one crash per generated input, and this body is used verbatim as the GitHub
+	// issue — thousands of near-identical lines would push it past the size limit
+	// and lose the notification exactly when the harness is most broken.
+	const LIMIT = 25
+	const seen = new Set<string>()
+	let shown = 0
+	let omitted = 0
+	for (const report of reports) {
+		for (const crash of report.crashes ?? []) {
+			// Keyed on the `threw` line, not the first one. The first line carries the
+			// origin — `seed X, run 412` — so a check that throws systematically
+			// produced a distinct key for every input, defeating the dedup entirely:
+			// one failure consumed the whole cap while later crash classes went
+			// unlisted. The exception text is what actually identifies a crash.
+			const threw = crash
+				.split('\n')
+				.map(line => line.trim())
+				.find(line => line.startsWith('threw '))
+			const key = `${report.target}\u0000${threw ?? crash.trim().split('\n')[0]}`
+			if (seen.has(key) || shown >= LIMIT) {
+				omitted++
+				continue
+			}
+			seen.add(key)
+			shown++
+			lines.push(`- **${report.target}** — ${crash.trim()}`)
+		}
+	}
+	if (omitted > 0) lines.push(`- …and ${omitted} more (repeats of the above, or past the ${LIMIT}-line cap)`)
+}
+
+if (open.length > 0) {
+	heading('Open findings still on the books')
+	for (const entry of open) lines.push(`- \`${entry.id}\` (review by ${entry.review})`)
+}
+
+if (expired.length > 0) {
+	heading('Known divergences past review')
+	for (const entry of expired) lines.push(`- \`${entry.id}\` was due ${entry.review} — re-argue it or delete it`)
+}
+
+if (!complete) {
+	heading('Registry stale-entry check skipped')
+	lines.push(
+		runFailed
+			? 'The fuzz step did not exit cleanly, so some targets may have written no report at all and this run cannot establish which entries are unused.'
+			: filtered
+				? 'FUZZ_ONLY selected a subset of targets, so this run cannot establish which entries are unused.'
+				: truncated.length > 0
+					? 'At least one target was truncated, so this run cannot establish which entries are unused.'
+					: `This was a ${mode} run, which draws a fraction of the inputs deep mode does, so it cannot establish which entries are unused. Run \`npm run fuzz:deep\` to answer that.`
+	)
+} else if (candidates.length > 0) {
+	heading('Registry entries that excused nothing')
+	lines.push('These excused nothing anywhere in this run — fixed, or no longer reachable. Either way, delete them:')
+	for (const entry of candidates) lines.push(`- \`${entry.id}\``)
+}
+
+console.log(lines.join('\n'))
+
+/**
+ * Truncation fails the run, but only under `--fail-on-stale`.
+ *
+ * The runner only warns about it, and a warning is not enough on its own: a
+ * target reduced to an arbitrarily small prefix still writes a report with no
+ * findings, so a regression that makes a decoder ten times slower shows up as a
+ * green run with less coverage rather than as a failure.
+ *
+ * Gated on the same flag as the other strict checks because the two callers want
+ * different things. The nightly passes it and gives every target 180s, so
+ * truncation there means something actually got slower. A local `npm run fuzz`
+ * has a 6s smoke budget and truncates routinely on a busy machine; failing that
+ * would train people to ignore the signal.
+ */
+const failed =
+	totals.findings > 0 ||
+	totals.crashes > 0 ||
+	(failOnStale && (expired.length > 0 || candidates.length > 0 || truncated.length > 0))
+process.exit(failed ? 1 : 0)
