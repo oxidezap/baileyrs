@@ -290,7 +290,11 @@ describe('public helper compatibility', () => {
 	it('extracts wrapped history notifications', () => {
 		const notification = { syncType: proto.HistorySync.HistorySyncType.RECENT }
 		assert.deepEqual(getHistoryMsg({ protocolMessage: { historySyncNotification: notification } }), notification)
-		assert.throws(() => getHistoryMsg({ conversation: 'not a history sync' }), /history sync notification/)
+		// Upstream returns undefined here. Throwing broke `const h = getHistoryMsg(m); if (!h) return`,
+		// which is the shape a drop-in caller writes.
+		assert.equal(getHistoryMsg({ conversation: 'not a history sync' }), undefined)
+		assert.equal(getHistoryMsg({}), undefined)
+		assert.equal(getHistoryMsg(undefined as never), undefined)
 	})
 
 	it('matches message-device inference and bulk receipt grouping', () => {
