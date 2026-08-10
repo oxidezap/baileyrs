@@ -191,6 +191,57 @@ describe('event buffer — upstream process() contract', () => {
 	})
 
 	/**
+	 * A buffered `contacts.update` is older than an upsert that follows it.
+	 *
+	 * The fold used to apply the pending update *after* the incoming upsert, so a
+	 * name the consumer had already superseded won and the buffer released the
+	 * older of the two. Found by the buffer differential in deep mode, on a
+	 * sequence that folded the pair into a `messaging-history.set`. The fields
+	 * only the update carried still survive, which upstream drops — that half is
+	 * the documented divergence, and is asserted separately below.
+	 */
+	it('lets a contacts.upsert win over an update buffered before it', () => {
+		const ev = makeEventBuffer(logger)
+		const released: BaileysEventMap['contacts.upsert'] = []
+		ev.on('contacts.upsert', contacts => released.push(...contacts))
+
+		ev.buffer()
+		ev.emit('contacts.update', [{ id: 'c@s.whatsapp.net', name: 'older', notify: 'kept' }])
+		ev.emit('contacts.upsert', [{ id: 'c@s.whatsapp.net', name: 'newer' }])
+		ev.flush()
+
+		expect(released.length).toEqual(1)
+		// The upsert arrived last, so its value wins...
+		expect(released[0]?.name).toEqual('newer')
+		// ...and the field only the update carried is still there.
+		expect(released[0]?.notify).toEqual('kept')
+	})
+
+	/**
+	 * The same precedence once a history set owns the contact.
+	 *
+	 * A different code path: the update and the upsert both fold into the object
+	 * the history set holds, rather than into a pending upsert, and that object is
+	 * released inside `messaging-history.set` instead of `contacts.upsert`. This
+	 * is the shape the fuzzer actually minimised to.
+	 */
+	it('applies the same precedence when the contact lives in a buffered history set', () => {
+		const ev = makeEventBuffer(logger)
+		const sets: BaileysEventMap['messaging-history.set'][] = []
+		ev.on('messaging-history.set', set => sets.push(set))
+
+		ev.buffer()
+		ev.emit('contacts.update', [{ id: 'c@s.whatsapp.net', name: 'older', notify: 'kept' }])
+		ev.emit('messaging-history.set', { chats: [], contacts: [{ id: 'c@s.whatsapp.net' }], messages: [] } as never)
+		ev.emit('contacts.upsert', [{ id: 'c@s.whatsapp.net', name: 'newer' }])
+		ev.flush()
+
+		expect(sets[0]?.contacts?.length).toEqual(1)
+		expect(sets[0]?.contacts?.[0]?.name).toEqual('newer')
+		expect(sets[0]?.contacts?.[0]?.notify).toEqual('kept')
+	})
+
+	/**
 	 * A flush walks `Object.keys()` of the consolidated map, so the order that
 	 * `consolidateEvents` writes its keys is the order a `process()` handler
 	 * iterates and the order the individual events reach `.on()` listeners. The
