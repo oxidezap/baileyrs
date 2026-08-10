@@ -151,7 +151,9 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-decode-above-max-safe-integer',
-		target: /^proto:/u,
+		// Also matched on the wire fuzzer, where the same ceiling stops the library
+		// reading back bytes it just sent.
+		target: /^(proto|wire):/u,
 		status: 'open',
 		reason:
 			'The bridge decoder throws "Value is larger than Number.MAX_SAFE_INTEGER" (or the MIN_SAFE_INTEGER counterpart) for any 64-bit field outside +/-(2^53-1), where protobufjs decodes it to a Long. The boundary is exact: 9007199254740991 decodes, 9007199254740992 throws. This is not a precision difference — the whole message fails to decode, so a legitimate server payload with a large fileLength or a microsecond timestamp becomes an error rather than a message. The most severe finding in this suite.',
