@@ -1462,7 +1462,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// the multiset, and none of which this entry has ever claimed.
 		when: divergence => samePollAggregate(normalise(divergence.local), normalise(divergence.upstream)),
 		reason:
-			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order. Consumers that index into the returned array rather than looking options up by name see different results.',
+			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order — and the ordering is a symptom, not the defect. Both build a map keyed by the option hash and return `Object.values`, but they key the *lookup* differently: this side decodes the selected option with `Buffer.from(optionHash).toString()`, upstream calls `option.toString()` on the value as it stands. For a Buffer those agree. For a plain `Uint8Array` they do not — the array renders as its comma-joined bytes, so `[0x5c]` keys as "92", which JavaScript treats as an array index and hoists to the front of the object. That is the whole of the ordering difference. It matters because `decodeProto` returns a plain `Uint8Array` for a bytes field, measured, not a Buffer: under the real runtime upstream\'s key never matches a declared option, every vote lands in an "Unknown" bucket and every real option comes back with no voters. Matching upstream would mean adopting that. Pinned in public-helpers-compatibility.test.ts with the Uint8Array shape; restoring upstream\'s key fails it.',
 		review: '2026-11-01'
 	}
 ]
