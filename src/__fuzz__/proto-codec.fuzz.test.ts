@@ -24,7 +24,14 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
-import { canonicalWire, differsOnlyByPacking, isWireSubset, orderedWire, sameWireContent } from './harness/wire.ts'
+import {
+	canonicalWire,
+	differsOnlyByPacking,
+	isWireSubset,
+	orderedWire,
+	sameWireContent,
+	type SchemaContext
+} from './harness/wire.ts'
 import { undoRenames, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import type { Random } from './harness/random.ts'
@@ -113,6 +120,63 @@ const hex = (bytes: unknown): string =>
 const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.value : `<throw ${outcome.error}>`)
 
 /**
+ * Per-message field-number metadata, for telling packing apart from a wrong wire
+ * type.
+ *
+ * `differsOnlyByPacking` cannot distinguish a one-element packed run from a
+ * singular scalar written length-delimited — the bytes are identical — so it asks
+ * the schema. Field numbers are unique per message, not globally, and this schema
+ * has 30 repeated scalar fields against 1734 singular ones drawing from the same
+ * small numbers: a global set would answer "repeated" for nearly every singular
+ * field and excuse exactly the regression this exists to catch.
+ *
+ * The compact schema records the repeated flag and the nested type but not the
+ * number, so each number is recovered the way the field-number sweep recovers it
+ * — encode the field alone, read the tag back. Built per message, lazily, so a
+ * run only pays for the types it actually compares.
+ */
+interface FieldFacts {
+	readonly repeated: ReadonlySet<number>
+	readonly messages: ReadonlyMap<number, string>
+}
+
+const fieldFactsByPath = new Map<string, FieldFacts>()
+
+const factsFor = (path: string): FieldFacts => {
+	const cached = fieldFactsByPath.get(path)
+	if (cached) return cached
+
+	const repeated = new Set<number>()
+	const messages = new Map<number, string>()
+	const type = upstreamType(path)
+	if (type) {
+		for (const field of fieldsOfPath(path)) {
+			if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
+			const isMessage = field[1] === PROTO_FIELD_KIND.message
+			const one = isMessage ? {} : sampleFor(field[1])
+			const value = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 ? [one] : one
+			const encoded = attempt(() => type.encode({ [field[0]]: value }).finish())
+			if (!encoded.ok) continue
+			const number = firstFieldNumber(encoded.value as Uint8Array)
+			if (number === undefined) continue
+			if ((field[3] & PROTO_FIELD_FLAG.repeated) !== 0 && !isMessage) repeated.add(number)
+			const nested = messagePathOfField(field)
+			if (nested !== undefined) messages.set(number, nested)
+		}
+	}
+
+	const facts: FieldFacts = { repeated, messages }
+	fieldFactsByPath.set(path, facts)
+	return facts
+}
+
+const schemaAt = (path: string): SchemaContext => ({
+	path,
+	isRepeated: (at, field) => factsFor(at).repeated.has(field),
+	messageAt: (at, field) => factsFor(at).messages.get(field)
+})
+
+/**
  * Message types upstream declares that the bridge codec has never heard of.
  *
  * Computed once by probing, not hard-coded: when the bridge gains a type this set
@@ -120,41 +184,6 @@ const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.val
  * the stale-entry check surfaces it for deletion. A hard-coded list would instead
  * keep excusing a gap that had already been closed.
  */
-/**
- * Field numbers used by some repeated, packable field somewhere in the schema.
- *
- * `differsOnlyByPacking` cannot tell a one-element packed run from a singular
- * scalar written at the wrong wire type — the bytes are identical — so it only
- * treats a single value as packing when this says the number belongs to a
- * repeated field. Without it a wrong-wire-type regression would be retargeted to
- * the allowlisted packing entry and excused.
- *
- * The compact schema records the repeated flag but not the field number, so each
- * number is recovered the same way the field-number sweep recovers it: encode
- * the field alone and read the tag back. Computed once, lazily, because only the
- * byte-comparing targets need it.
- */
-let packableNumbers: Set<number> | undefined
-
-const isPackableField = (field: number): boolean => {
-	if (!packableNumbers) {
-		packableNumbers = new Set<number>()
-		for (const path of PROTO_PATHS) {
-			const type = upstreamType(path)
-			if (!type) continue
-			for (const schemaField of fieldsOfPath(path)) {
-				if ((schemaField[3] & PROTO_FIELD_FLAG.repeated) === 0) continue
-				if (schemaField[1] === PROTO_FIELD_KIND.message) continue
-				const encoded = attempt(() => type.encode({ [schemaField[0]]: [sampleFor(schemaField[1])] }).finish())
-				if (!encoded.ok) continue
-				const number = firstFieldNumber(encoded.value as Uint8Array)
-				if (number !== undefined) packableNumbers.add(number)
-			}
-		}
-	}
-	return packableNumbers.has(field)
-}
-
 const BRIDGE_UNKNOWN_TYPES: ReadonlySet<string> = new Set(
 	PROTO_PATHS.filter(path => {
 		if (upstreamType(path) === undefined) return false
@@ -219,7 +248,7 @@ const byteTarget = (
 	fallback: string
 ): string => {
 	if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
-	if (isWireSubset(local, remote, isPackableField)) return 'proto:field-omission'
+	if (isWireSubset(local, remote, schemaAt(path))) return 'proto:field-omission'
 	return fallback
 }
 
@@ -426,7 +455,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 
 				// Packed vs unpacked repeated scalars: also legal either way, also its
 				// own target, for the same reason.
-				if (differsOnlyByPacking(localBytes, remoteBytes, isPackableField)) {
+				if (differsOnlyByPacking(localBytes, remoteBytes, schemaAt(path))) {
 					return {
 						target: 'proto:field-packing',
 						input: { path, message },
@@ -725,7 +754,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 				if (!local.ok || !remote.ok) return []
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
-				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, isPackableField)) return []
+				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
 					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:oneof'),
 					input: { path, message },
@@ -762,7 +791,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 				if (!local.ok || !remote.ok) return []
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
-				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, isPackableField)) return []
+				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
 					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:integers'),
 					input: { path, message },

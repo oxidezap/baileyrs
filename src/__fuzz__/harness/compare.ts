@@ -94,7 +94,7 @@ export interface NormaliseOptions {
  * runs, and what is at the bottom. The walk is iterative and bounded, so a cycle
  * ends at the cap instead of overflowing the stack.
  */
-const describeDeep = (value: unknown): unknown => {
+const describeDeep = (value: unknown, options: NormaliseOptions): unknown => {
 	const seen = new WeakSet<object>()
 	let cursor = value
 	let remaining = 0
@@ -109,7 +109,10 @@ const describeDeep = (value: unknown): unknown => {
 		cursor = (cursor as Record<string, unknown>)[keys[0]!]
 		remaining++
 	}
-	return { __deep__: remaining, __leaf__: normalise(cursor, 0, { coerceScalars: false }) }
+	// The caller's policy, not a fixed one: a proto comparison collapses `123` and
+	// "123" deliberately, and hard-coding the opposite here would report a leaf
+	// below the depth limit as a codec difference the caller had asked to ignore.
+	return { __deep__: remaining, __leaf__: normalise(cursor, 0, options) }
 }
 
 /** Marks a key that exists with the value `undefined`, under `preservePresence`. */
@@ -139,7 +142,7 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 	const coerce = options.coerceScalars ?? true
 	const nested = (item: unknown) => normalise(item, depth + 1, options)
 
-	if (depth > 12) return describeDeep(value)
+	if (depth > 12) return describeDeep(value, options)
 	if (value === null) return null
 	if (typeof value === 'bigint') return coerce ? value : { __bigint__: value.toString() }
 	if (typeof value === 'number') {
