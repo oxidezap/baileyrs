@@ -598,60 +598,6 @@ const maskInt64Truncations = (local: unknown, upstream: unknown, depth = 0): [un
 	return [maskedLocal, maskedUpstream]
 }
 
-/** Every `contextInfo` removed, so the rest of a tuple can be compared alone. */
-const withoutContextInfo = (value: unknown, depth = 0): unknown => {
-	if (depth > 12 || typeof value !== 'object' || value === null) return value
-	if (Array.isArray(value)) return value.map(item => withoutContextInfo(item, depth + 1))
-	const out: Record<string, unknown> = {}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		if (key === 'contextInfo') continue
-		out[key] = withoutContextInfo(nested, depth + 1)
-	}
-	return out
-}
-
-/** The keys `generateForwardMessageContent` is allowed to leave in a `contextInfo`. */
-const FORWARDING_KEYS: ReadonlySet<string> = new Set(['forwardingScore', 'isForwarded'])
-
-/**
- * True when every `contextInfo` that differs between the two sides is one
- * baileyrs wrote the forwarding metadata into, and nothing else differs.
- *
- * Positional, not global. The mutation oracle reports one finding for the whole
- * argument tuple, so "baileyrs mutated the argument" was true of the documented
- * write *and* of anything that rode along with it. But requiring *every*
- * `contextInfo` to hold only forwarding keys is the opposite error: a
- * `contextInfo` the caller supplied deeper in the message is legitimately left
- * alone — measured on a `deviceSentMessage` whose inner `extendedTextMessage`
- * keeps its own `participant` while the forwarding metadata is written at the
- * wrapper level. So each position is compared against upstream's, and only a
- * `contextInfo` holding exactly the forwarding keys may differ.
- */
-const onlyForwardingContextInfoDiffers = (local: unknown, upstream: unknown, depth = 0): boolean => {
-	if (depth > 12) return false
-	if (text(local) === text(upstream)) return true
-	if (Array.isArray(local) || Array.isArray(upstream)) {
-		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
-		return local.every((item, index) => onlyForwardingContextInfoDiffers(item, upstream[index], depth + 1))
-	}
-	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) return false
-	const a = local as Record<string, unknown>
-	const b = upstream as Record<string, unknown>
-	for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-		if (text(a[key]) === text(b[key])) continue
-		if (key === 'contextInfo') {
-			// Added or replaced, either way it must hold the forwarding keys alone.
-			const written = a[key]
-			if (typeof written !== 'object' || written === null) return false
-			if (!Object.keys(written as Record<string, unknown>).every(inner => FORWARDING_KEYS.has(inner))) return false
-			continue
-		}
-		if (!Object.hasOwn(a, key) || !Object.hasOwn(b, key)) return false
-		if (!onlyForwardingContextInfoDiffers(a[key], b[key], depth + 1)) return false
-	}
-	return true
-}
-
 /**
  * What `generateForwardMessageContent`'s two copy strategies are allowed to
  * differ by, once every documented normalisation has been undone.
@@ -841,17 +787,6 @@ const text = (value: unknown): string => {
 }
 
 /**
- * Every property an empty object inherits.
- *
- * Enumerated from the prototype itself rather than written out, so the entry that
- * relies on it cannot drift from what the runtime actually inherits.
- */
-// Object.prototype only: the adapter table is a plain object literal, so that is
-// the whole of its prototype chain. Including Function.prototype names would
-// excuse a genuine unrecognised event type called `bind` or `name`.
-const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(Object.getOwnPropertyNames(Object.prototype))
-
-/**
  * An unpaired UTF-16 surrogate, which is what the newsletter encoder differs on.
  *
  * Serialised input renders surrogates as `\udXXX` escapes, so the check runs
@@ -859,10 +794,6 @@ const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(Object.getOwnPropertyNames(O
  */
 const LONE_SURROGATE =
 	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
-
-/** The TypeError shapes a missing or short `data` slot produces. */
-const MISSING_DATA_THROWS =
-	/Cannot read properties of (undefined|null)|is not iterable|Cannot use 'in' operator|is not a function/u
 
 /**
  * True when two observation streams hold the same entries in a different order.
@@ -1095,36 +1026,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		review: '2026-11-01'
 	},
 	{
-		id: 'forward-message-content-mutates-input',
-		// The mutation target exactly, not the family: the pattern also matched the
-		// base return-value target, so a helper that started returning different
-		// forwarded content was excused as the known mutation. Narrowing it revealed
-		// the second difference below, which had been hiding there.
-		target: 'pure:generateForwardMessageContent#mutation',
-		status: 'open',
-		// Confined to the documented mutation, which it was not before: the oracle
-		// reports one finding for the whole argument tuple, so "baileyrs mutated the
-		// argument" was satisfied by the forwarding write *and* by anything else
-		// that rode along with it — a replaced `conversation`, a deleted field. Two
-		// conditions now. Everything outside `contextInfo` has to be untouched, and
-		// every `contextInfo` baileyrs left behind has to hold forwarding metadata
-		// and nothing else.
-		when: divergence => {
-			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
-			const mine = normalise(divergence.local)
-			const theirs = normalise(divergence.upstream)
-			// Two conditions rather than one, because either alone is escapable.
-			// Everything outside `contextInfo` identical rules out a changed body or
-			// a deleted field; the positional walk then rules out a `contextInfo`
-			// changed to anything but the forwarding metadata.
-			if (text(withoutContextInfo(mine)) !== text(withoutContextInfo(theirs))) return false
-			return onlyForwardingContextInfoDiffers(mine, theirs)
-		},
-		reason:
-			"baileyrs replaces `contextInfo` on the caller's own message object with `{ forwardingScore, isForwarded }`; upstream leaves the argument untouched and returns new content. Two consequences, and the second is the sharper one: forwarding a message mutates the original in one library and not the other, and because it *replaces* rather than merges, a caller who forwards a quoted message finds `stanzaId` and `participant` gone from their own object afterwards. Measured on `{ extendedTextMessage: { text: 'x', contextInfo: { stanzaId: 'abc', participant: 'a@s.whatsapp.net' } } }`: the baileyrs argument comes back holding only the two forwarding keys, the upstream argument comes back unchanged. Both return values drop the quote metadata, so that part is agreed behaviour; only the write to the caller's object differs. Root cause is the copy: baileyrs shallow-clones with `{ ...content }`, so the nested message object is shared with the caller, where upstream rebuilds it via `proto.Message.decode(proto.Message.encode(content))`.",
-		review: '2026-11-01'
-	},
-	{
 		id: 'forward-message-content-copy-shape',
 		target: 'pure:generateForwardMessageContent',
 		status: 'open',
@@ -1193,36 +1094,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'For a 64-bit integer field holding a number that is not a 64-bit integer, the bridge encoder throws where upstream converts and encodes. Two rejections, one cause: `1.5`, `NaN` and `Infinity` fail the BigInt conversion (`RangeError: The number … cannot be converted to a BigInt`), and `1e300`, `2**63` and `1.5625e19` fail the range check (`Error: invalid int64: …`). Upstream accepts every one of them — `1.5` as 1, `NaN`/`Infinity`/`1e300` as 0, and `1.5625e19` as a wrapped value that is not the number it was given. Safe integers, numeric strings, `null` and `undefined` are byte-identical on both sides. Measured on `pollUpdateMessage.senderTimestampMs`. baileyrs is plainly the more correct side here — upstream silently sends a wrong value where baileyrs refuses — but it is caller-visible either way: the same content sends on Baileys and throws on baileyrs. Same shape as the float32 entry, and the pair should be decided together.',
 		review: '2026-11-01'
-	},
-	{
-		id: 'bridge-adapter-prototype-chain-lookup',
-		target: /^bridge:adapt-(unknown|total)$/u,
-		status: 'open',
-		reason:
-			'The adapter table is a plain object literal indexed by the event type string, so a type of "constructor", "toString" or "valueOf" resolves through Object.prototype: the inherited function is called and its return value is handed on as a canonical event, and "__proto__" resolves to a non-function and throws "adapter is not a function". The type comes from the runtime, which gets it from the server, so an untrusted string is indexing a prototype-bearing lookup table. Both outcomes break the layer\'s stated contract of dropping what it does not recognise. A Map, an Object.create(null) table, or an Object.hasOwn guard fixes it.',
-		review: '2026-10-01',
-		when: divergence => PROTOTYPE_KEYS.has(String((divergence.input as { type?: unknown })?.type))
-	},
-	{
-		id: 'bridge-adapter-throws-on-missing-data',
-		target: /^bridge:adapt-(total|coverage)$/u,
-		status: 'open',
-		reason:
-			'Adapters for declared event types read straight into `data` without checking it is there, so an event that arrives with no data slot — or with a slot missing the field the adapter reads — throws a TypeError instead of returning null. `adapt.ts` documents the opposite ("Result is null on unrecoverable shape mismatch"), and the throw does not stay local: it propagates into the socket event dispatch, which takes out the whole event loop rather than the one event.',
-		review: '2026-10-01',
-		// The throw shape *and* a `data` slot that is actually missing. On its own
-		// the regex matches the most common TypeErrors there are — "is not a
-		// function", "is not iterable" — so an adapter regression on a well-shaped
-		// event was classified as the known missing-data problem. The per-type
-		// coverage counter cannot catch that either: it sees a type that never
-		// adapts at all, not one that fails on one payload in eight.
-		when: divergence => {
-			if (!MISSING_DATA_THROWS.test(text(divergence.local))) return false
-			const data = (divergence.input as { data?: unknown } | undefined)?.data
-			// Absent, not a record at all, or a record with nothing in it — the three
-			// shapes an adapter reading straight into `data` cannot survive.
-			return plainObject(data)?.length !== undefined ? plainObject(data)!.length === 0 : true
-		}
 	},
 	{
 		id: 'event-buffer-merge-precedence',
