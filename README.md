@@ -246,19 +246,19 @@ Here is what that costs on a rate-limited account. Four consecutive
 | `429` #3 | 813.9s | 968.5s |
 | `429` #4 | 903.5s | 1872.0s |
 
-About 16 minutes offline by the third failure, and about 31 by the fourth. For
-all of it the consumer sees exactly **one** `connection: 'connecting'`: no
-`lastDisconnect`, no status code, no repeat. `isConnected` and `isLoggedIn` are
-both `false` throughout, exactly as they are during a first connection, so
-neither tells you a retry is scheduled.
+About 16 minutes offline once the third retry delay has run, and about 31 once
+the fourth has. For all of it the consumer sees exactly **one**
+`connection: 'connecting'`: no `lastDisconnect`, no status code, no repeat.
+`isConnected` and `isLoggedIn` are both `false` throughout, exactly as they are
+during a first connection, so neither tells you a retry is scheduled.
 
 **Do not arm a readiness timeout on `connecting`, and above all do not restart
 the process when one expires.** The backoff counter lives in the Rust client
-that your socket owns, so it dies with the process. The next boot connects
-immediately, replays the whole startup burst against a server that just asked
-for less traffic, and earns the next `429` sooner. Restarting is the single
-worst answer to a rate limit, and an upstream-shaped readiness timeout leads
-straight to it.
+that your socket owns, so it dies with the process. The next boot starts a new
+attempt immediately, replays the whole startup burst against a server that just
+asked for less traffic, and earns the next `429` sooner. Restarting is the
+single worst answer to a rate limit, and an upstream-shaped readiness timeout
+leads straight to it.
 
 What to do instead:
 
