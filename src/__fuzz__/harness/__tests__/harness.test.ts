@@ -546,12 +546,14 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-field-renamed-and-dropped')
 		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
 
+		// The input is passed whole rather than as a defaulted `path` string: an
+		// `undefined` argument would take the default and quietly test the opposite
+		// of the no-path case below.
+		const excusedWith = (input: unknown, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist([{ target: 'proto:decode-parity', input, local, upstream }], new Date('2026-01-01'), registry)
+				.unexcused.length === 0
 		const excused = (local: unknown, upstream: unknown, path = 'SyncActionValue'): boolean =>
-			applyAllowlist(
-				[{ target: 'proto:decode-parity', input: { path }, local, upstream }],
-				new Date('2026-01-01'),
-				registry
-			).unexcused.length === 0
+			excusedWith({ path }, local, upstream)
 
 		const renamed = { agentAction: { deviceId: '0n' } }
 		const declared = { agentAction: { deviceID: '0n' } }
@@ -560,6 +562,13 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(
 			excused(renamed, { ...declared, businessBroadcastAssociationAction: {} }),
 			'the rename beside a field the bridge never writes — the shape deep mode draws'
+		)
+		// The documented absence is rooted at the decoded type, so a finding that
+		// names no type cannot reach it. Pinned because the root lookup is the one
+		// place a later change could widen every path at once.
+		assert.ok(
+			!excusedWith({}, renamed, { ...declared, businessBroadcastAssociationAction: {} }),
+			'an input carrying no path cannot root a documented absence'
 		)
 		// A field that is not on the list is a new gap, not this one.
 		assert.ok(!excused(renamed, { ...declared, chatLockSettings: {} }), 'an undocumented missing field still fails')

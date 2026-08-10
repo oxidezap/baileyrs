@@ -1257,8 +1257,9 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// already documents. Two known gaps in one message explained neither, and
 			// the finite sweeps never saw the pair because they vary one field at a
 			// time. Composing here is what the buffer entries do, for the same reason.
-			// The composition stays exact: only the eleven enumerated fields may be
-			// absent, only from this side, and any value both sides carry must match.
+			// The composition stays exact: only the paths `DECODE_OMITTED_PATHS`
+			// enumerates may be absent, only from this side, and any value both
+			// sides carry must match.
 			// Rooted at the decoded type, so a documented absence is pinned to the
 			// message it was measured in rather than to a bare property name.
 			const decoded = inputPath(divergence.input)
