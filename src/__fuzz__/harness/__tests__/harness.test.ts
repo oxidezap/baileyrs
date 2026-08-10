@@ -428,6 +428,34 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(!excused([upsert('same'), receipt], [receipt, upsert('same')]), 'a pure reordering is a finding')
 	})
 
+	// Four separate rules under one id — the dropped high word, the non-Long
+	// passthrough, and the two falsy numbers — so each one is held to its own
+	// outcome rather than to "the argument had the right shape".
+	it('excuses toNumber only where each side did what the entry says it does', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'to-number-high-word')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (input: unknown[], local: unknown, upstream: unknown): boolean =>
+			applyAllowlist([{ target: 'pure:toNumber', input, local, upstream }], new Date('2026-01-01'), registry).unexcused
+				.length === 0
+
+		// The documented shapes.
+		assert.ok(excused([{ low: 5, high: 1 }], 0x1_0000_0005, 5), 'upstream drops the high word')
+		assert.ok(excused(['x'], 0, 'x'), 'upstream hands a non-Long straight back')
+		assert.ok(excused([-0], -0, 0), 'upstream folds negative zero to +0')
+		assert.ok(excused([Number.NaN], Number.NaN, 0), 'upstream folds NaN to +0')
+
+		// ...and each side held to its own rule. A NaN that this side turned into a
+		// number, or that upstream propagated, is not what the entry describes.
+		assert.ok(!excused([Number.NaN], 0, 0), 'this side manufacturing a value is not this entry')
+		assert.ok(!excused([Number.NaN], Number.NaN, Number.NaN), 'both reaching NaN is not a divergence to excuse')
+		assert.ok(!excused([Number.NaN], Number.NaN, 1), 'upstream returning anything but +0 is unexplained')
+		// A finite number is the case where the two agree, so any difference on one
+		// is a regression rather than a documented rule.
+		assert.ok(!excused([7], 8, 7), 'a finite number must not differ at all')
+	})
+
 	it('excuses the cleanMessage JID rewrite only in the shape it documents', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'clean-message-empty-user-jid-server')

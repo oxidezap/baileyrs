@@ -860,7 +860,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'pure:toNumber',
 		status: 'intended',
 		reason:
-			'Upstream returns `t.low` for a Long without a toNumber method, silently dropping the high word and truncating any value past 2^32 (a millisecond timestamp, for one). baileyrs reconstructs `high * 2^32 + (low >>> 0)`, which is documented at the call site. Upstream also returns its argument unchanged for a non-Long, non-number input, where baileyrs returns 0 to honour its `number` return type. And `toNumber(-0)` returns `-0` from baileyrs and `+0` from upstream, because `t || 0` treats negative zero as falsy — observable through `Object.is` and `1 / result`.',
+			"Upstream returns `t.low` for a Long without a toNumber method, silently dropping the high word and truncating any value past 2^32 (a millisecond timestamp, for one). baileyrs reconstructs `high * 2^32 + (low >>> 0)`, which is documented at the call site. Upstream also returns its argument unchanged for a non-Long, non-number input, where baileyrs returns 0 to honour its `number` return type. And on a falsy *number* the two part ways for the same reason: `t || 0` treats it as absent, so upstream answers `+0` where baileyrs hands the argument straight back. `toNumber(-0)` is `-0` here and `+0` upstream, observable through `Object.is` and `1 / result`; `toNumber(NaN)` is `NaN` here and `0` upstream, which is the sharper of the two — a caller's arithmetic error stays visible instead of being silently rounded into a real timestamp. `0` itself agrees, since `+0` is what both return.",
 		review: '2027-02-01',
 		when: divergence => {
 			// `??` only replaces null/undefined, and a corpus entry or a shrunk input
@@ -886,12 +886,22 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 					? Object.is(divergence.local, (typeof high === 'number' ? high : 0) * 0x1_0000_0000 + (low >>> 0))
 					: divergence.local === 0
 			}
-			// `-0` is the one number the two disagree on, and for the same reason as
-			// the rest of this entry: upstream's `t || 0` treats it as falsy and hands
-			// back `+0`, baileyrs returns the argument. Surfaced once `normalise`
-			// stopped folding the sign away under strict comparison.
+			// `-0` and `NaN` are the numbers the two disagree on, for one reason:
+			// upstream's `t || 0` treats every falsy number as absent and hands back
+			// `+0`, where baileyrs returns the argument — a `number` in is the one
+			// case with nothing to convert. `0` is falsy too and agrees, because `+0`
+			// is what it returns anyway. `-0` surfaced once `normalise` stopped
+			// folding the sign away under strict comparison; `NaN` only in deep mode,
+			// which is the one that draws it.
 			if (Object.is(argument, -0)) {
 				return Object.is(divergence.local, -0) && Object.is(divergence.upstream, 0)
+			}
+			// Not `Object.is(local, NaN)` on the upstream side: it returns `+0` here,
+			// and holding each side to its own rule is what stops this clause from
+			// excusing a run where *both* went to NaN, or where baileyrs started
+			// manufacturing a number of its own.
+			if (typeof argument === 'number' && Number.isNaN(argument)) {
+				return Number.isNaN(divergence.local) && Object.is(divergence.upstream, 0)
 			}
 			if (typeof argument === 'number') return false
 			// Non-object, non-number: upstream is `t || 0`, baileyrs is 0.
