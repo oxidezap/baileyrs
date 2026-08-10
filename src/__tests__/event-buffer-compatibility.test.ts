@@ -125,4 +125,40 @@ describe('event buffer — upstream process() contract', () => {
 		ev.flush()
 		expect(sets[0]?.pastParticipants?.[0]?.pastParticipants?.map(item => item.userJid)).toEqual(['1@lid', '2@lid'])
 	})
+	/**
+	 * An id-less chat is not the history set's id-less chat.
+	 *
+	 * Upstream guards the history-set lookup with `id &&`, so a `chats.upsert`
+	 * carrying no id starts its own entry. This port had dropped that guard, and
+	 * the two folded together: their unread counts summed and the upsert was never
+	 * released on its own. Found by the buffer differential once history rows drew
+	 * from the same identity pool as live traffic, which is the only way the two
+	 * ever met.
+	 */
+	it('keeps an id-less chats.upsert out of a buffered history set', () => {
+		const ev = makeEventBuffer(logger)
+		const upserts: unknown[] = []
+		const sets: BaileysEventMap['messaging-history.set'][] = []
+		ev.on('chats.upsert', chats => upserts.push(...chats))
+		ev.on('messaging-history.set', set => sets.push(set))
+
+		ev.buffer()
+		ev.emit('messaging-history.set', {
+			chats: [{ id: '', conversationTimestamp: 737, unreadCount: 4 } as never],
+			contacts: [],
+			messages: [],
+			isLatest: false,
+			syncType: undefined,
+			progress: undefined,
+			peerDataRequestSessionId: undefined
+		} as never)
+		ev.emit('chats.upsert', [{ id: '', conversationTimestamp: -918, unreadCount: 5 } as never])
+		ev.flush()
+
+		// The history chat keeps its own values...
+		expect(sets[0]?.chats?.[0]?.unreadCount).toEqual(4)
+		expect(sets[0]?.chats?.[0]?.conversationTimestamp).toEqual(737)
+		// ...and the upsert is released separately rather than summed into it.
+		expect(upserts.length).toEqual(1)
+	})
 })

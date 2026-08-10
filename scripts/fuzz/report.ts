@@ -172,7 +172,14 @@ if (totals.findings > 0) {
 		for (const detail of details.slice(0, 5)) lines.push(`  - ${detail}`)
 	}
 	lines.push('')
-	lines.push(`Reproduce with \`FUZZ_SEED=${shellQuote(String(seeds[0] ?? ''))} FUZZ_ONLY="<target>" npm run fuzz\`.`)
+	// The mode is part of the reproduction, not decoration. `npm run fuzz` sets no
+	// `FUZZ_MODE` and so runs smoke — roughly a twenty-fifth of the inputs — which
+	// replays the same deterministic prefix and can finish clean before reaching a
+	// finding the nightly's deep run only got to on its 4000th input. Right seed,
+	// right target, wrong answer.
+	lines.push(
+		`Reproduce with \`FUZZ_SEED=${shellQuote(String(seeds[0] ?? ''))} FUZZ_ONLY="<target>" npm run ${mode === 'deep' ? 'fuzz:deep' : 'fuzz'}\`.`
+	)
 }
 
 // A crash is a failure with no divergence attached — a check or generator that

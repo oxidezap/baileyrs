@@ -287,6 +287,14 @@ interface BoundaryFinding {
 }
 
 /** Everything the rejection contract requires, checked in one place. */
+/**
+ * This file's own name, as it appears in a V8 stack frame.
+ *
+ * Derived rather than written down: a rename would otherwise turn the
+ * caller-frame check into one that can never fail.
+ */
+const CALLER_FILE = import.meta.filename.split('/').at(-1)!
+
 const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFinding => {
 	if (!(error instanceof Error)) {
 		return { ok: false, detail: 'the rejection is not an Error', observed: String(error) }
@@ -326,6 +334,22 @@ const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFindi
 			ok: false,
 			detail: 'the message does not open with the method the consumer called',
 			observed: error.message.slice(0, 120)
+		}
+	}
+	// The caller's own frame, which is the point of guarding at the boundary at
+	// all. A guard that rejects only after an internal `await` produces a stack
+	// rooted in the socket's internals: a fire-and-forget caller —
+	// `sock.sendReceipt(...)` with no await — then gets an unhandled rejection
+	// with nothing pointing at the line that made the call. That is invisible to a
+	// type checker and it is exactly what this boundary exists to prevent.
+	//
+	// Only meaningful because the call above is not awaited at its call site;
+	// awaiting re-adds this frame whether the guard earned it or not.
+	if (!stack.includes(CALLER_FILE)) {
+		return {
+			ok: false,
+			detail: 'the rejection stack has lost the caller frame',
+			observed: stack.split('\n').slice(0, 4).join(' | ')
 		}
 	}
 	return { ok: true }
@@ -579,8 +603,31 @@ describe('closed-domain argument boundary, fuzzed', () => {
 					// guard that widened its accepted list would otherwise vouch for the
 					// very value that proves it widened.
 					if ((EXPECTED_DOMAINS[testCase.source] ?? []).includes(value)) return findings
-					try {
-						await testCase.call(socket, value)
+					// Invoked without `await` at the call site, and the outcome taken from
+					// handlers attached to the returned promise.
+					//
+					// `await socket.method(...)` lets V8 splice the awaiting frame into the
+					// rejection's stack, so a guard that had moved past an internal await —
+					// losing the caller's frame for every real fire-and-forget caller —
+					// still produced a stack naming this file, and the checks below passed
+					// on a trace the guard had not actually produced. Attaching handlers
+					// instead means what is inspected is the stack as it was thrown.
+					const settled = await new Promise<{ readonly ok: boolean; readonly error?: unknown }>(resolve => {
+						let pending: unknown
+						try {
+							pending = testCase.call(socket, value)
+						} catch (error) {
+							// A guard that rejects synchronously, before returning a promise.
+							resolve({ ok: false, error })
+							return
+						}
+						Promise.resolve(pending).then(
+							() => resolve({ ok: true }),
+							(error: unknown) => resolve({ ok: false, error })
+						)
+					})
+
+					if (settled.ok) {
 						// Reaching here means the value was accepted. It cannot have been
 						// valid — everything generated is off-domain — so the guard let it
 						// through and it is on its way to the bridge.
@@ -591,17 +638,18 @@ describe('closed-domain argument boundary, fuzzed', () => {
 							upstream: '<Boom 400 naming the parameter>',
 							detail: 'an off-domain value passed the guard'
 						})
-					} catch (error) {
-						const verdict = inspectRejection(error, testCase)
-						if (!verdict.ok) {
-							findings.push({
-								target: `args:${testCase.method}`,
-								input: value,
-								local: verdict.observed,
-								upstream: '<Boom 400 naming the parameter, with a wasm-free stack>',
-								detail: verdict.detail
-							})
-						}
+						return findings
+					}
+
+					const verdict = inspectRejection(settled.error, testCase)
+					if (!verdict.ok) {
+						findings.push({
+							target: `args:${testCase.method}`,
+							input: value,
+							local: verdict.observed,
+							upstream: '<Boom 400 naming the parameter, with a wasm-free stack>',
+							detail: verdict.detail
+						})
 					}
 					return findings
 				}

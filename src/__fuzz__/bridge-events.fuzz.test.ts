@@ -429,12 +429,42 @@ describe('bridge event adaptation', () => {
 						detail: 'a malformed message-wire payload threw instead of being dropped'
 					}
 				}
-				// Dropping a payload is always allowed — the adapter's contract is
-				// "null on unrecoverable shape mismatch", and the generator produces
-				// plenty of those on purpose.
-				if (canonical === null) return []
-				accepted++
+				// Dropping a payload is allowed only where the adapter says it is.
+				// `adaptBridgeMessageWire` returns null on exactly two conditions — a
+				// non-object message, or a `chat`/`id` that is not a non-empty string —
+				// and the generator produces plenty of those on purpose. Anything else
+				// is a *valid* message being dropped.
+				//
+				// Skipping every null was too generous by a whole category. The
+				// `accepted > 0` floor below only catches total collapse, so an adapter
+				// that returned null for, say, every group message went on passing all
+				// 400 cases on the strength of the ones it still accepted.
 				const info = wire.info as Record<string, unknown>
+				//
+				// An array is not one of them: a message proto is a keyed structure, and
+				// `[]` carries no fields to adapt. The first version of this check said
+				// only `typeof === 'object'`, and the shrinker immediately produced
+				// `{ info: { id: '3', chat: '1' }, message: [] }` — a correct rejection
+				// reported as a dropped message.
+				const wellFormed =
+					typeof wire.message === 'object' &&
+					wire.message !== null &&
+					!Array.isArray(wire.message) &&
+					typeof info?.chat === 'string' &&
+					info.chat.length > 0 &&
+					typeof info.id === 'string' &&
+					info.id.length > 0
+				if (canonical === null) {
+					if (!wellFormed) return []
+					return {
+						target: 'bridge:message-wire',
+						input: wire,
+						local: 'null',
+						upstream: '<a canonical message>',
+						detail: 'the adapter dropped a message whose chat, id and payload were all well formed'
+					}
+				}
+				accepted++
 
 				// Deep, not by reference: an adapter that copies the proto on its way
 				// through is doing nothing wrong, and pinning identity would forbid it.
@@ -649,18 +679,27 @@ const payloadFor = (random: Random, event: string, pool: StepPool): unknown => {
 		case 'messaging-history.set':
 			return {
 				chats: Array.from({ length: random.int(0, 3) }, () => ({
-					id: historyJid(random),
+					id: pooledChat(random, pool),
 					conversationTimestamp: generateNumber(random),
 					unreadCount: random.int(0, 5),
 					endOfHistoryTransferType: random.bool(0.3) ? random.int(0, 2) : undefined
 				})),
 				contacts: Array.from({ length: random.int(0, 3) }, () => ({
-					id: historyJid(random),
+					id: pooledChat(random, pool),
 					name: random.bool(0.5) ? generateString(random) : undefined,
 					notify: random.bool(0.3) ? generateString(random) : undefined
 				})),
+				// From the sequence pool, like every other row. An independent
+				// `messageKey` here meant a buffered history message and a later live
+				// `messages.upsert`/`messages.update` shared a key only by accident, and
+				// the buffer's two explicit history-to-live branches
+				// (`src/Utils/event-buffer.ts:244` and `:264`, where a history message is
+				// *replaced* by the live one rather than accumulated as a separate
+				// upsert) never ran at all — instrumented over the fixed stream, 0 hits
+				// on each. A regression that stopped applying live traffic to buffered
+				// history stayed green.
 				messages: Array.from({ length: random.int(0, 3) }, () => ({
-					key: messageKey(random),
+					key: pooledKey(random, pool),
 					messageTimestamp: generateNumber(random),
 					message: { conversation: generateString(random) }
 				})),
