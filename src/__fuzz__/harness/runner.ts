@@ -248,13 +248,62 @@ const asList = (result: readonly Divergence[] | Divergence | void): readonly Div
 	return Array.isArray(result) ? result : [result as Divergence]
 }
 
+/**
+ * A structure `JSON.stringify` cannot be made to throw on.
+ *
+ * A replacer is not enough: `JSON.stringify` reads `toJSON` and then every
+ * property itself, so a value whose getters throw takes the call down before
+ * the replacer ever sees it. `argument-boundary.fuzz.test.ts` generates exactly
+ * that on purpose — a proxy whose `get` trap throws — and when one reached a
+ * finding, `writeReport` threw, which ran *before* the readable error below and
+ * so lost the JSON report and the divergence description together. Precisely
+ * when a generated case had found a boundary regression.
+ *
+ * So every read is guarded and every failure becomes a marker in place, leaving
+ * the rest of the report intact.
+ */
+const reportSafe = (value: unknown, seen = new WeakSet<object>(), depth = 0): unknown => {
+	if (depth > 12) return '<deep>'
+	try {
+		if (typeof value === 'bigint') return value.toString()
+		if (typeof value === 'function') return `<function ${value.name || 'anonymous'}>`
+		if (typeof value === 'symbol') return value.toString()
+		if (value === null || typeof value !== 'object') return value
+		if (seen.has(value)) return '<circular>'
+		seen.add(value)
+		if (value instanceof Uint8Array)
+			return `<bytes ${value.length}: ${Buffer.from(value.slice(0, 32)).toString('hex')}>`
+		if (Array.isArray(value)) return value.map(item => reportSafe(item, seen, depth + 1))
+		const out: Record<string, unknown> = {}
+		for (const key of Object.keys(value)) {
+			try {
+				out[key] = reportSafe((value as Record<string, unknown>)[key], seen, depth + 1)
+			} catch {
+				out[key] = '<unreadable property>'
+			}
+		}
+		return out
+	} catch {
+		// `Object.keys`, `instanceof` and the typeof checks all reach traps a
+		// hostile object may define. Whatever it was, it is not worth a lost report.
+		return `<unreadable ${typeof value}>`
+	}
+}
+
 const writeReport = (report: FuzzReport): void => {
 	if (!reportDirectory) return
-	mkdirSync(reportDirectory, { recursive: true })
-	writeFileSync(
-		join(reportDirectory, `${corpusSlug(report.target)}.json`),
-		`${JSON.stringify(report, (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value), '\t')}\n`
-	)
+	try {
+		mkdirSync(reportDirectory, { recursive: true })
+		writeFileSync(
+			join(reportDirectory, `${corpusSlug(report.target)}.json`),
+			`${JSON.stringify(reportSafe(report), null, '\t')}\n`
+		)
+	} catch (error) {
+		// A report that cannot be written must not replace the findings it was
+		// describing. Said out loud rather than swallowed, so a systematically
+		// failing write — a full disk, a bad FUZZ_REPORT_DIR — is visible.
+		console.error(`fuzz: could not write the report for ${report.target}: ${(error as Error)?.message}`)
+	}
 }
 
 /**
