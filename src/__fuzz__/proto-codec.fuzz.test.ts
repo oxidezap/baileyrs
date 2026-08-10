@@ -370,11 +370,39 @@ const encodeTarget = (path: string, message: unknown, fallback: string): string 
  */
 const RENUMBERED_FIELD = 'pollResultSnapshotMessageV3'
 
-const renumberingTag = (path: string, message: unknown, type: UpstreamType): string | undefined => {
+/**
+ * Both sides re-encoded with the renumbered field deleted, or undefined when
+ * that question cannot be asked.
+ *
+ * Undefined has two causes and they are not the same: the message never carried
+ * the field, or one of the encoders rejected the stripped message. Callers treat
+ * both as "no answer", which is the safe direction — nothing gets excused on the
+ * strength of a comparison that did not happen.
+ *
+ * Only plain objects are rebuilt. `Object.entries` on a `Uint8Array` yields its
+ * indices, so rebuilding one put `{ '0': 12, '1': 7 }` where a bytes field
+ * belonged and a `Long` lost the prototype its encoder reads. The stripped
+ * message then failed to encode and the case was written off as "not isolated".
+ * Measured on the fixed seed before this guard: *every* "not isolated" verdict
+ * came from the re-encode throwing — `invalid uint32: undefined` on the bridge
+ * side, `empty string` upstream — and not one from a difference that actually
+ * survived the deletion. The renumbering entry was excusing almost nothing it
+ * was written to excuse.
+ */
+const withoutRenumberedField = (
+	path: string,
+	message: unknown,
+	type: UpstreamType
+): { readonly left: Uint8Array; readonly right: Uint8Array } | undefined => {
 	if (!text(message).includes(RENUMBERED_FIELD)) return undefined
+	const isPlainObject = (value: object): boolean => {
+		const prototype = Object.getPrototypeOf(value) as unknown
+		return prototype === Object.prototype || prototype === null
+	}
 	const without = (value: unknown, depth = 0): unknown => {
 		if (depth > 12 || typeof value !== 'object' || value === null) return value
 		if (Array.isArray(value)) return value.map(item => without(item, depth + 1))
+		if (!isPlainObject(value)) return value
 		const out: Record<string, unknown> = {}
 		for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
 			if (key === RENUMBERED_FIELD) continue
@@ -385,9 +413,15 @@ const renumberingTag = (path: string, message: unknown, type: UpstreamType): str
 	const stripped = without(message)
 	const mine = attempt(() => encodeProto(path, stripped))
 	const theirs = attempt(() => type.encode(stripped).finish())
-	if (!mine.ok || !theirs.ok) return 'renumbering not isolated'
-	const left = mine.value as Uint8Array
-	const right = theirs.value as Uint8Array
+	if (!mine.ok || !theirs.ok) return undefined
+	return { left: mine.value as Uint8Array, right: theirs.value as Uint8Array }
+}
+
+const renumberingTag = (path: string, message: unknown, type: UpstreamType): string | undefined => {
+	if (!text(message).includes(RENUMBERED_FIELD)) return undefined
+	const pair = withoutRenumberedField(path, message, type)
+	if (pair === undefined) return 'renumbering not isolated'
+	const { left, right } = pair
 	// Compared with the same tolerances the target itself applies, not by raw
 	// byte equality: field order and packed-vs-unpacked are legal protobuf and
 	// have their own targets, so a message carrying the renumbering *and* one of
@@ -395,6 +429,13 @@ const renumberingTag = (path: string, message: unknown, type: UpstreamType): str
 	if (hex(left) === hex(right)) return 'renumbering only'
 	if (sameWireContent(left, right, schemaAt(path))) return 'renumbering only'
 	if (differsOnlyByPacking(left, right, schemaAt(path))) return 'renumbering only'
+	// Omission is a fourth such tolerance, and the one that actually co-occurs:
+	// measured, the residue on these is upstream writing a nested field the bridge
+	// does not. Named distinctly rather than folded into "renumbering only" —
+	// there are two documented differences here, not one, and the detail should
+	// say so. `byteTarget` reads the same question to route the finding to the
+	// omission class, which is the specific one.
+	if (isWireSubset(left, right, schemaAt(path))) return 'renumbering plus omission'
 	return 'renumbering not isolated'
 }
 
@@ -496,10 +537,24 @@ const byteTarget = (
 	message: unknown,
 	local: Uint8Array,
 	remote: Uint8Array,
-	fallback: string
+	fallback: string,
+	type?: UpstreamType
 ): string => {
 	if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
 	if (isWireSubset(local, remote, schemaAt(path))) return 'proto:field-omission'
+	// Asked again with the documented renumbering taken out, when there is one.
+	// A field the bridge writes at 115 and upstream at 114 is a field each side
+	// has and the other does not, which breaks the subset test outright — so a
+	// message carrying the renumbering *and* an omission matched neither entry
+	// and landed on the generic target, which is the class it is least like.
+	// Deleting the renumbered field and asking the same structural question is
+	// the same answer the renumbering entry already relies on, so nothing weaker
+	// is being accepted: the residue still has to be upstream's bytes minus whole
+	// fields, and a changed value still fails.
+	if (type !== undefined) {
+		const pair = withoutRenumberedField(path, message, type)
+		if (pair !== undefined && isWireSubset(pair.left, pair.right, schemaAt(path))) return 'proto:field-omission'
+	}
 	return fallback
 }
 
@@ -868,7 +923,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 
 				return {
-					target: byteTarget(path, message, localBytes, remoteBytes, 'proto:encode-bytes'),
+					target: byteTarget(path, message, localBytes, remoteBytes, 'proto:encode-bytes', type),
 					input: { path, message },
 					local: canonicalWire(localBytes, schemaAt(path)) ?? hex(localBytes),
 					upstream: canonicalWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
@@ -1259,7 +1314,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
-					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:oneof'),
+					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:oneof', type),
 					input: { path, message },
 					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
 					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
@@ -1299,7 +1354,14 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
-					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:integers'),
+					target: byteTarget(
+						path,
+						message,
+						local.value as Uint8Array,
+						remote.value as Uint8Array,
+						'proto:integers',
+						type
+					),
 					input: { path, message },
 					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
 					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
