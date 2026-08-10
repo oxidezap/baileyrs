@@ -197,9 +197,22 @@ describe('send-path wire fidelity on generated messages', () => {
 				let sentBytes: Uint8Array
 				try {
 					sentBytes = await relayedBytes(message, { jid })
-				} catch {
-					// Covered by wire:fidelity; reporting it twice helps nobody.
-					return []
+				} catch (error) {
+					// Reported here too, not deferred to `wire:fidelity`.
+					//
+					// "Covered next door" assumed both targets see the same inputs. They
+					// do not: the runner seeds each target `${FUZZ_SEED}:${target}`, so
+					// the two draw entirely different JID and message combinations, and a
+					// send-path failure reachable only from this target's stream was
+					// dropped on the floor. The duplicate-report concern it was written
+					// for cannot arise for the same reason.
+					return {
+						target: 'wire:upstream-readable',
+						input: { jid, message },
+						local: `<relayMessage threw: ${String((error as Error)?.message).slice(0, 160)}>`,
+						upstream: '<bytes upstream can decode>',
+						detail: 'the send path produced no bytes for a message the codec accepts'
+					}
 				}
 
 				const findings: Divergence[] = []

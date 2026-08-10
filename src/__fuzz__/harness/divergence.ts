@@ -1294,14 +1294,25 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// *whole* difference: undo it and the two sides must agree, or this finding
 			// is carrying a second defect that the entry does not explain.
 			//
-			// The field-name sweep reports strings rather than objects (the key list
-			// against the expected key), and there the name match *is* the finding.
-			// Scoped to that one target: without it, any proto finding whose two
-			// sides are primitives — a bridge error message mentioning `deviceAgentId`
-			// against an upstream result containing `deviceAgentID` — was excused as
-			// a rename even though one side had started throwing.
+			// The field-name sweep reports strings rather than objects — the decoded
+			// key list against the expected key — and there the name match *is* the
+			// finding. But it has to be the whole key list, not a substring of it.
+			//
+			// `local` is `keys.join(', ')`, so a decoder that materialised *both*
+			// spellings reported `deviceAgentID, deviceAgentId` against upstream's
+			// `deviceAgentID`, and the substring test above passed on the joined
+			// string. That is not this entry's rename — it is a decoder inventing a
+			// duplicate property, which the sweep even reports under its own detail
+			// ("plus keys upstream never encoded") — and it was being excused.
+			//
+			// Exact equality on both sides: one declared name in, one renamed key out.
 			if (typeof divergence.local !== 'object' || typeof divergence.upstream !== 'object') {
-				return divergence.target === 'proto:field-names'
+				return (
+					divergence.target === 'proto:field-names' &&
+					RENAMED_PROTO_FIELDS.some(
+						([upstreamName, bridgeName]) => divergence.local === bridgeName && divergence.upstream === upstreamName
+					)
+				)
 			}
 			return sameShape(undoRenames(divergence.local), undoRenames(divergence.upstream))
 		},
@@ -1383,7 +1394,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-float32-out-of-range-rejected',
-		target: /^proto:/u,
+		// The wire fuzzer too, for the same reason `proto-decode-above-max-safe-integer`
+		// covers both: the send path encodes through the same bridge, so a float above
+		// FLT_MAX makes `relayMessage` throw there exactly as `encodeProto` throws
+		// here. It only started surfacing once `wire:upstream-readable` stopped
+		// discarding its own relay failures on the assumption that `wire:fidelity`
+		// had seen the same input — the two targets draw from different streams.
+		target: /^(proto|wire):/u,
 		status: 'open',
 		reason:
 			'For a 32-bit float field given a double above FLT_MAX (3.4028234663852886e38), the bridge throws "invalid float32" and protobufjs encodes it anyway — silently, to Infinity. baileyrs is the stricter and arguably the correct one here, but the difference is caller-visible: the same value sends on Baileys and throws on baileyrs. Exact FLT_MAX itself is accepted by both; an earlier version of this entry claimed otherwise because the generator emitted the rounded literal 3.4028235e38, which is a larger double.',
