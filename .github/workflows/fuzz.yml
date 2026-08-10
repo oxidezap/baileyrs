@@ -141,11 +141,22 @@ jobs:
             // that opens a fresh issue every night trains people to close them
             // unread.
             //
-            // Matched on the marker alone. `listForRepo` returns pull requests as
-            // well as issues, and the generic `fuzz` label is one anybody can put on
-            // anything — so the label by itself would let the nightly report land in
-            // an unrelated thread, or on a PR, and the API's default ordering makes
-            // which one unstable as more labelled items are opened.
+            // Three things have to agree before this job will write to an issue:
+            // the marker in the body, the title it files under, and an author that
+            // is this workflow's own bot identity.
+            //
+            // The marker is public — it is visible in every report this job posts —
+            // so anyone who can open an issue can paste it. On its own it is a claim
+            // of ownership, not proof of one: an issue carrying it with a lower
+            // number would collect the nightly's reports, and a clean night would
+            // comment on and close it. Authorship is the part a repository user
+            // cannot forge, so it is the part that decides.
+            //
+            // `listForRepo` returns pull requests as well as issues, and the generic
+            // `fuzz` label is one anybody can put on anything — so the label by
+            // itself would let the nightly report land in an unrelated thread, or on
+            // a PR, and the API's default ordering makes which one unstable as more
+            // labelled items are opened.
             //
             // And the label cannot be part of the *query* either, only of the
             // answer. A label is editable by anyone with write access: strip `fuzz`
@@ -165,8 +176,17 @@ jobs:
               state: 'open',
               per_page: 100
             })
+            // `github-actions[bot]` is who `GITHUB_TOKEN` posts as, which is what
+            // creates the issue below. A repository user cannot author as it.
             const owned = open
-              .filter(item => !item.pull_request && (item.body ?? '').includes(marker))
+              .filter(
+                item =>
+                  !item.pull_request &&
+                  (item.body ?? '').includes(marker) &&
+                  item.title === title &&
+                  item.user?.type === 'Bot' &&
+                  item.user?.login === 'github-actions[bot]'
+              )
               .sort((left, right) => left.number - right.number)
 
             const body = [

@@ -909,12 +909,21 @@ describe('event buffer', () => {
 				// `conversation: '0'` together with the number `0` would hide a
 				// consolidation that changed a text value's runtime type. A consumer sees
 				// that difference through `typeof`, `===` and arithmetic.
-				if (equivalent(local, remote, { preservePresence: true, coerceScalars: false })) return []
+				const strict = { preservePresence: true, coerceScalars: false }
+				if (equivalent(local, remote, strict)) return []
 				return {
 					target: 'buffer:differential',
 					input: steps,
-					local: normalise(local),
-					upstream: normalise(remote),
+					// Recorded under the same policy the gate used. The registry reads
+					// these values, and the default normalisation puts back exactly what
+					// the gate had held apart: `'0'` and `0` fold together and an
+					// explicitly-present `undefined` disappears. A type or presence
+					// regression occurring in a sequence that *also* shows the documented
+					// release-order difference then rendered as two records differing only
+					// by permutation, and `event-buffer-release-order` excused the whole
+					// finding.
+					local: normalise(local, 0, strict),
+					upstream: normalise(remote, 0, strict),
 					detail: 'the two buffers released different events for the same sequence'
 				}
 			}

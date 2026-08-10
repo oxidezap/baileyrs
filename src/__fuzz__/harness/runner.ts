@@ -290,19 +290,22 @@ const reportSafe = (value: unknown, seen = new WeakSet<object>(), depth = 0): un
 	}
 }
 
-const writeReport = (report: FuzzReport): void => {
-	if (!reportDirectory) return
+const writeReport = (report: FuzzReport): string | undefined => {
+	if (!reportDirectory) return undefined
 	try {
 		mkdirSync(reportDirectory, { recursive: true })
 		writeFileSync(
 			join(reportDirectory, `${corpusSlug(report.target)}.json`),
 			`${JSON.stringify(reportSafe(report), null, '\t')}\n`
 		)
+		return undefined
 	} catch (error) {
 		// A report that cannot be written must not replace the findings it was
 		// describing. Said out loud rather than swallowed, so a systematically
 		// failing write — a full disk, a bad FUZZ_REPORT_DIR — is visible.
-		console.error(`fuzz: could not write the report for ${report.target}: ${(error as Error)?.message}`)
+		const message = `could not write the report for ${report.target}: ${(error as Error)?.message}`
+		console.error(`fuzz: ${message}`)
+		return message
 	}
 }
 
@@ -532,7 +535,17 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		findings: outcome.unexcused,
 		crashes
 	}
-	writeReport(report)
+	// A failed write is a failed target, not a logged inconvenience.
+	//
+	// The aggregator decides whether the run can answer "which registry entries
+	// went unused" by looking at the reports that arrived. A write that fails part
+	// way through a run — the report volume filling during a deep run is the
+	// realistic case — leaves a non-empty but incomplete set that looks complete,
+	// and entries used only by the missing targets are then recommended for
+	// deletion. Failing here means the fuzz step goes red, the summariser is
+	// invoked with `--run-failed`, and stale-entry enforcement stands down.
+	const writeFailure = writeReport(report)
+	if (writeFailure !== undefined) crashes.push(`fuzz: ${writeFailure}`)
 
 	if (outcome.unexcused.length > 0 || crashes.length > 0) {
 		const lines = [
