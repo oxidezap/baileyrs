@@ -244,18 +244,37 @@ const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boo
 }
 
 /**
- * Replaces every `key.remoteJid` with a sentinel, recursively.
+ * The two key fields `cleanMessage` re-encodes through `jidNormalizedUser`.
  *
- * Lets a predicate say "apart from the remoteJid, these agree" without
+ * Both, not just `remoteJid`: the same empty-user rewrite is observable on
+ * `participant`, and an entry scoped to one field reported the other as an
+ * unrelated finding. Measured — `{ key: { participant: '@hosted' } }` with an
+ * empty meId leaves `@hosted` in baileyrs and becomes `@s.whatsapp.net`
+ * upstream, exactly as `remoteJid` does.
+ */
+const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
+
+/**
+ * Replaces every normalised key JID with a sentinel, recursively.
+ *
+ * Lets a predicate say "apart from those JIDs, these agree" without
  * hand-walking the argument tuple the mutation target reports.
  */
-const maskRemoteJid = (value: unknown, depth = 0): unknown => {
+const maskKeyJids = (value: unknown, depth = 0): unknown => {
 	if (depth > 12 || typeof value !== 'object' || value === null) return value
-	if (Array.isArray(value)) return value.map(item => maskRemoteJid(item, depth + 1))
+	if (Array.isArray(value)) return value.map(item => maskKeyJids(item, depth + 1))
 	const out: Record<string, unknown> = {}
 	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
 		Object.defineProperty(out, key, {
-			value: key === 'remoteJid' && typeof nested === 'string' ? '<remoteJid>' : maskRemoteJid(nested, depth + 1),
+			// The empty string is left alone rather than masked. It is the *other*
+			// entry's subject — upstream materialising a missing JID as `''` — and
+			// masking it to the same sentinel as a real JID stopped
+			// `addsOnlyEmptyStrings` from recognising it, so a key that hit both
+			// differences at once matched neither entry.
+			value:
+				CLEANED_JID_FIELDS.has(key) && typeof nested === 'string' && nested !== ''
+					? '<jid>'
+					: maskKeyJids(nested, depth + 1),
 			enumerable: true,
 			writable: true,
 			configurable: true
@@ -264,16 +283,25 @@ const maskRemoteJid = (value: unknown, depth = 0): unknown => {
 	return out
 }
 
-/** Every `key.remoteJid` string a divergence side carries. */
-const remoteJids = (value: unknown, found: string[] = [], depth = 0): string[] => {
+/**
+ * Every non-empty normalised key JID a divergence side carries, by path.
+ *
+ * Keyed by path rather than collected into a list, because the two sides are
+ * then compared field to field: a `remoteJid` on one side lining up with a
+ * `participant` on the other is a different defect from the one this documents,
+ * and must not be excused by it.
+ */
+const keyJids = (value: unknown, prefix = '', found = new Map<string, string>(), depth = 0): Map<string, string> => {
 	if (depth > 12 || typeof value !== 'object' || value === null) return found
 	if (Array.isArray(value)) {
-		for (const item of value) remoteJids(item, found, depth + 1)
+		for (const [index, item] of value.entries()) keyJids(item, `${prefix}[${index}]`, found, depth + 1)
 		return found
 	}
 	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		if (key === 'remoteJid' && typeof nested === 'string') found.push(nested)
-		else remoteJids(nested, found, depth + 1)
+		const path = `${prefix}.${key}`
+		if (CLEANED_JID_FIELDS.has(key) && typeof nested === 'string') {
+			if (nested !== '') found.set(path, nested)
+		} else keyJids(nested, path, found, depth + 1)
 	}
 	return found
 }
@@ -660,10 +688,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 					// pass as this entry.
 					(Buffer.from(bytes).toString('hex').match(/../gu) ?? [])
 						.join(' ')
-						// The Rust encoder's U+FFFD, and protobufjs's WTF-8 surrogate
-						// (ed a0 80 .. ed bf bf), which is the only other three-byte
-						// sequence starting `ed a`/`ed b`.
-						.replaceAll(/ef bf bd|ed [ab][0-9a-f] [0-9a-f]{2}/gu, '<sub>')
+						// The Rust encoder's U+FFFD, and protobufjs's WTF-8 surrogate,
+						// spelled out in full: `ed a0 80` .. `ed bf bf`. The trailing byte
+						// is a UTF-8 continuation, so it is `80`..`bf` — not any byte.
+						// Leaving it as `[0-9a-f]{2}` folded `ed a0 00`, which is not a
+						// surrogate at all, and folding a non-substitution on one side
+						// only is exactly what stops the two folds from cancelling.
+						.replaceAll(/ef bf bd|ed [ab][0-9a-f] [89ab][0-9a-f]/gu, '<sub>')
 				const mine = fold(divergence.local)
 				return mine === fold(divergence.upstream) && mine.includes('<sub>')
 			}
@@ -737,20 +768,27 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// difference on the target and so was covering this one too.
 		when: divergence => {
 			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
-			const mine = remoteJids(normalise(divergence.local))
-			const theirs = remoteJids(normalise(divergence.upstream))
-			// Both sides normalised to an empty user, and they disagree on nothing
-			// except which server that JID keeps.
-			if (mine.length === 0 || mine.length !== theirs.length) return false
-			if (!mine.every((jid, index) => jid.startsWith('@') && theirs[index]!.startsWith('@') && jid !== theirs[index]))
-				return false
-			return addsOnlyEmptyStrings(
-				maskRemoteJid(normalise(divergence.local)),
-				maskRemoteJid(normalise(divergence.upstream))
-			)
+			const mine = keyJids(normalise(divergence.local))
+			const theirs = keyJids(normalise(divergence.upstream))
+			// Same JID fields on both sides. A JID baileyrs writes where upstream
+			// writes nothing at all — or the reverse — is not this.
+			if (mine.size === 0 || mine.size !== theirs.size) return false
+			let rewritten = 0
+			for (const [path, jid] of mine) {
+				const other = theirs.get(path)
+				if (other === undefined) return false
+				if (other === jid) continue
+				// Differing: both must be the empty-user form this entry is about.
+				if (!jid.startsWith('@') || !other.startsWith('@')) return false
+				rewritten++
+			}
+			// At least one, or nothing here is the documented rewrite and whatever
+			// else differs is being excused for free.
+			if (rewritten === 0) return false
+			return addsOnlyEmptyStrings(maskKeyJids(normalise(divergence.local)), maskKeyJids(normalise(divergence.upstream)))
 		},
 		reason:
-			"For a message key whose remoteJid normalises to an empty user, the two write different servers onto the caller's key. Measured directly: `_99:1@hosted` becomes `@hosted` in baileyrs and `@s.whatsapp.net` upstream; `_1@hosted.lid` becomes `@hosted.lid` in baileyrs and `@lid` upstream. `jidNormalizedUser` agrees on both of those in isolation, so the difference is in cleanMessage's own re-encoding, and baileyrs is the side that preserves what the server actually sent. A consumer keying chats by remoteJid therefore files these under different chats depending on the library. Only reachable with a JID whose user part is empty.",
+			"For a message key whose remoteJid or participant normalises to an empty user, the two write different servers onto the caller's key. Measured directly: `_99:1@hosted` becomes `@hosted` in baileyrs and `@s.whatsapp.net` upstream; `_1@hosted.lid` becomes `@hosted.lid` in baileyrs and `@lid` upstream; `{ key: { participant: '@hosted' } }` shows the same rewrite on the participant field. `jidNormalizedUser` agrees on all of those in isolation, so the difference is in cleanMessage's own re-encoding, and baileyrs is the side that preserves what the server actually sent. A consumer keying chats by remoteJid therefore files these under different chats depending on the library. Only reachable with a JID whose user part is empty.",
 		review: '2026-11-01'
 	},
 	{

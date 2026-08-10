@@ -210,11 +210,17 @@ export const EXCLUDED_EXPORTS: Readonly<Record<string, string>> = {
 	USyncStatusProtocol: 'class; covered by usync-compatibility',
 	USyncUsernameProtocol: 'class; covered by usync-compatibility',
 
-	// Message construction: the send path is fuzzed end-to-end by
-	// wire-fidelity.fuzz.test.ts, which is a stronger oracle than argument diffing.
-	generateWAMessage: 'async send-path builder; covered by wire-fidelity.fuzz.test.ts',
-	generateWAMessageContent: 'async send-path builder; covered by wire-fidelity.fuzz.test.ts',
+	// Message construction. Only the synchronous builder is actually fuzzed:
+	// wire-fidelity.fuzz.test.ts calls generateWAMessageFromContent on both sides
+	// and diffs the envelope, which is a stronger oracle than argument diffing.
 	generateWAMessageFromContent: 'send-path builder; covered by wire-fidelity.fuzz.test.ts',
+	// The other two are not covered by anything here, and saying they were is
+	// worse than the gap: it retires a target nothing exercises. Both are async
+	// and reach media upload, so a differential needs a stubbed upload pair that
+	// returns identically on both sides before the comparison means anything —
+	// otherwise every draw diverges on an upload URL. Worth building; not here.
+	generateWAMessage: 'NOT COVERED: async, uploads media; needs a paired upload stub first',
+	generateWAMessageContent: 'NOT COVERED: async, uploads media; needs a paired upload stub first',
 	processHistoryMessage: 'history-sync pipeline; covered by history-sync-inflate and the wire tests',
 
 	// Keyed crypto whose inputs cannot be generated meaningfully: random input only

@@ -287,11 +287,121 @@ interface PureTarget {
 	readonly runs?: number
 }
 
+/**
+ * A message key, including the `*Alt` fields.
+ *
+ * `getKeyAuthor` resolves `participantAlt || remoteJidAlt || participant ||
+ * remoteJid`. Without the first two the differential only ever exercised the
+ * last two branches, so a codec that reordered that precedence — or dropped an
+ * alt field entirely — read as agreement. Empty strings are drawn on purpose:
+ * the operator is `||`, so `''` has to fall through to the next branch, and
+ * that fall-through is the part most likely to drift.
+ */
+const altJid = (random: Random) =>
+	random.weighted<() => string | undefined>([
+		[6, () => undefined],
+		[3, () => generateJid(random)],
+		[1, () => '']
+	])()
+
+/**
+ * Text for `extractUrlFromText`, which is one `String.match` against
+ * `URL_REGEX` and returns the first hit.
+ *
+ * Measured over 250 draws of the generic string generator: *zero* matched, so
+ * the differential only ever compared `undefined` to `undefined` — a regex that
+ * had been changed on one side to match nothing at all would have passed. The
+ * cases below are built around the parts of that pattern that can drift: the
+ * https-only prefix, the two-letter TLD minimum, the optional port and path,
+ * where the match stops (whitespace), which of several URLs comes back first,
+ * and the negative lookahead that rejects `user:pass@host` — the one rule in
+ * there that exists for a security reason rather than a parsing one.
+ */
+const urlText = (random: Random): string => {
+	const host = () =>
+		random.pick([
+			'example.com',
+			'a.co',
+			'sub.domain.example.org',
+			'xn--80ak6aa92e.com',
+			'127.0.0.1.nip.io',
+			'UPPER.CASE.NET'
+		])
+	const port = () => (random.bool(0.25) ? `:${random.pick([80, 443, 8080, 0, 65535, 99999])}` : '')
+	const path = () =>
+		random.bool(0.5) ? random.pick(['/', '/a/b?c=d&e=f', '/#frag', '/%20%zz', '/trailing.', '/a b']) : ''
+	const url = () => `https://${host()}${port()}${path()}`
+
+	return random.weighted<() => string>([
+		// A bare URL, and a URL embedded in surrounding words — the match has to
+		// start and stop in the right place.
+		[4, url],
+		[3, () => `${random.pick(['see ', 'go to ', '(', 'x'])}${url()}${random.pick([' now', ')', '', '\nnext'])}`],
+		// More than one: the helper returns the *first*, and which one that is has
+		// to be the same on both sides.
+		[2, () => `${url()} and ${url()}`],
+		// Near-misses that must not match: wrong scheme, single-letter TLD, no TLD,
+		// and the credential form the lookahead exists to reject.
+		[
+			2,
+			() =>
+				random.pick([
+					'http://example.com',
+					'https://example.c',
+					'https://localhost',
+					'https://user:pass@example.com/x',
+					'https://user:pass@example.com and https://example.net',
+					'httpsx://example.com',
+					'https://'
+				])
+		],
+		[1, () => generateString(random)]
+	])()
+}
+
+/**
+ * Input for `encodeBase64EncodedStringForUpload`, which is three replacements
+ * and a percent-encode: `+`→`-`, `/`→`_`, trailing `=` stripped.
+ *
+ * The generic string generator does not reach any of them in practice. Measured
+ * over 250 draws: 8 contained `+` or `/` and *zero* ended with `=`, so the
+ * padding strip — the one rule with an anchor in it, and the one most likely to
+ * be got wrong — was never executed on either side. Real base64 of random bytes
+ * produces all three naturally; the hand-written cases pin the edges the random
+ * draw would need luck to hit.
+ */
+const uploadBase64 = (random: Random): string =>
+	random.weighted<() => string>([
+		[6, () => Buffer.from(random.bytes(random.int(1, 48))).toString('base64')],
+		[
+			3,
+			() =>
+				random.pick([
+					// One, two, and no padding characters.
+					'AA==',
+					'AAA=',
+					'AAAA',
+					// Padding is only stripped at the end: an interior `=` must survive.
+					'AA==BB==',
+					// Nothing but padding, and the empty string.
+					'====',
+					'',
+					// Both replaced characters, adjacent, with padding behind them.
+					'+/+/==',
+					// Characters encodeURIComponent has to escape but the replacements do not touch.
+					'a b&c?d#e%f'
+				])
+		],
+		[1, () => generateString(random)]
+	])()
+
 const messageKey = (random: Random) => ({
 	remoteJid: generateMaybeJid(random),
 	fromMe: random.bool(),
 	id: random.pick(['ABC123', '', '3EB0' + '0'.repeat(32), 'BAE5' + 'F'.repeat(12)]),
-	participant: random.bool(0.3) ? generateMaybeJid(random) : undefined
+	participant: random.bool(0.3) ? generateMaybeJid(random) : undefined,
+	participantAlt: altJid(random),
+	remoteJidAlt: altJid(random)
 })
 
 const receipt = (random: Random) => ({
@@ -904,7 +1014,7 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [random.bool(0.85) ? mediaWithDigest(random) : messageContent(random)],
 		runs: 200
 	},
-	{ name: 'encodeBase64EncodedStringForUpload', generate: random => [generateString(random)], runs: 200 },
+	{ name: 'encodeBase64EncodedStringForUpload', generate: random => [uploadBase64(random)], runs: 200 },
 	{
 		name: 'xmppPreKey',
 		generate: random => [{ public: generateBytes(random), private: generateBytes(random) }, generateNumber(random)],
@@ -921,7 +1031,7 @@ const TARGETS: readonly PureTarget[] = [
 		],
 		runs: 150
 	},
-	{ name: 'extractUrlFromText', generate: random => [generateString(random)], runs: 250 },
+	{ name: 'extractUrlFromText', generate: random => [urlText(random)], runs: 250 },
 	{
 		name: 'generateForwardMessageContent',
 		generate: random => [

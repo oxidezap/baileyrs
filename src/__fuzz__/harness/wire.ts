@@ -295,6 +295,18 @@ const descend = (schema: SchemaContext | undefined, field: number): SchemaContex
 const packableHere = (schema: SchemaContext | undefined, field: number): boolean =>
 	schema !== undefined && schema.isRepeated(schema.path, field)
 
+/**
+ * One field number's entries in occurrence order.
+ *
+ * Order, not a sorted key. A repeated field's occurrence order is part of its
+ * value: `08 01 08 02` decodes to `[1, 2]` and `08 02 08 01` to `[2, 1]`.
+ * Sorting made those two spellings compare equal, so a reordering codec bug
+ * took the "identical, skip" branch and the comparison returned true — the
+ * proto targets then reported clean — without either side being a packed run.
+ */
+const spelling = (entries: readonly WireField[]): string =>
+	entries.map(entry => `${entry.wireType}:${entry.value}`).join(',')
+
 const nestedDiffersOnlyByPacking = (
 	a: readonly WireField[],
 	b: readonly WireField[],
@@ -314,15 +326,7 @@ const nestedDiffersOnlyByPacking = (
 		const rightEntries = right_.get(field)
 		if (!rightEntries) return false
 
-		const leftKey = leftEntries
-			.map(entry => `${entry.wireType}:${entry.value}`)
-			.toSorted()
-			.join(',')
-		const rightKey = rightEntries
-			.map(entry => `${entry.wireType}:${entry.value}`)
-			.toSorted()
-			.join(',')
-		if (leftKey === rightKey) continue
+		if (spelling(leftEntries) === spelling(rightEntries)) continue
 
 		// A packing difference inside a nested message is still a packing difference:
 		// without this, `47:2:{1:0:0}` versus `47:2:{1:2:00}` falls through as a

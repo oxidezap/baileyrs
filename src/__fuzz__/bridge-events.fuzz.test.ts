@@ -223,15 +223,24 @@ describe('bridge event adaptation', () => {
 		)
 	})
 
-	it('never throws on a message-wire payload', async () => {
-		await fuzz<Record<string, unknown>>({
+	it('carries chat and id through the message-wire adapter, and never throws', async () => {
+		// The result is inspected, not discarded. "Never throws" on its own is
+		// cleared by an adapter that returns `null` for every input it is ever
+		// shown, so a regression that dropped every valid message would have passed
+		// all 400 cases. Two things are checked instead: when the adapter accepts a
+		// payload, the canonical message has to carry the chat and id it was given,
+		// and across the sweep it has to accept *something* — measured at 288 of 400
+		// draws on the fixed seed, so a floor of one is a liveness check with plenty
+		// of headroom rather than a threshold that will flake on an unlucky seed.
+		let accepted = 0
+		const report = await fuzz<Record<string, unknown>>({
 			target: 'bridge:message-wire',
 			runs: 400,
 			generate: generateMessageWire,
 			check: wire => {
+				let canonical: ReturnType<typeof adaptBridgeMessageWire>
 				try {
-					adaptBridgeMessageWire(wire.message, wire.info as never, silentLogger)
-					return []
+					canonical = adaptBridgeMessageWire(wire.message, wire.info as never, silentLogger)
 				} catch (error) {
 					return {
 						target: 'bridge:message-wire',
@@ -241,8 +250,33 @@ describe('bridge event adaptation', () => {
 						detail: 'a malformed message-wire payload threw instead of being dropped'
 					}
 				}
+				// Dropping a payload is always allowed — the adapter's contract is
+				// "null on unrecoverable shape mismatch", and the generator produces
+				// plenty of those on purpose.
+				if (canonical === null) return []
+				accepted++
+				const info = wire.info as Record<string, unknown>
+				if (canonical.chatJid === info.chat && canonical.id === info.id && canonical.type === 'message') return []
+				return {
+					target: 'bridge:message-wire',
+					input: wire,
+					local: { type: canonical.type, chatJid: canonical.chatJid, id: canonical.id },
+					upstream: { type: 'message', chatJid: info.chat, id: info.id },
+					detail: 'the adapter accepted a message but changed its chat or id'
+				}
 			}
 		})
+
+		// Asserted rather than reported, for the same reason as the coverage counter
+		// above: this is a statement about the generator and the adapter's liveness,
+		// and no allowlist entry should be able to excuse it. Skipped when FUZZ_ONLY
+		// filtered the target out, since the counter would then be about a run that
+		// never happened.
+		if (report.runs === 0) return
+		assert.ok(
+			accepted > 0,
+			`adaptBridgeMessageWire returned null on all ${report.runs} draws — either the generator stopped producing valid payloads or the adapter now drops everything`
+		)
 	})
 })
 
