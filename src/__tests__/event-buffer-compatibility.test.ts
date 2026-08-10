@@ -1,3 +1,4 @@
+import { makeEventBuffer as makeUpstreamEventBuffer } from 'baileys/lib/Utils/event-buffer.js'
 import { describe, it } from 'node:test'
 import type { BaileysEventMap } from '../Types/index.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
@@ -187,5 +188,50 @@ describe('event buffer — upstream process() contract', () => {
 		expect(released[0]?.subject).toEqual('second')
 		// ...and the field that only the middle update carried is still there.
 		expect(released[0]?.announce).toEqual(true)
+	})
+
+	/**
+	 * A flush walks `Object.keys()` of the consolidated map, so the order that
+	 * `consolidateEvents` writes its keys is the order a `process()` handler
+	 * iterates and the order the individual events reach `.on()` listeners. The
+	 * expectation below is read from upstream at run time rather than written out
+	 * by hand: a hardcoded list would go stale the moment upstream reorders, and
+	 * would then assert compatibility with a version nobody runs.
+	 */
+	it('releases the consolidated kinds in upstream’s order', () => {
+		// Distinct message ids per kind on purpose: a reaction or receipt whose key
+		// matches a buffered upsert is folded into that message instead of landing
+		// in its own bucket, and the kind would never appear in the map.
+		const seed = (ev: ReturnType<typeof makeEventBuffer>) => {
+			const key = (id: string) => ({ remoteJid: '1@s.whatsapp.net', id, fromMe: false })
+			ev.buffer()
+			ev.emit('messages.upsert', { messages: [{ key: key('A'), message: {} } as never], type: 'notify' })
+			ev.emit('message-receipt.update', [{ key: key('E'), receipt: { userJid: '2@s.whatsapp.net', readTimestamp: 5 } }])
+			ev.emit('contacts.upsert', [{ id: '2@s.whatsapp.net', name: 'x' }])
+			ev.emit('contacts.update', [{ id: '3@s.whatsapp.net', name: 'y' }])
+			ev.emit('groups.update', [{ id: '120@g.us', subject: 's' }])
+			ev.emit('chats.upsert', [{ id: '9@s.whatsapp.net', conversationTimestamp: 1, unreadCount: 1 }])
+			ev.emit('chats.update', [{ id: '8@s.whatsapp.net', unreadCount: 1 }])
+			ev.emit('chats.delete', ['7@s.whatsapp.net'])
+			ev.emit('messages.update', [{ key: key('B'), update: { status: 3 } }])
+			ev.emit('messages.delete', { keys: [key('C')] })
+			ev.emit('messages.reaction', [{ key: key('D'), reaction: { text: '\u{1f44d}', key: key('D') } }])
+			ev.flush()
+		}
+		const orderOf = (make: typeof makeEventBuffer) => {
+			const ev = make(logger)
+			let keys: string[] = []
+			ev.process(events => {
+				keys = Object.keys(events)
+			})
+			seed(ev)
+			return keys
+		}
+
+		const upstream = orderOf(makeUpstreamEventBuffer as unknown as typeof makeEventBuffer)
+		// The seed has to actually exercise every kind, or the order it pins is
+		// only the order of whatever happened to survive consolidation.
+		expect(upstream.length).toEqual(11)
+		expect(orderOf(makeEventBuffer)).toEqual(upstream)
 	})
 })

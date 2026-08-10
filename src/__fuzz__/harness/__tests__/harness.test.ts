@@ -343,10 +343,9 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		)
 	})
 
-	// The merge-precedence entry pairs observations by kind and identity rather
-	// than by position, so that it composes with the release-order entry. That is
-	// exactly the construction that can quietly start excusing a lost event, so
-	// the boundaries are pinned.
+	// The merge-precedence entry pairs observations by position and then checks
+	// kind and identity. That is exactly the construction that can quietly start
+	// excusing a lost or moved event, so the boundaries are pinned.
 	it('excuses the buffer merge precedence only for the two kinds it names', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'event-buffer-merge-precedence')
@@ -389,10 +388,13 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			),
 			'a wrong value on an unpinned field is reported'
 		)
-		// The case that forced the pairing: a field difference *and* a reordering.
+		// This used to be excused, back when the two buffers released kinds in
+		// different orders and a sibling entry documented it. `consolidateEvents`
+		// now matches upstream's order, so a reordering is a finding again and may
+		// not ride along with a field difference.
 		assert.ok(
-			excused([upsert('first'), receipt], [receipt, upsert('second')]),
-			'a field difference alongside a reordering is the two documented entries together'
+			!excused([upsert('first'), receipt], [receipt, upsert('second')]),
+			'a reordering is no longer documented, with or without a field difference'
 		)
 
 		// Near-misses.
@@ -411,10 +413,7 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			),
 			'a changed id is a different entity, not a merge precedence'
 		)
-		assert.ok(
-			!excused([upsert('same'), receipt], [receipt, upsert('same')]),
-			'a pure reordering belongs to the sibling entry'
-		)
+		assert.ok(!excused([upsert('same'), receipt], [receipt, upsert('same')]), 'a pure reordering is a finding')
 	})
 
 	it('excuses the cleanMessage JID rewrite only in the shape it documents', async () => {

@@ -918,10 +918,10 @@ describe('event buffer', () => {
 					// these values, and the default normalisation puts back exactly what
 					// the gate had held apart: `'0'` and `0` fold together and an
 					// explicitly-present `undefined` disappears. A type or presence
-					// regression occurring in a sequence that *also* shows the documented
-					// release-order difference then rendered as two records differing only
-					// by permutation, and `event-buffer-release-order` excused the whole
-					// finding.
+					// regression occurring in a sequence that *also* showed a documented
+					// consolidation difference then rendered as two records differing only
+					// in ways an existing entry already excused, and the regression went
+					// with it.
 					local: normalise(local, 0, strict),
 					upstream: normalise(remote, 0, strict),
 					detail: 'the two buffers released different events for the same sequence'
