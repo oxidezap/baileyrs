@@ -210,35 +210,6 @@ const namesUnknownCodecType = (input: unknown): boolean => {
 }
 
 /**
- * The message paths whose bridge encoding is upstream's minus whole fields.
- *
- * The classifier proves the shape and the direction — `isWireSubset` is called
- * `(localBytes, remoteBytes)` at every site, so this target can only ever mean
- * bridge-minus-upstream and a changed value lands elsewhere. What it cannot
- * prove is that the omission is one already known, so the paths are listed and
- * an eighteenth fails.
- */
-const FIELD_OMISSION_PATHS: readonly string[] = [
-	'Message.AudioMessage',
-	'Message.ButtonsMessage',
-	'Message.DocumentMessage',
-	'Message.ExtendedTextMessage',
-	'Message.HighlyStructuredMessage',
-	'Message.ImageMessage',
-	'Message.InteractiveMessage',
-	'Message.InteractiveMessage.Header',
-	'Message.MMSThumbnailMetadata',
-	'Message.ProductMessage.ProductSnapshot',
-	'Message.ProtocolMessage',
-	'Message.TemplateMessage',
-	'Message.TemplateMessage.FourRowTemplate',
-	'Message.TemplateMessage.HydratedFourRowTemplate',
-	'Message.VideoMessage',
-	'SyncActionValue',
-	'SyncActionValue.ChatAssignmentAction'
-]
-
-/**
  * True when upstream is baileyrs plus keys that all hold the empty string.
  *
  * That is the whole of the `cleanMessage` difference: for a key with no
@@ -531,7 +502,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'pure:toNumber',
 		status: 'intended',
 		reason:
-			'Upstream returns `t.low` for a Long without a toNumber method, silently dropping the high word and truncating any value past 2^32 (a millisecond timestamp, for one). baileyrs reconstructs `high * 2^32 + (low >>> 0)`, which is documented at the call site. Upstream also returns its argument unchanged for a non-Long, non-number input, where baileyrs returns 0 to honour its `number` return type.',
+			'Upstream returns `t.low` for a Long without a toNumber method, silently dropping the high word and truncating any value past 2^32 (a millisecond timestamp, for one). baileyrs reconstructs `high * 2^32 + (low >>> 0)`, which is documented at the call site. Upstream also returns its argument unchanged for a non-Long, non-number input, where baileyrs returns 0 to honour its `number` return type. And `toNumber(-0)` returns `-0` from baileyrs and `+0` from upstream, because `t || 0` treats negative zero as falsy — observable through `Object.is` and `1 / result`.',
 		review: '2027-02-01',
 		when: divergence => {
 			// `??` only replaces null/undefined, and a corpus entry or a shrunk input
@@ -556,6 +527,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 				return typeof low === 'number'
 					? Object.is(divergence.local, (typeof high === 'number' ? high : 0) * 0x1_0000_0000 + (low >>> 0))
 					: divergence.local === 0
+			}
+			// `-0` is the one number the two disagree on, and for the same reason as
+			// the rest of this entry: upstream's `t || 0` treats it as falsy and hands
+			// back `+0`, baileyrs returns the argument. Surfaced once `normalise`
+			// stopped folding the sign away under strict comparison.
+			if (Object.is(argument, -0)) {
+				return Object.is(divergence.local, -0) && Object.is(divergence.upstream, 0)
 			}
 			if (typeof argument === 'number') return false
 			// Non-object, non-number: upstream is `t || 0`, baileyrs is 0.
@@ -590,9 +568,20 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			if (!LONE_SURROGATE.test(text(divergence.input))) return false
 			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
 			if (divergence.local instanceof Uint8Array && divergence.upstream instanceof Uint8Array) {
-				const mine = Buffer.from(divergence.local).toString('hex')
-				const theirs = Buffer.from(divergence.upstream).toString('hex')
-				return mine.includes('efbfbd') && !theirs.includes('efbfbd')
+				// Byte-for-byte apart from the substitution itself. Testing only that
+				// `ef bf bd` appears on one side and not the other let any other byte
+				// difference ride along whenever some field happened to hold a lone
+				// surrogate. Both spellings collapse to the same placeholder, and what
+				// is left has to be identical.
+				const fold = (bytes: Uint8Array) =>
+					Buffer.from(bytes)
+						.toString('hex')
+						// The Rust encoder's U+FFFD, and protobufjs's WTF-8 surrogate
+						// (ed a0 80 .. ed bf bf), which is the only other three-byte
+						// sequence starting `ed a`/`ed b`.
+						.replaceAll(/efbfbd|ed[ab][0-9a-f]{3}/gu, '<sub>')
+				const mine = fold(divergence.local)
+				return mine === fold(divergence.upstream) && mine.includes('<sub>')
 			}
 			// Composed with the copy-shape entry rather than duplicating it: once the
 			// surrogate substitution is undone, what is allowed to remain is the key
@@ -828,7 +817,17 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'proto-field-omission',
 		target: 'proto:field-omission',
 		status: 'open',
-		when: divergence => FIELD_OMISSION_PATHS.includes(inputPath(divergence.input) ?? ''),
+		// Deliberately no path predicate. Enumerating the affected paths was tried
+		// and reverted on measurement: one smoke seed names 17, four name 29, and
+		// the set keeps growing — a list drawn from a sample is not a pin, it is a
+		// way to fail on an unlucky seed while adding no safety. What does bound
+		// this target is the classifier: `isWireSubset` is called
+		// `(localBytes, remoteBytes)` at every site, so a finding can only ever mean
+		// bridge-minus-upstream, and any *changed* value is routed to encode-bytes
+		// or decode-parity instead. Pinning the omitted field rather than the
+		// message would be the real fix, and needs the scanner to report which
+		// fields went missing.
+
 		reason:
 			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Overlaps the presence and unknown-type entries, which are themselves already tracked in KNOWN_WIRE_GAPS; kept separate because the classifier cannot attribute a cause, only a shape.',
 		review: '2026-10-01'

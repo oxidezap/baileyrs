@@ -359,7 +359,13 @@ const messageContent = (random: Random, depth = 2): Record<string, unknown> => {
 /** A deliberately over-nested wrapper chain, to compare recursion limits rather than shapes. */
 const deeplyNestedContent = (random: Random): Record<string, unknown> => {
 	let content: Record<string, unknown> = { conversation: 'bottom' }
-	for (let depth = 0; depth < random.int(1, 400); depth++) {
+	// Drawn once. Re-drawing the bound every iteration compounds a survival
+	// probability instead of choosing a depth: measured over 500 chains, the
+	// median came out at 24 and nothing exceeded 67, so the hundreds-deep case
+	// this generator exists for was unreachable. Drawn once: median 196, 364 of
+	// 500 past 100.
+	const target = random.int(1, 400)
+	for (let depth = 0; depth < target; depth++) {
 		content = {
 			[random.pick(['ephemeralMessage', 'viewOnceMessage', 'documentWithCaptionMessage'])]: { message: content }
 		}

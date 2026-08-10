@@ -201,16 +201,20 @@ export const generateTaggedNode = (random: Random, tags: readonly string[], quer
 		tag:
 			queried !== undefined && random.bool(0.85) ? queried : random.bool(0.8) ? random.pick(tags) : random.pick(TAGS),
 		attrs: generateAttributes(random),
-		content: random.weighted<BinaryNode['content']>([
+		// Thunks, so only the chosen branch draws from the stream. Passing values
+		// built every branch and discarded all but one, which couples the
+		// deterministic sequence to draws that are never used — a later weight edit
+		// then shifts every downstream value.
+		content: random.weighted<() => BinaryNode['content']>([
 			// Lengths span the widths getBinaryNodeChildUInt is asked for, including
 			// buffers shorter than the requested length.
-			[5, random.bytes(random.pick([0, 1, 2, 3, 4, 8, 16]))],
-			[3, Buffer.from(random.bytes(random.pick([1, 2, 4, 8])))],
-			[3, generateString(random)],
-			[2, random.pick(ATTRIBUTE_VALUES)],
-			[1, undefined],
-			[1, []]
-		])
+			[5, () => random.bytes(random.pick([0, 1, 2, 3, 4, 8, 16]))],
+			[3, () => Buffer.from(random.bytes(random.pick([1, 2, 4, 8])))],
+			[3, () => generateString(random)],
+			[2, () => random.pick(ATTRIBUTE_VALUES)],
+			[1, () => undefined],
+			[1, () => []]
+		])()
 	}))
 })
 

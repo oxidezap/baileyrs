@@ -147,7 +147,15 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 	if (typeof value === 'bigint') return coerce ? value : { __bigint__: value.toString() }
 	if (typeof value === 'number') {
 		if (coerce && Number.isInteger(value) && Number.isSafeInteger(value)) return BigInt(value)
-		return Object.is(value, -0) ? 0 : value
+		// `-0` collapses to `0` only under coercion. Strict mode is what the pure
+		// helpers are compared with, and there the sign is observable —
+		// `Object.is(result, -0)` and `1 / result` both see it, and the suite
+		// generates and corpus-encodes `-0` on purpose — so a helper that loses it
+		// on one side has to be reported, not normalised into agreement. Rendered
+		// as a tagged value because `sameShape`, `JSON.stringify` and deepEqual all
+		// treat -0 and 0 as the same otherwise.
+		if (Object.is(value, -0)) return coerce ? 0 : { __negative_zero__: true }
+		return value
 	}
 	if (typeof value === 'string') {
 		// Only pure decimal integers; a JID or a base64 blob must stay a string.

@@ -178,10 +178,25 @@ const scanFrom = (
 	return groupField === undefined ? fields : undefined
 }
 
+/**
+ * Renders a field list so that field *order* does not matter but repeated-field
+ * *occurrence* order does.
+ *
+ * Protobuf lets a sender emit fields in any order, so two encoders disagreeing
+ * about that is a representation difference. It does not let the occurrences of
+ * one repeated field be reordered: that order is the decoded array's order.
+ * Sorting every entry conflated the two — `[a, b]` and `[b, a]` canonicalised
+ * identically, so an encoder that reversed an array was classified as
+ * `proto:field-order` and excused as harmless.
+ *
+ * Sorting on the field number alone fixes both halves: `Array.prototype.sort` is
+ * stable, so occurrences of one field keep their relative order, and the numeric
+ * comparison also stops field 10 sorting before field 2.
+ */
 const render = (fields: readonly WireField[]): string =>
 	[...fields]
+		.toSorted((left, right) => left.field - right.field || left.wireType - right.wireType)
 		.map(entry => `${entry.field}:${entry.wireType}:${entry.value}`)
-		.toSorted()
 		.join(',')
 
 /** Order-insensitive rendering of a message's fields, or undefined if it does not parse. */

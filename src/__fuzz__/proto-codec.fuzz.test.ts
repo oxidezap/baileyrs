@@ -464,7 +464,27 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 
 				const localNumber = firstFieldNumber(localBytes)
 				const remoteNumber = firstFieldNumber(remoteBytes)
-				if (localNumber === undefined || remoteNumber === undefined || localNumber === remoteNumber) return []
+				// Nonempty bytes whose first tag will not parse — a malformed varint, or
+				// an illegal field number like zero — are a broken encoder, not a case to
+				// skip. Skipping it meant the only sweep guaranteed to visit every field
+				// reported a pass for the one field it could not read, and the randomised
+				// byte differential may never draw that field in a smoke run.
+				if (localNumber === undefined || remoteNumber === undefined) {
+					return {
+						target: 'proto:field-numbers',
+						input: `${path}.${field}`,
+						local:
+							localNumber === undefined
+								? `<unreadable first tag: ${hex(localBytes).slice(0, 32)}>`
+								: `field ${localNumber}`,
+						upstream:
+							remoteNumber === undefined
+								? `<unreadable first tag: ${hex(remoteBytes).slice(0, 32)}>`
+								: `field ${remoteNumber}`,
+						detail: 'an encoder produced bytes whose first tag does not parse'
+					}
+				}
+				if (localNumber === remoteNumber) return []
 
 				return {
 					target: 'proto:field-numbers',
