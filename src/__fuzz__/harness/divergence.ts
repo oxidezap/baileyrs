@@ -200,6 +200,23 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		when: divergence => text(divergence.local).includes('invalid float32')
 	},
 	{
+		id: 'proto-decode-invalid-utf8',
+		target: 'proto:mutation-agreement',
+		status: 'open',
+		reason:
+			'When a string field carries bytes that are not valid UTF-8, the two decoders produce different strings: the bridge substitutes U+FFFD per undecodable byte, protobufjs runs its own reader and resolves the same bytes into different characters. Both accept the payload, so a peer sending malformed UTF-8 hands the two libraries different text. Same root cause as the lone-surrogate difference on the encode side, and the pair should be decided together.',
+		review: '2026-11-01',
+		when: divergence => text(divergence.local).includes('\uFFFD')
+	},
+	{
+		id: 'proto-malformed-interpretation',
+		target: 'proto:mutation-interpretation',
+		status: 'intended',
+		reason:
+			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
+		review: '2027-02-01'
+	},
+	{
 		id: 'proto-repeated-scalars-unpacked',
 		target: 'proto:field-packing',
 		status: 'open',
