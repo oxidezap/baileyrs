@@ -252,23 +252,45 @@ const messageKey = (random: Random) => ({
 	participant: random.bool(0.3) ? generateJid(random) : undefined
 })
 
+/**
+ * A four-entry jid pool for the history-set payloads.
+ *
+ * Small enough that two rows in one batch, or two batches before a flush,
+ * collide often — which is what drives the merge and dedup branches. The
+ * occasional draw from the full grammar keeps the hostile shapes reachable
+ * without diluting the pool into uniqueness.
+ */
+const HISTORY_JIDS = [
+	'15551234567@s.whatsapp.net',
+	'15550000000@s.whatsapp.net',
+	'120363000000000000@g.us',
+	'100000000000000@lid'
+] as const
+
+const historyJid = (random: Random): string => (random.bool(0.9) ? random.pick(HISTORY_JIDS) : generateJid(random))
+
 const payloadFor = (random: Random, event: string): unknown => {
 	switch (event) {
 		// The buffer's largest stateful branch: it merges chats, contacts and
 		// messages into `historySets` by id, folds later chat updates into entries
-		// already there, and carries syncType/progress/isLatest across flushes. The
-		// small id pools are the point — reuse is what makes the consolidation and
-		// deduplication paths run rather than appending distinct rows every time.
+		// already there, and carries syncType/progress/isLatest across flushes.
+		//
+		// Ids come from `historyJid`, not `generateJid`, and that is the whole point.
+		// The merge only runs when the same id shows up twice, and the full grammar
+		// draws ~214 distinct values in 300 tries, so the fold would be reached by
+		// coincidence at best. Its most common single value is the empty string,
+		// which fails the other way round — every row collapses under the `''` key
+		// and the dedup looks exercised while nothing distinct was ever merged.
 		case 'messaging-history.set':
 			return {
 				chats: Array.from({ length: random.int(0, 3) }, () => ({
-					id: generateJid(random),
+					id: historyJid(random),
 					conversationTimestamp: generateNumber(random),
 					unreadCount: random.int(0, 5),
 					endOfHistoryTransferType: random.bool(0.3) ? random.int(0, 2) : undefined
 				})),
 				contacts: Array.from({ length: random.int(0, 3) }, () => ({
-					id: generateJid(random),
+					id: historyJid(random),
 					name: random.bool(0.5) ? generateString(random) : undefined,
 					notify: random.bool(0.3) ? generateString(random) : undefined
 				})),
@@ -278,7 +300,7 @@ const payloadFor = (random: Random, event: string): unknown => {
 					message: { conversation: generateString(random) }
 				})),
 				pastParticipants: random.bool(0.25)
-					? [{ groupJid: generateJid(random), pastParticipants: [{ userJid: generateJid(random), leaveReason: 0 }] }]
+					? [{ groupJid: historyJid(random), pastParticipants: [{ userJid: historyJid(random), leaveReason: 0 }] }]
 					: undefined,
 				syncType: random.bool(0.5) ? random.int(0, 5) : undefined,
 				progress: random.bool(0.5) ? random.int(0, 100) : undefined,

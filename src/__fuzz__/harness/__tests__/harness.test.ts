@@ -13,6 +13,7 @@ import { applyAllowlist, staleEntries, type Divergence, type KnownDivergence } f
 import { corpusSlug } from '../corpus.ts'
 import { makeRandom } from '../random.ts'
 import { shrink } from '../shrink.ts'
+import { canonicalWire, differsOnlyByPacking, isWireSubset } from '../wire.ts'
 
 describe('fuzz harness — deterministic randomness', () => {
 	it('replays an identical stream for an identical seed', () => {
@@ -241,5 +242,76 @@ describe('fuzz harness — corpus', () => {
 		assert.equal(corpusSlug('proto:Message.roundTrip'), 'proto-message-roundtrip')
 		assert.equal(corpusSlug('jid:jidDecode'), 'jid-jiddecode')
 		assert.equal(corpusSlug('!!!'), 'unnamed')
+	})
+})
+
+describe('fuzz harness — protobuf wire canonicaliser', () => {
+	/** field, wire type 2, explicit length, payload. */
+	const lengthDelimited = (field: number, payload: readonly number[]): Uint8Array =>
+		Uint8Array.from([...tag(field, 2), payload.length, ...payload])
+
+	/** field, wire type 0, one varint value already encoded. */
+	const varint = (field: number, encoded: readonly number[]): Uint8Array =>
+		Uint8Array.from([...tag(field, 0), ...encoded])
+
+	// BigInt, not `field << 3`: the shift overflows int32 near the maximum legal
+	// field number, which would make the bounds test check the wrong bytes.
+	function tag(field: number, wireType: number): number[] {
+		let value = (BigInt(field) << 3n) | BigInt(wireType)
+		const bytes: number[] = []
+		while (value > 0x7fn) {
+			bytes.push(Number((value & 0x7fn) | 0x80n))
+			value >>= 7n
+		}
+		bytes.push(Number(value))
+		return bytes
+	}
+
+	const concat = (...parts: Uint8Array[]) => Uint8Array.from(parts.flatMap(part => [...part]))
+
+	it('reads a packed run and its unpacked spelling as the same content', () => {
+		// field 22, packed [0, 1] against two separate varints.
+		const packed = lengthDelimited(22, [0x00, 0x01])
+		const loose = concat(varint(22, [0x00]), varint(22, [0x01]))
+		assert.equal(differsOnlyByPacking(packed, loose), true)
+		assert.equal(differsOnlyByPacking(loose, packed), true)
+	})
+
+	/**
+	 * The regression that motivated carrying raw bytes on every field.
+	 *
+	 * `80 80 40 00` is a packed [1048576, 0], and it is *also* valid as a nested
+	 * message (field 131072, wire type 0, value 0). The canonicaliser renders it as
+	 * the nested form, so a packing check that unpacked the rendering rather than
+	 * the bytes simply failed — and an ordinary two-element repeated field was
+	 * reported as a codec mismatch. Six of these surfaced at once in `proto:oneof`
+	 * the moment a generator change shifted the random stream, so it stays pinned.
+	 */
+	it('detects packing even when the packed payload also parses as a nested message', () => {
+		const packed = lengthDelimited(22, [0x80, 0x80, 0x40, 0x00])
+		assert.match(canonicalWire(packed) ?? '', /\{131072:0:0\}/u, 'the payload should render as a nested message')
+
+		const loose = concat(varint(22, [0x80, 0x80, 0x40]), varint(22, [0x00]))
+		assert.equal(differsOnlyByPacking(packed, loose), true)
+	})
+
+	it('reads a packing difference alongside a dropped field as an omission', () => {
+		// Same repeated field spelled both ways, and field 2 present on one side only.
+		const packed = lengthDelimited(22, [0x80, 0x80, 0x40, 0x00])
+		const loose = concat(varint(22, [0x80, 0x80, 0x40]), varint(22, [0x00]))
+		assert.equal(isWireSubset(packed, concat(loose, varint(2, [0x09]))), true)
+	})
+
+	it('does not call a changed value a packing difference', () => {
+		const packed = lengthDelimited(22, [0x00, 0x01])
+		assert.equal(differsOnlyByPacking(packed, concat(varint(22, [0x00]), varint(22, [0x02]))), false)
+		// A shorter run is data loss, not a spelling difference.
+		assert.equal(differsOnlyByPacking(packed, varint(22, [0x00])), false)
+	})
+
+	it('rejects a field number past the protobuf maximum', () => {
+		// 2^29 is one past the last legal field number, so the payload does not parse.
+		assert.equal(canonicalWire(Uint8Array.from([...tag(536_870_912, 0), 0x00])), undefined)
+		assert.notEqual(canonicalWire(Uint8Array.from([...tag(536_870_911, 0), 0x00])), undefined)
 	})
 })

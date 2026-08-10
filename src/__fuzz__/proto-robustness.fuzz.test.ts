@@ -104,13 +104,45 @@ const isUsable = (value: MutationCase): boolean =>
 	typeof value?.path === 'string' && value.path.length > 0 && value.bytes instanceof Uint8Array
 
 /**
- * Set once a WASM trap has been seen, and never cleared.
+ * The first WASM trap seen in this process, if any.
  *
- * A trap leaves the module unusable for the rest of the process, so every decode
- * after it throws for the same reason. Reporting each one would turn a single
- * defect into hundreds of findings and drown the run that found it.
+ * A trap leaves the module unusable for the rest of the process: every later
+ * decode throws for the same reason. Two things follow, and both matter.
+ *
+ * Reporting each one would turn a single defect into hundreds of findings and
+ * bury it in its own duplicates — so only the first is reported.
+ *
+ * And every target that decodes through the bridge has to know. The other three
+ * treat a failed decode as an ordinary rejection (`if (!ok) return []`), which is
+ * right for a validation error and badly wrong for a trap: they would report
+ * clean having checked nothing, which is the exact failure this file exists to
+ * rule out. So the flag is set by whichever target hits it first, and they all
+ * consult it.
  */
-let trappedAlready = false
+let firstTrap: WebAssembly.RuntimeError | undefined
+
+/**
+ * Every bridge decode in this file goes through here.
+ *
+ * The trap bookkeeping has to be in one place: a decode site that skipped it
+ * would silently swallow the one failure mode the file is about.
+ */
+const decodeThroughBridge = (path: string, bytes: Uint8Array): Attempt => {
+	const result = attempt(() => decodeProto(path, bytes))
+	if (!result.ok && result.error instanceof WebAssembly.RuntimeError) {
+		firstTrap ??= result.error
+	}
+	return result
+}
+
+/** Reports the trap once, from whichever target reached it first. */
+const trapFinding = (path: string, mutator: string, bytes: Uint8Array, failure: WebAssembly.RuntimeError) => ({
+	target: 'proto:mutation-safety',
+	input: { path, mutator, bytes: hex(bytes) },
+	local: `<WASM trap: ${failure.message.slice(0, 160)}>`,
+	upstream: '<a validation Error>',
+	detail: 'a malformed payload trapped the WASM module instead of being rejected'
+})
 
 describe('protobuf decoder robustness under mutation', () => {
 	it('fails cleanly on malformed input', async () => {
@@ -126,12 +158,11 @@ describe('protobuf decoder robustness under mutation', () => {
 				if (!isUsable(value)) return []
 				const { path, mutator, bytes } = value
 
-				// A trap poisons the module: every later decode in this process throws
-				// too, so continuing would report one cause hundreds of times and bury
-				// it in its own duplicates. The first one is the finding.
-				if (trappedAlready) return []
+				// Once the module has trapped, every later decode throws for that same
+				// reason. Reporting each would bury the finding in its own duplicates.
+				if (firstTrap) return []
 
-				const result = attempt(() => decodeProto(path, bytes))
+				const result = decodeThroughBridge(path, bytes)
 				if (result.ok) return []
 
 				// A WebAssembly trap — `unreachable`, an out-of-bounds access — is an
@@ -144,14 +175,7 @@ describe('protobuf decoder robustness under mutation', () => {
 				// entry for this target — a false positive here is a hard suite failure.
 				const failure = result.error
 				if (failure instanceof WebAssembly.RuntimeError) {
-					trappedAlready = true
-					return {
-						target: 'proto:mutation-safety',
-						input: { path, mutator, bytes: hex(bytes) },
-						local: `<WASM trap: ${failure.message.slice(0, 160)}>`,
-						upstream: '<a validation Error>',
-						detail: 'a malformed payload trapped the WASM module instead of being rejected'
-					}
+					return trapFinding(path, mutator, bytes, failure)
 				}
 
 				// Otherwise a thrown Error is the contract. A thrown string or a thrown
@@ -180,11 +204,17 @@ describe('protobuf decoder robustness under mutation', () => {
 				const type = upstreamType(path)
 				if (!type) return []
 
-				const local = attempt(() => decodeProto(path, bytes))
+				if (firstTrap) return []
+				const local = decodeThroughBridge(path, bytes)
+				if (!local.ok && local.error instanceof WebAssembly.RuntimeError) {
+					return trapFinding(path, mutator, bytes, local.error)
+				}
 				const remote = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
 
 				// Strictness differences are expected and uninteresting; only what both
-				// sides claim to understand is compared.
+				// sides claim to understand is compared. A trap is not a rejection, so it
+				// is caught above rather than falling into this branch and reading as a
+				// clean run that checked nothing.
 				if (!local.ok || !remote.ok) return []
 				if (equivalent(local.value, remote.value)) return []
 
@@ -217,7 +247,11 @@ describe('protobuf decoder robustness under mutation', () => {
 				if (!isUsable(value)) return []
 				const { path, mutator, bytes } = value
 
-				const first = attempt(() => decodeProto(path, bytes))
+				if (firstTrap) return []
+				const first = decodeThroughBridge(path, bytes)
+				if (!first.ok && first.error instanceof WebAssembly.RuntimeError) {
+					return trapFinding(path, mutator, bytes, first.error)
+				}
 				if (!first.ok) return []
 
 				const reencoded = attempt(() => encodeProto(path, first.value as Record<string, unknown>))
@@ -231,7 +265,7 @@ describe('protobuf decoder robustness under mutation', () => {
 					}
 				}
 
-				const second = attempt(() => decodeProto(path, reencoded.value as Uint8Array))
+				const second = decodeThroughBridge(path, reencoded.value as Uint8Array)
 				if (!second.ok) {
 					return {
 						target: 'proto:mutation-stability',
@@ -269,11 +303,10 @@ describe('protobuf decoder robustness under mutation', () => {
 
 		const run = (cases: readonly MutationCase[]) => {
 			for (const value of cases) {
-				try {
-					decodeProto(value.path, value.bytes)
-				} catch {
-					// Rejection is the expected outcome; this measures allocation, not parity.
-				}
+				// Rejection is the expected outcome; this measures allocation, not
+				// parity. It still goes through the shared helper so a trap here is
+				// recorded rather than swallowed as one more rejection.
+				decodeThroughBridge(value.path, value.bytes)
 			}
 		}
 
@@ -316,12 +349,15 @@ describe('protobuf decoder robustness under mutation', () => {
 			marks.push(footprint())
 		}
 
-		const middle = marks[Math.floor(marks.length / 2)]!
-		const last = marks.at(-1)!
-		const tailGrowthMb = (last - middle) / (1024 * 1024)
+		// The baseline is the mark that *ends* the first half, so the window measured
+		// is exactly the second half. Taking `marks[length / 2]` instead would start
+		// one batch late and measure a window smaller than the message claimed.
+		const baseline = Math.ceil(marks.length / 2) - 1
+		const measuredInWindow = (marks.length - 1 - baseline) * size
+		const tailGrowthMb = (marks.at(-1)! - marks[baseline]!) / (1024 * 1024)
 		assert.ok(
 			tailGrowthMb < 32,
-			`heap + external memory grew ${tailGrowthMb.toFixed(1)}MB across the last ${measuredCases.length - Math.floor(marks.length / 2) * size} of ${measuredCases.length} malformed decodes — a handle or buffer is being retained. Marks (MB): ${marks.map(mark => (mark / (1024 * 1024)).toFixed(1)).join(', ')}`
+			`heap + external memory grew ${tailGrowthMb.toFixed(1)}MB across the last ${measuredInWindow} of ${measuredCases.length} malformed decodes — a handle or buffer is being retained. Marks (MB): ${marks.map(mark => (mark / (1024 * 1024)).toFixed(1)).join(', ')}`
 		)
 	})
 })
