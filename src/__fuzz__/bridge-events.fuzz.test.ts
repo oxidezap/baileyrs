@@ -56,6 +56,55 @@ const silentLogger = {
 	error: () => undefined
 } as unknown as ILogger
 
+/**
+ * The canonical tag a bridge event type is expected to adapt to.
+ *
+ * A convention plus its exceptions, not a transcription of the adapter's own
+ * dispatch: the convention is snake_case to camelCase, which holds for 47 of the
+ * 58 declared types, and the eleven below are the real renames and merges — each
+ * one a decision somebody made rather than a mechanical transformation. Changing
+ * any of them has to be a deliberate edit here, which is the point.
+ *
+ * The last four were missed on the first pass because the fixed seed never drew
+ * a payload that cleared their guards: all four returned `noop` on every run and
+ * only a deep seed reached their success path. A sampled expectation table is
+ * not a complete one — these were filled in from the adapter's declared returns
+ * once the deep run proved sampling insufficient.
+ */
+const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
+	// Three different bridge signals, one canonical call event.
+	incoming_call: 'incomingCall',
+	missed_call: 'incomingCall',
+	call_ended_elsewhere: 'incomingCall',
+	// A pairing code is shown to the user exactly as a QR is.
+	pairing_code: 'qr',
+	// Past tense on the wire, present tense in the canonical event.
+	contact_updated: 'contactUpdate',
+	// The `_update` suffix is dropped on the two label events.
+	label_edit_update: 'labelEdit',
+	label_association_update: 'labelAssociation',
+	// Named after what the event *is* rather than after the wire signal that
+	// carries it — verb first, and the `_update` suffix dropped again.
+	delete_chat_update: 'chatDelete',
+	clear_chat_update: 'chatClear',
+	delete_message_for_me_update: 'messageDelete',
+	// A changed contact number is how the runtime tells us about a LID mapping.
+	contact_number_changed: 'lidMappingUpdate'
+}
+
+const camelCase = (value: string): string =>
+	value.replaceAll(/_([a-z])/gu, (_match, letter: string) => letter.toUpperCase())
+
+/**
+ * `noop` is allowed for every type, and deliberately so: roughly a third of the
+ * table is signals baileyrs does not surface, and which ones those are is a
+ * product decision that changes. Pinning the exact noop set here would turn
+ * every such decision into a test failure in an unrelated file. What that
+ * allowance would otherwise hide — an adapter that no-ops everything — is
+ * covered by the collapse assertion after the sweep instead.
+ */
+const allowedTags = (type: string): ReadonlySet<string> => new Set([TAG_EXCEPTIONS[type] ?? camelCase(type), 'noop'])
+
 // ---------------------------------------------------------------------------
 // The anti-corruption layer
 // ---------------------------------------------------------------------------
@@ -168,7 +217,7 @@ describe('bridge event adaptation', () => {
 		})
 	})
 
-	it('handles every declared event type without throwing', async () => {
+	it('adapts every declared event type to the canonical event it belongs to', async () => {
 		// Finite and exhaustive: the table declares these, so all of them are checked.
 		let cursor = 0
 		// Not throwing is a low bar: an adapter that returns `null` for every input
@@ -177,7 +226,15 @@ describe('bridge event adaptation', () => {
 		// existed, 22 of the 58 declared types adapted to `null` on every run — a
 		// third of the table was declared covered while none of its mapping ran.
 		// So the return value is recorded per type and asserted after the sweep.
+		//
+		// And counting a non-null result was itself too weak: an adapter that routed
+		// `push_name_update` to a generic `{ type: 'message' }` incremented the same
+		// counter, and neither the totality target (any object with a string tag) nor
+		// the determinism target (the same wrong answer twice) could see it. So the
+		// tag is checked against the one this type belongs to, and every tag observed
+		// per type is recorded for the collapse checks below.
 		const adapted = new Map(BRIDGE_EVENT_TYPES.map(type => [type, 0]))
+		const tagsSeen = new Map<string, Set<string>>(BRIDGE_EVENT_TYPES.map(type => [type, new Set<string>()]))
 		const report = await fuzz<{ type: string; data: unknown }>({
 			target: 'bridge:adapt-coverage',
 			// Sixteen tries per type, not eight: the shaped payload still fuzzes the
@@ -191,10 +248,9 @@ describe('bridge event adaptation', () => {
 				return { type, data: shapedBridgePayload(random, type) }
 			},
 			check: event => {
+				let canonical: { type?: unknown } | null
 				try {
-					const canonical = adaptBridgeEvent(event as never, silentLogger)
-					if (canonical != null) adapted.set(event.type, (adapted.get(event.type) ?? 0) + 1)
-					return []
+					canonical = adaptBridgeEvent(event as never, silentLogger) as { type?: unknown } | null
 				} catch (error) {
 					return {
 						target: 'bridge:adapt-coverage',
@@ -204,6 +260,18 @@ describe('bridge event adaptation', () => {
 						detail: 'a declared event type threw on a fuzzed payload'
 					}
 				}
+				if (canonical == null) return []
+				adapted.set(event.type, (adapted.get(event.type) ?? 0) + 1)
+				const tag = String(canonical.type)
+				tagsSeen.get(event.type)?.add(tag)
+				if (allowedTags(event.type).has(tag)) return []
+				return {
+					target: 'bridge:adapt-coverage',
+					input: event,
+					local: tag,
+					upstream: [...allowedTags(event.type)].join(' | '),
+					detail: 'a declared event type adapted to a canonical event it does not belong to'
+				}
 			}
 		})
 
@@ -212,26 +280,54 @@ describe('bridge event adaptation', () => {
 		// a failure about a run that never happened.
 		if (report.runs === 0) return
 
-		// Asserted here rather than reported as a divergence: this is a statement
-		// about the *generator*, not about a disagreement between two libraries, and
-		// no allowlist entry should be able to excuse it.
+		// Asserted here rather than reported as a divergence: these are statements
+		// about the *generator* and about the table as a whole, not about a
+		// disagreement between two libraries, and no allowlist entry should be able
+		// to excuse them.
 		const inert = [...adapted].filter(([, count]) => count === 0).map(([type]) => type)
 		assert.deepEqual(
 			inert,
 			[],
 			`these declared event types adapted to null on every run — the generator never produces a payload their adapter accepts, so their mapping is untested:\n  ${inert.join('\n  ')}`
 		)
+
+		// One non-noop tag per type. The per-event check above allows `noop`
+		// everywhere, because most of these types are deliberately inert; this stops
+		// that allowance from hiding a tag that varies with the payload, which would
+		// mean the routing depends on the data rather than on the event type.
+		const unstable = [...tagsSeen]
+			.map(([type, tags]) => [type, [...tags].filter(tag => tag !== 'noop')] as const)
+			.filter(([, tags]) => tags.length > 1)
+		assert.deepEqual(
+			unstable.map(([type]) => type),
+			[],
+			`these types produced more than one canonical tag, so their routing depends on the payload rather than the type:\n  ${unstable.map(([type, tags]) => `${type} -> ${tags.join(' | ')}`).join('\n  ')}`
+		)
+
+		// And the table must not collapse. Since `noop` is allowed for every type, an
+		// adapter that no-op'd everything would satisfy both checks above while
+		// testing nothing. Measured at 34 distinct non-noop tags on the fixed seed;
+		// the floor is well under that so an unlucky draw cannot trip it, but well
+		// over what a collapse would leave.
+		const distinct = new Set([...tagsSeen.values()].flatMap(tags => [...tags]).filter(tag => tag !== 'noop'))
+		assert.ok(
+			distinct.size >= 25,
+			`only ${distinct.size} distinct canonical tags across the whole table — the adapter is collapsing event types onto a shared result`
+		)
 	})
 
-	it('carries chat and id through the message-wire adapter, and never throws', async () => {
+	it('carries the message and its envelope through the message-wire adapter', async () => {
 		// The result is inspected, not discarded. "Never throws" on its own is
 		// cleared by an adapter that returns `null` for every input it is ever
 		// shown, so a regression that dropped every valid message would have passed
-		// all 400 cases. Two things are checked instead: when the adapter accepts a
-		// payload, the canonical message has to carry the chat and id it was given,
-		// and across the sweep it has to accept *something* — measured at 288 of 400
-		// draws on the fixed seed, so a floor of one is a liveness check with plenty
-		// of headroom rather than a threshold that will flake on an unlucky seed.
+		// all 400 cases. Nor is the envelope enough on its own: with only the tag,
+		// chat and id checked, an adapter that replaced `messageProto` with `{}` —
+		// losing the entire payload, which is the one thing this transport exists to
+		// carry — still passed every case. So the payload is compared too.
+		//
+		// Across the sweep the adapter also has to accept *something*: measured at
+		// 288 of 400 draws on the fixed seed, so a floor of one is a liveness check
+		// with headroom rather than a threshold that flakes on an unlucky seed.
 		let accepted = 0
 		const report = await fuzz<Record<string, unknown>>({
 			target: 'bridge:message-wire',
@@ -256,13 +352,46 @@ describe('bridge event adaptation', () => {
 				if (canonical === null) return []
 				accepted++
 				const info = wire.info as Record<string, unknown>
-				if (canonical.chatJid === info.chat && canonical.id === info.id && canonical.type === 'message') return []
+
+				// Deep, not by reference: an adapter that copies the proto on its way
+				// through is doing nothing wrong, and pinning identity would forbid it.
+				// What must not change is the content.
+				if (!equivalent(canonical.messageProto, wire.message, { preservePresence: true })) {
+					return {
+						target: 'bridge:message-wire',
+						input: wire,
+						local: normalise(canonical.messageProto),
+						upstream: normalise(wire.message),
+						detail: 'the adapter accepted a message but did not carry its proto through unchanged'
+					}
+				}
+
+				// The scalar envelope, but only where the input makes the expected value
+				// unambiguous. Re-deriving `asString`/`asNumber` for a malformed input
+				// would just restate the adapter's own coercion rules back at it, which
+				// proves nothing; a plain string pushName or a finite timestamp has one
+				// correct answer that does not depend on them.
+				const envelope: Record<string, unknown> = { type: canonical.type, chatJid: canonical.chatJid, id: canonical.id }
+				const expected: Record<string, unknown> = { type: 'message', chatJid: info.chat, id: info.id }
+				if (typeof info.pushName === 'string') {
+					envelope.pushName = canonical.pushName
+					expected.pushName = info.pushName
+				}
+				if (typeof info.timestamp === 'number' && Number.isFinite(info.timestamp)) {
+					envelope.timestamp = canonical.timestamp
+					expected.timestamp = info.timestamp
+				}
+				if (typeof info.isFromMe === 'boolean') {
+					envelope.isFromMe = canonical.isFromMe
+					expected.isFromMe = info.isFromMe
+				}
+				if (equivalent(envelope, expected, { preservePresence: true })) return []
 				return {
 					target: 'bridge:message-wire',
 					input: wire,
-					local: { type: canonical.type, chatJid: canonical.chatJid, id: canonical.id },
-					upstream: { type: 'message', chatJid: info.chat, id: info.id },
-					detail: 'the adapter accepted a message but changed its chat or id'
+					local: envelope,
+					upstream: expected,
+					detail: 'the adapter accepted a message but changed its envelope'
 				}
 			}
 		})

@@ -432,38 +432,63 @@ const stripPackingDifferences = (
 	return { left: a, right: b }
 }
 
+/** Groups fields by number, keeping each number's entries in occurrence order. */
+const byFieldNumber = (fields: readonly WireField[]): Map<number, WireField[]> => {
+	const grouped = new Map<number, WireField[]>()
+	for (const entry of fields) {
+		const bucket = grouped.get(entry.field)
+		if (bucket) bucket.push(entry)
+		else grouped.set(entry.field, [entry])
+	}
+	return grouped
+}
+
+/** True when `entry` is carried unchanged by `candidate`, allowing a nested subset. */
+const carriedBy = (entry: WireField, candidate: WireField, schema: SchemaContext | undefined): boolean => {
+	if (candidate.wireType === entry.wireType && candidate.value === entry.value) return true
+	// Not identical: accept only when the other side is a nested message that
+	// contains everything this one does.
+	if (candidate.wireType !== 2 || entry.wireType !== 2) return false
+	const inner = entry.nested ?? parseNested(entry.value)
+	const outer = candidate.nested ?? parseNested(candidate.value)
+	if (inner === undefined || outer === undefined) return false
+	// A nested message that differs only by how its repeated scalars are packed
+	// has lost nothing, so it must not block the omission reading of the message
+	// around it.
+	const child = descend(schema, entry.field)
+	return subsetOf(inner, outer, child) || nestedDiffersOnlyByPacking(inner, outer, child)
+}
+
 const subsetOf = (source: readonly WireField[], target: readonly WireField[], schema?: SchemaContext): boolean => {
 	// Packing is not data loss, so a field that differs only that way must not
 	// stop a message from reading as an omission.
 	const stripped = stripPackingDifferences(source, target, schema)
-	const left = stripped.left
-	const remaining = stripped.right
+	const left = byFieldNumber(stripped.left)
+	const right = byFieldNumber(stripped.right)
 
-	for (const entry of left) {
-		const exact = remaining.findIndex(
-			candidate =>
-				candidate.field === entry.field && candidate.wireType === entry.wireType && candidate.value === entry.value
-		)
-		if (exact >= 0) {
-			remaining.splice(exact, 1)
-			continue
+	// Per field number, and in order: each side's occurrences have to line up as a
+	// subsequence. Searching the whole remaining set instead — which is what a
+	// flat `findIndex` over every field did — made `08 01 08 02` a subset of
+	// `08 02 08 01` *in both directions*, so a re-ordering encoder regression was
+	// classified `proto:field-omission` and excused by that target-wide entry,
+	// even though neither side omits anything and they decode to [1, 2] and [2, 1].
+	for (const [field, mine] of left) {
+		const theirs = right.get(field) ?? []
+		let cursor = 0
+		for (const entry of mine) {
+			// The earliest still-unclaimed occurrence at or after the cursor. Scanning
+			// forward only is what preserves order; consuming the match is what stops
+			// one occurrence upstream from covering two here.
+			let matched = -1
+			for (let index = cursor; index < theirs.length; index++) {
+				if (carriedBy(entry, theirs[index]!, schema)) {
+					matched = index
+					break
+				}
+			}
+			if (matched < 0) return false
+			cursor = matched + 1
 		}
-		// Not identical: accept only when the same field on the other side is a
-		// nested message that contains everything this one does.
-
-		const nested = remaining.findIndex(candidate => {
-			if (candidate.field !== entry.field || candidate.wireType !== 2 || entry.wireType !== 2) return false
-			const inner = entry.nested ?? parseNested(entry.value)
-			const outer = candidate.nested ?? parseNested(candidate.value)
-			if (inner === undefined || outer === undefined) return false
-			// A nested message that differs only by how its repeated scalars are
-			// packed has lost nothing, so it must not block the omission reading of
-			// the message around it.
-			const child = descend(schema, entry.field)
-			return subsetOf(inner, outer, child) || nestedDiffersOnlyByPacking(inner, outer, child)
-		})
-		if (nested < 0) return false
-		remaining.splice(nested, 1)
 	}
 	return true
 }

@@ -502,7 +502,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		await fuzz<ProtoCase>({
 			target: 'proto:encode-bytes',
 			runs: 400,
-			generate: random => generateProtoCase(random),
+			generate: random => generateProtoCase(random, { outOfRangeEnums: true }),
 			check: value => {
 				if (!isUsableCase(value)) return []
 				const { path, message } = value
@@ -566,7 +566,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		await fuzz<ProtoCase>({
 			target: 'proto:decode-parity',
 			runs: 400,
-			generate: random => generateProtoCase(random),
+			generate: random => generateProtoCase(random, { outOfRangeEnums: true }),
 			check: value => {
 				if (!isUsableCase(value)) return []
 				const { path, message } = value
@@ -633,7 +633,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		await fuzz<ProtoCase>({
 			target: 'proto:round-trip',
 			runs: 400,
-			generate: random => generateProtoCase(random),
+			generate: random => generateProtoCase(random, { outOfRangeEnums: true }),
 			check: value => {
 				if (!isUsableCase(value)) return []
 				const { path, message } = value
@@ -660,6 +660,27 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					return omitsKeysOnly(a, b) || omitsKeysOnly(b, a) ? 'proto:field-omission' : 'proto:round-trip'
 				}
 
+				// The same schema-aware comparison decode-parity uses. Without it, a
+				// declared string field holding `'0'` and a decoder that returned the
+				// number `0` both normalise to `0n` and the round trip reads as
+				// agreement — the exact type regression this target should catch.
+				// Measured on `Message.ExtendedTextMessage.text`: `'0'` vs `0` is
+				// `equivalent` without the predicate and not equivalent with it.
+				const compare = (left: unknown, right: unknown): boolean =>
+					equivalent(left, right, { isTextField: textFieldPredicate(path) })
+
+				// A decoder that throws is classified too. "The bridge cannot decode
+				// this" reads as a round-trip failure, but when the throw is the
+				// bridge's own "unknown proto type" on a type it is already known not to
+				// implement, the cause is the missing type and the target that names it
+				// is more useful than the symptom. Narrow on purpose: any other throw,
+				// or that message on a type the bridge does implement, stays a
+				// round-trip failure.
+				const throwTarget = (outcome: Outcome): string =>
+					!outcome.ok && /unknown proto type/iu.test(outcome.error) && populatedTouchesUnknownType(path, message)
+						? 'proto:unknown-type-dropped'
+						: 'proto:round-trip'
+
 				// Rust encodes → protobufjs reads it back.
 				const encodedLocally = attempt(() => encodeProto(path, message))
 				if (encodedLocally.ok) {
@@ -667,7 +688,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					const readBack = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
 					if (readBack.ok) {
 						const own = attempt(() => decodeProto(path, bytes))
-						if (own.ok && !equivalent(own.value, readBack.value)) {
+						if (own.ok && !compare(own.value, readBack.value)) {
 							findings.push({
 								target: classify(own.value, readBack.value),
 								input: { path, message, direction: 'rust-encode → js-decode' },
@@ -690,7 +711,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						}
 					} else {
 						findings.push({
-							target: 'proto:round-trip',
+							target: throwTarget(readBack),
 							input: { path, message, direction: 'rust-encode → js-decode' },
 							local: hex(bytes),
 							upstream: describeOutcome(readBack),
@@ -706,7 +727,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					const readBack = attempt(() => decodeProto(path, bytes))
 					if (readBack.ok) {
 						const own = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
-						if (own.ok && !equivalent(readBack.value, own.value)) {
+						if (own.ok && !compare(readBack.value, own.value)) {
 							findings.push({
 								target: classify(readBack.value, own.value),
 								input: { path, message, direction: 'js-encode → rust-decode' },
@@ -727,11 +748,32 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						}
 					} else {
 						findings.push({
-							target: 'proto:round-trip',
+							target: throwTarget(readBack),
 							input: { path, message, direction: 'js-encode → rust-decode' },
 							local: describeOutcome(readBack),
 							upstream: hex(bytes),
 							detail: 'the bridge cannot decode what upstream encoded'
+						})
+					}
+				}
+
+				// The two directions above cannot see an encoder that drops a field.
+				// Each of them shows both decoders the *same* bytes, so when the bridge
+				// encoder omits something, neither decoder sees it and the direction
+				// agrees; the mirrored direction agrees too, because there the field is
+				// present for both. The loss only becomes visible by comparing the two
+				// encoders' output — through one decoder, so that a decoder difference
+				// cannot be mistaken for an encoder one.
+				if (encodedLocally.ok && encodedUpstream.ok) {
+					const viaLocal = attempt(() => type.toObject(type.decode(encodedLocally.value as Uint8Array), TO_OBJECT))
+					const viaUpstream = attempt(() => type.toObject(type.decode(encodedUpstream.value as Uint8Array), TO_OBJECT))
+					if (viaLocal.ok && viaUpstream.ok && !compare(viaLocal.value, viaUpstream.value)) {
+						findings.push({
+							target: classify(viaLocal.value, viaUpstream.value),
+							input: { path, message, direction: 'both encoders → js-decode' },
+							local: normalise(viaLocal.value),
+							upstream: normalise(viaUpstream.value),
+							detail: 'the two encoders wrote different messages, read back by the same decoder'
 						})
 					}
 				}

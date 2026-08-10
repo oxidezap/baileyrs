@@ -204,6 +204,20 @@ const preview = (value: unknown, limit = 900): string => {
 }
 
 /**
+ * A value the reader can paste into a shell and get back verbatim.
+ *
+ * `FUZZ_SEED` is free-form — the nightly workflow takes it as a text input — so
+ * an unquoted hint is not the command that ran: a seed of `nightly run` makes
+ * the shell treat `run` as the command instead of `npm`, and a `;` or `$(…)`
+ * turns a copied reproduction into something else entirely. Single quotes
+ * rather than JSON, because double quotes still expand `$`, backticks and `\`.
+ *
+ * Left bare when nothing needs quoting, so the ordinary hint stays readable.
+ */
+const shellQuote = (value: string): string =>
+	/^[\w.:@/+=-]+$/u.test(value) ? value : `'${value.replaceAll("'", String.raw`'\''`)}'`
+
+/**
  * The command that reproduces a finding — which has to actually run.
  *
  * It printed `FUZZ_RUNS=as-configured` when there was no override, and
@@ -218,7 +232,7 @@ const replayHint = (target: string, exhaustive: boolean): string => {
 	// deep budget reaches does not reproduce from a hint that silently drops back
 	// to smoke — which is what `npm test` runs.
 	const mode = FUZZ_MODE === 'deep' ? ' FUZZ_MODE=deep' : ''
-	return `FUZZ_SEED=${FUZZ_SEED}${mode} FUZZ_ONLY=${JSON.stringify(target)}${runs} npm test`
+	return `FUZZ_SEED=${shellQuote(FUZZ_SEED)}${mode} FUZZ_ONLY=${shellQuote(target)}${runs} npm test`
 }
 
 const describeFinding = (finding: Divergence, index: number): string =>

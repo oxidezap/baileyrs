@@ -949,12 +949,19 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// and reverted on measurement: one smoke seed names 17, four name 29, and
 		// the set keeps growing — a list drawn from a sample is not a pin, it is a
 		// way to fail on an unlucky seed while adding no safety. What does bound
-		// this target is the classifier: `isWireSubset` is called
-		// `(localBytes, remoteBytes)` at every site, so a finding can only ever mean
-		// bridge-minus-upstream, and any *changed* value is routed to encode-bytes
-		// or decode-parity instead. Pinning the omitted field rather than the
-		// message would be the real fix, and needs the scanner to report which
-		// fields went missing.
+		// this target is the classifier: a finding can only ever be one side's
+		// output minus whole fields, and any *changed* value is routed to
+		// encode-bytes or decode-parity instead.
+		//
+		// Not one-directional, though. The byte classifier calls `isWireSubset`
+		// as `(localBytes, remoteBytes)`, so it does mean bridge-minus-upstream;
+		// the round-trip classifier tests `omitsKeysOnly` both ways round, so a
+		// finding there can also be upstream-minus-bridge. That is deliberate —
+		// upstream dropping a field the bridge kept is data loss too — but it means
+		// this entry covers both, which an earlier version of this comment denied.
+		//
+		// Pinning the omitted field rather than the message would be the real fix,
+		// and needs the scanner to report which fields went missing.
 
 		reason:
 			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Overlaps the presence and unknown-type entries, which are themselves already tracked in KNOWN_WIRE_GAPS; kept separate because the classifier cannot attribute a cause, only a shape.',
