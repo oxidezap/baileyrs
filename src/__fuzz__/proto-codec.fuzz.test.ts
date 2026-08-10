@@ -120,6 +120,41 @@ const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.val
  * the stale-entry check surfaces it for deletion. A hard-coded list would instead
  * keep excusing a gap that had already been closed.
  */
+/**
+ * Field numbers used by some repeated, packable field somewhere in the schema.
+ *
+ * `differsOnlyByPacking` cannot tell a one-element packed run from a singular
+ * scalar written at the wrong wire type — the bytes are identical — so it only
+ * treats a single value as packing when this says the number belongs to a
+ * repeated field. Without it a wrong-wire-type regression would be retargeted to
+ * the allowlisted packing entry and excused.
+ *
+ * The compact schema records the repeated flag but not the field number, so each
+ * number is recovered the same way the field-number sweep recovers it: encode
+ * the field alone and read the tag back. Computed once, lazily, because only the
+ * byte-comparing targets need it.
+ */
+let packableNumbers: Set<number> | undefined
+
+const isPackableField = (field: number): boolean => {
+	if (!packableNumbers) {
+		packableNumbers = new Set<number>()
+		for (const path of PROTO_PATHS) {
+			const type = upstreamType(path)
+			if (!type) continue
+			for (const schemaField of fieldsOfPath(path)) {
+				if ((schemaField[3] & PROTO_FIELD_FLAG.repeated) === 0) continue
+				if (schemaField[1] === PROTO_FIELD_KIND.message) continue
+				const encoded = attempt(() => type.encode({ [schemaField[0]]: [sampleFor(schemaField[1])] }).finish())
+				if (!encoded.ok) continue
+				const number = firstFieldNumber(encoded.value as Uint8Array)
+				if (number !== undefined) packableNumbers.add(number)
+			}
+		}
+	}
+	return packableNumbers.has(field)
+}
+
 const BRIDGE_UNKNOWN_TYPES: ReadonlySet<string> = new Set(
 	PROTO_PATHS.filter(path => {
 		if (upstreamType(path) === undefined) return false
@@ -184,7 +219,7 @@ const byteTarget = (
 	fallback: string
 ): string => {
 	if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
-	if (isWireSubset(local, remote)) return 'proto:field-omission'
+	if (isWireSubset(local, remote, isPackableField)) return 'proto:field-omission'
 	return fallback
 }
 
@@ -240,17 +275,17 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		// upstream types declare. If the bridge calls it `deviceAgentId`, reads
 		// return undefined and, worse, writes are dropped on the way out with no
 		// error at all.
-		// Repeated fields are included, wrapped in a one-element array: a renamed or
-		// misnumbered repeated field is exactly as breaking as a singular one, and
-		// excluding them left both finite sweeps unable to see it. Nested message
-		// types are covered by their own entry, and maps stay out — the compact
-		// schema carries no key type, so a faithful map value cannot be built.
+		// Repeated fields are wrapped in a one-element array and message-valued
+		// fields carry `{}`; neither is excluded. A renamed repeated or message
+		// field is exactly as breaking as a renamed scalar, and the nested type
+		// having its own entry proves nothing about the *containing* field's name —
+		// that was the gap. Only maps stay out: the compact schema carries no key
+		// type, so a faithful map value cannot be built from it.
 		const pairs: FieldCase[] = []
 		for (const path of PROTO_PATHS) {
 			if (!upstreamType(path)) continue
 			for (const field of fieldsOfPath(path)) {
 				if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
-				if (field[1] === PROTO_FIELD_KIND.message) continue
 				pairs.push({ path, field: field[0], kind: field[1], repeated: (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 })
 			}
 		}
@@ -266,7 +301,8 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				const type = upstreamType(path)
 				if (!type) return []
 
-				const sample = repeated ? [sampleFor(kind)] : sampleFor(kind)
+				const one = kind === PROTO_FIELD_KIND.message ? {} : sampleFor(kind)
+				const sample = repeated ? [one] : one
 				const encoded = attempt(() => type.encode({ [field]: sample }).finish())
 				if (!encoded.ok) return []
 
@@ -390,7 +426,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 
 				// Packed vs unpacked repeated scalars: also legal either way, also its
 				// own target, for the same reason.
-				if (differsOnlyByPacking(localBytes, remoteBytes)) {
+				if (differsOnlyByPacking(localBytes, remoteBytes, isPackableField)) {
 					return {
 						target: 'proto:field-packing',
 						input: { path, message },
@@ -612,6 +648,21 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				const zero = defaultFor(kind)
 				const remote = attempt(() => type.encode({ [field]: zero }).finish())
 				const local = attempt(() => encodeProto(path, { [field]: zero }))
+
+				// One side rejecting is a finding, not an unusable sample. These inputs
+				// come from the upstream schema itself — a field it declares, set to the
+				// zero value the type defines — so a rejection here is an acceptance
+				// asymmetry a caller would hit, and skipping it would let the sweep
+				// report full coverage of a field it never actually checked.
+				if (remote.ok !== local.ok) {
+					return {
+						target: encodeTarget(path, { [field]: zero }, 'proto:presence'),
+						input: `${path}.${field} = ${JSON.stringify(zero instanceof Uint8Array ? '<empty bytes>' : zero)}`,
+						local: describeOutcome(local),
+						upstream: describeOutcome(remote),
+						detail: 'one encoder accepted an explicit-presence field at its zero value and the other rejected it'
+					}
+				}
 				if (!remote.ok || !local.ok) return []
 
 				const localBytes = local.value as Uint8Array
@@ -674,7 +725,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 				if (!local.ok || !remote.ok) return []
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
-				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, isPackableField)) return []
 				return {
 					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:oneof'),
 					input: { path, message },
@@ -711,7 +762,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 				if (!local.ok || !remote.ok) return []
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array)) return []
-				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array)) return []
+				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, isPackableField)) return []
 				return {
 					target: byteTarget(path, message, local.value as Uint8Array, remote.value as Uint8Array, 'proto:integers'),
 					input: { path, message },

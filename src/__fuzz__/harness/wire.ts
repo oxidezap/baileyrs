@@ -56,6 +56,13 @@ const readVarint = (cursor: Cursor): bigint | undefined => {
 	for (let index = 0; index < 10; index++) {
 		if (cursor.offset >= cursor.bytes.length) return undefined
 		const byte = cursor.bytes[cursor.offset++]!
+		// Nine bytes carry 63 bits, so the tenth may only contribute bit 63 — any
+		// other payload bit puts the value past 64 and the encoding is malformed.
+		// Accepting it would let `canonicalWire` call mutated bytes well-formed,
+		// which routes a decoder disagreement to `proto:mutation-agreement` (a real
+		// codec bug) instead of `proto:mutation-interpretation` (a strictness
+		// difference on bytes with no defined meaning).
+		if (index === 9 && (byte & 0x7f) > 0x01) return undefined
 		result |= BigInt(byte & 0x7f) << shift
 		if ((byte & 0x80) === 0) return result
 		shift += 7n
@@ -175,14 +182,35 @@ const unpackVarints = (hexPayload: string): string[] | undefined => {
  * qualifies only when the length-delimited side unpacks to exactly the multiset
  * of varints the other side wrote out one by one.
  */
-export const differsOnlyByPacking = (left: Uint8Array, right: Uint8Array): boolean => {
+/**
+ * Field numbers that some repeated, packable field in the schema uses.
+ *
+ * Needed because a one-element packed run and a singular scalar written with the
+ * wrong wire type are byte-identical: `0a 01 01` is both "field 1, packed [1]"
+ * and "field 1, varint 1, mis-encoded as length-delimited". Without a way to
+ * tell them apart, treating every such pair as packing would let a wrong-wire-
+ * type regression be excused by the allowlisted packing entry; treating none of
+ * them as packing reports ordinary one-element repeated fields as codec bugs.
+ *
+ * The caller supplies the numbers it knows are repeated, which resolves the
+ * ambiguity for every field the schema actually declares that way. Runs of two
+ * or more are unambiguous and never need it — no encoder writes a singular field
+ * twice.
+ */
+export type PackableFields = (field: number) => boolean
+
+export const differsOnlyByPacking = (left: Uint8Array, right: Uint8Array, packable?: PackableFields): boolean => {
 	const a = scan(left, 12)
 	const b = scan(right, 12)
 	if (!a || !b) return false
-	return nestedDiffersOnlyByPacking(a, b)
+	return nestedDiffersOnlyByPacking(a, b, packable)
 }
 
-const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireField[]): boolean => {
+const nestedDiffersOnlyByPacking = (
+	a: readonly WireField[],
+	b: readonly WireField[],
+	packable?: PackableFields
+): boolean => {
 	const group = (fields: readonly WireField[]) => {
 		const byField = new Map<number, WireField[]>()
 		for (const entry of fields) byField.set(entry.field, [...(byField.get(entry.field) ?? []), entry])
@@ -218,7 +246,7 @@ const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireFie
 		) {
 			const leftNested = leftEntries[0]!.nested ?? parseNested(leftEntries[0]!.value)
 			const rightNested = rightEntries[0]!.nested ?? parseNested(rightEntries[0]!.value)
-			if (leftNested && rightNested && nestedDiffersOnlyByPacking(leftNested, rightNested)) continue
+			if (leftNested && rightNested && nestedDiffersOnlyByPacking(leftNested, rightNested, packable)) continue
 		}
 
 		// One side must be a single packed run, the other a series of varints.
@@ -226,6 +254,10 @@ const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireFie
 		const looseSide = packedSide === leftEntries ? rightEntries : leftEntries
 		if (packedSide.length !== 1 || packedSide[0]!.wireType !== 2) return false
 		if (!looseSide.every(entry => entry.wireType === 0)) return false
+		// A single value is ambiguous with a singular scalar written at the wrong
+		// wire type, so it counts as packing only when the schema says this field
+		// number is repeated. Two or more is unambiguous on its own.
+		if (looseSide.length < 2 && !packable?.(field)) return false
 
 		const unpacked = unpackVarints(packedSide[0]!.raw ?? packedSide[0]!.value)
 		if (!unpacked) return false
@@ -244,11 +276,11 @@ const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireFie
  * messages recurse, so a sub-field dropped three levels down still reads as an
  * omission rather than a mismatch.
  */
-export const isWireSubset = (left: Uint8Array, right: Uint8Array): boolean => {
+export const isWireSubset = (left: Uint8Array, right: Uint8Array, packable?: PackableFields): boolean => {
 	const a = scan(left, 12)
 	const b = scan(right, 12)
 	if (!a || !b) return false
-	return subsetOf(a, b) && render(a) !== render(b)
+	return subsetOf(a, b, packable) && render(a) !== render(b)
 }
 
 /**
@@ -265,7 +297,8 @@ export const isWireSubset = (left: Uint8Array, right: Uint8Array): boolean => {
  */
 const stripPackingDifferences = (
 	left: readonly WireField[],
-	right: readonly WireField[]
+	right: readonly WireField[],
+	packable?: PackableFields
 ): { left: WireField[]; right: WireField[] } => {
 	const a = [...left]
 	const b = [...right]
@@ -284,7 +317,11 @@ const stripPackingDifferences = (
 					: undefined
 		if (!packedSide) continue
 		const looseSide = packedSide === mine ? theirs : mine
+		// Same ambiguity as in `nestedDiffersOnlyByPacking`: a single varint against
+		// one length-delimited field is a wrong wire type unless the schema declares
+		// this field number repeated.
 		if (looseSide.length === 0 || !looseSide.every(entry => entry.wireType === 0)) continue
+		if (looseSide.length < 2 && !packable?.(field)) continue
 
 		const unpacked = unpackVarints(packedSide[0]!.raw ?? packedSide[0]!.value)
 		if (!unpacked || unpacked.length !== looseSide.length) continue
@@ -301,10 +338,10 @@ const stripPackingDifferences = (
 	return { left: a, right: b }
 }
 
-const subsetOf = (source: readonly WireField[], target: readonly WireField[]): boolean => {
+const subsetOf = (source: readonly WireField[], target: readonly WireField[], packable?: PackableFields): boolean => {
 	// Packing is not data loss, so a field that differs only that way must not
 	// stop a message from reading as an omission.
-	const stripped = stripPackingDifferences(source, target)
+	const stripped = stripPackingDifferences(source, target, packable)
 	const left = stripped.left
 	const remaining = stripped.right
 
@@ -328,7 +365,7 @@ const subsetOf = (source: readonly WireField[], target: readonly WireField[]): b
 			// A nested message that differs only by how its repeated scalars are
 			// packed has lost nothing, so it must not block the omission reading of
 			// the message around it.
-			return subsetOf(inner, outer) || nestedDiffersOnlyByPacking(inner, outer)
+			return subsetOf(inner, outer, packable) || nestedDiffersOnlyByPacking(inner, outer, packable)
 		})
 		if (nested < 0) return false
 		remaining.splice(nested, 1)

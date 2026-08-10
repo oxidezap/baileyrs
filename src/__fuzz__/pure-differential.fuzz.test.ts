@@ -20,7 +20,12 @@ import { compareOutcomes, runOutcome, showOutcome } from './harness/compare.ts'
 import type { Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import type { Random } from './harness/random.ts'
-import { generateBinaryNode, generateDictionaryNode, generateErrorNode } from './generators/binary-node.ts'
+import {
+	generateBinaryNode,
+	generateDictionaryNode,
+	generateErrorNode,
+	generateMediaRetryNode
+} from './generators/binary-node.ts'
 import { generateJid, generateJidPair, generateMaybeJid, JID_SERVERS } from './generators/jid.ts'
 import {
 	generateAnyValue,
@@ -528,7 +533,13 @@ const TARGETS: readonly PureTarget[] = [
 		runs: 200
 	},
 	{ name: 'createSignalIdentity', generate: random => [generateJid(random), generateBytes(random)], runs: 150 },
-	{ name: 'decodeMediaRetryNode', generate: random => [generateErrorNode(random)], runs: 200 },
+	{
+		name: 'decodeMediaRetryNode',
+		// Mostly well-formed retry stanzas, with the odd error node: feeding it only
+		// error nodes reached the missing-`rmr` throw and nothing else.
+		generate: random => [random.bool(0.85) ? generateMediaRetryNode(random) : generateErrorNode(random)],
+		runs: 200
+	},
 	{
 		name: 'extractDeviceJids',
 		generate: random => [

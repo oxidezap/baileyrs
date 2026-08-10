@@ -81,6 +81,37 @@ export interface NormaliseOptions {
 	readonly preservePresence?: boolean
 }
 
+/**
+ * Summarises a subtree that sits below the recursion limit.
+ *
+ * Returning one constant marker here would make every deep value equal to every
+ * other deep value — and the pure differential deliberately generates wrapper
+ * chains up to 400 levels precisely to compare where each implementation stops
+ * unwrapping. Collapsing them all together silently answered "the same" to the
+ * one question those inputs were built to ask.
+ *
+ * So the marker carries what distinguishes them: how much further the chain
+ * runs, and what is at the bottom. The walk is iterative and bounded, so a cycle
+ * ends at the cap instead of overflowing the stack.
+ */
+const describeDeep = (value: unknown): unknown => {
+	const seen = new WeakSet<object>()
+	let cursor = value
+	let remaining = 0
+	while (typeof cursor === 'object' && cursor !== null && remaining < 4_096) {
+		if (seen.has(cursor)) return { __deep__: remaining, __leaf__: '<cycle>' }
+		seen.add(cursor)
+		const keys = Object.keys(cursor as Record<string, unknown>)
+		// Only a single-child chain has an unambiguous "next"; anything wider is
+		// summarised by its shape instead of walked.
+		if (keys.length !== 1)
+			return { __deep__: remaining, __leaf__: `<${keys.length} keys: ${keys.toSorted().join(',')}>` }
+		cursor = (cursor as Record<string, unknown>)[keys[0]!]
+		remaining++
+	}
+	return { __deep__: remaining, __leaf__: normalise(cursor, 0, { coerceScalars: false }) }
+}
+
 /** Marks a key that exists with the value `undefined`, under `preservePresence`. */
 const UNDEFINED_PRESENT = { __undefined__: true } as const
 
@@ -108,7 +139,7 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 	const coerce = options.coerceScalars ?? true
 	const nested = (item: unknown) => normalise(item, depth + 1, options)
 
-	if (depth > 12) return '<depth-limit>'
+	if (depth > 12) return describeDeep(value)
 	if (value === null) return null
 	if (typeof value === 'bigint') return coerce ? value : { __bigint__: value.toString() }
 	if (typeof value === 'number') {

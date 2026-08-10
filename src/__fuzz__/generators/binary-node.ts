@@ -152,3 +152,55 @@ export const generateDictionaryNode = (random: Random): BinaryNode => ({
 		content: undefined
 	}))
 })
+
+/**
+ * A media-retry reply stanza, shaped the way the server actually sends one.
+ *
+ * `decodeMediaRetryNode` reads `<rmr>` before anything else and does it with a
+ * non-null assertion, so a node without that child throws on the first line.
+ * Feeding it only malformed nodes therefore exercises exactly one branch — both
+ * implementations throw, the comparator calls that agreement, and the status
+ * mapping, the error branch and the ciphertext extraction are never compared at
+ * all.
+ *
+ * So the valid shape is the common case here and the malformed ones are
+ * variations on it: `<error>` present (the failure path, whose code drives
+ * `getStatusCodeForMediaRetry`), `<encrypt>` with both `enc_p` and `enc_iv` (the
+ * success path), and each of those with a piece missing.
+ */
+export const generateMediaRetryNode = (random: Random): BinaryNode => {
+	const content: BinaryNode[] = []
+
+	// Usually present — without it the decoder cannot reach any other branch.
+	if (random.bool(0.85)) {
+		content.push({
+			tag: 'rmr',
+			attrs: {
+				jid: random.pick(['15551234567@s.whatsapp.net', '120363000000000000@g.us', '']),
+				from_me: random.pick(['true', 'false', '']),
+				...(random.bool(0.5) ? { participant: random.pick(['15550000000@s.whatsapp.net', '']) } : {})
+			}
+		})
+	}
+
+	if (random.bool(0.45)) {
+		// The error path. The codes are the ones getStatusCodeForMediaRetry maps,
+		// plus values outside its table.
+		content.push({
+			tag: 'error',
+			attrs: { code: random.pick(['0', '1', '2', '3', '4', '5', '404', '-1', 'not-a-number', '']) }
+		})
+	} else if (random.bool(0.8)) {
+		// The success path, sometimes missing one half of the key material.
+		const encrypted: BinaryNode[] = []
+		if (random.bool(0.85)) encrypted.push({ tag: 'enc_p', attrs: {}, content: random.bytes(random.pick([0, 1, 32])) })
+		if (random.bool(0.85)) encrypted.push({ tag: 'enc_iv', attrs: {}, content: random.bytes(random.pick([0, 12, 16])) })
+		content.push({ tag: 'encrypt', attrs: {}, content: encrypted })
+	}
+
+	return {
+		tag: 'notification',
+		attrs: { id: String(random.int(1, 9999)), type: 'media-retry' },
+		content
+	}
+}
