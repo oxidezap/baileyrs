@@ -507,12 +507,20 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		// A guard on the fuzzers themselves. Nested types are the majority of the
 		// schema and all of the interesting traffic; if the lookup stops resolving
 		// them, every target below keeps passing while testing half of what it says.
+		//
+		// The bar is *every* path, not most of them. A percentage floor cannot see a
+		// small namespace drop out: stubbing `ContextInfo.*` to unresolvable still
+		// leaves 299/309 nested paths resolving, which passed the old 90% floor while
+		// ten types went unprobed. Every target below skips what it cannot resolve, so
+		// a silent loss reads as coverage rather than as a gap. All 498 declared paths
+		// resolve today, so there is nothing to carve out.
 		const nested = PROTO_PATHS.filter(path => path.includes('.'))
-		const resolved = nested.filter(path => upstreamType(path) !== undefined)
 		assert.ok(nested.length > 200, `expected the schema to be mostly nested types, found ${nested.length}`)
-		assert.ok(
-			resolved.length > nested.length * 0.9,
-			`only ${resolved.length}/${nested.length} nested types resolve — the lookup is skipping them`
+		const unresolved = PROTO_PATHS.filter(path => upstreamType(path) === undefined)
+		assert.deepEqual(
+			unresolved,
+			[],
+			`${unresolved.length}/${PROTO_PATHS.length} declared types do not resolve upstream — every target skips these`
 		)
 		assert.ok(upstreamType('Message.ExtendedTextMessage') !== undefined)
 	})
@@ -530,8 +538,21 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				return () => PROTO_PATHS[cursor++ % PROTO_PATHS.length]!
 			})(),
 			check: path => {
-				const upstreamSide = upstreamType(path)
-				if (!upstreamSide) return []
+				// An unresolved path is a finding, not a path to skip. Every other
+				// target in this file walks past the paths `upstreamType` cannot
+				// resolve, so if a namespace stopped resolving they would all keep
+				// passing while probing less of the schema — and this sweep, the one
+				// target whose whole job is coverage, would have been the loudest place
+				// for that to go unnoticed.
+				if (!upstreamType(path)) {
+					return {
+						target: 'proto:type-coverage',
+						input: path,
+						local: '<declared in PROTO_PATHS>',
+						upstream: '<no encodable type at this path>',
+						detail: 'a declared schema path does not resolve to an upstream type — every target skips it'
+					}
+				}
 				// Both directions. "Known" used to mean only that `encodeProto`
 				// accepted an empty message, so a type registered in the bridge's
 				// encoder but missing from its decoder passed here — and nothing else

@@ -96,14 +96,76 @@ const camelCase = (value: string): string =>
 	value.replaceAll(/_([a-z])/gu, (_match, letter: string) => letter.toUpperCase())
 
 /**
- * `noop` is allowed for every type, and deliberately so: roughly a third of the
- * table is signals baileyrs does not surface, and which ones those are is a
- * product decision that changes. Pinning the exact noop set here would turn
- * every such decision into a test failure in an unrelated file. What that
- * allowance would otherwise hide — an adapter that no-ops everything — is
- * covered by the collapse assertion after the sweep instead.
+ * The types whose adapter can only ever return `{ type: 'noop' }`.
+ *
+ * Derived from the adapter's declared returns, not from what a run happened to
+ * produce: an entry whose body contains no `type:` literal other than `'noop'`
+ * cannot surface anything, whatever payload it is given. Sampling got this
+ * wrong once already — four types that only no-op'd on the fixed seed turned
+ * out to have reachable success paths on a deep one — so this is read from the
+ * source and then checked against eight seeds, where no member ever surfaced a
+ * real event.
  */
-const allowedTags = (type: string): ReadonlySet<string> => new Set([TAG_EXCEPTIONS[type] ?? camelCase(type), 'noop'])
+const UNCONDITIONALLY_INERT: ReadonlySet<string> = new Set([
+	'pairing_code_refresh',
+	'pair_passkey_request',
+	'pair_passkey_confirmation',
+	'pair_passkey_error',
+	'self_push_name_updated',
+	'offline_sync_preview',
+	'device_list_update',
+	'identity_change',
+	'business_status_update',
+	'contact_sync_requested',
+	'user_about_update',
+	'user_status_mute_update'
+])
+
+/**
+ * Types that *can* surface an event but whose guard this file does not reliably
+ * clear.
+ *
+ * A gap here, not a decision in the adapter — which is why they are listed apart
+ * from the set above rather than folded into it. Each needs a shaped payload
+ * that satisfies its guard; until then `noop` has to be tolerated for them, or
+ * the sweep fails on this file's shortcoming rather than on the library's
+ * behaviour.
+ *
+ * The membership rule is "no-ops on at least one seed", not "no-ops on the
+ * fixed seed". Four of these do surface on some seeds and not others, so a set
+ * built from one run would have passed there and failed on the nightly's next
+ * seed. Measured as the union across ten seeds, each run exactly as the target
+ * runs it — the same cursor over the type list, the same 16 rounds.
+ */
+const NOT_YET_REACHABLE: ReadonlySet<string> = new Set([
+	'clear_chat_update',
+	'contact_number_changed',
+	'delete_chat_update',
+	'delete_message_for_me_update',
+	'disappearing_mode_changed',
+	'label_association_update',
+	'label_edit_update',
+	'newsletter_live_update'
+])
+
+/**
+ * `noop` used to be allowed for every declared type, on the reasoning that the
+ * collapse assertion after the sweep would catch an adapter that stopped
+ * surfacing things. It does not: measured, one production event regressing to
+ * `noop` takes the distinct-tag count from 34 to 33 and three take it to 31,
+ * both far above the floor of 25. Losing a handful of events stayed green.
+ *
+ * So `noop` is now allowed only where it is the adapter's whole behaviour, or
+ * where this file cannot yet reach the success path. A type outside both sets
+ * that returns `noop` is an event that stopped being surfaced, and that should
+ * be a deliberate edit here rather than a silent change.
+ */
+const allowedTags = (type: string): ReadonlySet<string> => {
+	const canonical = TAG_EXCEPTIONS[type] ?? camelCase(type)
+	return UNCONDITIONALLY_INERT.has(type) || NOT_YET_REACHABLE.has(type)
+		? new Set([canonical, 'noop'])
+		: new Set([canonical])
+}
 
 // ---------------------------------------------------------------------------
 // The anti-corruption layer
