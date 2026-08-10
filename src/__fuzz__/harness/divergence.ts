@@ -143,7 +143,15 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
  * is the absence the decode targets actually produced. A drop anywhere else,
  * including the same leaf under a different holder, still fails.
  */
-const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set(['SyncActionValue.businessBroadcastAssociationAction'])
+const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
+	'SyncActionValue.businessBroadcastAssociationAction',
+	// Measured after the 0.8.0 bump, on a ContextInfo whose quoted message is a
+	// video: `Message.VideoMessage.mediaKeyDomain` is one of the eleven the bridge
+	// never writes, and this is the path a generative draw puts it at. Listed
+	// rather than matched by leaf, so the same field under another holder is still
+	// a drop nobody has looked at.
+	'ContextInfo.quotedMessage.videoMessage.mediaKeyDomain'
+])
 
 /**
  * True when the two decodes agree once the documented absences are allowed on
