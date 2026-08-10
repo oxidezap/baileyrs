@@ -141,21 +141,31 @@ jobs:
             // that opens a fresh issue every night trains people to close them
             // unread.
             //
-            // Matched on the marker, not on the label alone. `listForRepo` returns
-            // pull requests as well as issues, and the generic `fuzz` label is one
-            // anybody can put on anything — so the label by itself would let the
-            // nightly report land in an unrelated thread, or on a PR, and the
-            // API's default ordering makes which one unstable as more labelled
-            // items are opened. The lowest number wins, so the choice does not
-            // depend on page order either.
-            const labelled = await github.paginate(github.rest.issues.listForRepo, {
+            // Matched on the marker alone. `listForRepo` returns pull requests as
+            // well as issues, and the generic `fuzz` label is one anybody can put on
+            // anything — so the label by itself would let the nightly report land in
+            // an unrelated thread, or on a PR, and the API's default ordering makes
+            // which one unstable as more labelled items are opened.
+            //
+            // And the label cannot be part of the *query* either, only of the
+            // answer. A label is editable by anyone with write access: strip `fuzz`
+            // from the open tracking issue and a label-scoped search stops returning
+            // it before the marker is ever consulted, so the next failing night files
+            // a duplicate and no clean night can ever find and close the original.
+            // The marker lives in the body, which is the one part of the issue this
+            // job writes and nothing routine edits. It still *applies* the label on
+            // creation, for people who browse that way — it just never trusts it.
+            //
+            // The cost is listing open issues rather than a label slice, which is
+            // why it paginates. The lowest number wins, so the choice does not depend
+            // on page order either.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'fuzz',
               per_page: 100
             })
-            const owned = labelled
+            const owned = open
               .filter(item => !item.pull_request && (item.body ?? '').includes(marker))
               .sort((left, right) => left.number - right.number)
 

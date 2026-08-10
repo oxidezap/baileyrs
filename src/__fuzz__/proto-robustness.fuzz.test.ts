@@ -82,8 +82,21 @@ const MESSAGE_CYCLE: MessageCycle = [[0xc2, 0x02], [0x0a]]
 
 const cycleFor = (path: string): MessageCycle | undefined => (path === 'Message' ? MESSAGE_CYCLE : undefined)
 
-/** The paths robustness cares about: what a peer can actually put on the wire. */
-const PATHS = HOT_PROTO_PATHS.filter(path => upstreamType(path) !== undefined)
+/**
+ * The paths robustness cares about: what a peer can actually put on the wire.
+ *
+ * Every hot path, not the subset upstream still resolves. Two of the three
+ * targets here — that a malformed payload is rejected rather than trapping the
+ * module, and that decode → encode → decode is stable — are claims about the
+ * bridge alone and need no upstream codec at all. Filtering the *generator* on
+ * upstream meant a path dropping out of protobufjs, through schema or API drift,
+ * silently removed it from those two as well, and a trap or an unstable round
+ * trip reachable only there would have kept reporting clean.
+ *
+ * Only the agreement target needs both sides, and it already skips a path it
+ * cannot resolve — at the point where that actually matters.
+ */
+const PATHS = HOT_PROTO_PATHS
 
 interface MutationCase {
 	readonly path: string

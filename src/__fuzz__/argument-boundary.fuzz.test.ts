@@ -540,7 +540,14 @@ describe('closed-domain argument boundary, fuzzed', () => {
 				unreported.push(testCase.source)
 				continue
 			}
-			const key = (values: readonly unknown[]) => JSON.stringify([...values].map(item => String(item)).toSorted())
+			// Tagged with the type, not stringified. `String(undefined)` is the same
+			// six characters as the literal string `'undefined'`, and three of these
+			// domains end in an optional `undefined` member — so a guard that started
+			// accepting the *string* instead of the absent value matched this pin
+			// exactly. Only the randomised off-domain target could have caught it, and
+			// only if a seed happened to draw that one string.
+			const key = (values: readonly unknown[]) =>
+				JSON.stringify([...values].map(item => `${typeof item}:${String(item)}`).toSorted())
 			if (key(expected) !== key(reported)) {
 				mismatched.push(
 					`${testCase.source}: guard accepts ${JSON.stringify(reported)}, table says ${JSON.stringify(expected)}`
