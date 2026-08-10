@@ -355,8 +355,16 @@ describe('bridge event adaptation', () => {
 
 				// Deep, not by reference: an adapter that copies the proto on its way
 				// through is doing nothing wrong, and pinning identity would forbid it.
-				// What must not change is the content.
-				if (!equivalent(canonical.messageProto, wire.message, { preservePresence: true })) {
+				// What must not change is the content — and `content` includes the
+				// runtime type. `coerceScalars` defaults on, which exists so a Rust u64
+				// can be compared against a protobufjs Long; here it meant a generated
+				// `conversation: '0'` compared equal to an adapter that handed back
+				// `conversation: 0`, which a consumer can tell apart with `typeof`,
+				// `===` or arithmetic. Off, as the pure-helper differential has it, for
+				// the same reason: this is a plain JavaScript value, not a value being
+				// carried across two protobuf runtimes.
+				const strict = { preservePresence: true, coerceScalars: false }
+				if (!equivalent(canonical.messageProto, wire.message, strict)) {
 					return {
 						target: 'bridge:message-wire',
 						input: wire,
@@ -385,7 +393,7 @@ describe('bridge event adaptation', () => {
 					envelope.isFromMe = canonical.isFromMe
 					expected.isFromMe = info.isFromMe
 				}
-				if (equivalent(envelope, expected, { preservePresence: true })) return []
+				if (equivalent(envelope, expected, strict)) return []
 				return {
 					target: 'bridge:message-wire',
 					input: wire,

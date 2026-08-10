@@ -601,14 +601,35 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						detail: 'an encoder produced bytes whose first tag does not parse'
 					}
 				}
-				if (localNumber === remoteNumber) return []
+				if (localNumber !== remoteNumber) {
+					return {
+						target: 'proto:field-numbers',
+						input: `${path}.${field}`,
+						local: `field ${localNumber}`,
+						upstream: `field ${remoteNumber}`,
+						detail: 'the bridge writes this field at a different number than upstream'
+					}
+				}
+
+				// The whole encoding, not just the first tag. These are singletons — one
+				// declared field, one sample value — so anything beyond that field is
+				// output nobody asked for: a duplicate, or a second field written
+				// alongside. Matching first tags said nothing about it, and neither
+				// sweep next door covers the gap: the field-*name* sweep passes as long
+				// as the requested key is among the decoded ones, and the randomised
+				// byte target may never draw this particular field in a smoke run.
+				//
+				// Field order and packed-vs-unpacked are legal protobuf and have their
+				// own targets, so they are allowed here rather than re-reported.
+				if (sameWireContent(localBytes, remoteBytes, schemaAt(path))) return []
+				if (differsOnlyByPacking(localBytes, remoteBytes, schemaAt(path))) return []
 
 				return {
-					target: 'proto:field-numbers',
+					target: byteTarget(path, { [field]: sample }, localBytes, remoteBytes, 'proto:field-numbers'),
 					input: `${path}.${field}`,
-					local: `field ${localNumber}`,
-					upstream: `field ${remoteNumber}`,
-					detail: 'the bridge writes this field at a different number than upstream'
+					local: canonicalWire(localBytes, schemaAt(path)) ?? hex(localBytes),
+					upstream: canonicalWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
+					detail: 'the bridge writes this field at the right number but the encodings differ'
 				}
 			}
 		})
