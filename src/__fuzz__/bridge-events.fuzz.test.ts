@@ -571,6 +571,17 @@ const generateSteps = (random: Random): Step[] => {
 type Observation =
 	| { readonly released: string; readonly data: unknown }
 	| { readonly threw: string; readonly at: string }
+	// `flush()` answers "was there anything to release", and callers branch on it.
+	// Discarding it meant a buffer that returned the wrong boolean while releasing
+	// the right events agreed with upstream on both targets — and the fixed
+	// invariant below only covers one `chats.upsert` sequence, so any other
+	// consolidation path returning `true` after it had already drained was
+	// invisible.
+	| { readonly flushed: boolean }
+	// And the drain's cap is an observation too: without it, a buffer that
+	// answered `true` forever left the loop at 100 with nothing recorded, which
+	// reads exactly like one that drained cleanly.
+	| { readonly drainedAfter: number; readonly exhausted: boolean }
 
 const observe = (
 	make: () => {
@@ -596,18 +607,29 @@ const observe = (
 	for (const step of steps) {
 		if (step.kind === 'emit') guard(`emit ${step.event}`, () => emitter.emit(step.event, structuredClone(step.data)))
 		else if (step.kind === 'buffer') guard('buffer', () => emitter.buffer())
-		else guard('flush', () => emitter.flush())
+		else {
+			// Recorded in the stream, in order, so a wrong answer shows up as a
+			// divergence at the step that produced it rather than not at all.
+			guard('flush', () => seen.push({ flushed: emitter.flush() }))
+		}
 	}
 
 	// Drain whatever is still buffered, so a sequence that ends mid-buffer is
 	// compared on what it holds rather than on what it happened to have released.
-	for (let drain = 0; drain < 100; drain++) {
+	const cap = 100
+	let drained = 0
+	let exhausted = false
+	for (; drained < cap; drained++) {
 		let more = false
 		guard('drain', () => {
 			more = emitter.flush()
 		})
-		if (!more) break
+		if (!more) {
+			exhausted = true
+			break
+		}
 	}
+	seen.push({ drainedAfter: drained, exhausted })
 
 	// Each buffer registers listeners, a history cache and up to two timers. The
 	// differential and conservation targets build two per case across 300 cases

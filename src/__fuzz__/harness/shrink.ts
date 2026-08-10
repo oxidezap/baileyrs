@@ -21,6 +21,21 @@ export type StillFails<T> = (candidate: T) => boolean | Promise<boolean>
 export interface ShrinkOptions {
 	/** Upper bound on candidate evaluations, so shrinking cannot outlive the run. */
 	maxEvaluations?: number
+	/**
+	 * Wall-clock ceiling, as a `performance.now()` reading to stop at.
+	 *
+	 * The evaluation count alone does not bound the time: it bounds the number of
+	 * checks, and a check that reproduces a slow input costs whatever that input
+	 * costs. A one-second reproducer against the deep budget's 1200 evaluations is
+	 * twenty minutes of shrinking — long enough to hit the parent test timeout and
+	 * lose the report entirely, which is the one outcome worse than a large
+	 * unminimised input.
+	 *
+	 * Whatever has been found by the deadline is returned. Shrinking is greedy and
+	 * monotone, so stopping early yields a partly-minimised input rather than a
+	 * wrong one.
+	 */
+	deadline?: number
 	/** Upper bound on greedy passes over the value. */
 	maxPasses?: number
 	/**
@@ -188,6 +203,10 @@ export const shrink = async <T>(value: T, stillFails: StillFails<T>, options: Sh
 	const maxEvaluations = options.maxEvaluations ?? 600
 	const maxPasses = options.maxPasses ?? 12
 	const shrinkRoot = options.shrinkRoot ?? true
+	const deadline = options.deadline ?? Number.POSITIVE_INFINITY
+	// Checked alongside the evaluation count at every point that count is checked,
+	// so a single expensive candidate is the most that can run past the deadline.
+	const spent = () => evaluations >= maxEvaluations || performance.now() >= deadline
 
 	let best = value
 	let evaluations = 0
@@ -197,10 +216,10 @@ export const shrink = async <T>(value: T, stillFails: StillFails<T>, options: Sh
 
 		for (const path of positions(best, 200)) {
 			if (path.length === 0 && !shrinkRoot) continue
-			if (evaluations >= maxEvaluations) return best
+			if (spent()) return best
 			const current = readAt(best, path)
 			for (const candidate of candidatesFor(current)) {
-				if (evaluations >= maxEvaluations) return best
+				if (spent()) return best
 				evaluations++
 				const attempt = replaceAt(best, path, candidate) as T
 				let holds = false

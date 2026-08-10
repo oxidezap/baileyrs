@@ -456,6 +456,93 @@ const samePollAggregate = (left: unknown, right: unknown): boolean => {
 }
 
 /**
+ * True when `value` holds a number an int64 field cannot represent exactly.
+ *
+ * Which is what makes the two implementations disagree: `1.5`, `NaN`,
+ * `Infinity` and `1e300` are all numbers, and none of them is a 64-bit integer.
+ * Safe integers and numeric strings are excluded, because both sides handle
+ * those identically — measured on `senderTimestampMs`, where `12345`, `'12345'`,
+ * `0`, `null` and `undefined` all encode byte-for-byte the same.
+ */
+const carriesInexactInt64 = (value: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (typeof value === 'number') return !Number.isSafeInteger(value)
+	if (Array.isArray(value)) return value.some(item => carriesInexactInt64(item, depth + 1))
+	if (typeof value !== 'object' || value === null) return false
+	return Object.values(value as Record<string, unknown>).some(nested => carriesInexactInt64(nested, depth + 1))
+}
+
+/**
+ * Replaces each side's int64 truncation with one sentinel, in place of the pair.
+ *
+ * A sentinel rather than a verdict, so this composes with the key-presence entry
+ * instead of duplicating it: one message can exhibit both differences at once —
+ * measured on `{ pollUpdateMessage: { pollCreationMessageKey: { remoteJidAlt:
+ * '' }, senderTimestampMs: -1.5 } }`, where the round trip both truncates the
+ * timestamp and drops the empty alt JID — and a predicate that demanded matching
+ * key sets then matched neither entry.
+ *
+ * `normalise` folds a safe integer into a bigint and leaves everything else a
+ * number, so "baileyrs kept a float, upstream holds an integer" is exactly
+ * `typeof local === 'number'` against `typeof upstream === 'bigint'`. A changed
+ * *integer*, a changed string, or a dropped field is none of those, stays
+ * unmasked, and still fails.
+ */
+const maskInt64Truncations = (local: unknown, upstream: unknown, depth = 0): [unknown, unknown] => {
+	if (depth > 12) return [local, upstream]
+	// The leaf rule: a non-integer (or NaN/Infinity) against any integer, and
+	// `null` against the field's zero default, which is what the round trip writes
+	// for a numeric field that was not set to a number at all.
+	if (typeof local === 'number' && typeof upstream === 'bigint') return ['<int64>', '<int64>']
+	if (local === null && upstream === 0n) return ['<int64>', '<int64>']
+	if (Array.isArray(local) && Array.isArray(upstream) && local.length === upstream.length) {
+		const pairs = local.map((item, index) => maskInt64Truncations(item, upstream[index], depth + 1))
+		return [pairs.map(pair => pair[0]), pairs.map(pair => pair[1])]
+	}
+	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) {
+		return [local, upstream]
+	}
+	if (Array.isArray(local) || Array.isArray(upstream)) return [local, upstream]
+	const a = local as Record<string, unknown>
+	const b = upstream as Record<string, unknown>
+	const maskedLocal: Record<string, unknown> = {}
+	const maskedUpstream: Record<string, unknown> = {}
+	// Only the keys both carry are paired up. A key on one side alone is the
+	// key-presence entry's subject and is passed through untouched, so that entry
+	// still has to account for it.
+	for (const key of Object.keys(a)) maskedLocal[key] = a[key]
+	for (const key of Object.keys(b)) maskedUpstream[key] = b[key]
+	for (const key of Object.keys(a)) {
+		if (!Object.hasOwn(b, key)) continue
+		const [left, right] = maskInt64Truncations(a[key], b[key], depth + 1)
+		maskedLocal[key] = left
+		maskedUpstream[key] = right
+	}
+	return [maskedLocal, maskedUpstream]
+}
+
+/**
+ * What `generateForwardMessageContent`'s two copy strategies are allowed to
+ * differ by, once every documented normalisation has been undone.
+ *
+ * One helper rather than three predicates, because the differences co-occur.
+ * Upstream copies through `proto.Message.decode(proto.Message.encode(content))`
+ * and baileyrs shallow-clones, so a single message can show all of them at once
+ * — measured on `{ pollUpdateMessage: { pollCreationMessageKey: { remoteJid:
+ * '\ud83d' }, senderTimestampMs: -1.5 } }`, where the round trip substitutes the
+ * lone surrogate, truncates the timestamp *and* drops the added `contextInfo`.
+ * Each entry below still needs its own trigger to say which difference it is
+ * about; what they share is what is allowed to remain afterwards.
+ *
+ * Anything the normalisations do not explain — a changed body, a changed
+ * integer, a dropped field with a value — survives and still fails.
+ */
+const copyStrategyResidue = (local: unknown, upstream: unknown): boolean => {
+	const [mine, theirs] = maskInt64Truncations(replaceLoneSurrogates(local), upstream)
+	return differsOnlyByKeyPresence(mine, theirs)
+}
+
+/**
  * True when two values agree on every key they share, differing only by which
  * keys are present.
  *
@@ -698,14 +785,11 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 				const mine = fold(divergence.local)
 				return mine === fold(divergence.upstream) && mine.includes('<sub>')
 			}
-			// Composed with the copy-shape entry rather than duplicating it: once the
-			// surrogate substitution is undone, what is allowed to remain is the key
-			// presence difference that entry already documents — `contextInfo` on the
-			// baileyrs side and nothing else. A changed body still fails both.
-			return differsOnlyByKeyPresence(
-				replaceLoneSurrogates(normalise(divergence.local)),
-				normalise(divergence.upstream)
-			)
+			// Composed with the sibling copy-strategy entries rather than duplicating
+			// them: once the surrogate substitution is undone, what is allowed to
+			// remain is the key presence and int64 conversion those entries already
+			// document. A changed body still fails all of them.
+			return copyStrategyResidue(normalise(divergence.local), normalise(divergence.upstream))
 		},
 		reason:
 			'A string field holding an unpaired UTF-16 surrogate is handled differently on each side. Encoding: protobufjs emits the WTF-8 form (U+DFFF becomes ed bf bf, which is not valid UTF-8) where the Rust encoder substitutes U+FFFD (ef bf bd) — the Rust output is the well-formed one, but the wire bytes differ. Copying: `generateForwardMessageContent` shows the same thing from the other side, because upstream copies content through the protobuf codec and baileyrs does not, so `\ud800` survives in baileyrs and becomes U+FFFD upstream. Needs a maintainer call on whether to match upstream or keep sanitising.',
@@ -813,6 +897,56 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		when: divergence => differsOnlyByKeyPresence(normalise(divergence.local), normalise(divergence.upstream)),
 		reason:
 			"The same root cause as the mutation entry, seen in the return value: upstream copies the content through `proto.Message.decode(proto.Message.encode(content))` while baileyrs shallow-clones with `{ ...content }`. The round trip changes the key set in both directions — it drops properties the schema does not declare, and it materialises empty repeated fields the schema does declare. Measured on `{ extendedTextMessage: {} }`: upstream's result carries `endCardTiles: []`, baileyrs' does not; on `{ extendedTextMessage: { text: 'x', notAField: 1 } }` baileyrs keeps `notAField` and upstream loses it. Schema-valid content with no empty repeated fields agrees exactly, so callers are largely unaffected — but it is a second observable of one defect, and the mutation entry's over-broad target had been excusing it.",
+		review: '2026-11-01'
+	},
+	{
+		id: 'forward-message-content-int64-truncation',
+		target: 'pure:generateForwardMessageContent',
+		status: 'open',
+		// A third observable of the copy strategy, on values rather than keys, so it
+		// needs its own predicate: the sibling entry above is confined to key
+		// presence and a changed value is exactly what it must never excuse.
+		//
+		// Composed with that entry rather than restating it. One message commonly
+		// shows both — the round trip truncates a timestamp *and* drops an empty alt
+		// JID — so this masks the truncations and then requires what is left to be
+		// the key-presence difference that entry already documents. A changed
+		// integer, a changed string or a changed body survives the mask and fails.
+		when: divergence => {
+			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
+			if (!carriesInexactInt64(divergence.input)) return false
+			const mine = normalise(divergence.local)
+			const [masked] = maskInt64Truncations(mine, normalise(divergence.upstream))
+			// The mask has to have fired: without this the entry would excuse any
+			// pure key-presence difference, which is the sibling entry's job.
+			if (text(masked) === text(mine)) return false
+			return copyStrategyResidue(mine, normalise(divergence.upstream))
+		},
+		reason:
+			"For a 64-bit integer field holding a number that is not a 64-bit integer, the two copy strategies disagree on the value as well as the key set. Upstream's `proto.Message.decode(proto.Message.encode(content))` converts through Long, so `senderTimestampMs: 1.5` comes back as 1, `-1.5` as -1, and `NaN`, `Infinity` and `1e300` all as 0; baileyrs shallow-clones and hands back the float it was given. Measured on `pollUpdateMessage.senderTimestampMs`. Safe integers, numeric strings, `null` and `undefined` agree exactly on both sides, so only a caller passing a fractional or non-finite timestamp is affected — but the two then forward different values, and the same conversion applies to every int64 field in the schema.",
+		review: '2026-11-01'
+	},
+	{
+		id: 'newsletter-encode-rejects-inexact-int64',
+		target: 'pure:encodeNewsletterMessage',
+		status: 'open',
+		// The rejecting side, one of the two rejection messages, *and* an input that
+		// actually carries such a number. The error text alone would let a
+		// regression that started throwing the same error on an ordinary integer be
+		// excused as this; `carriesInexactInt64` is what stops that.
+		//
+		// Two messages, because the bridge rejects in two places: the BigInt
+		// conversion catches a non-integer or non-finite value, and its own range
+		// check catches an integer-valued double outside int64. Both are "a number
+		// an int64 cannot carry", so both belong here; a *third* message would not
+		// be covered and would surface, which is the intent.
+		when: divergence =>
+			isThrow(divergence.local) &&
+			!isThrow(divergence.upstream) &&
+			/cannot be converted to a BigInt|invalid int64/iu.test(text(divergence.local)) &&
+			carriesInexactInt64(divergence.input),
+		reason:
+			'For a 64-bit integer field holding a number that is not a 64-bit integer, the bridge encoder throws where upstream converts and encodes. Two rejections, one cause: `1.5`, `NaN` and `Infinity` fail the BigInt conversion (`RangeError: The number … cannot be converted to a BigInt`), and `1e300`, `2**63` and `1.5625e19` fail the range check (`Error: invalid int64: …`). Upstream accepts every one of them — `1.5` as 1, `NaN`/`Infinity`/`1e300` as 0, and `1.5625e19` as a wrapped value that is not the number it was given. Safe integers, numeric strings, `null` and `undefined` are byte-identical on both sides. Measured on `pollUpdateMessage.senderTimestampMs`. baileyrs is plainly the more correct side here — upstream silently sends a wrong value where baileyrs refuses — but it is caller-visible either way: the same content sends on Baileys and throws on baileyrs. Same shape as the float32 entry, and the pair should be decided together.',
 		review: '2026-11-01'
 	},
 	{

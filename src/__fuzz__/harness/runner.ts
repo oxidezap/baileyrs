@@ -393,9 +393,19 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 				return [...originalCounts].every(([id, count]) => (counts.get(id) ?? 0) >= count)
 			}
 
+			// Shrinking gets whatever is left of the target's budget, and never less
+			// than the floor: the count bounds evaluations, not time, so a slow
+			// reproducer found near the deadline could otherwise spend twenty minutes
+			// minimising after the budget expired — long enough to reach the parent
+			// test timeout and lose the report the nightly exists to produce. The
+			// floor is there because a finding on the last input still deserves to be
+			// minimised; it just does not deserve unbounded time.
+			const shrinkFloorMs = FUZZ_MODE === 'deep' ? 15_000 : 5_000
+			const shrinkDeadline = performance.now() + Math.max(deadline - performance.now(), shrinkFloorMs)
 			const minimised = shrinkFailures
 				? await shrink(input, async candidate => preservesClass(await runOne(candidate, 'shrink', false)), {
 						maxEvaluations: FUZZ_MODE === 'deep' ? 1_200 : 300,
+						deadline: shrinkDeadline,
 						shrinkRoot: options.shrinkRoot ?? true
 					})
 				: input

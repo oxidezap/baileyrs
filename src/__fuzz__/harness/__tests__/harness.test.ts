@@ -143,6 +143,42 @@ describe('fuzz harness — shrinking', () => {
 		)
 		assert.ok(evaluations <= 25, `budget ignored: ${evaluations} evaluations`)
 	})
+
+	/**
+	 * The evaluation count bounds checks, not time.
+	 *
+	 * A check that reproduces a slow input costs whatever that input costs, so the
+	 * deep budget's 1200 evaluations against a one-second reproducer is twenty
+	 * minutes of shrinking — past the target's own deadline and long enough to hit
+	 * the parent test timeout, which loses the report entirely. That is strictly
+	 * worse than reporting a large input, so the clock gets its own bound.
+	 */
+	it('stops shrinking at its deadline, keeping what it has found', async () => {
+		const input: Record<string, unknown> = { culprit: 99 }
+		for (let index = 0; index < 40; index++) input[`noise${index}`] = 'x'.repeat(32)
+		const slow = async (candidate: unknown) => {
+			const until = performance.now() + 20
+			while (performance.now() < until) {
+				// Busy, not idle: a real reproducer burns CPU inside the check, so a
+				// timer-based stall would not exercise the same path.
+			}
+			return (candidate as { culprit?: number })?.culprit === 99
+		}
+
+		const started = performance.now()
+		const minimised = (await shrink(input, slow, { maxEvaluations: 1_200, deadline: started + 200 })) as Record<
+			string,
+			unknown
+		>
+		const elapsed = performance.now() - started
+
+		// Generous, so a slow machine cannot flake it: the point is that it is
+		// bounded at all, against an unbounded run measured at ~900ms.
+		assert.ok(elapsed < 2_000, `deadline ignored: shrinking ran for ${Math.round(elapsed)}ms`)
+		// And what comes back is a real partial result, not a bail-out: it still
+		// reproduces, which is what makes stopping early safe.
+		assert.equal(minimised.culprit, 99, 'the partly-minimised input must still reproduce')
+	})
 })
 
 describe('fuzz harness — known-divergence allowlist', () => {
@@ -230,6 +266,76 @@ describe('fuzz harness — known-divergence allowlist', () => {
 	// from `remoteJid` to `participant` after the fuzzer found the same rewrite on
 	// the second field, and a widening is exactly the change that quietly starts
 	// excusing things it should not — so the near-misses are pinned here.
+	// The two int64 entries are the newest and the least settled, and one of them
+	// masks values before deferring to a sibling entry — which is the construction
+	// most likely to widen quietly. Pinned the same way as the cleanMessage one.
+	it('excuses the int64 conversion only where a number an int64 cannot carry is involved', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'forward-message-content-int64-truncation')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (input: unknown, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist(
+				[{ target: 'pure:generateForwardMessageContent', input, local, upstream }],
+				new Date('2026-01-01'),
+				registry
+			).unexcused.length === 0
+
+		const withTimestamp = (value: unknown) => [
+			{ key: {}, message: { pollUpdateMessage: { senderTimestampMs: value } } }
+		]
+
+		// The measured shapes: a fraction truncated, and a null defaulted to zero.
+		assert.ok(
+			excused(
+				withTimestamp(-1.5),
+				{ pollUpdateMessage: { senderTimestampMs: -1.5 } },
+				{
+					pollUpdateMessage: { senderTimestampMs: '-1' }
+				}
+			),
+			'the measured truncation is the entry’s subject'
+		)
+		// And the same message also dropping a key, which is what forced the mask to
+		// compose with the key-presence entry rather than demand equal key sets.
+		assert.ok(
+			excused(
+				withTimestamp(-1.5),
+				{ pollUpdateMessage: { senderTimestampMs: -1.5, pollCreationMessageKey: { remoteJidAlt: '' } } },
+				{ pollUpdateMessage: { senderTimestampMs: '-1', pollCreationMessageKey: {} } }
+			),
+			'a truncation alongside a dropped key is still the two documented differences'
+		)
+
+		// Near-misses.
+		assert.ok(
+			!excused(
+				withTimestamp(7),
+				{ pollUpdateMessage: { senderTimestampMs: 7 } },
+				{
+					pollUpdateMessage: { senderTimestampMs: '8' }
+				}
+			),
+			'a changed integer is a value bug, not a conversion'
+		)
+		assert.ok(
+			!excused(
+				withTimestamp(-1.5),
+				{ pollUpdateMessage: { senderTimestampMs: -1.5, text: 'hello' } },
+				{ pollUpdateMessage: { senderTimestampMs: '-1', text: 'HELLO' } }
+			),
+			'a changed string must not ride along with the truncation'
+		)
+		assert.ok(
+			!excused(
+				withTimestamp(7),
+				{ pollUpdateMessage: { senderTimestampMs: 7, extra: 1 } },
+				{ pollUpdateMessage: { senderTimestampMs: 7 } }
+			),
+			'without an inexact number there is nothing for this entry to excuse'
+		)
+	})
+
 	it('excuses the cleanMessage JID rewrite only in the shape it documents', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'clean-message-empty-user-jid-server')

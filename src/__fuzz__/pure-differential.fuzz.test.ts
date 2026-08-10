@@ -412,6 +412,36 @@ const receipt = (random: Random) => ({
 })
 
 /** A shallow message-content shape: enough to drive the content-type resolvers. */
+/**
+ * Mimetypes for the media branches.
+ *
+ * `extensionForMediaMessage` is `mimetype.split(';')[0].split('/')[1]`, so the
+ * parameter and the slash are the whole of its logic. Generic hostile strings
+ * contain neither: measured over 200 draws, not one carried a `;` and only 4
+ * calls returned an extension at all — the other 196 threw on an absent or
+ * unusable mimetype, which the oracle reads as agreement. The malformed ones
+ * stay, because the split has to survive them; they just stop being all of it.
+ */
+const MIME_TYPES = [
+	'image/jpeg',
+	'image/webp',
+	'video/mp4',
+	'audio/ogg; codecs=opus',
+	'application/pdf',
+	'image/jpeg; charset=binary',
+	// The shapes the two splits have to survive.
+	'image/',
+	'/jpeg',
+	'image',
+	';',
+	''
+] as const
+
+const mediaBody = (random: Random): Record<string, unknown> => ({
+	url: generateString(random),
+	mimetype: random.bool(0.75) ? random.pick(MIME_TYPES) : generateString(random)
+})
+
 const messageContent = (random: Random, depth = 2): Record<string, unknown> => {
 	const key = random.pick([
 		'conversation',
@@ -422,6 +452,19 @@ const messageContent = (random: Random, depth = 2): Record<string, unknown> => {
 		'audioMessage',
 		'stickerMessage',
 		'reactionMessage',
+		// `cleanMessage` normalises the key inside these two, and `isRealMessage`
+		// treats both as non-real. Neither was reachable: `pollUpdateMessage` was
+		// not in this list at all, and `reactionMessage` fell through to the media
+		// body below, so all 16 draws of it on the fixed seed carried `{url,
+		// mimetype}` and no `.key` — `normaliseKey(undefined)` then threw on both
+		// sides, which the oracle reads as agreement.
+		'pollUpdateMessage',
+		// The three types `extensionForMediaMessage` special-cases to `.jpeg`
+		// before it ever looks at a mimetype. None was reachable, so a regression
+		// removing that branch passed every run.
+		'locationMessage',
+		'liveLocationMessage',
+		'productMessage',
 		'protocolMessage',
 		'ephemeralMessage',
 		'viewOnceMessage',
@@ -463,7 +506,36 @@ const messageContent = (random: Random, depth = 2): Record<string, unknown> => {
 			}
 		}
 	}
-	return { [key]: random.bool(0.7) ? { url: generateString(random), mimetype: generateString(random) } : {} }
+	// The two with a nested key `cleanMessage` rewrites. Usually present, so the
+	// `fromMe`/`remoteJid`/`participant` rewrites actually run; sometimes absent,
+	// because both implementations reaching `normaliseKey(undefined)` is a real
+	// shared behaviour and dropping it would stop testing that they still agree.
+	if (key === 'reactionMessage') {
+		return {
+			reactionMessage: {
+				key: random.bool(0.85) ? messageKey(random) : undefined,
+				text: generateString(random)
+			}
+		}
+	}
+	if (key === 'pollUpdateMessage') {
+		return {
+			pollUpdateMessage: {
+				pollCreationMessageKey: random.bool(0.85) ? messageKey(random) : undefined,
+				senderTimestampMs: generateNumber(random)
+			}
+		}
+	}
+	// The `.jpeg` types carry no mimetype in practice, and the helper never reads
+	// one for them — giving them a media body would test the wrong branch.
+	if (key === 'locationMessage' || key === 'liveLocationMessage' || key === 'productMessage') {
+		return {
+			[key]: random.bool(0.8)
+				? { degreesLatitude: generateNumber(random), degreesLongitude: generateNumber(random) }
+				: {}
+		}
+	}
+	return { [key]: random.bool(0.7) ? mediaBody(random) : {} }
 }
 
 /** A deliberately over-nested wrapper chain, to compare recursion limits rather than shapes. */
@@ -681,10 +753,33 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'updateMessageWithReaction',
-		generate: random => [
-			{ reactions: random.bool(0.5) ? [{ key: messageKey(random), text: generateString(random) }] : undefined },
-			{ key: messageKey(random), text: random.bool(0.8) ? generateString(random) : undefined }
-		]
+		// The helper's whole job is "replace the previous reaction from the same
+		// author, then append". Drawing the stored and incoming keys independently
+		// left that replacement essentially unexercised: of 150 draws on the fixed
+		// seed, 79 carried a stored reaction and the filter removed it 18 times —
+		// but all 18 were the degenerate case where both keys have `fromMe: true`
+		// and `getKeyAuthor` returns the same `'me'` for both. Zero shared an actual
+		// JID author, so a regression in author resolution for anyone *else's*
+		// reaction, or one that left two reactions from one participant, stayed
+		// green. The stored key is now the incoming one most of the time, the same
+		// way the receipt and poll-update generators already do it.
+		generate: random => {
+			const incoming = { key: messageKey(random), text: random.bool(0.8) ? generateString(random) : undefined }
+			const storedKey = random.weighted<() => Record<string, unknown>>([
+				// The same author, same key: the replacement has to fire.
+				[5, () => ({ ...incoming.key })],
+				// The same author reached by a different spelling of the key, so the
+				// resolution order in `getKeyAuthor` is what decides it rather than a
+				// shallow object comparison.
+				[3, () => ({ ...messageKey(random), participantAlt: incoming.key.participantAlt })],
+				// An unrelated author: the append path, which still has to work.
+				[3, () => messageKey(random)]
+			])()
+			return [
+				{ reactions: random.bool(0.75) ? [{ key: storedKey, text: generateString(random) }] : undefined },
+				incoming
+			]
+		}
 	},
 	{
 		name: 'updateMessageWithPollUpdate',
@@ -927,21 +1022,39 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'extractDeviceJids',
-		generate: random => [
-			Array.from({ length: random.int(0, 3) }, () => ({
-				id: generateJid(random),
+		// The helper drops the caller's own device: it keeps a row only when
+		// `(myUser !== user && myLid !== user) || myDevice !== device`. With the
+		// query rows and the `myJid`/`myLid` arguments drawn independently, that
+		// branch was never reached — measured at 0 of 366 generated device rows on
+		// the fixed seed — so a regression that handed the caller its own device
+		// back alongside its peers' stayed green.
+		//
+		// So the current identity is planted into some rows. Both device numbers
+		// matter: the exclusion needs the user *and* the device to match, so a row
+		// with the right user and a different device is the near-miss that must
+		// still be kept, and it is the pair that pins the `&&`.
+		generate: random => {
+			const myJid = generateJid(random)
+			const myLid = generateJid(random)
+			const myUser = myJid.split('@')[0]!
+			const myDevice = Number(myUser.split(':')[1] ?? 0)
+			const rows = Array.from({ length: random.int(0, 3) }, () => ({
+				// One row in three is the caller's own user, so the exclusion is
+				// reachable at all; the rest are peers.
+				id: random.bool(0.35) ? myJid : generateJid(random),
 				devices: {
 					deviceList: Array.from({ length: random.int(0, 3) }, () => ({
-						id: random.int(0, 5),
+						// And within such a row, the caller's own device number as often as
+						// any other — that is the difference between reaching the branch
+						// and merely reaching the row.
+						id: random.bool(0.4) ? myDevice : random.int(0, 5),
 						keyIndex: random.int(0, 5),
 						isHosted: random.bool()
 					}))
 				}
-			})),
-			generateJid(random),
-			generateJid(random),
-			random.bool()
-		],
+			}))
+			return [rows, myJid, myLid, random.bool()]
+		},
 		runs: 200
 	},
 	{
