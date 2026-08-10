@@ -279,7 +279,16 @@ describe('bridge event adaptation', () => {
 				// all is bridge:adapt-total's subject, not this one's.
 				const once = runOutcome(() => adaptBridgeEvent(structuredClone(event) as never, silentLogger))
 				const twice = runOutcome(() => adaptBridgeEvent(structuredClone(event) as never, silentLogger))
-				if (compareOutcomes(once, twice).same) return []
+				// Strict, unlike every cross-implementation comparison in this suite.
+				// The tolerances exist to bridge two runtimes: `coerceScalars` folds a
+				// Rust u64 and a protobufjs Long together, and dropping absent keys
+				// papers over two libraries spelling "not set" differently. Neither
+				// applies to one implementation compared against itself — and both
+				// erase exactly what this target is looking for. An adapter carrying
+				// state that made consecutive calls alternate between `'0'` and `0`, or
+				// between an absent property and a present `undefined` one, is
+				// observable to every caller and was being called deterministic.
+				if (compareOutcomes(once, twice, { coerceScalars: false, preservePresence: true }).same) return []
 				return {
 					target: 'bridge:adapt-deterministic',
 					input: event,

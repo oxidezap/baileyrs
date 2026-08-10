@@ -119,7 +119,17 @@ const used = [...new Set(reports.flatMap(report => report.excusedBy ?? []))]
 // with `runs: 0`, which survives the process boundary.
 const filtered =
 	Boolean(process.env.FUZZ_ONLY?.trim()) || reports.some(report => report.runs === 0 && !report.truncated)
-const complete = truncated.length === 0 && !runFailed && !filtered
+// And a smoke run is the same question again, from sample size rather than from
+// coverage: it draws roughly a twenty-fifth of the inputs deep mode does — 201
+// against 5001 on `pure:cleanMessage`, measured — so an entry it never reached
+// is not thereby unreachable. Nothing else about smoke changes; findings,
+// crashes and expired entries still fail exactly as before.
+//
+// Read from the reports rather than from the mode this process was told about,
+// for the same reason the filter is: the runner owns `FUZZ_MODE`, and a separate
+// `node scripts/fuzz/report.ts` invocation does not see it.
+const sampled = mode !== 'deep'
+const complete = truncated.length === 0 && !runFailed && !filtered && !sampled
 const candidates = complete ? staleEntries(used) : []
 
 const today = new Date().toISOString().slice(0, 10)
@@ -220,7 +230,9 @@ if (!complete) {
 			? 'The fuzz step did not exit cleanly, so some targets may have written no report at all and this run cannot establish which entries are unused.'
 			: filtered
 				? 'FUZZ_ONLY selected a subset of targets, so this run cannot establish which entries are unused.'
-				: 'At least one target was truncated, so this run cannot establish which entries are unused.'
+				: truncated.length > 0
+					? 'At least one target was truncated, so this run cannot establish which entries are unused.'
+					: `This was a ${mode} run, which draws a fraction of the inputs deep mode does, so it cannot establish which entries are unused. Run \`npm run fuzz:deep\` to answer that.`
 	)
 } else if (candidates.length > 0) {
 	heading('Registry entries that excused nothing')

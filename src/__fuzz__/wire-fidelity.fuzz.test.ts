@@ -346,7 +346,14 @@ describe('send-path wire fidelity on generated messages', () => {
 					// Dropping it meant a builder that ignored, rounded or re-derived the
 					// caller's timestamp compared equal, in the one target that claims to
 					// compare the generated envelope.
-					return normalise(record)
+					//
+					// Returned raw. Normalising here ran *without* the schema, folding
+					// every decimal string into a bigint before the schema-aware
+					// comparison below could see it — so the predicate the next block
+					// carefully passes had nothing left to distinguish, and `'0'` versus
+					// `0` on a declared text field read as agreement. Normalisation
+					// belongs to the comparison, which knows the schema; this only clones.
+					return record
 				}
 
 				// Compared against the schema, not just structurally. `normalise` folds
@@ -365,8 +372,12 @@ describe('send-path wire fidelity on generated messages', () => {
 				return {
 					target: 'wire:message-builder',
 					input: { jid, message },
-					local: localView,
-					upstream: upstreamView,
+					// Normalised here instead, under the same rules the gate used, so the
+					// report shows the two sides exactly as the comparison saw them — a
+					// raw builder output carries Longs and byte arrays that render as
+					// `{}` through the reporter's own stringifier.
+					local: normalise(localView, 0, { isTextField }),
+					upstream: normalise(upstreamView, 0, { isTextField }),
 					detail: 'generateWAMessageFromContent produced a different envelope'
 				}
 			}
