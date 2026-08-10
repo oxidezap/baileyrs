@@ -326,6 +326,28 @@ describe('public helper compatibility', () => {
 			{ name: 'No', voters: [] }
 		])
 
+		// The shape the runtime actually delivers. `decodeProto` returns a plain
+		// `Uint8Array` for a bytes field, not a Buffer, and a selected option is
+		// matched by decoding those bytes — not by the array's own `toString()`,
+		// which renders `[1,2,3]` as the string "1,2,3" and matches no option at
+		// all. Pinned because it is the difference between counting a vote and
+		// filing every vote under "Unknown".
+		assert.deepEqual(
+			getAggregateVotesInPollMessage({
+				message: { pollCreationMessage: { options: [{ optionName: 'Yes' }, { optionName: 'No' }] } },
+				pollUpdates: [
+					{
+						pollUpdateMessageKey: { participant: 'voter@s.whatsapp.net' },
+						vote: { selectedOptions: [new Uint8Array(sha256(Buffer.from('Yes')))] }
+					}
+				]
+			}),
+			[
+				{ name: 'Yes', voters: ['voter@s.whatsapp.net'] },
+				{ name: 'No', voters: [] }
+			]
+		)
+
 		const mutablePoll: { pollUpdates?: (typeof pollUpdate)[] } = { pollUpdates: [pollUpdate] }
 		updateMessageWithPollUpdate(mutablePoll, {
 			pollUpdateMessageKey: { participant: 'voter@s.whatsapp.net' },
