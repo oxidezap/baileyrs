@@ -129,6 +129,202 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
 const plainObject = (value: unknown): string[] | undefined =>
 	typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.keys(value) : undefined
 
+/** `showOutcome` renders a thrown result as this prefix; a returned value is passed through raw. */
+const isThrow = (value: unknown): value is string => typeof value === 'string' && value.startsWith('<throw ')
+
+/**
+ * The `path` a proto finding names, however that target spells its input.
+ *
+ * The sweeps disagree on shape — the type inventory passes a bare path string,
+ * the codec targets pass `{ path, message }` — and a substring match over the
+ * serialised form is no substitute: `text()` stringifies without spaces, so a
+ * pattern written against the pretty-printed report matches nothing at all, and
+ * a bare `includes('Message')` matches every nested type there is.
+ */
+const inputPath = (input: unknown): string | undefined => {
+	if (typeof input === 'string') return input
+	const path = (input as { path?: unknown } | null | undefined)?.path
+	return typeof path === 'string' ? path : undefined
+}
+
+/**
+ * The ten explicit-presence fields the bridge encoder drops at their zero value.
+ *
+ * Enumerated rather than left to the target name. The `proto:presence` sweep
+ * covers all 1696 proto3-optional fields, and the whole value of a sweep is that
+ * an eleventh has to fail rather than be absorbed into the entry describing the
+ * ten. (`BotAvatarMetadata`'s five presence fields are not here: the bridge does
+ * not implement that type at all, so they route to the unknown-type entry.)
+ */
+const PRESENCE_DROPPED_FIELDS: readonly string[] = [
+	'Message.AudioMessage.mediaKeyDomain',
+	'Message.DocumentMessage.mediaKeyDomain',
+	'Message.ImageMessage.mediaKeyDomain',
+	'Message.MMSThumbnailMetadata.mediaKeyDomain',
+	'Message.StickerMessage.mediaKeyDomain',
+	'Message.VideoMessage.mediaKeyDomain',
+	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
+	'Message.PaymentExtendedMetadata.messageParamsJson',
+	'SyncActionValue.AgentAction.deviceID',
+	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
+]
+
+/** The message type the bridge codec does not implement. */
+const UNKNOWN_CODEC_TYPES: readonly string[] = ['BotAvatarMetadata']
+
+/** The messages whose schema reaches it — where a `{ path, message }` finding names the holder. */
+const UNKNOWN_CODEC_HOLDERS: readonly string[] = ['BotMetadata', 'Message', 'MessageContextInfo']
+
+/** The individual fields the sweeps name, either on the missing type or holding one. */
+const UNKNOWN_CODEC_FIELDS: readonly string[] = [
+	'BotAvatarMetadata.action',
+	'BotAvatarMetadata.behaviorGraph',
+	'BotAvatarMetadata.intensity',
+	'BotAvatarMetadata.sentiment',
+	'BotAvatarMetadata.wordCount',
+	'BotMetadata.avatarMetadata'
+]
+
+/**
+ * True when a finding names a type the bridge codec does not implement.
+ *
+ * Three input shapes reach this entry and they match differently, which is why
+ * the lists are separate rather than one prefix test: the inventory sweep passes
+ * a bare type name, the field sweeps pass `Type.field` (with the presence sweep
+ * appending ` = <zero>`), and the byte-level classifier passes `{ path }` naming
+ * the *holder*. Prefix-matching the holders instead would make `Message` cover
+ * every nested message type in the schema.
+ *
+ * Pinned rather than left to the runtime probe behind the target: that probe is
+ * what makes the entry self-retiring once the bridge implements the type, but it
+ * would equally route a type the bridge *loses* straight into this entry as
+ * though it had always been here.
+ */
+const namesUnknownCodecType = (input: unknown): boolean => {
+	if (typeof input === 'string') {
+		const spec = input.split(' = ')[0]!
+		return UNKNOWN_CODEC_TYPES.includes(spec) || UNKNOWN_CODEC_FIELDS.includes(spec)
+	}
+	const path = inputPath(input)
+	return path !== undefined && (UNKNOWN_CODEC_TYPES.includes(path) || UNKNOWN_CODEC_HOLDERS.includes(path))
+}
+
+/**
+ * The message paths whose bridge encoding is upstream's minus whole fields.
+ *
+ * The classifier proves the shape and the direction — `isWireSubset` is called
+ * `(localBytes, remoteBytes)` at every site, so this target can only ever mean
+ * bridge-minus-upstream and a changed value lands elsewhere. What it cannot
+ * prove is that the omission is one already known, so the paths are listed and
+ * an eighteenth fails.
+ */
+const FIELD_OMISSION_PATHS: readonly string[] = [
+	'Message.AudioMessage',
+	'Message.ButtonsMessage',
+	'Message.DocumentMessage',
+	'Message.ExtendedTextMessage',
+	'Message.HighlyStructuredMessage',
+	'Message.ImageMessage',
+	'Message.InteractiveMessage',
+	'Message.InteractiveMessage.Header',
+	'Message.MMSThumbnailMetadata',
+	'Message.ProductMessage.ProductSnapshot',
+	'Message.ProtocolMessage',
+	'Message.TemplateMessage',
+	'Message.TemplateMessage.FourRowTemplate',
+	'Message.TemplateMessage.HydratedFourRowTemplate',
+	'Message.VideoMessage',
+	'SyncActionValue',
+	'SyncActionValue.ChatAssignmentAction'
+]
+
+/**
+ * True when upstream is baileyrs plus keys that all hold the empty string.
+ *
+ * That is the whole of the `cleanMessage` difference: for a key with no
+ * remoteJid or participant, upstream writes `jidNormalizedUser(undefined)` —
+ * `''` — onto the caller's object where baileyrs leaves the property absent.
+ * Anything else, including a changed value or a key upstream is missing, is a
+ * different defect and still fails.
+ */
+const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (Array.isArray(local) || Array.isArray(upstream)) {
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
+		return local.every(
+			(item, index) => sameShape(item, upstream[index]) || addsOnlyEmptyStrings(item, upstream[index], depth + 1)
+		)
+	}
+	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) {
+		return sameShape(local, upstream)
+	}
+	const a = local as Record<string, unknown>
+	const b = upstream as Record<string, unknown>
+	// A key baileyrs has and upstream does not is the reverse of the claim.
+	for (const key of Object.keys(a)) if (!Object.hasOwn(b, key) && a[key] !== undefined) return false
+	for (const key of Object.keys(b)) {
+		if (!Object.hasOwn(a, key) || a[key] === undefined) {
+			if (b[key] !== '') return false
+			continue
+		}
+		if (!sameShape(a[key], b[key]) && !addsOnlyEmptyStrings(a[key], b[key], depth + 1)) return false
+	}
+	return true
+}
+
+/**
+ * Replaces every `key.remoteJid` with a sentinel, recursively.
+ *
+ * Lets a predicate say "apart from the remoteJid, these agree" without
+ * hand-walking the argument tuple the mutation target reports.
+ */
+const maskRemoteJid = (value: unknown, depth = 0): unknown => {
+	if (depth > 12 || typeof value !== 'object' || value === null) return value
+	if (Array.isArray(value)) return value.map(item => maskRemoteJid(item, depth + 1))
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		Object.defineProperty(out, key, {
+			value: key === 'remoteJid' && typeof nested === 'string' ? '<remoteJid>' : maskRemoteJid(nested, depth + 1),
+			enumerable: true,
+			writable: true,
+			configurable: true
+		})
+	}
+	return out
+}
+
+/** Every `key.remoteJid` string a divergence side carries. */
+const remoteJids = (value: unknown, found: string[] = [], depth = 0): string[] => {
+	if (depth > 12 || typeof value !== 'object' || value === null) return found
+	if (Array.isArray(value)) {
+		for (const item of value) remoteJids(item, found, depth + 1)
+		return found
+	}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		if (key === 'remoteJid' && typeof nested === 'string') found.push(nested)
+		else remoteJids(nested, found, depth + 1)
+	}
+	return found
+}
+
+/**
+ * True when two poll aggregates hold the same options and voters, in any order.
+ *
+ * The entry claims ordering and nothing else, so that is what has to be checked:
+ * a voter moved to the wrong bucket, a dropped voter or a renamed option all
+ * change the multiset and must still be reported.
+ */
+const samePollAggregate = (left: unknown, right: unknown): boolean => {
+	if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+	const key = (entry: unknown): string => {
+		if (typeof entry !== 'object' || entry === null) return text(entry)
+		const record = entry as Record<string, unknown>
+		const voters = Array.isArray(record.voters) ? record.voters.map(voter => text(voter)).toSorted() : record.voters
+		return text({ ...record, voters })
+	}
+	return text(left.map(key).toSorted()) === text(right.map(key).toSorted()) && text(left) !== text(right)
+}
+
 /**
  * True when two values agree on every key they share, differing only by which
  * keys are present.
@@ -248,9 +444,6 @@ const isPermutation = (left: unknown, right: unknown): boolean => {
 	return key(left) === key(right) && text(left) !== text(right)
 }
 
-const isLongPair = (value: unknown): boolean =>
-	typeof value === 'object' && value !== null && 'low' in value && 'high' in value
-
 /**
  * The registry.
  *
@@ -282,7 +475,26 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// error unrelated to the finding.
 			if (!Array.isArray(divergence.input)) return false
 			const [argument] = divergence.input as unknown[]
-			return isLongPair(argument) || typeof argument !== 'number'
+			// The outcomes, not just the input shape. Both rules are spelled out and
+			// each side is held to its own: matching on "the argument was a Long"
+			// alone excused a regression that threw, reconstructed the wrong sign or
+			// returned a different constant — on the very inputs the entry is about.
+			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
+			if (typeof argument === 'object' && argument !== null) {
+				// With a `toNumber` method both call it, so they agree or both throw.
+				// Neither outcome is this entry.
+				if ('toNumber' in argument) return false
+				const { low, high } = argument as { low?: unknown; high?: unknown }
+				// Upstream is `t.low` verbatim, including `undefined` for an object
+				// carrying no such property — which is most generated objects.
+				if (!sameShape(divergence.upstream, low)) return false
+				return typeof low === 'number'
+					? Object.is(divergence.local, (typeof high === 'number' ? high : 0) * 0x1_0000_0000 + (low >>> 0))
+					: divergence.local === 0
+			}
+			if (typeof argument === 'number') return false
+			// Non-object, non-number: upstream is `t || 0`, baileyrs is 0.
+			return divergence.local === 0 && sameShape(divergence.upstream, argument || 0)
 		}
 	},
 	{
@@ -307,14 +519,31 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'binary-node-messages-tolerates-bad-payload',
 		target: 'pure:getBinaryNodeMessages',
 		status: 'open',
+		// Exactly one side throwing, which is the whole claim. The generator now
+		// builds `<message>` children carrying a real, populated WebMessageInfo, so
+		// a target-wide entry would also excuse a dropped key or a misrendered
+		// timestamp on a *valid* message. If both decoded and disagreed, that is a
+		// decode difference on a payload they both accepted, and it still fails.
+		when: divergence => isThrow(divergence.local) !== isThrow(divergence.upstream),
 		reason:
-			'For a `<message>` child whose content is not a decodable WebMessageInfo, upstream throws "illegal buffer" while baileyrs returns an empty message object. Being tolerant means a corrupt stanza turns into an empty message instead of an error the caller can see. Needs a maintainer call on which contract the stanza handlers should rely on.',
+			'The two decoders disagree about which malformed `<message>` payloads are readable, in both directions. Upstream throws "illegal buffer" where baileyrs returns an empty message object; and for a truncated length prefix (`2a 16` with no body) baileyrs throws RangeError "premature EOF" where upstream returns `[{ participant: "" }]`. Whichever way round, a corrupt stanza becomes an empty message on one side and an exception on the other, so a caller cannot write one handler that works against both. Needs a maintainer call on which contract the stanza handlers should rely on.',
 		review: '2026-11-01'
 	},
 	{
 		id: 'get-history-msg-throws-instead-of-undefined',
 		target: 'pure:getHistoryMsg',
 		status: 'open',
+		// The generator now emits valid history-sync notifications, so the entry has
+		// to say which half of that it covers: only the *missing* one. Read
+		// structurally rather than by searching the serialised input — a
+		// notification nested under `deviceSentMessage` appears in the text but is
+		// not where either helper looks, and both correctly ignore it.
+		when: divergence => {
+			if (!isThrow(divergence.local) || divergence.upstream !== undefined) return false
+			const message = Array.isArray(divergence.input) ? divergence.input[0] : undefined
+			const protocol = (message as { protocolMessage?: Record<string, unknown> } | undefined)?.protocolMessage
+			return protocol?.historySyncNotification === undefined
+		},
 		reason:
 			'Upstream returns `undefined` when the message carries no history-sync notification; baileyrs throws a Boom 400. Drop-in consumer code written as `const h = getHistoryMsg(msg); if (!h) return` therefore crashes against baileyrs. The fix is a signature change on a published API, so it belongs in its own commit rather than in the change that found it.',
 		review: '2026-11-01'
@@ -323,8 +552,40 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'clean-message-empty-jid-normalisation',
 		target: /^pure:cleanMessage/u,
 		status: 'open',
+		// One substitution, checked as such. Without a predicate the pattern excused
+		// every difference on every generated message, so altered content or a
+		// mis-normalised JID was absorbed — which is exactly what had been hiding
+		// the empty-user server difference below.
+		when: divergence =>
+			!isThrow(divergence.local) &&
+			!isThrow(divergence.upstream) &&
+			addsOnlyEmptyStrings(normalise(divergence.local), normalise(divergence.upstream)),
 		reason:
 			'For a message key with no remoteJid/participant, upstream writes the empty string (via jidNormalizedUser(undefined)) while baileyrs writes undefined. Both are falsy and downstream behaviour matches, but the key objects differ for anything that inspects them. Only reachable with a malformed key.',
+		review: '2026-11-01'
+	},
+	{
+		id: 'clean-message-empty-user-jid-server',
+		target: /^pure:cleanMessage/u,
+		status: 'open',
+		// Found by narrowing the entry above, which had been excusing every
+		// difference on the target and so was covering this one too.
+		when: divergence => {
+			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
+			const mine = remoteJids(normalise(divergence.local))
+			const theirs = remoteJids(normalise(divergence.upstream))
+			// Both sides normalised to an empty user, and they disagree on nothing
+			// except which server that JID keeps.
+			if (mine.length === 0 || mine.length !== theirs.length) return false
+			if (!mine.every((jid, index) => jid.startsWith('@') && theirs[index]!.startsWith('@') && jid !== theirs[index]))
+				return false
+			return addsOnlyEmptyStrings(
+				maskRemoteJid(normalise(divergence.local)),
+				maskRemoteJid(normalise(divergence.upstream))
+			)
+		},
+		reason:
+			"For a message key whose remoteJid normalises to an empty user, the two write different servers onto the caller's key. Measured directly: `_99:1@hosted` becomes `@hosted` in baileyrs and `@s.whatsapp.net` upstream; `_1@hosted.lid` becomes `@hosted.lid` in baileyrs and `@lid` upstream. `jidNormalizedUser` agrees on both of those in isolation, so the difference is in cleanMessage's own re-encoding, and baileyrs is the side that preserves what the server actually sent. A consumer keying chats by remoteJid therefore files these under different chats depending on the library. Only reachable with a JID whose user part is empty.",
 		review: '2026-11-01'
 	},
 	{
@@ -367,7 +628,19 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'Adapters for declared event types read straight into `data` without checking it is there, so an event that arrives with no data slot — or with a slot missing the field the adapter reads — throws a TypeError instead of returning null. `adapt.ts` documents the opposite ("Result is null on unrecoverable shape mismatch"), and the throw does not stay local: it propagates into the socket event dispatch, which takes out the whole event loop rather than the one event.',
 		review: '2026-10-01',
-		when: divergence => MISSING_DATA_THROWS.test(text(divergence.local))
+		// The throw shape *and* a `data` slot that is actually missing. On its own
+		// the regex matches the most common TypeErrors there are — "is not a
+		// function", "is not iterable" — so an adapter regression on a well-shaped
+		// event was classified as the known missing-data problem. The per-type
+		// coverage counter cannot catch that either: it sees a type that never
+		// adapts at all, not one that fails on one payload in eight.
+		when: divergence => {
+			if (!MISSING_DATA_THROWS.test(text(divergence.local))) return false
+			const data = (divergence.input as { data?: unknown } | undefined)?.data
+			// Absent, not a record at all, or a record with nothing in it — the three
+			// shapes an adapter reading straight into `data` cannot survive.
+			return plainObject(data)?.length !== undefined ? plainObject(data)!.length === 0 : true
+		}
 	},
 	{
 		id: 'event-buffer-release-order',
@@ -424,6 +697,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'proto-explicit-presence-zero-dropped',
 		target: 'proto:presence',
 		status: 'open',
+		// Named, not target-wide. The sweep's whole point is that it covers every
+		// proto3-optional field; an entry matching the target alone would route an
+		// eleventh drop into the finding that describes the ten and leave the
+		// nightly green on a new regression.
+		when: divergence =>
+			typeof divergence.input === 'string' &&
+			PRESENCE_DROPPED_FIELDS.some(
+				field => divergence.input === `${field} = 0` || divergence.input === `${field} = ""`
+			),
 		reason:
 			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
 		review: '2026-10-01'
@@ -454,6 +736,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'proto-field-omission',
 		target: 'proto:field-omission',
 		status: 'open',
+		when: divergence => FIELD_OMISSION_PATHS.includes(inputPath(divergence.input) ?? ''),
 		reason:
 			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Overlaps the presence and unknown-type entries, which are themselves already tracked in KNOWN_WIRE_GAPS; kept separate because the classifier cannot attribute a cause, only a shape.',
 		review: '2026-10-01'
@@ -538,6 +821,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'proto-unknown-type-dropped',
 		target: /^proto:(unknown-type-dropped|type-coverage)$/u,
 		status: 'open',
+		when: divergence => namesUnknownCodecType(divergence.input),
 		reason:
 			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. ALREADY TRACKED: BotAvatarMetadata is in KNOWN_UNSUPPORTED_CODECS and its fields in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. The unknown-type set here is probed at runtime rather than listed, so this entry stops matching by itself once the bridge implements them.',
 		review: '2026-10-01'
@@ -555,6 +839,11 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'poll-vote-aggregation-order',
 		target: 'pure:getAggregateVotesInPollMessage',
 		status: 'open',
+		// Ordering only. Now that generated votes actually hash to the declared
+		// options, an unqualified entry would excuse a voter bucketed under the
+		// wrong option, a dropped voter or a renamed option — all of which change
+		// the multiset, and none of which this entry has ever claimed.
+		when: divergence => samePollAggregate(normalise(divergence.local), normalise(divergence.upstream)),
 		reason:
 			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order. Consumers that index into the returned array rather than looking options up by name see different results.',
 		review: '2026-11-01'
