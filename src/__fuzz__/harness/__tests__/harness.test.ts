@@ -362,8 +362,20 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		const group = (subject: string) => ({ released: 'groups.update', data: [{ id: 'g@g.us', subject }] })
 		const receipt = { released: 'message-receipt.update', data: [{ key: { id: 'B2' } }] }
 
-		assert.ok(excused([upsert('first')], [upsert('second')]), 'a pinned field may differ in value')
-		assert.ok(excused([group('second')], [group('first')]), 'the same, on the other kind')
+		// `subject` on a group is the one field whose *value* the two may disagree
+		// on, and only there. A contact's `name` was pinned the same way until the
+		// upsert fold was corrected; a value difference on one is a regression of
+		// that fix, so this entry must not absorb it.
+		assert.ok(excused([group('second')], [group('first')]), 'the pinned field may differ in value')
+		assert.ok(!excused([upsert('first')], [upsert('second')]), 'a contact name may not — the two agree on it now')
+		// What the contact half of the entry does document: a field only this side kept.
+		assert.ok(
+			excused(
+				[{ released: 'contacts.upsert', data: [{ id: 'a@s.whatsapp.net', name: 'x', notify: 'n' }] }],
+				[{ released: 'contacts.upsert', data: [{ id: 'a@s.whatsapp.net', name: 'x' }] }]
+			),
+			'a field upstream dropped folding an earlier update is what this entry is for'
+		)
 		// The shape the entry actually documents: upstream lost a field this side kept.
 		assert.ok(
 			excused(

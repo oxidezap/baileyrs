@@ -225,12 +225,33 @@ const append = (
 		case 'contacts.upsert': {
 			for (const contact of eventData as Contact[]) {
 				const existing = data.contactUpserts[contact.id] || data.historySets.contacts[contact.id]
-				if (existing) Object.assign(existing, trimUndefined(contact))
-				else data.contactUpserts[contact.id] = contact
+				// A `contacts.update` already buffered for this id arrived *before*
+				// this upsert, so it is folded in first and the upsert's own values
+				// win where the two carry the same field. Folding it last — which is
+				// what this did — let a stale name overwrite the one that came after
+				// it, and the buffer released the older of the two. Fields only the
+				// update carried still survive, which upstream drops.
 				const pending = data.contactUpdates[contact.id]
-				if (pending) {
-					Object.assign(existing || contact, pending)
-					delete data.contactUpdates[contact.id]
+				if (pending) delete data.contactUpdates[contact.id]
+				if (existing) {
+					if (pending) Object.assign(existing, pending)
+					Object.assign(existing, trimUndefined(contact))
+				} else {
+					// Filling the gaps in `contact` rather than merging onto `pending`
+					// and storing that: `pending` was grown from `{}` by the update
+					// branch, and accumulating into it — or into a fresh literal —
+					// measured about twice the cost of writing into the contact the
+					// caller handed us, which arrives with a settled shape. An
+					// explicitly-`undefined` field counts as absent, which is what
+					// `trimUndefined` would decide and costs no second pass.
+					if (pending) {
+						const target = contact as unknown as Record<string, unknown>
+						const source = pending as Record<string, unknown>
+						for (const field in source) {
+							if (target[field] === undefined) target[field] = source[field]
+						}
+					}
+					data.contactUpserts[contact.id] = contact
 				}
 			}
 			break
