@@ -838,6 +838,15 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					}
 				}
 				if (!local.ok || !remote.ok) return []
+				// Ordering is deliberately not compared here, on measurement. For a oneof
+				// the order would be semantic — a decoder that resolves a winner keeps
+				// the last member it meets — but protobufjs declares no runtime oneof
+				// for any of the 14 paths whose schema table records a multi-member
+				// group: `type.oneofs` is empty for all of them, `decode` keeps every
+				// member it meets, and `toObject` shows them all. So a check comparing
+				// the decoded winners could not fail, and a check that cannot fail is
+				// worse than none. If the generated protos ever carry runtime oneofs,
+				// this is the place to compare `decoded[oneofName]` on both sides.
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
