@@ -337,7 +337,7 @@ interface PureTarget {
 	 * Classifying here, where both libraries are already imported, keeps the
 	 * registry honest without dragging a decoder into it.
 	 */
-	readonly tag?: (args: Args) => string | undefined
+	readonly tag?: (args: Args, localResult: unknown, upstreamResult: unknown) => string | undefined
 }
 
 /**
@@ -447,6 +447,37 @@ const uploadBase64 = (random: Random): string =>
 		],
 		[1, () => generateString(random)]
 	])()
+
+/**
+ * `content` as upstream's copy would leave it, or undefined if it will not go.
+ *
+ * `generateWAMessageFromContent`'s upstream twin rebuilds content through the
+ * protobuf codec, and that round trip is the entire difference between the two
+ * implementations' copies. Running it here answers "is this difference the
+ * documented one" exactly, where a structural description of its effects cannot.
+ */
+const attemptRoundTrip = (content: unknown): unknown => {
+	try {
+		const type = (upstream.proto as { Message: UpstreamMessageCodec }).Message
+		return type.toObject(type.decode(type.encode(type.fromObject(structuredClone(content))).finish()), {
+			longs: String,
+			enums: Number,
+			defaults: false,
+			arrays: false,
+			objects: false,
+			oneofs: false
+		})
+	} catch {
+		return undefined
+	}
+}
+
+interface UpstreamMessageCodec {
+	fromObject(value: unknown): unknown
+	encode(message: unknown): { finish(): Uint8Array }
+	decode(bytes: Uint8Array): unknown
+	toObject(message: unknown, options: Record<string, unknown>): Record<string, unknown>
+}
 
 const messageKey = (random: Random) => ({
 	remoteJid: generateMaybeJid(random),
@@ -1280,7 +1311,30 @@ const TARGETS: readonly PureTarget[] = [
 			{ key: messageKey(random), message: messageContent(random) },
 			random.bool(0.5) ? random.bool() : undefined
 		],
-		runs: 200
+		runs: 200,
+		// Whether the whole difference is the copy strategy, answered by running
+		// that strategy rather than describing it.
+		//
+		// The two implementations differ only in how they copy: upstream rebuilds
+		// content through `proto.Message.decode(proto.Message.encode(content))`
+		// while baileyrs shallow-clones. So the difference is explained exactly when
+		// upstream's result *is* that round trip of baileyrs' result — which the
+		// registry cannot compute, having no protobuf runtime.
+		//
+		// This replaced a structural rule that tried to describe the round trip's
+		// effects from outside, and got them wrong in both directions: it excused a
+		// dropped `extendedTextMessage.text` — a declared field, real body loss —
+		// and once tightened it reported a `deviceSentMessage` carrying an
+		// undeclared property as unexplained. Only the schema separates those two,
+		// and the round trip *is* the schema. Measured: upstream equals the round
+		// trip for both of those, and does not for a simulated body drop or a
+		// changed value.
+		tag: (_args, mine, theirs) => {
+			if (mine === undefined || theirs === undefined) return undefined
+			const copied = attemptRoundTrip(mine)
+			if (copied === undefined) return undefined
+			return JSON.stringify(copied) === JSON.stringify(theirs) ? 'copy strategy' : 'not the copy strategy'
+		}
 	},
 	{
 		name: 'getAggregateVotesInPollMessage',
@@ -1394,7 +1448,14 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 					// check unable to see one side deleting a property — and made
 					// `trimUndefined`, whose whole job is that deletion, untestable here.
 					const strict = { coerceScalars: false, preservePresence: true }
-					const tag = target.tag?.(args)
+					// The two results as well as the arguments: a classification like "is this
+					// difference the documented copy strategy" is a statement about the
+					// outputs, and only this file has the protobuf runtime to answer it.
+					const tag = target.tag?.(
+						args,
+						localOutcome.kind === 'return' ? localOutcome.value : undefined,
+						upstreamOutcome.kind === 'return' ? upstreamOutcome.value : undefined
+					)
 					const withTag = (detail: string) => (tag === undefined ? detail : `${detail} [${tag}]`)
 					const comparison = compareOutcomes(localOutcome, upstreamOutcome, strict)
 					if (!comparison.same) {

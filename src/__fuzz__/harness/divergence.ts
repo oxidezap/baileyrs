@@ -734,18 +734,31 @@ const walkKeyPresence = (left: unknown, right: unknown, depth: number, state: { 
 	const a = left as Record<string, unknown>
 	const b = right as Record<string, unknown>
 	const shared = Object.keys(a).filter(key => Object.hasOwn(b, key))
-	// No key in common at this level. That is still explicable, but only as the
-	// exact thing the round trip does: it materialises fields the schema declares
-	// (an empty repeated field, so `[]`) and drops properties it does not (which
-	// are the scalars a caller tacked on). A content object replaced wholesale
-	// does not look like that — `{ conversation: 'x' }` against
-	// `{ imageMessage: {} }` has an object on the upstream side, not an empty
-	// array — so it is rejected here rather than passed over by an empty loop.
-	if (shared.length === 0 && Object.keys(a).length > 0 && Object.keys(b).length > 0) {
-		const materialised = Object.keys(b).every(key => Array.isArray(b[key]) && (b[key] as unknown[]).length === 0)
-		const dropped = Object.keys(a).every(key => typeof a[key] !== 'object' || a[key] === null)
-		return materialised && dropped
+
+	// Every unmatched key, checked against what the round trip actually does:
+	// it materialises fields the schema declares (an empty repeated field, so
+	// `[]`) and drops properties it does not (the scalars a caller tacked on).
+	//
+	// Applied to every level, not only to a level with no shared keys — which is
+	// where this used to stop. With one key in common the loop below ran and the
+	// unmatched ones were never looked at, so a *dropped message body* was
+	// excused: `{ extendedTextMessage: { contextInfo } }` against
+	// `{ extendedTextMessage: { text: 'the body', contextInfo } }` shares
+	// `contextInfo`, and `text` went unexamined. Losing a message body is the
+	// single thing this suite exists to catch, so it now has to be one of the two
+	// documented artifacts or nothing.
+	for (const key of Object.keys(b)) {
+		if (Object.hasOwn(a, key)) continue
+		// Upstream-only: the materialised empty repeated field, and nothing else.
+		if (!Array.isArray(b[key]) || (b[key] as unknown[]).length > 0) return false
 	}
+	for (const key of Object.keys(a)) {
+		if (Object.hasOwn(b, key)) continue
+		// baileyrs-only: a scalar the schema does not declare, which is what the
+		// round trip drops. An object here would be a whole subtree upstream lost.
+		if (typeof a[key] === 'object' && a[key] !== null) return false
+	}
+
 	for (const key of shared) {
 		state.compared++
 		if (!sameShape(a[key], b[key]) && !walkKeyPresence(a[key], b[key], depth + 1, state)) return false
@@ -1078,7 +1091,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// Confined to key presence, in either direction — which is exactly what the
 		// two copy strategies differ by. A changed *value*, a dropped body or wrong
 		// forwarding metadata is not a subset either way round, and still fails.
-		when: divergence => differsOnlyByKeyPresence(normalise(divergence.local), normalise(divergence.upstream)),
+		// Keyed on the target's own round-trip check, not on a structural guess.
+		// The registry has no protobuf runtime, so it cannot tell a declared field
+		// from an undeclared one — and that is the whole difference between an
+		// artifact of the copy and a lost message body. The target answers instead:
+		// it re-runs upstream's copy over baileyrs' result and tags whether that
+		// reproduces upstream's. A structural rule got this wrong in both directions
+		// before, first excusing a dropped `extendedTextMessage.text` and then
+		// reporting a legitimately dropped undeclared property.
+		when: divergence => (divergence.detail ?? '').includes('[copy strategy]'),
 		reason:
 			"The same root cause as the mutation entry, seen in the return value: upstream copies the content through `proto.Message.decode(proto.Message.encode(content))` while baileyrs shallow-clones with `{ ...content }`. The round trip changes the key set in both directions — it drops properties the schema does not declare, and it materialises empty repeated fields the schema does declare. Measured on `{ extendedTextMessage: {} }`: upstream's result carries `endCardTiles: []`, baileyrs' does not; on `{ extendedTextMessage: { text: 'x', notAField: 1 } }` baileyrs keeps `notAField` and upstream loses it. Schema-valid content with no empty repeated fields agrees exactly, so callers are largely unaffected — but it is a second observable of one defect, and the mutation entry's over-broad target had been excusing it.",
 		review: '2026-11-01'

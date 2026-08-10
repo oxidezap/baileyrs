@@ -30,6 +30,7 @@ const DATE_TAG = '__date__'
 const ERROR_TAG = '__error__'
 const ESCAPE_TAG = '__escaped__'
 const NULL_PROTO_TAG = '__nullproto__'
+const HOSTILE_TAG = '__hostile__'
 
 /**
  * Every tag `decode` recognises.
@@ -41,6 +42,7 @@ const NULL_PROTO_TAG = '__nullproto__'
  */
 const TAGS: readonly string[] = [
 	NULL_PROTO_TAG,
+	HOSTILE_TAG,
 	BYTES_TAG,
 	BIGINT_TAG,
 	UNDEFINED_TAG,
@@ -87,6 +89,20 @@ const encode = (value: unknown): unknown => {
 	}
 	if (Array.isArray(value)) return value.map(encode)
 	if (typeof value === 'object' && value !== null) {
+		// An object whose property reads throw. `argument-boundary.fuzz.test.ts`
+		// generates one deliberately — a proxy with a throwing `get` trap — and
+		// there is no way to recognise a proxy from outside, so it is probed
+		// instead. Untagged it serialised as `{}` (its `ownKeys` is empty, so the
+		// branch below never triggered the trap) and reloaded as an ordinary
+		// object, which cannot reproduce the failure it was recorded for.
+		//
+		// The identity is gone either way, as with the function and symbol tags;
+		// what the boundary checks read is the *behaviour*, so that is what is kept.
+		try {
+			void (value as Record<string, unknown>).__corpus_probe__
+		} catch {
+			return { [HOSTILE_TAG]: true }
+		}
 		const out: Record<string, unknown> = {}
 		for (const [key, nested] of Object.entries(value)) {
 			// `__proto__` must stay an own key: the generators plant it deliberately,
@@ -152,6 +168,16 @@ const decode = (value: unknown): unknown => {
 				})
 			}
 			return bare
+		}
+		if (taggedAs(record, HOSTILE_TAG)) {
+			return new Proxy(
+				{},
+				{
+					get: () => {
+						throw new Error('hostile getter')
+					}
+				}
+			)
 		}
 		if (taggedAs(record, UNDEFINED_TAG)) return undefined
 		if (taggedAs(record, BIGINT_TAG)) return BigInt(String(record[BIGINT_TAG]))

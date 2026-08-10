@@ -33,12 +33,14 @@ on:
           - deep
           - smoke
 
-# One fuzz run at a time on a branch. A manual dispatch during the nightly would
-# otherwise run the full 45-minute suite twice and have both comment on the same
-# `fuzz` issue. Queued rather than cancelled: the in-flight nightly's result is
-# the one worth keeping.
+# One fuzz run at a time in the *repository*, not per ref. The tracking issue is
+# repository-wide, so two runs on different refs — a nightly and a manual
+# dispatch on a branch — would each look it up, each find nothing, and each
+# create one. Every later run then comments on and closes only the lowest
+# number, leaving the duplicate open forever holding a stale report. Queued
+# rather than cancelled: the in-flight run's result is the one worth keeping.
 concurrency:
-  group: fuzz-${{ github.ref }}
+  group: fuzz
   cancel-in-progress: false
 
 permissions:
@@ -180,12 +182,17 @@ jobs:
             // A clean run closes the issue rather than opening one. Commented
             // first, so the thread records *why* it closed and against which
             // seed — a bare close leaves whoever reopens it guessing.
+            // Every owned issue, not just the lowest. The concurrency group is
+            // repository-wide now so two runs cannot race into duplicates, but one
+            // may already exist from before that, or from a hand-filed issue
+            // carrying the marker — and closing only `owned[0]` would leave it open
+            // forever holding a report the nightly has disproved.
             if (clean) {
-              if (owned.length === 0) return
+              for (const issue of owned) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: owned[0].number,
+                issue_number: issue.number,
                 body: [
                   marker,
                   `The nightly is clean on seed \`${seed}\` (mode \`${mode}\`), so this is closed.`,
@@ -201,10 +208,11 @@ jobs:
               await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: owned[0].number,
+                issue_number: issue.number,
                 state: 'closed',
                 state_reason: 'completed'
               })
+              }
               return
             }
 

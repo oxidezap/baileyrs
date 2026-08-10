@@ -30,7 +30,7 @@ import { equivalent, normalise } from './harness/compare.ts'
 import { canonicalWire } from './harness/wire.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
-import { generateProtoObject, HOT_PROTO_PATHS } from './generators/proto.ts'
+import { generateProtoObject, textFieldPredicate, HOT_PROTO_PATHS } from './generators/proto.ts'
 import { mutate, MUTATORS, type MessageCycle } from './generators/mutation.ts'
 
 const upstream = (await import('baileys')) as unknown as { proto: Record<string, unknown> }
@@ -239,7 +239,13 @@ describe('protobuf decoder robustness under mutation', () => {
 				// is caught above rather than falling into this branch and reading as a
 				// clean run that checked nothing.
 				if (!local.ok || !remote.ok) return []
-				if (equivalent(local.value, remote.value)) return []
+				// Schema-aware, as the codec differential is. `normalise` folds every
+				// decimal string into a bigint so a Rust u64 can be compared against a
+				// protobufjs Long, which also folds a *declared string* holding `'0'`
+				// together with the number `0` — and the generator emits `'0'` on purpose.
+				// Mutated input is exactly where a parser turns one into the other, and
+				// the valid-message differential never sees these payloads.
+				if (equivalent(local.value, remote.value, { isTextField: textFieldPredicate(path) })) return []
 
 				// Well-formed protobuf has exactly one meaning, whether or not the
 				// fields make sense for this message type — two decoders reading it
@@ -307,7 +313,10 @@ describe('protobuf decoder robustness under mutation', () => {
 					}
 				}
 
-				if (equivalent(first.value, second.value)) return []
+				// Same predicate as the agreement check above: re-encoding and re-reading
+				// is where a decoder's own type confusion would show, so folding the two
+				// types together here would hide it in the one place it is visible.
+				if (equivalent(first.value, second.value, { isTextField: textFieldPredicate(path) })) return []
 				return {
 					target: 'proto:mutation-stability',
 					input: { path, mutator, bytes: hex(bytes) },
