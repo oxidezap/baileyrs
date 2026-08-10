@@ -1,0 +1,9 @@
+[
+	{
+		"note": "an event type that resolves through Object.prototype: the inherited function is called and its result treated as a canonical event",
+		"input": {
+			"type": "constructor",
+			"data": {}
+		}
+	}
+]

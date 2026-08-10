@@ -86,6 +86,21 @@ const text = (value: unknown): string => {
 	}
 }
 
+/**
+ * Every property an empty object inherits.
+ *
+ * Enumerated from the prototype itself rather than written out, so the entry that
+ * relies on it cannot drift from what the runtime actually inherits.
+ */
+const PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+	...Object.getOwnPropertyNames(Object.prototype),
+	...Object.getOwnPropertyNames(Function.prototype)
+])
+
+/** The TypeError shapes a missing or short `data` slot produces. */
+const MISSING_DATA_THROWS =
+	/Cannot read properties of (undefined|null)|is not iterable|Cannot use 'in' operator|is not a function/u
+
 const isLongPair = (value: unknown): boolean =>
 	typeof value === 'object' && value !== null && 'low' in value && 'high' in value
 
@@ -147,6 +162,32 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		status: 'open',
 		reason:
 			'baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller\'s own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to.',
+		review: '2026-11-01'
+	},
+	{
+		id: 'bridge-adapter-prototype-chain-lookup',
+		target: /^bridge:adapt-(unknown|total)$/u,
+		status: 'open',
+		reason:
+			'The adapter table is a plain object literal indexed by the event type string, so a type of "constructor", "toString" or "valueOf" resolves through Object.prototype: the inherited function is called and its return value is handed on as a canonical event, and "__proto__" resolves to a non-function and throws "adapter is not a function". The type comes from the runtime, which gets it from the server, so an untrusted string is indexing a prototype-bearing lookup table. Both outcomes break the layer\'s stated contract of dropping what it does not recognise. A Map, an Object.create(null) table, or an Object.hasOwn guard fixes it.',
+		review: '2026-10-01',
+		when: divergence => PROTOTYPE_KEYS.has(String((divergence.input as { type?: unknown })?.type))
+	},
+	{
+		id: 'bridge-adapter-throws-on-missing-data',
+		target: /^bridge:adapt-(total|coverage)$/u,
+		status: 'open',
+		reason:
+			'Adapters for declared event types read straight into `data` without checking it is there, so an event that arrives with no data slot — or with a slot missing the field the adapter reads — throws a TypeError instead of returning null. `adapt.ts` documents the opposite ("Result is null on unrecoverable shape mismatch"), and the throw does not stay local: it propagates into the socket event dispatch, which takes out the whole event loop rather than the one event.',
+		review: '2026-10-01',
+		when: divergence => MISSING_DATA_THROWS.test(text(divergence.local))
+	},
+	{
+		id: 'event-buffer-release-order',
+		target: 'buffer:differential',
+		status: 'open',
+		reason:
+			'Flushing a buffer that holds several event kinds releases them in a different order than upstream: for the same sequence, baileyrs emitted contacts.upsert before message-receipt.update where upstream emitted them the other way round. No event is lost — buffer:conservation is clean — but a consumer whose handlers assume upstream\'s ordering (contacts populated before receipts reference them) sees a different interleaving.',
 		review: '2026-11-01'
 	},
 	{
