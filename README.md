@@ -236,8 +236,8 @@ or `close` within seconds, because upstream never retries on its own. On
 baileyrs the same value also covers every drop the engine is retrying, and the
 backoff between those retries climbs with each consecutive failure.
 
-Here is what that costs on a rate-limited account. Three `429 rate-overlimit`
-in a row, measured against the production reconnect path:
+Here is what that costs on a rate-limited account. Four consecutive
+`429 rate-overlimit`, measured against the production reconnect path:
 
 | failure | next attempt in | offline so far |
 | --- | --- | --- |
@@ -246,11 +246,11 @@ in a row, measured against the production reconnect path:
 | `429` #3 | 813.9s | 968.5s |
 | `429` #4 | 903.5s | 1872.0s |
 
-About 16 minutes offline after the third one. For all 16 of those minutes the
-consumer sees exactly **one** `connection: 'connecting'`: no `lastDisconnect`,
-no status code, no repeat. `isConnected` and `isLoggedIn` are both `false`
-throughout, exactly as they are during a first connection, so neither tells you
-a retry is scheduled.
+About 16 minutes offline by the third failure, and about 31 by the fourth. For
+all of it the consumer sees exactly **one** `connection: 'connecting'`: no
+`lastDisconnect`, no status code, no repeat. `isConnected` and `isLoggedIn` are
+both `false` throughout, exactly as they are during a first connection, so
+neither tells you a retry is scheduled.
 
 **Do not arm a readiness timeout on `connecting`, and above all do not restart
 the process when one expires.** The backoff counter lives in the Rust client
