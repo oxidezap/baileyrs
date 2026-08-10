@@ -120,6 +120,9 @@ const hex = (bytes: unknown): string =>
 
 const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.value : `<throw ${outcome.error}>`)
 
+/** Appends a classification the allowlist registry cannot compute for itself. */
+const withTag = (detail: string, tag: string | undefined): string => (tag === undefined ? detail : `${detail} [${tag}]`)
+
 /**
  * The field kinds protobuf actually packs, and that unpack as varints.
  *
@@ -129,6 +132,9 @@ const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.val
  * difference. Floats are packable but fixed-width, so they never appear as the
  * varint run this comparison looks for.
  */
+/** The kinds protobufjs routes through `Long.fromString`, which rejects `''`. */
+const SIXTY_FOUR_BIT_KINDS: ReadonlySet<number> = new Set([PROTO_FIELD_KIND.signed64, PROTO_FIELD_KIND.unsigned64])
+
 const PACKABLE_KINDS: ReadonlySet<number> = new Set([
 	PROTO_FIELD_KIND.enum,
 	PROTO_FIELD_KIND.bool,
@@ -259,6 +265,99 @@ const encodeTarget = (path: string, message: unknown, fallback: string): string 
  * bridge's output is upstream's minus some fields, the defect is omission, and
  * saying so is more useful than "the bytes differ".
  */
+/**
+ * Whether the bridge really coerced an empty string to zero, as a detail tag.
+ *
+ * `proto-empty-string-for-numeric-field` documents exactly that coercion, but
+ * the registry could only check that the input held an empty string somewhere
+ * and that the bridge produced *some* bytes — it has no schema, so it cannot
+ * tell the coerced field from its neighbours, and a regression that wrote 5 or
+ * dropped the field stayed covered.
+ *
+ * Substitution answers it without any path resolution: if the bridge coerces
+ * `''` to zero, encoding the same message with every empty string replaced by
+ * `'0'` has to produce identical bytes. Measured on
+ * `Message.AudioMessage.fileLength`: `''` and `'0'` both encode to
+ * `0a017520002803`, and `'5'` to `0a017520052803`.
+ *
+ * Returns undefined when there is no empty string to ask about, so the tag only
+ * appears on the findings it is about.
+ */
+const emptyStringCoercionTag = (path: string, message: unknown): string | undefined => {
+	// Schema-aware, and it has to be. Replacing *every* empty string substitutes
+	// declared string fields too, which legitimately changes the bytes — measured
+	// on `SyncActionValue { timestamp: '', labelEditAction: { name: '' } }`, where
+	// substituting both gives different bytes and substituting only `timestamp`
+	// gives identical ones. A blanket replacement therefore reported `not coerced`
+	// for every message that happened to hold an empty string anywhere, which is
+	// how the first version of this tag broke four targets at once.
+	const replaceEmpty = (owner: string, value: unknown, depth = 0): unknown => {
+		if (depth > 12 || typeof value !== 'object' || value === null) return value
+		if (Array.isArray(value)) return value.map(item => replaceEmpty(owner, item, depth + 1))
+		const fields = new Map(fieldsOfPath(owner).map(field => [field[0], field] as const))
+		const out: Record<string, unknown> = {}
+		for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+			const field = fields.get(key)
+			if (field !== undefined && nested === '' && SIXTY_FOUR_BIT_KINDS.has(field[1])) {
+				out[key] = '0'
+				continue
+			}
+			const child = field === undefined ? undefined : messagePathOfField(field)
+			out[key] = child === undefined ? nested : replaceEmpty(child, nested, depth + 1)
+		}
+		return out
+	}
+	const substituted = replaceEmpty(path, message)
+	if (JSON.stringify(substituted) === JSON.stringify(message)) return undefined
+
+	const asZero = attempt(() => encodeProto(path, substituted))
+	const asEmpty = attempt(() => encodeProto(path, message))
+	if (!asZero.ok || !asEmpty.ok) return 'empty string not coerced'
+	return hex(asZero.value) === hex(asEmpty.value) ? 'empty string coerced to zero' : 'empty string not coerced'
+}
+
+/**
+ * The oneof member each side's bytes resolve to, when the two disagree.
+ *
+ * protobufjs exposes a oneof's discriminator as a getter on the generated
+ * prototype rather than in `type.oneofs`, which is empty for every type in this
+ * schema. The getter returns the last member present, so which member a
+ * conforming consumer observes depends on the order the encoder wrote them —
+ * and that is exactly what the order-insensitive comparisons below discard.
+ *
+ * Returns undefined when the two agree, when the type declares no
+ * multi-member group, or when either side fails to decode: a decode failure is
+ * a different defect, reported by a different target.
+ */
+const oneofWinners = (
+	path: string,
+	type: UpstreamType,
+	localBytes: Uint8Array,
+	remoteBytes: Uint8Array
+): { local: string; upstream: string } | undefined => {
+	const groups = [...oneofGroups(path).entries()].filter(([, members]) => members.length > 1).map(([name]) => name)
+	if (groups.length === 0) return undefined
+	const prototype = (type as unknown as { prototype?: object }).prototype
+	if (!prototype) return undefined
+	const virtual = groups.filter(name => typeof Object.getOwnPropertyDescriptor(prototype, name)?.get === 'function')
+	if (virtual.length === 0) return undefined
+
+	const winners = (bytes: Uint8Array): Record<string, unknown> | undefined => {
+		const decoded = attempt(() => type.decode(bytes))
+		if (!decoded.ok) return undefined
+		const out: Record<string, unknown> = {}
+		for (const name of virtual) out[name] = (decoded.value as Record<string, unknown>)[name]
+		return out
+	}
+
+	const mine = winners(localBytes)
+	const theirs = winners(remoteBytes)
+	if (mine === undefined || theirs === undefined) return undefined
+	const left = JSON.stringify(mine)
+	const right = JSON.stringify(theirs)
+	return left === right ? undefined : { local: left, upstream: right }
+}
+
 const byteTarget = (
 	path: string,
 	message: unknown,
@@ -535,7 +634,10 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						input: { path, message },
 						local: describeOutcome(local),
 						upstream: describeOutcome(remote),
-						detail: 'one encoder accepted the message and the other rejected it'
+						detail: withTag(
+							'one encoder accepted the message and the other rejected it',
+							emptyStringCoercionTag(path, message)
+						)
 					}
 				}
 				if (!local.ok || !remote.ok) return []
@@ -573,7 +675,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					input: { path, message },
 					local: canonicalWire(localBytes, schemaAt(path)) ?? hex(localBytes),
 					upstream: canonicalWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
-					detail: 'encoders put different fields or values on the wire'
+					detail: withTag('encoders put different fields or values on the wire', emptyStringCoercionTag(path, message))
 				}
 			}
 		})
@@ -610,7 +712,10 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 							input: { path, origin, bytes: hex(bytes) },
 							local: describeOutcome(local),
 							upstream: describeOutcome(remote),
-							detail: 'one decoder accepted the bytes and the other rejected them'
+							detail: withTag(
+								'one decoder accepted the bytes and the other rejected them',
+								emptyStringCoercionTag(path, message)
+							)
 						})
 						continue
 					}
@@ -843,7 +948,10 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						input: `${path}.${field} = ${JSON.stringify(zero instanceof Uint8Array ? '<empty bytes>' : zero)}`,
 						local: describeOutcome(local),
 						upstream: describeOutcome(remote),
-						detail: 'one encoder accepted an explicit-presence field at its zero value and the other rejected it'
+						detail: withTag(
+							'one encoder accepted an explicit-presence field at its zero value and the other rejected it',
+							emptyStringCoercionTag(path, { [field]: zero })
+						)
 					}
 				}
 				if (!remote.ok || !local.ok) return []
@@ -903,33 +1011,40 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						input: { path, message },
 						local: describeOutcome(local),
 						upstream: describeOutcome(remote),
-						detail: 'one encoder accepted a multi-member oneof the other rejected'
+						detail: withTag(
+							'one encoder accepted a multi-member oneof the other rejected',
+							emptyStringCoercionTag(path, message)
+						)
 					}
 				}
 				if (!local.ok || !remote.ok) return []
-				// Ordering is deliberately not compared here, on measurement. For a oneof
-				// the order would be semantic — a decoder that resolves a winner keeps
-				// the last member it meets — but protobufjs declares no runtime oneof
-				// for any of the 14 paths whose schema table records a multi-member
-				// group: `type.oneofs` is empty for all of them, `decode` keeps every
-				// member it meets, and `toObject` shows them all. So a check comparing
-				// the decoded winners could not fail, and a check that cannot fail is
-				// worse than none.
+
+				// The winner, before anything that ignores field order.
 				//
-				// The premise is checked rather than trusted. If the generated protos
-				// ever gain a runtime oneof, this reports instead of silently skipping
-				// the comparison, and the fix is to compare `decoded[oneofName]` on
-				// both sides here.
-				const runtimeOneofs = Object.keys((type as { oneofs?: Record<string, unknown> }).oneofs ?? {})
-				if (runtimeOneofs.length > 0) {
+				// This target used to skip the ordering comparison, on the reasoning
+				// that protobufjs declares no runtime oneof for any of these paths —
+				// `type.oneofs` is indeed empty for all 14. That was the wrong place to
+				// look: the generated static code puts a *virtual* discriminator on the
+				// prototype as a getter, and all 14 have one. It resolves to the last
+				// member on the wire, so byte order is semantic after all. Measured on
+				// `Message.ButtonsMessage`, whose `header` group holds several members:
+				// `0a 01 78 22 00` decodes to `header = videoMessage` and the same two
+				// fields in the other order to `header = text`.
+				//
+				// So the winners are compared first. `sameWireContent` below ignores
+				// field order by design — which is right for ordinary fields and wrong
+				// for these — and would otherwise dismiss the difference as harmless.
+				const winners = oneofWinners(path, type, local.value as Uint8Array, remote.value as Uint8Array)
+				if (winners) {
 					return {
 						target: 'proto:oneof',
 						input: { path, message },
-						local: `<${runtimeOneofs.length} runtime oneof(s): ${runtimeOneofs.join(', ')}>`,
-						upstream: '<no runtime oneof, which is what the ordering skip assumes>',
-						detail: 'the schema now declares a runtime oneof, so encoding order decides a winner and has to be compared'
+						local: winners.local,
+						upstream: winners.upstream,
+						detail: 'the two encoders put a different oneof member last, so a consumer sees a different one'
 					}
 				}
+
 				if (sameWireContent(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				if (differsOnlyByPacking(local.value as Uint8Array, remote.value as Uint8Array, schemaAt(path))) return []
 				return {
@@ -937,7 +1052,10 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					input: { path, message },
 					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
 					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
-					detail: 'a oneof with several members set resolves differently'
+					detail: withTag(
+						'a oneof with several members set resolves differently',
+						emptyStringCoercionTag(path, message)
+					)
 				}
 			}
 		})
@@ -963,7 +1081,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						input: { path, message },
 						local: describeOutcome(local),
 						upstream: describeOutcome(remote),
-						detail: 'one encoder accepted an integer the other rejected'
+						detail: withTag('one encoder accepted an integer the other rejected', emptyStringCoercionTag(path, message))
 					}
 				}
 				if (!local.ok || !remote.ok) return []
@@ -974,7 +1092,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					input: { path, message },
 					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
 					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
-					detail: 'integer fields encode differently'
+					detail: withTag('integer fields encode differently', emptyStringCoercionTag(path, message))
 				}
 			}
 		})

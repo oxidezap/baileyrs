@@ -27,7 +27,7 @@ import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
 import type { Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import { relayedBytes } from './harness/send-path.ts'
-import { generateProtoObject } from './generators/proto.ts'
+import { generateProtoObject, textFieldPredicate } from './generators/proto.ts'
 import { generateJid } from './generators/jid.ts'
 import type { Random } from './harness/random.ts'
 
@@ -273,19 +273,26 @@ describe('send-path wire fidelity on generated messages', () => {
 				// (newsletters take neither; protocol and already-ephemeral content
 				// skip the expiration), and the JID generator produces newsletter JIDs,
 				// so those exceptions are reached too.
-				const options = {
+				// Rebuilt per call, not spread from one object. `{ ...options }` copies
+				// the option bag but shares the `quoted` object inside it, and the
+				// upstream builder *mutates* what it is handed — measured, it deletes
+				// `contextInfo` from the quoted message. Whichever side ran first would
+				// hand the other an already-stripped quote, so a regression that
+				// stopped stripping could not be seen. The main message is deep-cloned
+				// for exactly this reason; the quote needs the same treatment.
+				const optionsFor = () => ({
 					userJid: '15550000000@s.whatsapp.net',
 					messageId: '3EB0FUZZ0000000000',
 					timestamp: new Date(1_700_000_000_000),
-					...(value.quoted === undefined ? {} : { quoted: value.quoted }),
+					...(value.quoted === undefined ? {} : { quoted: structuredClone(value.quoted) }),
 					...(value.ephemeralExpiration === undefined ? {} : { ephemeralExpiration: value.ephemeralExpiration })
-				}
+				})
 
 				// Upstream first: if it rejects the generated shape, there is nothing to
 				// compare against and the input says nothing about baileyrs.
 				let upstreamBuilt: unknown
 				try {
-					upstreamBuilt = upstream.generateWAMessageFromContent(jid, structuredClone(message), { ...options })
+					upstreamBuilt = upstream.generateWAMessageFromContent(jid, structuredClone(message), optionsFor())
 				} catch {
 					return []
 				}
@@ -296,7 +303,7 @@ describe('send-path wire fidelity on generated messages', () => {
 				// the contract.
 				let localBuilt: unknown
 				try {
-					localBuilt = local.generateWAMessageFromContent(jid, structuredClone(message), { ...options })
+					localBuilt = local.generateWAMessageFromContent(jid, structuredClone(message), optionsFor())
 				} catch (error) {
 					return {
 						target: 'wire:message-builder',
@@ -325,9 +332,18 @@ describe('send-path wire fidelity on generated messages', () => {
 					return normalise(record)
 				}
 
+				// Compared against the schema, not just structurally. `normalise` folds
+				// every decimal string into a bigint so a 64-bit field can be compared
+				// across the two runtimes, which also folds a *declared string* holding
+				// `"0"` together with the number `0` — measured on
+				// `message.conversation`, equivalent without the predicate and not
+				// equivalent with it. This is the suite's only coverage of
+				// `generateWAMessageFromContent`, so a builder that changed such a
+				// field's runtime type had nowhere else to be caught.
+				const isTextField = textFieldPredicate('WebMessageInfo')
 				const localView = strip(localBuilt)
 				const upstreamView = strip(upstreamBuilt)
-				if (equivalent(localView, upstreamView)) return []
+				if (equivalent(localView, upstreamView, { isTextField })) return []
 
 				return {
 					target: 'wire:message-builder',

@@ -668,7 +668,14 @@ describe('event buffer', () => {
 				const local = observe(() => makeEventBuffer(silentLogger), steps)
 				const remote = observe(() => upstream.makeEventBuffer(silentLogger) as never, steps)
 
-				if (equivalent(local, remote)) return []
+				// `preservePresence: true`, as the pure-helper and message-wire targets
+				// already use. Without it, one buffer deleting an optional property and
+				// the other leaving it holding `undefined` compare equal — and the
+				// generated payloads are full of such fields (`participant`, `name`,
+				// `notify`, the history-sync metadata). A consumer tells them apart with
+				// `Object.keys`, spread or `in`, so a consolidation change that altered
+				// the public event shape is a real difference, not a representation one.
+				if (equivalent(local, remote, { preservePresence: true })) return []
 				return {
 					target: 'buffer:differential',
 					input: steps,

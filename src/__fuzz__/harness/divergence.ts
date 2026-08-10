@@ -366,6 +366,29 @@ const carriesOutOfRangeFloat = (value: unknown, depth = 0): boolean => {
 }
 
 /**
+ * True when `value` holds a 64-bit magnitude outside ±(2^53−1).
+ *
+ * Strings as well as numbers: the generator seeds 64-bit fields as decimal
+ * strings, because that is how protobufjs renders them and how a caller would
+ * supply one. `9007199254740991` is inside the range and must not match — it is
+ * the exact boundary the entry says still decodes.
+ */
+const carriesBeyondSafeInteger = (value: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (typeof value === 'number') return Number.isFinite(value) && Math.abs(value) > Number.MAX_SAFE_INTEGER
+	if (typeof value === 'bigint')
+		return value > BigInt(Number.MAX_SAFE_INTEGER) || value < -BigInt(Number.MAX_SAFE_INTEGER)
+	if (typeof value === 'string') {
+		if (!/^-?\d+$/u.test(value)) return false
+		const parsed = BigInt(value)
+		return parsed > BigInt(Number.MAX_SAFE_INTEGER) || parsed < -BigInt(Number.MAX_SAFE_INTEGER)
+	}
+	if (Array.isArray(value)) return value.some(item => carriesBeyondSafeInteger(item, depth + 1))
+	if (typeof value !== 'object' || value === null) return false
+	return Object.values(value as Record<string, unknown>).some(nested => carriesBeyondSafeInteger(nested, depth + 1))
+}
+
+/**
  * True when the input really carries an empty string and the bridge still encoded.
  *
  * The entry documents one coercion, and keying on upstream's error text alone
@@ -389,8 +412,15 @@ const coercedAnEmptyString = (divergence: Divergence): boolean => {
 		return Object.values(value as Record<string, unknown>).some(nested => carriesEmptyString(nested, depth + 1))
 	}
 	if (!carriesEmptyString(divergence.input)) return false
-	if (typeof divergence.local === 'string') return divergence.local.includes('<nothing encoded>')
-	return divergence.local instanceof Uint8Array
+	// And the bridge really did coerce it to zero. The registry cannot tell the
+	// coerced field from its neighbours — that needs the schema — so the target
+	// answers instead: it re-encodes the same message with every empty string
+	// replaced by `'0'` and tags the finding with whether the bytes match.
+	// Measured on `Message.AudioMessage.fileLength`, `''` and `'0'` both encode to
+	// `0a017520002803` where `'5'` gives `0a017520052803`, so a regression that
+	// wrote a different value or dropped the field is tagged `not coerced` and
+	// stops being excused here.
+	return (divergence.detail ?? '').includes('[empty string coerced to zero]')
 }
 
 /** Removes one property wherever it appears, so a predicate can ask what is left. */
@@ -1092,7 +1122,22 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'The bridge decoder throws "Value is larger than Number.MAX_SAFE_INTEGER" (or the MIN_SAFE_INTEGER counterpart) for any 64-bit field outside +/-(2^53-1), where protobufjs decodes it to a Long. The boundary is exact: 9007199254740991 decodes, 9007199254740992 throws. This is not a precision difference — the whole message fails to decode, so a legitimate server payload with a large fileLength or a microsecond timestamp becomes an error rather than a message. The most severe finding in this suite.',
 		review: '2026-10-01',
-		when: divergence => [divergence.local, divergence.upstream].some(side => text(side).includes('SAFE_INTEGER'))
+		// The rejecting side, the error, *and* a value that is actually outside the
+		// range the reason names. Keyed on the text alone, a decoder that started
+		// raising the same error at the wrong threshold — on 9007199254740991, which
+		// this entry says decodes, or on an ordinary small integer — was
+		// indistinguishable from the documented case, on every proto and wire
+		// target. The bridge is the side with the ceiling, so an upstream mention
+		// does not qualify either.
+		//
+		// The magnitude is looked for in the input *or* in what upstream produced,
+		// because the targets hand this entry different shapes: the encode-side ones
+		// carry the generated message, while decode-parity carries raw bytes — there
+		// the offending value appears only in upstream's decoded object, which is
+		// still evidence independent of the side that threw.
+		when: divergence =>
+			text(divergence.local).includes('SAFE_INTEGER') &&
+			(carriesBeyondSafeInteger(divergence.input) || carriesBeyondSafeInteger(divergence.upstream))
 	},
 	{
 		id: 'proto-field-renamed-and-dropped',

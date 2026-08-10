@@ -218,15 +218,41 @@ export const generateTaggedNode = (random: Random, tags: readonly string[], quer
 	}))
 })
 
-/** A node whose children are `<item>`s carrying key/value attributes, for the dictionary reducer. */
+/**
+ * A node whose children are `<item>`s carrying key/value attributes, for the
+ * dictionary reducer.
+ *
+ * `reduceBinaryNodeToDictionary` reads two attribute spellings — the key is
+ * `attrs.name` or, when that is absent, `attrs.config_code`, and the value is
+ * `attrs.value || attrs.config_value`. Only the first pair was generated, and
+ * neither config key is in the generic attribute pool, so the fallback branch
+ * never ran and a regression that dropped or miskeyed a config-code entry
+ * stayed green. All four combinations are drawn now, including the ones where
+ * the value side is missing and the `||` has to fall through.
+ */
+const dictionaryItemAttrs = (random: Random): Record<string, string> => {
+	const key = random.pick(ATTRIBUTE_KEYS)
+	const value = random.pick(ATTRIBUTE_VALUES)
+	return random.weighted<() => Record<string, string>>([
+		[4, () => ({ name: key, value })],
+		[3, () => ({ config_code: key, config_value: value })],
+		// Mixed spellings: the key from one pair, the value from the other. Both
+		// resolutions are independent in the reducer, so both crossings are real.
+		[2, () => ({ name: key, config_value: value })],
+		[2, () => ({ config_code: key, value })],
+		// A key with no value at all: `attrs.value || attrs.config_value` is then
+		// undefined, which the reducer stores as-is.
+		[1, () => ({ name: key })],
+		[1, () => ({ config_code: key })]
+	])()
+}
+
 export const generateDictionaryNode = (random: Random): BinaryNode => ({
 	tag: random.pick(['props', 'list', 'dict']),
 	attrs: generateAttributes(random),
 	content: Array.from({ length: random.int(0, 6) }, () => ({
 		tag: random.bool(0.8) ? 'item' : random.pick(TAGS),
-		attrs: random.bool(0.8)
-			? { name: random.pick(ATTRIBUTE_KEYS), value: random.pick(ATTRIBUTE_VALUES) }
-			: generateAttributes(random),
+		attrs: random.bool(0.8) ? dictionaryItemAttrs(random) : generateAttributes(random),
 		content: undefined
 	}))
 })

@@ -332,14 +332,97 @@ const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFindi
 }
 
 /**
- * The values each guard accepts, read from the guard itself.
+ * What each guarded parameter is supposed to accept, written down here.
  *
- * Asking the boundary what it accepts — by provoking one rejection and reading
- * `data.accepted` — beats writing the domains out here a second time. A hand-kept
- * copy drifts, and when it does the fuzzer starts calling a *valid* value
- * off-domain and reporting the resulting "not connected" failure as a bug. Which
- * is exactly what happened before this existed.
+ * Written down, not read from the guard. The domains used to come only from the
+ * guard's own rejection — `data.accepted` — which made the oracle circular: a
+ * guard that accidentally widened its list to include `'add '` would report that
+ * wider list, the fuzzer would treat `'add '` as valid and skip it, and the
+ * off-domain acceptance this target exists to catch became unobservable.
+ *
+ * The reason for reading it at runtime was real, though, and is kept: a
+ * hand-copied table drifts, and a drifted table makes the fuzzer call a *valid*
+ * value off-domain and report the resulting "not connected" failure as a bug.
+ * So both exist and are compared — `pins every guarded domain` below fails if
+ * they disagree, naming the parameter. A widening is then a test failure rather
+ * than a silent loss of coverage, and drift is a test failure rather than a
+ * false positive.
  */
+const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
+	'Socket/blocking.ts:updateBlockStatus:action': ['block', 'unblock'],
+	'Socket/index.ts:sendPresenceUpdate:type': ['unavailable', 'available', 'composing', 'recording', 'paused'],
+	'Socket/index.ts:waUploadToServer:mediaType': [
+		'audio',
+		'document',
+		'gif',
+		'image',
+		'ppic',
+		'product',
+		'ptt',
+		'sticker',
+		'video',
+		'thumbnail-document',
+		'thumbnail-image',
+		'thumbnail-video',
+		'thumbnail-link',
+		'md-msg-hist',
+		'md-app-state',
+		'product-catalog-image',
+		'payment-bg-image',
+		'ptv',
+		'biz-cover-photo'
+	],
+	'Socket/index.ts:downloadMedia:type': ['buffer', 'stream'],
+	'Socket/groups.ts:groupSettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
+	'Socket/groups.ts:groupRequestParticipantsUpdate:action': ['approve', 'reject'],
+	'Socket/groups.ts:groupParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
+	'Socket/groups.ts:groupMemberAddMode:mode': ['admin_add', 'all_member_add'],
+	'Socket/groups.ts:groupJoinApprovalMode:mode': ['on', 'off'],
+	'Socket/messages.ts:sendReceipt:type': [
+		'read',
+		'read-self',
+		'hist_sync',
+		'peer_msg',
+		'sender',
+		'inactive',
+		'played',
+		// `undefined`, not `null`: omitting the type is how a caller sends a plain
+		// delivery receipt, and the two are different values to `includes`.
+		undefined
+	],
+	'Socket/messages.ts:sendReceipts:type': [
+		'read',
+		'read-self',
+		'hist_sync',
+		'peer_msg',
+		'sender',
+		'inactive',
+		'played',
+		// `undefined`, not `null`: omitting the type is how a caller sends a plain
+		// delivery receipt, and the two are different values to `includes`.
+		undefined
+	],
+	'Socket/newsletter.ts:newsletterMetadata:type': ['invite', 'jid'],
+	'Socket/server-queries.ts:cleanDirtyBits:type': ['account_sync', 'groups'],
+	'Socket/presence.ts:sendPresence:status': ['unavailable', 'available'],
+	'Socket/presence.ts:sendChatState:state': ['composing', 'recording', 'paused'],
+	'Socket/privacy.ts:updateLastSeenPrivacy:value': ['all', 'contacts', 'contact_blacklist', 'none'],
+	'Socket/privacy.ts:updateOnlinePrivacy:value': ['all', 'match_last_seen'],
+	'Socket/privacy.ts:updateProfilePicturePrivacy:value': ['all', 'contacts', 'contact_blacklist', 'none'],
+	'Socket/privacy.ts:updateStatusPrivacy:value': ['all', 'contacts', 'contact_blacklist', 'none'],
+	'Socket/privacy.ts:updateReadReceiptsPrivacy:value': ['all', 'none'],
+	'Socket/privacy.ts:updateGroupsAddPrivacy:value': ['all', 'contacts', 'contact_blacklist'],
+	'Socket/privacy.ts:updateCallPrivacy:value': ['all', 'known'],
+	'Socket/privacy.ts:updateMessagesPrivacy:value': ['all', 'contacts'],
+	'Socket/contacts.ts:profilePictureUrl:type': ['preview', 'image'],
+	'Socket/communities.ts:communityRequestParticipantsUpdate:action': ['approve', 'reject'],
+	'Socket/communities.ts:communityParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
+	'Socket/communities.ts:communitySettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
+	'Socket/communities.ts:communityMemberAddMode:mode': ['admin_add', 'all_member_add'],
+	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off']
+}
+
+/** The same values as reported by the guard itself, for the pin below. */
 const acceptedValues = new Map<string, readonly unknown[]>()
 
 const learnDomain = async (socket: Socket, testCase: BoundaryCase): Promise<void> => {
@@ -433,6 +516,45 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		assert.deepEqual(stale, [], `fuzz cases for guards that no longer exist: ${stale.join(', ')}`)
 	})
 
+	it('pins every guarded domain to a written-down list', () => {
+		// The two halves of the oracle, compared. `EXPECTED_DOMAINS` is what the
+		// fuzzer treats as valid; `acceptedValues` is what the guard reports at
+		// runtime. Equal, or one of them is wrong — and which one is a question for
+		// whoever changed it, which is why this fails rather than reconciling.
+		//
+		// Order-insensitive, since the guard may list its domain in any order, but
+		// membership-exact: a value in one and not the other is the whole point.
+		const mismatched: string[] = []
+		const unreported: string[] = []
+		for (const testCase of CASES) {
+			const expected = EXPECTED_DOMAINS[testCase.source]
+			if (expected === undefined) {
+				mismatched.push(`${testCase.source}: no entry in EXPECTED_DOMAINS`)
+				continue
+			}
+			const reported = acceptedValues.get(testCase.source)
+			if (reported === undefined) {
+				// The guard never reported a domain — it may not have been reached, or
+				// it rejected without `data.accepted`. Surfaced separately, because it
+				// means the pin proved nothing for that parameter rather than failing.
+				unreported.push(testCase.source)
+				continue
+			}
+			const key = (values: readonly unknown[]) => JSON.stringify([...values].map(item => String(item)).toSorted())
+			if (key(expected) !== key(reported)) {
+				mismatched.push(
+					`${testCase.source}: guard accepts ${JSON.stringify(reported)}, table says ${JSON.stringify(expected)}`
+				)
+			}
+		}
+		assert.deepEqual(mismatched, [], `guarded domains disagree with the table:\n  ${mismatched.join('\n  ')}`)
+		assert.deepEqual(
+			unreported,
+			[],
+			`these guards never reported an accepted list, so their domain is unpinned:\n  ${unreported.join('\n  ')}`
+		)
+	})
+
 	for (const testCase of CASES) {
 		it(`${testCase.method}(${testCase.parameter})`, async () => {
 			await fuzz<unknown>({
@@ -445,7 +567,11 @@ describe('closed-domain argument boundary, fuzzed', () => {
 					// A generated value that happens to be in the domain (`undefined` for
 					// an optional or defaulted parameter) is not off-domain, and what it
 					// does downstream is not this test's subject.
-					if ((acceptedValues.get(testCase.source) ?? []).includes(value)) return findings
+					//
+					// Read from `EXPECTED_DOMAINS`, never from the guard's own report: a
+					// guard that widened its accepted list would otherwise vouch for the
+					// very value that proves it widened.
+					if ((EXPECTED_DOMAINS[testCase.source] ?? []).includes(value)) return findings
 					try {
 						await testCase.call(socket, value)
 						// Reaching here means the value was accepted. It cannot have been

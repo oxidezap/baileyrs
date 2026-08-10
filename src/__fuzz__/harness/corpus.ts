@@ -29,6 +29,7 @@ const BUFFER_TAG = '__buffer__'
 const DATE_TAG = '__date__'
 const ERROR_TAG = '__error__'
 const ESCAPE_TAG = '__escaped__'
+const NULL_PROTO_TAG = '__nullproto__'
 
 /**
  * Every tag `decode` recognises.
@@ -39,6 +40,7 @@ const ESCAPE_TAG = '__escaped__'
  * would open it silently, so encode escapes the collision instead.
  */
 const TAGS: readonly string[] = [
+	NULL_PROTO_TAG,
 	BYTES_TAG,
 	BIGINT_TAG,
 	UNDEFINED_TAG,
@@ -91,6 +93,13 @@ const encode = (value: unknown): unknown => {
 			// and plain assignment would move the prototype instead.
 			Object.defineProperty(out, key, { value: encode(nested), enumerable: true, writable: true, configurable: true })
 		}
+		// A null-prototype object is recorded as one. `generateOffDomainValue` emits
+		// `Object.create(null)` deliberately, and it differs from `{}` exactly where
+		// the boundary guards look: string coercion throws instead of yielding
+		// `[object Object]`, and `in`/`toString`/`hasOwnProperty` find nothing. Left
+		// untagged, the entry reloaded with `Object.prototype` and a committed
+		// reproducer quietly stopped reproducing.
+		if (Object.getPrototypeOf(value) === null) return { [NULL_PROTO_TAG]: out }
 		// An ordinary object that happens to be exactly one tag key would decode as
 		// the tagged value, so it is wrapped once and unwrapped on the way back.
 		const keys = Object.keys(out)
@@ -130,6 +139,20 @@ const decode = (value: unknown): unknown => {
 		// recursing would re-apply the tag checks one level down and hand back
 		// exactly the value the escape exists to prevent.
 		if (taggedAs(record, ESCAPE_TAG)) return decodeProperties(record[ESCAPE_TAG] as Record<string, unknown>)
+		// Same unwrap-once rule as the escape tag, onto a null prototype. Properties
+		// are copied rather than assigned so an own `__proto__` stays an own key.
+		if (taggedAs(record, NULL_PROTO_TAG)) {
+			const bare = Object.create(null) as Record<string, unknown>
+			for (const [key, nested] of Object.entries(record[NULL_PROTO_TAG] as Record<string, unknown>)) {
+				Object.defineProperty(bare, key, {
+					value: decode(nested),
+					enumerable: true,
+					writable: true,
+					configurable: true
+				})
+			}
+			return bare
+		}
 		if (taggedAs(record, UNDEFINED_TAG)) return undefined
 		if (taggedAs(record, BIGINT_TAG)) return BigInt(String(record[BIGINT_TAG]))
 		// Rebuilt as a fresh function/symbol carrying the recorded name. The
