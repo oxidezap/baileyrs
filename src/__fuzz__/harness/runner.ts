@@ -201,7 +201,11 @@ const preview = (value: unknown, limit = 900): string => {
  */
 const replayHint = (target: string, exhaustive: boolean): string => {
 	const runs = exhaustive || runsOverride === undefined ? '' : ` FUZZ_RUNS=${runsOverride}`
-	return `FUZZ_SEED=${FUZZ_SEED} FUZZ_ONLY=${JSON.stringify(target)}${runs} npm test`
+	// The mode too. Deep multiplies every target's run count, so a finding only the
+	// deep budget reaches does not reproduce from a hint that silently drops back
+	// to smoke — which is what `npm test` runs.
+	const mode = FUZZ_MODE === 'deep' ? ' FUZZ_MODE=deep' : ''
+	return `FUZZ_SEED=${FUZZ_SEED}${mode} FUZZ_ONLY=${JSON.stringify(target)}${runs} npm test`
 }
 
 const describeFinding = (finding: Divergence, index: number): string =>

@@ -308,6 +308,36 @@ const remoteJids = (value: unknown, found: string[] = [], depth = 0): string[] =
 }
 
 /**
+ * Substitutes U+FFFD for every unpaired surrogate in every string, recursively.
+ *
+ * Three of them per surrogate, not one: upstream copies content through
+ * `proto.Message.decode(proto.Message.encode(content))`, protobufjs writes the
+ * surrogate as three WTF-8 bytes, and decoding those back as UTF-8 yields three
+ * replacement characters. Measured on `\ud800`.
+ */
+const replaceLoneSurrogates = (value: unknown, depth = 0): unknown => {
+	if (depth > 12) return value
+	if (typeof value === 'string') {
+		return value.replaceAll(
+			/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/gu,
+			'\ufffd\ufffd\ufffd'
+		)
+	}
+	if (Array.isArray(value)) return value.map(item => replaceLoneSurrogates(item, depth + 1))
+	if (typeof value !== 'object' || value === null) return value
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		Object.defineProperty(out, key, {
+			value: replaceLoneSurrogates(nested, depth + 1),
+			enumerable: true,
+			writable: true,
+			configurable: true
+		})
+	}
+	return out
+}
+
+/**
  * True when two poll aggregates hold the same options and voters, in any order.
  *
  * The entry claims ordering and nothing else, so that is what has to be checked:
@@ -363,8 +393,20 @@ const walkKeyPresence = (left: unknown, right: unknown, depth: number, state: { 
 	}
 	const a = left as Record<string, unknown>
 	const b = right as Record<string, unknown>
-	for (const key of Object.keys(a)) {
-		if (!Object.hasOwn(b, key)) continue
+	const shared = Object.keys(a).filter(key => Object.hasOwn(b, key))
+	// No key in common at this level. That is still explicable, but only as the
+	// exact thing the round trip does: it materialises fields the schema declares
+	// (an empty repeated field, so `[]`) and drops properties it does not (which
+	// are the scalars a caller tacked on). A content object replaced wholesale
+	// does not look like that — `{ conversation: 'x' }` against
+	// `{ imageMessage: {} }` has an object on the upstream side, not an empty
+	// array — so it is rejected here rather than passed over by an empty loop.
+	if (shared.length === 0 && Object.keys(a).length > 0 && Object.keys(b).length > 0) {
+		const materialised = Object.keys(b).every(key => Array.isArray(b[key]) && (b[key] as unknown[]).length === 0)
+		const dropped = Object.keys(a).every(key => typeof a[key] !== 'object' || a[key] === null)
+		return materialised && dropped
+	}
+	for (const key of shared) {
 		state.compared++
 		if (!sameShape(a[key], b[key]) && !walkKeyPresence(a[key], b[key], depth + 1, state)) return false
 	}
@@ -510,7 +552,34 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// excused every return-value difference from the encoder, so a regression
 		// that changed ordinary text or dropped a field would have been counted as
 		// the known WTF-8 case.
-		when: divergence => LONE_SURROGATE.test(text(divergence.input)),
+		// The documented substitution, checked as such. `LONE_SURROGATE.test(input)`
+		// alone excused every difference on a message that merely contained one, so
+		// a regression that changed ordinary text or dropped a field rode along.
+		//
+		// Two shapes reach here. The encoder returns bytes: the Rust side writes the
+		// well-formed `ef bf bd` where protobufjs writes the WTF-8 form, so the
+		// local output has to carry the replacement sequence and the upstream one
+		// must not. The forwarding helper returns content: substituting U+FFFD for
+		// each lone surrogate on the baileyrs side has to close the gap, since the
+		// protobuf round trip upstream expands one surrogate into three replacement
+		// characters.
+		when: divergence => {
+			if (!LONE_SURROGATE.test(text(divergence.input))) return false
+			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
+			if (divergence.local instanceof Uint8Array && divergence.upstream instanceof Uint8Array) {
+				const mine = Buffer.from(divergence.local).toString('hex')
+				const theirs = Buffer.from(divergence.upstream).toString('hex')
+				return mine.includes('efbfbd') && !theirs.includes('efbfbd')
+			}
+			// Composed with the copy-shape entry rather than duplicating it: once the
+			// surrogate substitution is undone, what is allowed to remain is the key
+			// presence difference that entry already documents — `contextInfo` on the
+			// baileyrs side and nothing else. A changed body still fails both.
+			return differsOnlyByKeyPresence(
+				replaceLoneSurrogates(normalise(divergence.local)),
+				normalise(divergence.upstream)
+			)
+		},
 		reason:
 			'A string field holding an unpaired UTF-16 surrogate is handled differently on each side. Encoding: protobufjs emits the WTF-8 form (U+DFFF becomes ed bf bf, which is not valid UTF-8) where the Rust encoder substitutes U+FFFD (ef bf bd) — the Rust output is the well-formed one, but the wire bytes differ. Copying: `generateForwardMessageContent` shows the same thing from the other side, because upstream copies content through the protobuf codec and baileyrs does not, so `\ud800` survives in baileyrs and becomes U+FFFD upstream. Needs a maintainer call on whether to match upstream or keep sanitising.',
 		review: '2026-11-01'
@@ -792,7 +861,10 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
 		review: '2027-02-01',
 		when: divergence =>
-			text(divergence.input).includes('nesting-bomb') &&
+			// The exact mutator, not a substring of the chain. `mutate` records
+			// `nesting-bomb → flip-bit`, so a substring test excused whatever the
+			// *second* mutator produced merely because a nesting bomb ran first.
+			(divergence.input as { mutator?: unknown } | undefined)?.mutator === 'nesting-bomb' &&
 			// Narrow to the direction the reason argues: the bridge decoded an empty
 			// message, upstream decoded a non-empty one. The reverse, and any
 			// disagreement over a field both sides read, is not this and must still

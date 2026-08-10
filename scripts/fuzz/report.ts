@@ -169,9 +169,16 @@ if (totals.crashes > 0) {
 	let omitted = 0
 	for (const report of reports) {
 		for (const crash of report.crashes ?? []) {
-			// Keyed on the first line: the input preview varies per case, the failure
-			// itself does not.
-			const key = `${report.target}\u0000${crash.trim().split('\n')[0]}`
+			// Keyed on the `threw` line, not the first one. The first line carries the
+			// origin — `seed X, run 412` — so a check that throws systematically
+			// produced a distinct key for every input, defeating the dedup entirely:
+			// one failure consumed the whole cap while later crash classes went
+			// unlisted. The exception text is what actually identifies a crash.
+			const threw = crash
+				.split('\n')
+				.map(line => line.trim())
+				.find(line => line.startsWith('threw '))
+			const key = `${report.target}\u0000${threw ?? crash.trim().split('\n')[0]}`
 			if (seen.has(key) || shown >= LIMIT) {
 				omitted++
 				continue

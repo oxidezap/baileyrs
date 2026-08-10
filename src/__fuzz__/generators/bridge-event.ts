@@ -417,8 +417,14 @@ export const generateMessageWire = (random: Random): { info: Record<string, unkn
 		id: generateString(random),
 		chat: generateMaybeJid(random),
 		sender: generateMaybeJid(random),
-		senderAlt: random.bool(0.4) ? bridgeJid(random) : undefined,
-		recipientAlt: random.bool(0.3) ? bridgeJid(random) : undefined,
+		// Strings, not the bridge JID struct. `adaptBridgeMessageWire` reads
+		// `MessageWireInfo` with `asString`, so a struct here reads `undefined` and
+		// `participantAlt`/`remoteJidAlt` are never computed — measured: a struct
+		// yields `remoteJidAlt: undefined` where the string yields the JID. The
+		// struct form belongs on the *event* payloads, which go through
+		// `asJidString`; this is the other transport.
+		senderAlt: random.bool(0.4) ? generateJid(random) : undefined,
+		recipientAlt: random.bool(0.3) ? generateJid(random) : undefined,
 		isFromMe: random.bool(),
 		isGroup: random.bool(),
 		pushName: random.bool(0.7) ? generateString(random) : undefined,

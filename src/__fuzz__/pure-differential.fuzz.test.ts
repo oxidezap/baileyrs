@@ -628,21 +628,28 @@ const TARGETS: readonly PureTarget[] = [
 	// `generateTaggedNode`.
 	{
 		name: 'getBinaryNodeChildBuffer',
-		generate: random => [generateTaggedNode(random, CONTENT_TAGS), random.pick(CONTENT_TAGS)],
+		generate: random => {
+			// The queried tag first, then a node built to carry it — see
+			// `generateTaggedNode`.
+			const tag = random.pick(CONTENT_TAGS)
+			return [generateTaggedNode(random, CONTENT_TAGS, tag), tag]
+		},
 		runs: 250
 	},
 	{
 		name: 'getBinaryNodeChildString',
-		generate: random => [generateTaggedNode(random, CONTENT_TAGS), random.pick(CONTENT_TAGS)],
+		generate: random => {
+			const tag = random.pick(CONTENT_TAGS)
+			return [generateTaggedNode(random, CONTENT_TAGS, tag), tag]
+		},
 		runs: 250
 	},
 	{
 		name: 'getBinaryNodeChildUInt',
-		generate: random => [
-			generateTaggedNode(random, CONTENT_TAGS),
-			random.pick(CONTENT_TAGS),
-			random.pick([1, 2, 3, 4, 8, 0])
-		],
+		generate: random => {
+			const tag = random.pick(CONTENT_TAGS)
+			return [generateTaggedNode(random, CONTENT_TAGS, tag), tag, random.pick([1, 2, 3, 4, 8, 0])]
+		},
 		runs: 250
 	},
 	{
