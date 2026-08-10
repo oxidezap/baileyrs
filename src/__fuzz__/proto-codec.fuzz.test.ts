@@ -25,7 +25,7 @@ import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
 import { canonicalWire, differsOnlyByPacking, isWireSubset, orderedWire, sameWireContent } from './harness/wire.ts'
-import type { Divergence } from './harness/divergence.ts'
+import { undoRenames, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import type { Random } from './harness/random.ts'
 import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND } from '../WAProto/compatibility-schema.ts'
@@ -88,6 +88,14 @@ const upstreamType = (path: string): UpstreamType | undefined => {
  * every unset field and the comparison stops being able to see a dropped one.
  */
 const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false, objects: false, oneofs: false }
+
+/** One entry in the two finite field sweeps: name and number, per declared field. */
+interface FieldCase {
+	readonly path: string
+	readonly field: string
+	readonly kind: number
+	readonly repeated: boolean
+}
 
 type Outcome = { ok: true; value: unknown } | { ok: false; error: string }
 
@@ -232,30 +240,33 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		// upstream types declare. If the bridge calls it `deviceAgentId`, reads
 		// return undefined and, worse, writes are dropped on the way out with no
 		// error at all.
-		const pairs: { path: string; field: string; kind: number }[] = []
+		// Repeated fields are included, wrapped in a one-element array: a renamed or
+		// misnumbered repeated field is exactly as breaking as a singular one, and
+		// excluding them left both finite sweeps unable to see it. Nested message
+		// types are covered by their own entry, and maps stay out — the compact
+		// schema carries no key type, so a faithful map value cannot be built.
+		const pairs: FieldCase[] = []
 		for (const path of PROTO_PATHS) {
 			if (!upstreamType(path)) continue
 			for (const field of fieldsOfPath(path)) {
-				// skip repeated and map: one scalar per field is enough
-				if ((field[3] & (PROTO_FIELD_FLAG.repeated | PROTO_FIELD_FLAG.map)) !== 0) continue
-				// skip nested messages: their own entry covers them
+				if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
 				if (field[1] === PROTO_FIELD_KIND.message) continue
-				pairs.push({ path, field: field[0], kind: field[1] })
+				pairs.push({ path, field: field[0], kind: field[1], repeated: (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 })
 			}
 		}
 
 		let cursor = 0
-		await fuzz<{ path: string; field: string; kind: number }>({
+		await fuzz<FieldCase>({
 			target: 'proto:field-names',
 			runs: pairs.length,
 			shrinkFailures: false,
 			exhaustive: true,
 			generate: () => pairs[cursor++ % pairs.length]!,
-			check: ({ path, field, kind }) => {
+			check: ({ path, field, kind, repeated }) => {
 				const type = upstreamType(path)
 				if (!type) return []
 
-				const sample = sampleFor(kind)
+				const sample = repeated ? [sampleFor(kind)] : sampleFor(kind)
 				const encoded = attempt(() => type.encode({ [field]: sample }).finish())
 				if (!encoded.ok) return []
 
@@ -291,27 +302,28 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 		// peer can recover from, it is a different field. Nothing in the shape-level
 		// audits can see it, and byte comparison alone reports it mixed in with
 		// ordering and packing noise.
-		const pairs: { path: string; field: string; kind: number }[] = []
+		const pairs: FieldCase[] = []
 		for (const path of PROTO_PATHS) {
 			if (!upstreamType(path)) continue
 			for (const field of fieldsOfPath(path)) {
-				if ((field[3] & (PROTO_FIELD_FLAG.repeated | PROTO_FIELD_FLAG.map)) !== 0) continue
-				pairs.push({ path, field: field[0], kind: field[1] })
+				if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
+				pairs.push({ path, field: field[0], kind: field[1], repeated: (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 })
 			}
 		}
 
 		let cursor = 0
-		await fuzz<{ path: string; field: string; kind: number }>({
+		await fuzz<FieldCase>({
 			target: 'proto:field-numbers',
 			runs: pairs.length,
 			shrinkFailures: false,
 			exhaustive: true,
 			generate: () => pairs[cursor++ % pairs.length]!,
-			check: ({ path, field, kind }) => {
+			check: ({ path, field, kind, repeated }) => {
 				const type = upstreamType(path)
 				if (!type) return []
 
-				const sample = kind === PROTO_FIELD_KIND.message ? {} : sampleFor(kind)
+				const one = kind === PROTO_FIELD_KIND.message ? {} : sampleFor(kind)
+				const sample = repeated ? [one] : one
 				const local = attempt(() => encodeProto(path, { [field]: sample }))
 				const remote = attempt(() => type.encode({ [field]: sample }).finish())
 				if (!local.ok || !remote.ok) return []
@@ -476,12 +488,17 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				// exists for: a field written at the wrong number, or with a wire type
 				// the other side still parses, produces bytes that decode cleanly into a
 				// different message.
-				const classify = (localView: unknown, upstreamView: unknown): string =>
-					populatedTouchesUnknownType(path, message)
-						? 'proto:unknown-type-dropped'
-						: omitsKeysOnly(localView, upstreamView) || omitsKeysOnly(upstreamView, localView)
-							? 'proto:field-omission'
-							: 'proto:round-trip'
+				// The known renames are undone before the shape test. A message that
+				// carries both a renamed field and a dropped one is not a subset either
+				// way round while the rename is still in place, so it fell through to the
+				// generic target and lost the more specific, more actionable answer:
+				// something was omitted.
+				const classify = (localView: unknown, upstreamView: unknown): string => {
+					if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
+					const a = undoRenames(localView)
+					const b = undoRenames(upstreamView)
+					return omitsKeysOnly(a, b) || omitsKeysOnly(b, a) ? 'proto:field-omission' : 'proto:round-trip'
+				}
 
 				// Rust encodes → protobufjs reads it back.
 				const encodedLocally = attempt(() => encodeProto(path, message))
@@ -497,6 +514,18 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 								local: normalise(own.value),
 								upstream: normalise(readBack.value),
 								detail: 'upstream read the bridge bytes as a different message'
+							})
+						} else if (!own.ok) {
+							// The reference decode failing is not a reason to skip: upstream
+							// just read these bytes, so the bridge cannot read back what it
+							// itself wrote. Skipping it here would hide a self-consistency
+							// defect that the mirrored branch reports when the roles swap.
+							findings.push({
+								target: 'proto:round-trip',
+								input: { path, message, direction: 'rust-encode → rust-decode' },
+								local: describeOutcome(own),
+								upstream: normalise(readBack.value),
+								detail: 'the bridge cannot decode its own bytes, which upstream reads fine'
 							})
 						}
 					} else {
@@ -524,6 +553,16 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 								local: normalise(readBack.value),
 								upstream: normalise(own.value),
 								detail: 'the bridge read the upstream bytes as a different message'
+							})
+						} else if (!own.ok) {
+							// Mirrors the branch above: upstream cannot read back its own
+							// bytes, which the bridge just read.
+							findings.push({
+								target: 'proto:round-trip',
+								input: { path, message, direction: 'js-encode → js-decode' },
+								local: normalise(readBack.value),
+								upstream: describeOutcome(own),
+								detail: 'upstream cannot decode its own bytes, which the bridge reads fine'
 							})
 						}
 					} else {

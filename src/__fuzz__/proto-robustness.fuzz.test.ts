@@ -103,6 +103,15 @@ const generateCase = (random: Random): MutationCase => {
 const isUsable = (value: MutationCase): boolean =>
 	typeof value?.path === 'string' && value.path.length > 0 && value.bytes instanceof Uint8Array
 
+/**
+ * Set once a WASM trap has been seen, and never cleared.
+ *
+ * A trap leaves the module unusable for the rest of the process, so every decode
+ * after it throws for the same reason. Reporting each one would turn a single
+ * defect into hundreds of findings and drown the run that found it.
+ */
+let trappedAlready = false
+
 describe('protobuf decoder robustness under mutation', () => {
 	it('fails cleanly on malformed input', async () => {
 		await fuzz<MutationCase>({
@@ -117,22 +126,29 @@ describe('protobuf decoder robustness under mutation', () => {
 				if (!isUsable(value)) return []
 				const { path, mutator, bytes } = value
 
+				// A trap poisons the module: every later decode in this process throws
+				// too, so continuing would report one cause hundreds of times and bury
+				// it in its own duplicates. The first one is the finding.
+				if (trappedAlready) return []
+
 				const result = attempt(() => decodeProto(path, bytes))
 				if (result.ok) return []
 
 				// A WebAssembly trap — `unreachable`, an out-of-bounds access — is an
 				// `Error` subclass, so an `instanceof Error` check alone would accept
-				// exactly the aborts this target says must never happen. The module is
-				// poisoned after a trap; that is not a validation failure.
+				// exactly the aborts this target says must never happen.
+				//
+				// The test is the instance, never the message text. Matching on words
+				// like "out of bounds" would turn any validation error that happens to
+				// phrase itself that way into a trap report, and there is no allowlist
+				// entry for this target — a false positive here is a hard suite failure.
 				const failure = result.error
-				const trapped =
-					failure instanceof WebAssembly.RuntimeError ||
-					/unreachable|out of bounds|memory access|RuntimeError/iu.test(String((failure as Error)?.message ?? ''))
-				if (trapped) {
+				if (failure instanceof WebAssembly.RuntimeError) {
+					trappedAlready = true
 					return {
 						target: 'proto:mutation-safety',
 						input: { path, mutator, bytes: hex(bytes) },
-						local: `<WASM trap: ${String((failure as Error)?.message ?? failure).slice(0, 160)}>`,
+						local: `<WASM trap: ${failure.message.slice(0, 160)}>`,
 						upstream: '<a validation Error>',
 						detail: 'a malformed payload trapped the WASM module instead of being rejected'
 					}
@@ -277,15 +293,35 @@ describe('protobuf decoder robustness under mutation', () => {
 
 		run(warmupCases)
 		collect()
-		const before = footprint()
-		run(measuredCases)
-		collect()
-		const after = footprint()
 
-		const growthMb = (after - before) / (1024 * 1024)
+		/**
+		 * Measured as a slope across batches, not as one before/after delta.
+		 *
+		 * WASM linear memory only ever grows: the first payload bigger than anything
+		 * in the warmup raises the high-water mark once and it never comes back down.
+		 * Against a single total that one-time step is indistinguishable from a leak,
+		 * and it lands in `external`, which is noisy to begin with.
+		 *
+		 * A leak keeps allocating, so it shows up as growth in the *last* batches as
+		 * much as the first. A high-water step shows up once and then flattens. The
+		 * budget is therefore applied to the second half only, with the first half
+		 * left to absorb the one-time growth.
+		 */
+		const batches = 8
+		const size = Math.ceil(measuredCases.length / batches)
+		const marks: number[] = []
+		for (let index = 0; index < measuredCases.length; index += size) {
+			run(measuredCases.slice(index, index + size))
+			collect()
+			marks.push(footprint())
+		}
+
+		const middle = marks[Math.floor(marks.length / 2)]!
+		const last = marks.at(-1)!
+		const tailGrowthMb = (last - middle) / (1024 * 1024)
 		assert.ok(
-			growthMb < 32,
-			`heap + external memory grew ${growthMb.toFixed(1)}MB across ${measuredCases.length} malformed decodes — a handle or buffer is being retained`
+			tailGrowthMb < 32,
+			`heap + external memory grew ${tailGrowthMb.toFixed(1)}MB across the last ${measuredCases.length - Math.floor(marks.length / 2) * size} of ${measuredCases.length} malformed decodes — a handle or buffer is being retained. Marks (MB): ${marks.map(mark => (mark / (1024 * 1024)).toFixed(1)).join(', ')}`
 		)
 	})
 })

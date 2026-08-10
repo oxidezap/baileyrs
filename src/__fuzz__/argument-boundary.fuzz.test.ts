@@ -53,7 +53,7 @@ interface BoundaryCase {
 	readonly method: string
 	/** The parameter name the rejection must name. */
 	readonly parameter: string
-	/** `file.ts:method:parameter`, matching how the source scan spells it. */
+	/** `path/to/file.ts:method:parameter`, relative to `src/`, matching the scan. */
 	readonly source: string
 	readonly call: (socket: Socket, value: unknown) => Promise<unknown>
 }
@@ -62,176 +62,176 @@ const CASES: readonly BoundaryCase[] = [
 	{
 		method: 'updateBlockStatus',
 		parameter: 'action',
-		source: 'blocking.ts:updateBlockStatus:action',
+		source: 'Socket/blocking.ts:updateBlockStatus:action',
 		call: (s, v) => s.updateBlockStatus(USER, off(v))
 	},
 	{
 		method: 'sendPresenceUpdate',
 		parameter: 'type',
-		source: 'index.ts:sendPresenceUpdate:type',
+		source: 'Socket/index.ts:sendPresenceUpdate:type',
 		call: (s, v) => s.sendPresenceUpdate(off(v), USER)
 	},
 	{
 		method: 'waUploadToServer',
 		parameter: 'mediaType',
-		source: 'index.ts:waUploadToServer:mediaType',
+		source: 'Socket/index.ts:waUploadToServer:mediaType',
 		call: (s, v) =>
 			s.waUploadToServer(off(Buffer.from('x')), off({ mediaType: v, fileEncSha256B64: '', mediaType2: undefined }))
 	},
 	{
 		method: 'groupSettingUpdate',
 		parameter: 'setting',
-		source: 'groups.ts:groupSettingUpdate:setting',
+		source: 'Socket/groups.ts:groupSettingUpdate:setting',
 		call: (s, v) => s.groupSettingUpdate(GROUP, off(v))
 	},
 	{
 		method: 'groupRequestParticipantsUpdate',
 		parameter: 'action',
-		source: 'groups.ts:groupRequestParticipantsUpdate:action',
+		source: 'Socket/groups.ts:groupRequestParticipantsUpdate:action',
 		call: (s, v) => s.groupRequestParticipantsUpdate(GROUP, [USER], off(v))
 	},
 	{
 		method: 'groupParticipantsUpdate',
 		parameter: 'action',
-		source: 'groups.ts:groupParticipantsUpdate:action',
+		source: 'Socket/groups.ts:groupParticipantsUpdate:action',
 		call: (s, v) => s.groupParticipantsUpdate(GROUP, [USER], off(v))
 	},
 	{
 		method: 'groupMemberAddMode',
 		parameter: 'mode',
-		source: 'groups.ts:groupMemberAddMode:mode',
+		source: 'Socket/groups.ts:groupMemberAddMode:mode',
 		call: (s, v) => s.groupMemberAddMode(GROUP, off(v))
 	},
 	{
 		method: 'groupJoinApprovalMode',
 		parameter: 'mode',
-		source: 'groups.ts:groupJoinApprovalMode:mode',
+		source: 'Socket/groups.ts:groupJoinApprovalMode:mode',
 		call: (s, v) => s.groupJoinApprovalMode(GROUP, off(v))
 	},
 	{
 		method: 'sendReceipt',
 		parameter: 'type',
-		source: 'messages.ts:sendReceipt:type',
+		source: 'Socket/messages.ts:sendReceipt:type',
 		call: (s, v) => s.sendReceipt(USER, undefined, ['ABC'], off(v))
 	},
 	{
 		method: 'sendReceipts',
 		parameter: 'type',
-		source: 'messages.ts:sendReceipts:type',
+		source: 'Socket/messages.ts:sendReceipts:type',
 		call: (s, v) => s.sendReceipts([{ remoteJid: USER, id: 'ABC', fromMe: false }], off(v))
 	},
 	{
 		method: 'newsletterMetadata',
 		parameter: 'type',
-		source: 'newsletter.ts:newsletterMetadata:type',
+		source: 'Socket/newsletter.ts:newsletterMetadata:type',
 		call: (s, v) => s.newsletterMetadata(off(v), 'key')
 	},
 	{
 		method: 'cleanDirtyBits',
 		parameter: 'type',
-		source: 'server-queries.ts:cleanDirtyBits:type',
+		source: 'Socket/server-queries.ts:cleanDirtyBits:type',
 		call: (s, v) => s.cleanDirtyBits(off(v))
 	},
 	{
 		method: 'sendPresence',
 		parameter: 'status',
-		source: 'presence.ts:sendPresence:status',
+		source: 'Socket/presence.ts:sendPresence:status',
 		call: (s, v) => s.sendPresence(off(v))
 	},
 	{
 		method: 'sendChatState',
 		parameter: 'state',
-		source: 'presence.ts:sendChatState:state',
+		source: 'Socket/presence.ts:sendChatState:state',
 		call: (s, v) => s.sendChatState(USER, off(v))
 	},
 	{
 		method: 'updateLastSeenPrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateLastSeenPrivacy:value',
+		source: 'Socket/privacy.ts:updateLastSeenPrivacy:value',
 		call: (s, v) => s.updateLastSeenPrivacy(off(v))
 	},
 	{
 		method: 'updateOnlinePrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateOnlinePrivacy:value',
+		source: 'Socket/privacy.ts:updateOnlinePrivacy:value',
 		call: (s, v) => s.updateOnlinePrivacy(off(v))
 	},
 	{
 		method: 'updateProfilePicturePrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateProfilePicturePrivacy:value',
+		source: 'Socket/privacy.ts:updateProfilePicturePrivacy:value',
 		call: (s, v) => s.updateProfilePicturePrivacy(off(v))
 	},
 	{
 		method: 'updateStatusPrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateStatusPrivacy:value',
+		source: 'Socket/privacy.ts:updateStatusPrivacy:value',
 		call: (s, v) => s.updateStatusPrivacy(off(v))
 	},
 	{
 		method: 'updateReadReceiptsPrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateReadReceiptsPrivacy:value',
+		source: 'Socket/privacy.ts:updateReadReceiptsPrivacy:value',
 		call: (s, v) => s.updateReadReceiptsPrivacy(off(v))
 	},
 	{
 		method: 'updateGroupsAddPrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateGroupsAddPrivacy:value',
+		source: 'Socket/privacy.ts:updateGroupsAddPrivacy:value',
 		call: (s, v) => s.updateGroupsAddPrivacy(off(v))
 	},
 	{
 		method: 'updateCallPrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateCallPrivacy:value',
+		source: 'Socket/privacy.ts:updateCallPrivacy:value',
 		call: (s, v) => s.updateCallPrivacy(off(v))
 	},
 	{
 		method: 'updateMessagesPrivacy',
 		parameter: 'value',
-		source: 'privacy.ts:updateMessagesPrivacy:value',
+		source: 'Socket/privacy.ts:updateMessagesPrivacy:value',
 		call: (s, v) => s.updateMessagesPrivacy(off(v))
 	},
 	{
 		method: 'profilePictureUrl',
 		parameter: 'type',
-		source: 'contacts.ts:profilePictureUrl:type',
+		source: 'Socket/contacts.ts:profilePictureUrl:type',
 		call: (s, v) => s.profilePictureUrl(USER, off(v))
 	},
 	{
 		method: 'communityRequestParticipantsUpdate',
 		parameter: 'action',
-		source: 'communities.ts:communityRequestParticipantsUpdate:action',
+		source: 'Socket/communities.ts:communityRequestParticipantsUpdate:action',
 		call: (s, v) => s.communityRequestParticipantsUpdate(GROUP, [USER], off(v))
 	},
 	{
 		method: 'communityParticipantsUpdate',
 		parameter: 'action',
-		source: 'communities.ts:communityParticipantsUpdate:action',
+		source: 'Socket/communities.ts:communityParticipantsUpdate:action',
 		call: (s, v) => s.communityParticipantsUpdate(GROUP, [USER], off(v))
 	},
 	{
 		method: 'communitySettingUpdate',
 		parameter: 'setting',
-		source: 'communities.ts:communitySettingUpdate:setting',
+		source: 'Socket/communities.ts:communitySettingUpdate:setting',
 		call: (s, v) => s.communitySettingUpdate(GROUP, off(v))
 	},
 	{
 		method: 'communityMemberAddMode',
 		parameter: 'mode',
-		source: 'communities.ts:communityMemberAddMode:mode',
+		source: 'Socket/communities.ts:communityMemberAddMode:mode',
 		call: (s, v) => s.communityMemberAddMode(GROUP, off(v))
 	},
 	{
 		method: 'communityJoinApprovalMode',
 		parameter: 'mode',
-		source: 'communities.ts:communityJoinApprovalMode:mode',
+		source: 'Socket/communities.ts:communityJoinApprovalMode:mode',
 		call: (s, v) => s.communityJoinApprovalMode(GROUP, off(v))
 	},
 	{
 		method: 'downloadMedia',
 		parameter: 'type',
-		source: 'index.ts:downloadMedia:type',
+		source: 'Socket/index.ts:downloadMedia:type',
 		call: (s, v) =>
 			s.downloadMedia(
 				off({
@@ -400,14 +400,20 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		// this file's header is "every call site in src/", and a scan of two
 		// directories' immediate children would let a guard in a new subdirectory
 		// pass without a fuzz case — the exact gap this test exists to close.
+		// Keyed on the path relative to `src`, not the basename: the scan is
+		// recursive, and two guards in different directories sharing a file name and
+		// the same method and parameter would otherwise collapse into one entry —
+		// letting a single fuzz case satisfy both and a guard ship unfuzzed.
 		const sourceRoot = path.join(import.meta.dirname, '..')
 		const scanned: string[] = []
 		for (const entry of await readdir(sourceRoot, { withFileTypes: true, recursive: true })) {
 			if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
 			if (entry.parentPath.includes('__fuzz__') || entry.parentPath.includes('__tests__')) continue
-			const source = await readFile(path.join(entry.parentPath, entry.name), 'utf8')
+			const file = path.join(entry.parentPath, entry.name)
+			const relative = path.relative(sourceRoot, file).split(path.sep).join('/')
+			const source = await readFile(file, 'utf8')
 			for (const match of source.matchAll(/assertArgumentDomain\(\s*['"`]([^'"`]+)['"`],\s*['"`]([^'"`]+)['"`]/gu)) {
-				scanned.push(`${entry.name}:${match[1]}:${match[2]}`)
+				scanned.push(`${relative}:${match[1]}:${match[2]}`)
 			}
 		}
 
@@ -419,7 +425,7 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		const covered = new Set(CASES.map(testCase => testCase.source))
 		// downloadMediaMessage is a standalone helper rather than a socket method;
 		// closed-domain-arguments.test.ts drives it directly.
-		const exempt = new Set(['messages.ts:downloadMediaMessage:type'])
+		const exempt = new Set(['Utils/messages.ts:downloadMediaMessage:type'])
 		const missing = scanned.filter(entry => !covered.has(entry) && !exempt.has(entry))
 		assert.deepEqual(missing, [], `guarded parameters with no fuzz case: ${missing.join(', ')}`)
 

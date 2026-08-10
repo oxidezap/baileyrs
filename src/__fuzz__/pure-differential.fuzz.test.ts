@@ -29,7 +29,7 @@ import {
 	generateString,
 	HOSTILE_STRINGS
 } from './generators/values.ts'
-import { PURE_TARGET_NAMES, registerFuzzedTargets } from './targets.ts'
+import { PURE_TARGET_NAMES } from './targets.ts'
 
 const upstream = (await import('baileys')) as unknown as Record<string, unknown>
 const local = (await import('../index.ts')) as unknown as Record<string, unknown>
@@ -674,7 +674,6 @@ const TARGETS: readonly PureTarget[] = [
 ]
 
 const targetNames = TARGETS.map(target => target.name)
-registerFuzzedTargets(targetNames)
 
 describe('pure helper differential — baileyrs vs baileys', () => {
 	it('covers every helper this fuzzer claims to cover', () => {
@@ -728,7 +727,13 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 					// `typeof`, `===` and arithmetic all expose it. The integer coercion
 					// exists so a Rust u64 can be compared against a protobufjs Long, and
 					// that is the codec fuzzer's problem, not this one's.
-					const strict = { coerceScalars: false }
+					//
+					// `preservePresence: true` for the same reason one level down: a key
+					// deleted and a key left holding `undefined` are different objects to
+					// `Object.keys`, spread and `in`. Collapsing them made the mutation
+					// check unable to see one side deleting a property — and made
+					// `trimUndefined`, whose whole job is that deletion, untestable here.
+					const strict = { coerceScalars: false, preservePresence: true }
 					const comparison = compareOutcomes(localOutcome, upstreamOutcome, strict)
 					if (!comparison.same) {
 						findings.push({

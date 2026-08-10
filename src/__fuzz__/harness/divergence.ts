@@ -71,6 +71,47 @@ const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string
 ]
 
 /**
+ * Rewrites the bridge's spelling of every renamed field back to upstream's,
+ * recursively.
+ *
+ * The point is what happens after: if the two sides are then equal, the rename is
+ * the entire difference and the entry legitimately explains it. If anything else
+ * still differs, the finding contains a second defect and must not be excused —
+ * matching on "both names appear somewhere in the text" alone would have let a
+ * decode regression ride along beside a known rename.
+ */
+export const undoRenames = (value: unknown, depth = 0): unknown => {
+	if (depth > 12 || typeof value !== 'object' || value === null) return value
+	if (Array.isArray(value)) return value.map(item => undoRenames(item, depth + 1))
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		const rename = RENAMED_PROTO_FIELDS.find(([, bridgeName]) => bridgeName === key)
+		Object.defineProperty(out, rename ? rename[0] : key, {
+			value: undoRenames(nested, depth + 1),
+			enumerable: true,
+			writable: true,
+			configurable: true
+		})
+	}
+	return out
+}
+
+/** Structural equality over the plain values a divergence carries. */
+const sameShape = (left: unknown, right: unknown): boolean => {
+	if (typeof left !== typeof right) return false
+	if (typeof left !== 'object' || left === null || right === null) return Object.is(left, right)
+	if (Array.isArray(left) || Array.isArray(right)) {
+		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+		return left.every((item, index) => sameShape(item, right[index]))
+	}
+	const a = left as Record<string, unknown>
+	const b = right as Record<string, unknown>
+	const keys = Object.keys(a)
+	if (keys.length !== Object.keys(b).length) return false
+	return keys.every(key => Object.hasOwn(b, key) && sameShape(a[key], b[key]))
+}
+
+/**
  * Renders either side of a divergence for a predicate to match against.
  *
  * `String(value)` yields "[object Object]" for the decoded objects these
@@ -246,11 +287,21 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// narrow — it names the three fields exactly.
 		target: /^proto:/u,
 		status: 'open',
-		when: divergence =>
-			RENAMED_PROTO_FIELDS.some(
+		when: divergence => {
+			const named = RENAMED_PROTO_FIELDS.some(
 				([upstreamName, bridgeName]) =>
 					text(divergence.local).includes(bridgeName) && text(divergence.upstream).includes(upstreamName)
-			),
+			)
+			if (!named) return false
+			// Naming both spellings is not enough on its own. The rename has to be the
+			// *whole* difference: undo it and the two sides must agree, or this finding
+			// is carrying a second defect that the entry does not explain.
+			//
+			// The field-name sweep reports strings rather than objects (the key list
+			// against the expected key), and there the name match is the finding.
+			if (typeof divergence.local !== 'object' || typeof divergence.upstream !== 'object') return true
+			return sameShape(undoRenames(divergence.local), undoRenames(divergence.upstream))
+		},
 		reason:
 			'Three fields round-trip under a different property name than upstream declares, and the bridge encoder silently drops the upstream spelling: SyncActionValue.ChatAssignmentAction.deviceAgentID becomes deviceAgentId, SyncActionValue.AgentAction.deviceID becomes deviceId, and Message.MessageHistoryMetadata.oldestMessageTimestamp becomes oldestMessageTimestampInWindow. The property name is the public API — code written against the upstream types reads undefined, and writes are lost with no error at all. ALREADY TRACKED: all three are in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts; the sweep rediscovered them from generated input rather than finding them.',
 		review: '2026-10-01'
@@ -337,7 +388,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: /^proto:/u,
 		status: 'open',
 		reason:
-			'Given an empty string where the schema declares an integer, the bridge coerces to 0 and protobufjs throws "empty string". Same shape as the toNumber difference: baileyrs is the tolerant one. Tolerant is defensible, but it means a caller\'s type error is silently encoded as a real value instead of surfacing.',
+			'Given an empty string where the schema declares a 64-bit integer, the bridge coerces to 0 and protobufjs throws "empty string" — it routes 64-bit fields through Long.fromString, which rejects it. 32-bit fields are not affected: both sides coerce to 0 there, which is why the generator seeds the empty string into the 64-bit pools only. Same shape as the toNumber difference: baileyrs is the tolerant one. Tolerant is defensible, but it means a caller\'s type error is silently encoded as a real value instead of surfacing.',
 		review: '2026-11-01',
 		when: divergence => text(divergence.upstream).includes('empty string')
 	},

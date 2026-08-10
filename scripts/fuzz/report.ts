@@ -31,6 +31,7 @@ interface Report {
 	openFindings?: string[]
 	truncated?: { ran: number; planned: number }
 	findings: { target: string; detail?: string }[]
+	crashes?: string[]
 }
 
 const argv = process.argv.slice(2)
@@ -61,9 +62,10 @@ const totals = reports.reduce(
 		runs: accumulator.runs + report.runs,
 		corpus: accumulator.corpus + report.corpusReplayed,
 		excused: accumulator.excused + report.excused,
-		findings: accumulator.findings + report.findings.length
+		findings: accumulator.findings + report.findings.length,
+		crashes: accumulator.crashes + (report.crashes?.length ?? 0)
 	}),
-	{ runs: 0, corpus: 0, excused: 0, findings: 0 }
+	{ runs: 0, corpus: 0, excused: 0, findings: 0, crashes: 0 }
 )
 
 const truncated = reports.filter(report => report.truncated)
@@ -101,7 +103,7 @@ lines.push(
 	`mode ${mode} · seed${seeds.length > 1 ? 's' : ''} ${seeds.join(', ')} · ${totals.runs} inputs across ${reports.length} targets`
 )
 lines.push(
-	`${totals.findings} unexcused finding(s) · ${totals.excused} excused · ${totals.corpus} replayed from the corpus`
+	`${totals.findings} unexcused finding(s) · ${totals.crashes} crash(es) · ${totals.excused} excused · ${totals.corpus} replayed from the corpus`
 )
 
 if (truncated.length > 0) {
@@ -122,6 +124,17 @@ if (totals.findings > 0) {
 	}
 	lines.push('')
 	lines.push(`Reproduce with \`FUZZ_SEED=${seeds[0]} FUZZ_ONLY="<target>" npm run fuzz\`.`)
+}
+
+// A crash is a failure with no divergence attached — a check or generator that
+// threw, or an expired allowlist entry under strict mode. Without this section a
+// crash-only run printed "0 findings" while the job went red, which reads as a
+// broken workflow rather than a real result.
+if (totals.crashes > 0) {
+	heading('Crashes')
+	for (const report of reports) {
+		for (const crash of report.crashes ?? []) lines.push(`- **${report.target}** — ${crash.trim()}`)
+	}
 }
 
 if (open.length > 0) {
@@ -145,5 +158,6 @@ if (!complete) {
 
 console.log(lines.join('\n'))
 
-const failed = totals.findings > 0 || (failOnStale && (expired.length > 0 || candidates.length > 0))
+const failed =
+	totals.findings > 0 || totals.crashes > 0 || (failOnStale && (expired.length > 0 || candidates.length > 0))
 process.exit(failed ? 1 : 0)

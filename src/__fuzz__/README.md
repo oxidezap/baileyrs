@@ -34,16 +34,16 @@ replay it.
 
 ### Environment
 
-| Variable                | Meaning                                          |
-| ----------------------- | ------------------------------------------------ |
-| `FUZZ_SEED`             | Seed string. Default `baileyrs-fuzz-v1`.         |
-| `FUZZ_RUNS`             | Iterations per target, overriding every default. |
-| `FUZZ_MODE`             | `smoke` (default) or `deep`.                     |
-| `FUZZ_TIME_BUDGET_MS`   | Per-target wall-clock ceiling.                   |
-| `FUZZ_ONLY`             | Substring filter over target names, for triage.  |
-| `FUZZ_RECORD`           | `1` appends minimised failures to the corpus.    |
-| `FUZZ_STRICT_ALLOWLIST` | `1` fails on registry entries past review.       |
-| `FUZZ_REPORT_DIR`       | Directory for per-target JSON reports.           |
+| Variable                | Meaning                                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FUZZ_SEED`             | Seed string. Default `baileyrs-fuzz-v1`.                                                                                                         |
+| `FUZZ_RUNS`             | Iterations per target. Ignored by targets marked `exhaustive`, which sweep a finite set and would otherwise report a partial pass as a full one. |
+| `FUZZ_MODE`             | `smoke` (default) or `deep`.                                                                                                                     |
+| `FUZZ_TIME_BUDGET_MS`   | Per-target wall-clock ceiling.                                                                                                                   |
+| `FUZZ_ONLY`             | Substring filter over target names, for triage.                                                                                                  |
+| `FUZZ_RECORD`           | `1` appends minimised failures to the corpus.                                                                                                    |
+| `FUZZ_STRICT_ALLOWLIST` | `1` fails on registry entries past review.                                                                                                       |
+| `FUZZ_REPORT_DIR`       | Directory for per-target JSON reports.                                                                                                           |
 
 ## The targets
 

@@ -9,7 +9,7 @@
  *
  * Environment:
  *   FUZZ_SEED                seed string (default `baileyrs-fuzz-v1`)
- *   FUZZ_RUNS                iterations per target, overrides every default
+ *   FUZZ_RUNS                iterations per target; ignored by exhaustive sweeps
  *   FUZZ_MODE                `smoke` (default) or `deep`
  *   FUZZ_DEEP_FACTOR         multiplier applied to budgets in deep mode (default 25)
  *   FUZZ_TIME_BUDGET_MS      per-target wall-clock ceiling
@@ -117,6 +117,16 @@ export interface FuzzReport {
 	/** Set when the time budget cut the run short, so a partial pass is never silent. */
 	readonly truncated?: { readonly ran: number; readonly planned: number }
 	readonly findings: readonly Divergence[]
+	/**
+	 * Failures that are not divergences: a check or generator that threw, or an
+	 * expired allowlist entry under `FUZZ_STRICT_ALLOWLIST`.
+	 *
+	 * These belong in the report and not only in the thrown error. A crash with no
+	 * divergence used to write `findings: []` and then throw, so the summariser saw
+	 * a clean run, filed no issue, and printed "0 findings" for a run that had
+	 * actually failed. The job went red with a summary saying nothing was wrong.
+	 */
+	readonly crashes: readonly string[]
 }
 
 /**
@@ -160,8 +170,12 @@ const preview = (value: unknown, limit = 900): string => {
 	return text.length > limit ? `${text.slice(0, limit)}… (${text.length} chars)` : text
 }
 
-const replayHint = (target: string): string =>
-	`FUZZ_SEED=${FUZZ_SEED} FUZZ_ONLY=${JSON.stringify(target)} FUZZ_RUNS=${runsOverride ?? 'as-configured'} npm test`
+// FUZZ_RUNS is left out for exhaustive targets on purpose: they ignore it, and
+// printing it in the replay line would suggest a knob that silently does nothing.
+const replayHint = (target: string, exhaustive: boolean): string => {
+	const runs = exhaustive ? '' : ` FUZZ_RUNS=${runsOverride ?? 'as-configured'}`
+	return `FUZZ_SEED=${FUZZ_SEED} FUZZ_ONLY=${JSON.stringify(target)}${runs} npm test`
+}
 
 const describeFinding = (finding: Divergence, index: number): string =>
 	[
@@ -284,23 +298,34 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			// field-omission divergence, and since the minimised findings replace the
 			// original ones below, the regression is then reported — and excused — as
 			// the known difference. The allowlist discipline depends on this.
+			// The target name alone is too coarse to be the class: two different
+			// defects share `proto:decode-parity`, one of them allowlisted. Shrinking a
+			// new regression into the known SAFE_INTEGER case would keep the target and
+			// lose the bug. So excusability is carried too — a finding the allowlist
+			// does not cover may only ever be minimised into another one it does not
+			// cover.
 			const originalTargets = new Set(produced.map(finding => finding.target))
-			const reproducesSameClass = async (candidate: T, origin: string) => {
-				const found = await runOne(candidate, origin, false)
-				return found.some(finding => originalTargets.has(finding.target))
+			const hadUnexcused = applyAllowlist(produced, new Date()).unexcused.length > 0
+			const preservesClass = (found: readonly Divergence[]): boolean => {
+				const sameTarget = found.filter(finding => originalTargets.has(finding.target))
+				if (sameTarget.length === 0) return false
+				if (!hadUnexcused) return true
+				return applyAllowlist(sameTarget, new Date()).unexcused.length > 0
 			}
 
 			const minimised = shrinkFailures
-				? await shrink(input, candidate => reproducesSameClass(candidate, 'shrink'), {
+				? await shrink(input, async candidate => preservesClass(await runOne(candidate, 'shrink', false)), {
 						maxEvaluations: FUZZ_MODE === 'deep' ? 1_200 : 300,
 						shrinkRoot: options.shrinkRoot ?? true
 					})
 				: input
 
-			const minimisedFindings = (await runOne(minimised, 'minimised', false)).filter(finding =>
-				originalTargets.has(finding.target)
-			)
-			findings.push(...(minimisedFindings.length > 0 ? minimisedFindings : produced))
+			const rerun = await runOne(minimised, 'minimised', false)
+			const minimisedFindings = rerun.filter(finding => originalTargets.has(finding.target))
+			// Keep the original when minimisation did not hold the class. Reporting a
+			// smaller input that no longer shows the defect is worse than a large one
+			// that does.
+			findings.push(...(preservesClass(rerun) ? minimisedFindings : produced))
 
 			if (recording) {
 				recordCorpus(target, { note: `seed ${FUZZ_SEED}, run ${index}`, input: minimised })
@@ -310,20 +335,6 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 
 	const outcome = applyAllowlist(findings, new Date())
 	excused = findings.length - outcome.unexcused.length
-
-	const report: FuzzReport = {
-		target,
-		seed: FUZZ_SEED,
-		mode: FUZZ_MODE,
-		runs: executed,
-		corpusReplayed: corpus.length,
-		excused,
-		excusedBy: outcome.used,
-		openFindings: outcome.openHits,
-		truncated: truncatedAt === undefined ? undefined : { ran: truncatedAt, planned: runs },
-		findings: outcome.unexcused
-	}
-	writeReport(report)
 
 	// Never let a budget cap pass for coverage. A run that checked 747 of 1734
 	// inputs and printed nothing reads exactly like one that checked them all.
@@ -347,11 +358,29 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		else console.warn(message)
 	}
 
+	// Written here rather than earlier so `crashes` is complete: the report is what
+	// the summariser reads, and a report that omits the crashes describes a run
+	// that failed as one that passed.
+	const report: FuzzReport = {
+		target,
+		seed: FUZZ_SEED,
+		mode: FUZZ_MODE,
+		runs: executed,
+		corpusReplayed: corpus.length,
+		excused,
+		excusedBy: outcome.used,
+		openFindings: outcome.openHits,
+		truncated: truncatedAt === undefined ? undefined : { ran: truncatedAt, planned: runs },
+		findings: outcome.unexcused,
+		crashes
+	}
+	writeReport(report)
+
 	if (outcome.unexcused.length > 0 || crashes.length > 0) {
 		const lines = [
 			`fuzz found ${outcome.unexcused.length} divergence(s) and ${crashes.length} crash(es) on ${target}`,
 			`  seed      ${FUZZ_SEED} (mode ${FUZZ_MODE}, ${executed} inputs, ${corpus.length} from corpus)`,
-			`  replay    ${replayHint(target)}`,
+			`  replay    ${replayHint(target, options.exhaustive === true)}`,
 			`  record    add FUZZ_RECORD=1 to freeze the minimised input into the corpus`,
 			...outcome.unexcused.map((finding, index) => describeFinding(finding, index)),
 			...crashes

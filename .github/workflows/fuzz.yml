@@ -83,8 +83,11 @@ jobs:
             fuzz-summary.md
           retention-days: 30
 
+      # The fuzz outcome is part of the condition, not just the report: a run can
+      # fail on something the report has no findings for — a harness crash, a
+      # suite-level assertion — and an issue is exactly what those need too.
       - name: Open an issue for the findings
-        if: always() && steps.report.outputs.clean == 'false'
+        if: always() && (steps.report.outputs.clean == 'false' || steps.fuzz.outcome != 'success')
         uses: actions/github-script@v7
         with:
           script: |

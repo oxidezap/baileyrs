@@ -24,6 +24,25 @@ export interface WireField {
 	readonly wireType: number
 	/** Canonical rendering of the value: hex, or the canonical form of a nested message. */
 	readonly value: string
+	/**
+	 * For wire type 2, the payload as hex — always, even when `value` rendered it
+	 * as a nested message.
+	 *
+	 * A packed run of varints is frequently also valid as a nested message, so
+	 * `value` may hold `{131072:0:0}` where the bytes are `0000...`. Unpacking has
+	 * to read the bytes, not the rendering; without this the packing detector
+	 * simply failed on those payloads and reported an ordinary two-element repeated
+	 * field as a codec mismatch.
+	 */
+	readonly raw?: string
+	/**
+	 * For wire type 2 that parsed as a nested message, the parsed children.
+	 *
+	 * Kept from the original scan rather than recovered by re-parsing `value`:
+	 * a round trip through the rendered string loses `raw` on every child, and the
+	 * packing checks below need those bytes.
+	 */
+	readonly nested?: readonly WireField[]
 }
 
 interface Cursor {
@@ -84,11 +103,8 @@ const scan = (bytes: Uint8Array, depth: number): WireField[] | undefined => {
 				cursor.offset += size
 
 				const nested = size > 0 && depth > 0 ? scan(slice, depth - 1) : undefined
-				fields.push({
-					field,
-					wireType,
-					value: nested ? `{${render(nested)}}` : Buffer.from(slice).toString('hex')
-				})
+				const raw = Buffer.from(slice).toString('hex')
+				fields.push({ field, wireType, value: nested ? `{${render(nested)}}` : raw, raw, nested })
 				break
 			}
 			case 5: {
@@ -200,8 +216,8 @@ const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireFie
 			leftEntries[0]!.wireType === 2 &&
 			rightEntries[0]!.wireType === 2
 		) {
-			const leftNested = parseNested(leftEntries[0]!.value)
-			const rightNested = parseNested(rightEntries[0]!.value)
+			const leftNested = leftEntries[0]!.nested ?? parseNested(leftEntries[0]!.value)
+			const rightNested = rightEntries[0]!.nested ?? parseNested(rightEntries[0]!.value)
 			if (leftNested && rightNested && nestedDiffersOnlyByPacking(leftNested, rightNested)) continue
 		}
 
@@ -211,7 +227,7 @@ const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireFie
 		if (packedSide.length !== 1 || packedSide[0]!.wireType !== 2) return false
 		if (!looseSide.every(entry => entry.wireType === 0)) return false
 
-		const unpacked = unpackVarints(packedSide[0]!.value)
+		const unpacked = unpackVarints(packedSide[0]!.raw ?? packedSide[0]!.value)
 		if (!unpacked) return false
 		if (unpacked.join(',') !== looseSide.map(entry => entry.value).join(',')) return false
 	}
@@ -235,21 +251,62 @@ export const isWireSubset = (left: Uint8Array, right: Uint8Array): boolean => {
 	return subsetOf(a, b) && render(a) !== render(b)
 }
 
-const subsetOf = (left: readonly WireField[], right: readonly WireField[]): boolean => {
-	const remaining = [...right]
+/**
+ * Drops the fields the two sides spell differently only by packing.
+ *
+ * A packed repeated scalar is one length-delimited field holding N varints; the
+ * unpacked spelling is N separate varint fields with the same number. Matching
+ * them pairwise can only ever handle N = 1, so a perfectly ordinary two-element
+ * repeated field fell through — and a message with a packing difference in one
+ * field and a real omission in another was then classified as neither, and got
+ * reported as a value mismatch it was not.
+ *
+ * Both whole groups are consumed at once, which is the only way N > 1 works.
+ */
+const stripPackingDifferences = (
+	left: readonly WireField[],
+	right: readonly WireField[]
+): { left: WireField[]; right: WireField[] } => {
+	const a = [...left]
+	const b = [...right]
 
-	// Packing is not data loss, so a field that differs only that way must not
-	// stop a message from reading as an omission. Without this, a payload with an
-	// omission in one field and a packing difference in another is classified as
-	// neither, and gets reported as a value mismatch it is not.
-	const packingEquivalent = (a: WireField, b: WireField): boolean => {
-		if (a.field !== b.field) return false
-		const single = a.wireType === 2 ? a : b
-		const other = single === a ? b : a
-		if (single.wireType !== 2 || other.wireType !== 0) return false
-		const unpacked = unpackVarints(single.value)
-		return unpacked !== undefined && unpacked.length === 1 && unpacked[0] === other.value
+	for (const field of new Set(a.map(entry => entry.field))) {
+		const mine = a.filter(entry => entry.field === field)
+		const theirs = b.filter(entry => entry.field === field)
+		if (theirs.length === 0) continue
+
+		// Exactly one side packed, the other a run of varints.
+		const packedSide =
+			mine.length === 1 && mine[0]!.wireType === 2
+				? mine
+				: theirs.length === 1 && theirs[0]!.wireType === 2
+					? theirs
+					: undefined
+		if (!packedSide) continue
+		const looseSide = packedSide === mine ? theirs : mine
+		if (looseSide.length === 0 || !looseSide.every(entry => entry.wireType === 0)) continue
+
+		const unpacked = unpackVarints(packedSide[0]!.raw ?? packedSide[0]!.value)
+		if (!unpacked || unpacked.length !== looseSide.length) continue
+		if (unpacked.some((value, index) => value !== looseSide[index]!.value)) continue
+
+		for (const entry of [...mine, ...theirs]) {
+			const fromA = a.indexOf(entry)
+			if (fromA >= 0) a.splice(fromA, 1)
+			const fromB = b.indexOf(entry)
+			if (fromB >= 0) b.splice(fromB, 1)
+		}
 	}
+
+	return { left: a, right: b }
+}
+
+const subsetOf = (source: readonly WireField[], target: readonly WireField[]): boolean => {
+	// Packing is not data loss, so a field that differs only that way must not
+	// stop a message from reading as an omission.
+	const stripped = stripPackingDifferences(source, target)
+	const left = stripped.left
+	const remaining = stripped.right
 
 	for (const entry of left) {
 		const exact = remaining.findIndex(
@@ -262,16 +319,11 @@ const subsetOf = (left: readonly WireField[], right: readonly WireField[]): bool
 		}
 		// Not identical: accept only when the same field on the other side is a
 		// nested message that contains everything this one does.
-		const packed = remaining.findIndex(candidate => packingEquivalent(entry, candidate))
-		if (packed >= 0) {
-			remaining.splice(packed, 1)
-			continue
-		}
 
 		const nested = remaining.findIndex(candidate => {
 			if (candidate.field !== entry.field || candidate.wireType !== 2 || entry.wireType !== 2) return false
-			const inner = parseNested(entry.value)
-			const outer = parseNested(candidate.value)
+			const inner = entry.nested ?? parseNested(entry.value)
+			const outer = candidate.nested ?? parseNested(candidate.value)
 			if (inner === undefined || outer === undefined) return false
 			// A nested message that differs only by how its repeated scalars are
 			// packed has lost nothing, so it must not block the omission reading of

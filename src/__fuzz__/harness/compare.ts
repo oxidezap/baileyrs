@@ -66,6 +66,42 @@ export interface NormaliseOptions {
 	 * turns this off.
 	 */
 	readonly coerceScalars?: boolean
+	/**
+	 * Keep an own property whose value is `undefined` distinct from an absent one
+	 * (default false).
+	 *
+	 * Collapsing the two is right for a protobuf message, where an unset field and
+	 * a field set to nothing are the same thing on the wire. It is wrong for a
+	 * plain helper: `Object.keys`, object spread, `Object.hasOwn` and `in` all tell
+	 * them apart, and `trimUndefined` — a fuzz target here — exists precisely to
+	 * turn one into the other. With the two collapsed, the oracle could not observe
+	 * that helper doing its job, nor one implementation deleting a key where the
+	 * other left it present.
+	 */
+	readonly preservePresence?: boolean
+}
+
+/** Marks a key that exists with the value `undefined`, under `preservePresence`. */
+const UNDEFINED_PRESENT = { __undefined__: true } as const
+
+/**
+ * A total, stable string ordering for already-normalised Map keys.
+ *
+ * `JSON.stringify` cannot be used here: normalisation turns an integer key into
+ * a `bigint`, and stringify throws `TypeError: Do not know how to serialize a
+ * BigInt` on it. That threw out of the comparator, out of `normalise`, and out
+ * of the oracle — so a two-entry `Map` keyed by integers crashed the check
+ * rather than comparing it.
+ */
+const sortKey = (value: unknown): string => {
+	if (typeof value === 'bigint') return `n:${value.toString()}`
+	if (typeof value === 'string') return `s:${value}`
+	if (typeof value === 'number' || typeof value === 'boolean' || value === null) return `p:${String(value)}`
+	try {
+		return `j:${JSON.stringify(value, (_key, entry) => (typeof entry === 'bigint' ? `${entry}n` : entry))}`
+	} catch {
+		return `x:${String(value)}`
+	}
 }
 
 export const normalise = (value: unknown, depth = 0, options: NormaliseOptions = {}): unknown => {
@@ -95,7 +131,7 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 			return {
 				__map__: [...value.entries()]
 					.map(([key, entry]) => [nested(key), nested(entry)] as const)
-					.toSorted((left, right) => (JSON.stringify(left[0]) < JSON.stringify(right[0]) ? -1 : 1))
+					.toSorted((left, right) => (sortKey(left[0]) < sortKey(right[0]) ? -1 : 1))
 			}
 		}
 		if (value instanceof Set) return { __set__: [...value].map(nested) }
@@ -106,10 +142,16 @@ export const normalise = (value: unknown, depth = 0, options: NormaliseOptions =
 		const out: Record<string, unknown> = {}
 		for (const key of Object.keys(value as Record<string, unknown>).toSorted()) {
 			const entry = (value as Record<string, unknown>)[key]
-			// An explicit `undefined` property and an absent one are the same value
-			// to every consumer that reads it; only `in` can tell them apart.
-			if (entry === undefined) continue
-			Object.defineProperty(out, key, { value: nested(entry), enumerable: true, writable: true, configurable: true })
+			// An explicit `undefined` property and an absent one carry the same value
+			// to code that reads it, so protobuf comparisons collapse them. A helper's
+			// caller can still tell them apart, so `preservePresence` keeps the key.
+			if (entry === undefined && !(options.preservePresence ?? false)) continue
+			Object.defineProperty(out, key, {
+				value: entry === undefined ? UNDEFINED_PRESENT : nested(entry),
+				enumerable: true,
+				writable: true,
+				configurable: true
+			})
 		}
 		return out
 	}
@@ -159,7 +201,21 @@ export const compareOutcomes = (local: Outcome, upstream: Outcome, options?: Nor
 		}
 	}
 	// Both threw: the fact of throwing is the contract, the wording is not.
-	if (local.kind === 'throw') return { same: true }
+	//
+	// One exception, and only one. Comparing error *classes* across two
+	// independent implementations would report on every `TypeError` versus `Boom`
+	// pair and bury everything else — the class is not a contract either. But a
+	// WebAssembly trap is not an error a caller can act on: it carries a
+	// `wasm://wasm/<hash>` stack with no frame pointing at the call, which is the
+	// whole reason the argument-boundary suite exists. Upstream is pure JS and can
+	// never produce one, so "we trapped where they threw" is always a real finding.
+	if (local.kind === 'throw') {
+		const trapped = local.name === 'RuntimeError' || local.name === 'CompileError'
+		if (trapped && upstream.kind === 'throw' && upstream.name !== local.name) {
+			return { same: false, detail: `baileyrs raised a WASM ${local.name} where baileys threw ${upstream.name}` }
+		}
+		return { same: true }
+	}
 	if (equivalent(local.value, (upstream as { value: unknown }).value, options)) return { same: true }
 	return { same: false, detail: 'return values differ' }
 }

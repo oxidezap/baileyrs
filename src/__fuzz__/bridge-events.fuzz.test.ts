@@ -225,6 +225,7 @@ describe('bridge event adaptation', () => {
 
 /** The events the buffer consolidates, plus one it must pass straight through. */
 const EMITTABLE = [
+	'messaging-history.set',
 	'chats.upsert',
 	'chats.update',
 	'chats.delete',
@@ -253,6 +254,38 @@ const messageKey = (random: Random) => ({
 
 const payloadFor = (random: Random, event: string): unknown => {
 	switch (event) {
+		// The buffer's largest stateful branch: it merges chats, contacts and
+		// messages into `historySets` by id, folds later chat updates into entries
+		// already there, and carries syncType/progress/isLatest across flushes. The
+		// small id pools are the point — reuse is what makes the consolidation and
+		// deduplication paths run rather than appending distinct rows every time.
+		case 'messaging-history.set':
+			return {
+				chats: Array.from({ length: random.int(0, 3) }, () => ({
+					id: generateJid(random),
+					conversationTimestamp: generateNumber(random),
+					unreadCount: random.int(0, 5),
+					endOfHistoryTransferType: random.bool(0.3) ? random.int(0, 2) : undefined
+				})),
+				contacts: Array.from({ length: random.int(0, 3) }, () => ({
+					id: generateJid(random),
+					name: random.bool(0.5) ? generateString(random) : undefined,
+					notify: random.bool(0.3) ? generateString(random) : undefined
+				})),
+				messages: Array.from({ length: random.int(0, 3) }, () => ({
+					key: messageKey(random),
+					messageTimestamp: generateNumber(random),
+					message: { conversation: generateString(random) }
+				})),
+				pastParticipants: random.bool(0.25)
+					? [{ groupJid: generateJid(random), pastParticipants: [{ userJid: generateJid(random), leaveReason: 0 }] }]
+					: undefined,
+				syncType: random.bool(0.5) ? random.int(0, 5) : undefined,
+				progress: random.bool(0.5) ? random.int(0, 100) : undefined,
+				chunkOrder: random.int(0, 3),
+				isLatest: random.bool(),
+				peerDataRequestSessionId: random.bool(0.3) ? generateString(random) : undefined
+			}
 		case 'chats.upsert':
 			return [{ id: generateJid(random), conversationTimestamp: generateNumber(random), unreadCount: random.int(0, 5) }]
 		case 'chats.update':
