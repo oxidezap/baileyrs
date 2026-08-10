@@ -363,8 +363,32 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		const group = (subject: string) => ({ released: 'groups.update', data: [{ id: 'g@g.us', subject }] })
 		const receipt = { released: 'message-receipt.update', data: [{ key: { id: 'B2' } }] }
 
-		assert.ok(excused([upsert('first')], [upsert('second')]), 'the measured contacts precedence is the subject')
-		assert.ok(excused([group('second')], [group('first')]), 'so is the groups one, which runs the other way round')
+		assert.ok(excused([upsert('first')], [upsert('second')]), 'a pinned field may differ in value')
+		assert.ok(excused([group('second')], [group('first')]), 'the same, on the other kind')
+		// The shape the entry actually documents: upstream lost a field this side kept.
+		assert.ok(
+			excused(
+				[{ released: 'groups.update', data: [{ id: 'g@g.us', subject: 'first', announce: true }] }],
+				[{ released: 'groups.update', data: [{ id: 'g@g.us', subject: 'first' }] }]
+			),
+			'a field upstream dropped on merge is what this entry is for'
+		)
+		// ...and never the reverse. This side losing a field is a defect, not this entry.
+		assert.ok(
+			!excused(
+				[{ released: 'groups.update', data: [{ id: 'g@g.us', subject: 'first' }] }],
+				[{ released: 'groups.update', data: [{ id: 'g@g.us', subject: 'first', announce: true }] }]
+			),
+			'a field lost on this side is not a merge-precedence difference'
+		)
+		// A field outside the pinned pair may not differ in value at all.
+		assert.ok(
+			!excused(
+				[{ released: 'groups.update', data: [{ id: 'g@g.us', announce: true }] }],
+				[{ released: 'groups.update', data: [{ id: 'g@g.us', announce: false }] }]
+			),
+			'a wrong value on an unpinned field is reported'
+		)
 		// The case that forced the pairing: a field difference *and* a reordering.
 		assert.ok(
 			excused([upsert('first'), receipt], [receipt, upsert('second')]),

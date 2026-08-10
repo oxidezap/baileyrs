@@ -622,12 +622,54 @@ const copyStrategyResidue = (local: unknown, upstream: unknown): boolean => {
 /**
  * The two event kinds whose buffered merges resolve differently.
  *
- * Not every kind: `chats.update` twice, and `groups.update` where the later one
- * carries no subject, were measured alongside these and agree. Listing the two
- * rather than allowing any kind is what stops this entry from covering a
- * consolidation difference nobody has looked at.
+ * Not every kind: `chats.update` twice, and a `groups.update` whose later event
+ * carries *nothing but the id*, were measured alongside these and agree. The
+ * id-only case agrees because there is no field to merge — an update carrying
+ * any other field, `announce` included, diverges. Listing the two kinds rather
+ * than allowing any kind is what stops this entry from covering a consolidation
+ * difference nobody has looked at.
  */
 const MERGE_PRECEDENCE_KINDS: ReadonlySet<string> = new Set(['contacts.upsert', 'groups.update'])
+
+/**
+ * The fields whose *value* the two buffers are allowed to disagree on.
+ *
+ * Measured: `subject` on a group, `name` on a contact. Everything else about a
+ * paired release has to match, so a consolidation that started emitting a wrong
+ * `announce`, `id` or timestamp is reported rather than folded into this entry.
+ * Pinning the field is the same treatment `KNOWN_OMITTED_FIELDS` and
+ * `PRESENCE_DROPPED_FIELDS` get, and for the same reason: "some field differs"
+ * is not a description of a defect.
+ */
+const MERGE_PRECEDENCE_VALUE_FIELDS: ReadonlySet<string> = new Set(['name', 'subject'])
+
+/**
+ * True when `mine` is `theirs` plus fields, disagreeing only on the pinned ones.
+ *
+ * Directional on purpose. What this entry documents is upstream *losing* data —
+ * a field it dropped on merge is present here — so a release where **this** side
+ * lost a field is not this divergence and must fail. Accepting any textual
+ * difference, which is what the predicate did before, meant a regression that
+ * dropped a field here, or wrote a wrong value into any field at all, was
+ * suppressed in both directions.
+ */
+const addsFieldsOrPinnedValues = (mine: unknown, theirs: unknown): boolean => {
+	if (Array.isArray(mine) || Array.isArray(theirs)) {
+		if (!Array.isArray(mine) || !Array.isArray(theirs) || mine.length !== theirs.length) return false
+		return mine.every((entry, index) => addsFieldsOrPinnedValues(entry, theirs[index]))
+	}
+	if (typeof mine !== 'object' || typeof theirs !== 'object' || mine === null || theirs === null) {
+		return text(mine) === text(theirs)
+	}
+	const ours = mine as Record<string, unknown>
+	const upstream = theirs as Record<string, unknown>
+	for (const [key, value] of Object.entries(upstream)) {
+		if (!Object.hasOwn(ours, key)) return false
+		if (text(ours[key]) === text(value)) continue
+		if (!MERGE_PRECEDENCE_VALUE_FIELDS.has(key)) return false
+	}
+	return true
+}
 
 /**
  * True when the two released sequences differ only in the fields of those
@@ -675,7 +717,11 @@ const mergePrecedenceFieldsOnly = (local: unknown, upstream: unknown): boolean =
 		const bucket = remaining.get(key)
 		if (bucket === undefined || bucket.length === 0) return false
 		const theirs = bucket.shift()
-		if (text(mine) !== text(theirs)) differing++
+		if (text(mine) === text(theirs)) continue
+		if (!addsFieldsOrPinnedValues((mine as { data?: unknown })?.data, (theirs as { data?: unknown })?.data)) {
+			return false
+		}
+		differing++
 	}
 	// Something has to have differed *inside* a contacts.upsert. Without this the
 	// entry would excuse a pure reordering, which is the sibling entry's subject.
@@ -1105,7 +1151,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// still fails.
 		when: divergence => mergePrecedenceFieldsOnly(divergence.local, divergence.upstream),
 		reason:
-			"The two buffers consolidate `groups.update` and `contacts.upsert` differently, and on both kinds it is upstream that loses data rather than the two picking different winners. On groups, upstream stores only the *first* update for an id and discards every later one: `src/Utils/event-buffer.ts` merges with `Object.assign(data.groupUpdates[id] || {}, update)` where upstream guards the whole assignment with `if (!data.groupUpdates[id])`, which makes its own merge unreachable. Measured by buffering each pair and flushing: two updates for the same id with subjects 'first' then 'second' release 'second' here and 'first' upstream; and with *disjoint* fields — a subject then an announce — this releases both while upstream releases only the subject and drops the announce outright. On contacts, a buffered `contacts.update` carrying a name is folded into a later `contacts.upsert` here and is not folded upstream, so the released upsert carries the name here and does not upstream. baileyrs is the accumulating side on both, which is what the surrounding branches do for chats and messages and what 'consolidate' means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. `chats.update` twice, a `groups.update` whose second event carries no subject, and the four message-level consolidation branches all agree, measured at the same time. Found only once the buffer generator started drawing ids from a shared pool: before that no two buffered events ever referred to the same entity, so none of this ran.",
+			"The two buffers consolidate `groups.update` and `contacts.upsert` differently, and on both kinds it is upstream that loses data rather than the two picking different winners. On groups, upstream stores only the *first* update for an id and discards every later one: `src/Utils/event-buffer.ts` merges with `Object.assign(data.groupUpdates[id] || {}, update)` where upstream guards the whole assignment with `if (!data.groupUpdates[id])`, which makes its own merge unreachable. Measured by buffering each pair and flushing: two updates for the same id with subjects 'first' then 'second' release 'second' here and 'first' upstream; and with *disjoint* fields — a subject then an announce — this releases both while upstream releases only the subject and drops the announce outright. On contacts, a buffered `contacts.update` carrying a name is folded into a later `contacts.upsert` here and is not folded upstream, so the released upsert carries the name here and does not upstream. baileyrs is the accumulating side on both, which is what the surrounding branches do for chats and messages and what 'consolidate' means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. `chats.update` twice, a `groups.update` whose second event carries nothing but the id, and the four message-level consolidation branches all agree, measured at the same time — the id-only case agreeing because there is no field to merge, which is why the `announce` case above does not. Found only once the buffer generator started drawing ids from a shared pool: before that no two buffered events ever referred to the same entity, so none of this ran.",
 		review: '2026-11-01'
 	},
 	{
