@@ -125,7 +125,8 @@ export const PURE_TARGET_NAMES: readonly string[] = [
 export const EXCLUDED_EXPORTS: Readonly<Record<string, string>> = {
 	// Non-deterministic: the two implementations cannot agree on a random draw.
 	aesEncrypt: 'generates a random IV; aesEncrypWithIV covers the deterministic half',
-	encodeWAMessage: 'appends writeRandomPadMax16 padding, so two calls never agree; encodeNewsletterMessage fuzzes the same encoder unpadded',
+	encodeWAMessage:
+		'appends writeRandomPadMax16 padding, so two calls never agree; encodeNewsletterMessage fuzzes the same encoder unpadded',
 	writeRandomPadMax16: 'pads with random bytes; unpadRandomMax16 covers the inverse',
 	generateMessageID: 'draws a random message id on every call',
 	generateMessageIDV2: 'draws a random message id on every call',

@@ -203,7 +203,7 @@ describe('bridge event adaptation', () => {
 			generate: generateMessageWire,
 			check: wire => {
 				try {
-					adaptBridgeMessageWire(wire as never, silentLogger)
+					adaptBridgeMessageWire(wire.message, wire.info as never, silentLogger)
 					return []
 				} catch (error) {
 					return {
@@ -277,13 +277,13 @@ const payloadFor = (random: Random, event: string): unknown => {
 		case 'messages.update':
 			return [{ key: messageKey(random), update: { status: random.int(0, 4) } }]
 		case 'messages.delete':
-			return random.bool(0.5)
-				? { keys: [messageKey(random)] }
-				: { jid: generateJid(random), all: true }
+			return random.bool(0.5) ? { keys: [messageKey(random)] } : { jid: generateJid(random), all: true }
 		case 'messages.reaction':
 			return [{ key: messageKey(random), reaction: { text: random.pick(['👍', '❤️', '']), key: messageKey(random) } }]
 		case 'message-receipt.update':
-			return [{ key: messageKey(random), receipt: { userJid: generateJid(random), readTimestamp: generateNumber(random) } }]
+			return [
+				{ key: messageKey(random), receipt: { userJid: generateJid(random), readTimestamp: generateNumber(random) } }
+			]
 		case 'groups.update':
 			return [{ id: generateJid(random), subject: generateString(random) }]
 		default:

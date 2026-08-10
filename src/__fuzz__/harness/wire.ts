@@ -107,7 +107,7 @@ const scan = (bytes: Uint8Array, depth: number): WireField[] | undefined => {
 const render = (fields: readonly WireField[]): string =>
 	[...fields]
 		.map(entry => `${entry.field}:${entry.wireType}:${entry.value}`)
-		.sort()
+		.toSorted()
 		.join(',')
 
 /** Order-insensitive rendering of a message's fields, or undefined if it does not parse. */
@@ -173,8 +173,14 @@ export const differsOnlyByPacking = (left: Uint8Array, right: Uint8Array): boole
 		const rightEntries = right_.get(field)
 		if (!rightEntries) return false
 
-		const leftKey = leftEntries.map(entry => `${entry.wireType}:${entry.value}`).sort().join(',')
-		const rightKey = rightEntries.map(entry => `${entry.wireType}:${entry.value}`).sort().join(',')
+		const leftKey = leftEntries
+			.map(entry => `${entry.wireType}:${entry.value}`)
+			.toSorted()
+			.join(',')
+		const rightKey = rightEntries
+			.map(entry => `${entry.wireType}:${entry.value}`)
+			.toSorted()
+			.join(',')
 		if (leftKey === rightKey) continue
 
 		// One side must be a single packed run, the other a series of varints.
@@ -211,7 +217,8 @@ const subsetOf = (left: readonly WireField[], right: readonly WireField[]): bool
 	const remaining = [...right]
 	for (const entry of left) {
 		const exact = remaining.findIndex(
-			candidate => candidate.field === entry.field && candidate.wireType === entry.wireType && candidate.value === entry.value
+			candidate =>
+				candidate.field === entry.field && candidate.wireType === entry.wireType && candidate.value === entry.value
 		)
 		if (exact >= 0) {
 			remaining.splice(exact, 1)

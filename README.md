@@ -27,6 +27,14 @@ so existing integrations can migrate with minimal changes. See
 | Key management | JS auth state | Rust `PersistenceManager` |
 | Auto-reconnect | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
 
+Compatibility is checked rather than assumed: a declaration audit against
+upstream's `.d.ts`, a wire-fidelity audit of the send path, ~50 behavioural
+compatibility suites, and a
+[differential fuzz suite](src/__fuzz__/README.md) that generates its own inputs
+from the proto schema and compares the two libraries directly. Differences the
+fuzzers find are recorded with a reason and a review date, and known open ones
+are listed in `src/__fuzz__/harness/divergence.ts`.
+
 ## Documentation
 
 The full API reference and guides live in the

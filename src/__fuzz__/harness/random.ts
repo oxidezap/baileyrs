@@ -18,7 +18,7 @@ const seedWords = (seed: string): [number, number, number, number] => {
 			h ^= h >>> 13
 		}
 		h = Math.imul(h ^ round, 2_654_435_761)
-		words.push((h >>> 0) || 0x9e37_79b9)
+		words.push(h >>> 0 || 0x9e37_79b9)
 	}
 	return [words[0]!, words[1]!, words[2]!, words[3]!]
 }

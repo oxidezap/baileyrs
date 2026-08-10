@@ -9,7 +9,7 @@
  * traffic degrades.
  */
 
-import type { BinaryNode } from '../../WABinary/index.ts'
+import type { BinaryNode } from '../../Types/index.ts'
 import type { Random } from '../harness/random.ts'
 import { generateString } from './values.ts'
 

@@ -47,6 +47,7 @@
     "lib/**/*",
     "!lib/**/*.map",
     "!lib/**/__tests__/**",
+    "!lib/__fuzz__/**",
     "!lib/**/*.test.*",
     "!lib/**/*.test-e2e.*"
   ],
@@ -70,6 +71,10 @@
     "prepack": "npm run build && node scripts/check-pack.ts",
     "prepare": "npm run build",
     "test": "node --test",
+    "fuzz": "node --test ./src/__fuzz__/**/*.test.ts",
+    "fuzz:deep": "FUZZ_MODE=deep node --expose-gc --test ./src/__fuzz__/**/*.test.ts",
+    "fuzz:record": "FUZZ_RECORD=1 node --test ./src/__fuzz__/**/*.test.ts",
+    "fuzz:report": "node scripts/fuzz/report.ts",
     "test:compat-auditor": "node --test scripts/compatibility/__tests__/audit.test.ts",
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && tsc -p scripts/compatibility/tsconfig.json",
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts"

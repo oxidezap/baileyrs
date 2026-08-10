@@ -111,14 +111,18 @@ const SURROGATE_STRINGS = ['\uD800', '\uDFFF', 'a\uD800b', '\uD83D', '\uDE00'] a
 
 const signed32 = [0, 1, -1, 127, -128, 32_767, -32_768, 2_147_483_647, -2_147_483_648] as const
 const unsigned32 = [0, 1, 127, 255, 65_535, 2_147_483_647, 2_147_483_648, 4_294_967_295] as const
-const signed64 = ['0', '1', '-1', '9007199254740991', '9007199254740993', '9223372036854775807', '-9223372036854775808'] as const
+const signed64 = [
+	'0',
+	'1',
+	'-1',
+	'9007199254740991',
+	'9007199254740993',
+	'9223372036854775807',
+	'-9223372036854775808'
+] as const
 const unsigned64 = ['0', '1', '9007199254740991', '9007199254740993', '18446744073709551615'] as const
 
-const scalarValue = (
-	random: Random,
-	field: ProtoFieldSchema,
-	options: Required<ProtoGenerateOptions>
-): unknown => {
+const scalarValue = (random: Random, field: ProtoFieldSchema, options: Required<ProtoGenerateOptions>): unknown => {
 	const wantsDefault = random.bool(options.defaultBias)
 
 	switch (field[1]) {
@@ -128,7 +132,7 @@ const scalarValue = (
 			return random.pick(SAFE_STRINGS)
 		}
 		case PROTO_FIELD_KIND.bool:
-			return wantsDefault ? false : true
+			return !wantsDefault
 		case PROTO_FIELD_KIND.bytes:
 			return wantsDefault ? new Uint8Array(0) : random.bytes(random.pick([1, 4, 16, 32, 100]))
 		case PROTO_FIELD_KIND.float:

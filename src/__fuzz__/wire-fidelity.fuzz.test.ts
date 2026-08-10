@@ -206,7 +206,11 @@ describe('send-path wire fidelity on generated messages', () => {
 
 				// A fixed timestamp and message id: everything else about this call is
 				// deterministic, and without them the two sides differ on the clock.
-				const options = { userJid: '15550000000@s.whatsapp.net', messageId: '3EB0FUZZ0000000000', timestamp: new Date(1_700_000_000_000) }
+				const options = {
+					userJid: '15550000000@s.whatsapp.net',
+					messageId: '3EB0FUZZ0000000000',
+					timestamp: new Date(1_700_000_000_000)
+				}
 
 				let localBuilt: unknown
 				let upstreamBuilt: unknown

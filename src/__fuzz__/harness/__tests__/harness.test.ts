@@ -50,7 +50,13 @@ describe('fuzz harness — deterministic randomness', () => {
 		const random = makeRandom('weights')
 		let rare = 0
 		for (let index = 0; index < 4_000; index++) {
-			if (random.weighted([[1, 'rare'], [99, 'common']]) === 'rare') rare++
+			if (
+				random.weighted([
+					[1, 'rare'],
+					[99, 'common']
+				]) === 'rare'
+			)
+				rare++
 		}
 		assert.ok(rare > 5 && rare < 200, `expected a roughly 1% tail, saw ${rare}/4000`)
 	})
@@ -58,7 +64,13 @@ describe('fuzz harness — deterministic randomness', () => {
 	it('never picks an entry whose weight is not positive', () => {
 		const random = makeRandom('zero-weight')
 		for (let index = 0; index < 500; index++) {
-			assert.equal(random.weighted([[0, 'never'], [1, 'always']]), 'always')
+			assert.equal(
+				random.weighted([
+					[0, 'never'],
+					[1, 'always']
+				]),
+				'always'
+			)
 		}
 	})
 })
@@ -117,13 +129,17 @@ describe('fuzz harness — shrinking', () => {
 
 	it('stays inside its evaluation budget', async () => {
 		let evaluations = 0
-		await shrink({ ...Array.from({ length: 50 }, (_value, index) => [`k${index}`, index]).reduce<Record<string, number>>(
-			(accumulator, [key, value]) => ({ ...accumulator, [String(key)]: Number(value) }),
-			{}
-		) }, () => {
-			evaluations++
-			return true
-		}, { maxEvaluations: 25 })
+		await shrink(
+			Array.from({ length: 50 }, (_value, index) => [`k${index}`, index]).reduce<Record<string, number>>(
+				(accumulator, [key, value]) => ({ ...accumulator, [String(key)]: Number(value) }),
+				{}
+			),
+			() => {
+				evaluations++
+				return true
+			},
+			{ maxEvaluations: 25 }
+		)
 		assert.ok(evaluations <= 25, `budget ignored: ${evaluations} evaluations`)
 	})
 })
@@ -145,7 +161,10 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			{ id: 'covered', target: 'jid:one', status: 'intended', reason: 'intended', review: future }
 		]
 		const outcome = applyAllowlist([divergence('jid:one'), divergence('jid:two')], new Date(), registry)
-		assert.deepEqual(outcome.unexcused.map(item => item.target), ['jid:two'])
+		assert.deepEqual(
+			outcome.unexcused.map(item => item.target),
+			['jid:two']
+		)
 		assert.deepEqual(outcome.used, ['covered'])
 	})
 
@@ -165,7 +184,10 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			new Date(),
 			registry
 		)
-		assert.deepEqual(outcome.unexcused.map(item => item.target), ['proto:b', 'jid:x'])
+		assert.deepEqual(
+			outcome.unexcused.map(item => item.target),
+			['proto:b', 'jid:x']
+		)
 	})
 
 	it('flags entries whose review date has passed', () => {
@@ -174,7 +196,10 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			{ id: 'fresh', target: 'jid:two', status: 'intended', reason: 'intended', review: future }
 		]
 		const outcome = applyAllowlist([], new Date(), registry)
-		assert.deepEqual(outcome.expired.map(entry => entry.id), ['stale'])
+		assert.deepEqual(
+			outcome.expired.map(entry => entry.id),
+			['stale']
+		)
 	})
 
 	it('reports entries that excused nothing', () => {
@@ -183,7 +208,10 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			{ id: 'unused', target: 'jid:nine', status: 'open', reason: 'intended', review: future }
 		]
 		const outcome = applyAllowlist([divergence('jid:one')], new Date(), registry)
-		assert.deepEqual(staleEntries(outcome.used, registry).map(entry => entry.id), ['unused'])
+		assert.deepEqual(
+			staleEntries(outcome.used, registry).map(entry => entry.id),
+			['unused']
+		)
 	})
 
 	it('separates entries that are still open from the ones that are intended', () => {

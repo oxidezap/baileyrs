@@ -28,7 +28,6 @@ import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise } from './harness/compare.ts'
 import { canonicalWire } from './harness/wire.ts'
-import type { Divergence } from './harness/divergence.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, HOT_PROTO_PATHS } from './generators/proto.ts'
@@ -48,9 +47,8 @@ const upstreamType = (path: string): UpstreamType | undefined => {
 		if (cursor === null || (typeof cursor !== 'object' && typeof cursor !== 'function')) return undefined
 		cursor = (cursor as Record<string, unknown>)[segment]
 	}
-	return typeof cursor === 'function' && typeof (cursor as UpstreamType).encode === 'function'
-		? (cursor as unknown as UpstreamType)
-		: undefined
+	const candidate = cursor as unknown as UpstreamType | undefined
+	return typeof cursor === 'function' && typeof candidate?.encode === 'function' ? candidate : undefined
 }
 
 const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false, objects: false, oneofs: false }

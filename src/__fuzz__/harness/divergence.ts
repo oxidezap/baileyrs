@@ -80,7 +80,9 @@ const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string
 const text = (value: unknown): string => {
 	if (typeof value === 'string') return value
 	try {
-		return JSON.stringify(value, (_key, nested: unknown) => (typeof nested === 'bigint' ? nested.toString() : nested)) ?? ''
+		return (
+			JSON.stringify(value, (_key, nested: unknown) => (typeof nested === 'bigint' ? nested.toString() : nested)) ?? ''
+		)
 	} catch {
 		return ''
 	}
@@ -161,7 +163,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: /^pure:generateForwardMessageContent/u,
 		status: 'open',
 		reason:
-			'baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller\'s own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to.',
+			"baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller's own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to.",
 		review: '2026-11-01'
 	},
 	{
@@ -187,7 +189,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'buffer:differential',
 		status: 'open',
 		reason:
-			'Flushing a buffer that holds several event kinds releases them in a different order than upstream: for the same sequence, baileyrs emitted contacts.upsert before message-receipt.update where upstream emitted them the other way round. No event is lost — buffer:conservation is clean — but a consumer whose handlers assume upstream\'s ordering (contacts populated before receipts reference them) sees a different interleaving.',
+			"Flushing a buffer that holds several event kinds releases them in a different order than upstream: for the same sequence, baileyrs emitted contacts.upsert before message-receipt.update where upstream emitted them the other way round. No event is lost — buffer:conservation is clean — but a consumer whose handlers assume upstream's ordering (contacts populated before receipts reference them) sees a different interleaving.",
 		review: '2026-11-01'
 	},
 	{
@@ -199,8 +201,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'The bridge decoder throws "Value is larger than Number.MAX_SAFE_INTEGER" (or the MIN_SAFE_INTEGER counterpart) for any 64-bit field outside +/-(2^53-1), where protobufjs decodes it to a Long. The boundary is exact: 9007199254740991 decodes, 9007199254740992 throws. This is not a precision difference — the whole message fails to decode, so a legitimate server payload with a large fileLength or a microsecond timestamp becomes an error rather than a message. The most severe finding in this suite.',
 		review: '2026-10-01',
-		when: divergence =>
-			[divergence.local, divergence.upstream].some(side => text(side).includes('SAFE_INTEGER'))
+		when: divergence => [divergence.local, divergence.upstream].some(side => text(side).includes('SAFE_INTEGER'))
 	},
 	{
 		id: 'proto-field-renamed-and-dropped',

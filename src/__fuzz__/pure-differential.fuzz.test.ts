@@ -15,14 +15,20 @@
  */
 
 import { describe, it } from 'node:test'
-import type { BinaryNode } from '../WABinary/index.ts'
+import type { BinaryNode } from '../Types/index.ts'
 import { compareOutcomes, runOutcome, showOutcome } from './harness/compare.ts'
 import type { Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import type { Random } from './harness/random.ts'
 import { generateBinaryNode, generateDictionaryNode, generateErrorNode } from './generators/binary-node.ts'
 import { generateJid, generateJidPair, generateMaybeJid, JID_SERVERS } from './generators/jid.ts'
-import { generateAnyValue, generateBytes, generateNumber, generateString, HOSTILE_STRINGS } from './generators/values.ts'
+import {
+	generateAnyValue,
+	generateBytes,
+	generateNumber,
+	generateString,
+	HOSTILE_STRINGS
+} from './generators/values.ts'
 import { PURE_TARGET_NAMES } from './targets.ts'
 
 const upstream = (await import('baileys')) as unknown as Record<string, unknown>
@@ -168,7 +174,9 @@ const messageContent = (random: Random, depth = 2): Record<string, unknown> => {
 const deeplyNestedContent = (random: Random): Record<string, unknown> => {
 	let content: Record<string, unknown> = { conversation: 'bottom' }
 	for (let depth = 0; depth < random.int(1, 400); depth++) {
-		content = { [random.pick(['ephemeralMessage', 'viewOnceMessage', 'documentWithCaptionMessage'])]: { message: content } }
+		content = {
+			[random.pick(['ephemeralMessage', 'viewOnceMessage', 'documentWithCaptionMessage'])]: { message: content }
+		}
 	}
 	return content
 }
@@ -232,7 +240,14 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [
 			random.weighted<unknown>([
 				[3, generateNumber(random)],
-				[3, { low: random.int(-2_147_483_648, 2_147_483_647), high: random.int(-2_147_483_648, 2_147_483_647), unsigned: random.bool() }],
+				[
+					3,
+					{
+						low: random.int(-2_147_483_648, 2_147_483_647),
+						high: random.int(-2_147_483_648, 2_147_483_647),
+						unsigned: random.bool()
+					}
+				],
 				[2, generateString(random)],
 				[2, undefined],
 				[1, null],
@@ -241,12 +256,18 @@ const TARGETS: readonly PureTarget[] = [
 		]
 	},
 	{ name: 'isStringNullOrEmpty', generate: random => [generateAnyValue(random)] },
-	{ name: 'getKeyAuthor', generate: random => [random.bool(0.9) ? messageKey(random) : undefined, generateMaybeJid(random)] },
+	{
+		name: 'getKeyAuthor',
+		generate: random => [random.bool(0.9) ? messageKey(random) : undefined, generateMaybeJid(random)]
+	},
 	{
 		name: 'getStatusFromReceiptType',
 		generate: random => [
 			random.weighted<unknown>([
-				[5, random.pick(['read', 'read-self', 'played', 'hist_sync', 'peer_msg', 'sender', 'inactive', 'delivery', ''])],
+				[
+					5,
+					random.pick(['read', 'read-self', 'played', 'hist_sync', 'peer_msg', 'sender', 'inactive', 'delivery', ''])
+				],
 				[2, generateString(random)],
 				[1, undefined]
 			])
@@ -256,7 +277,12 @@ const TARGETS: readonly PureTarget[] = [
 	{ name: 'getErrorCodeFromStreamError', generate: random => [generateErrorNode(random)], runs: 250 },
 	{
 		name: 'isWABusinessPlatform',
-		generate: random => [random.weighted<unknown>([[4, random.pick(['smba', 'smbi', 'android', 'ios', ''])], [2, generateString(random)]])]
+		generate: random => [
+			random.weighted<unknown>([
+				[4, random.pick(['smba', 'smbi', 'android', 'ios', ''])],
+				[2, generateString(random)]
+			])
+		]
 	},
 	{ name: 'bytesToCrockford', generate: random => [Buffer.from(generateBytes(random))], runs: 250 },
 	{
@@ -345,7 +371,11 @@ const TARGETS: readonly PureTarget[] = [
 		name: 'prepareDisappearingMessageSettingContent',
 		generate: random => [random.bool(0.8) ? generateNumber(random) : undefined]
 	},
-	{ name: 'assertMediaContent', generate: random => [random.bool(0.85) ? messageContent(random) : undefined], runs: 250 },
+	{
+		name: 'assertMediaContent',
+		generate: random => [random.bool(0.85) ? messageContent(random) : undefined],
+		runs: 250
+	},
 
 	// ---- src/WABinary/generic-utils.ts -------------------------------------
 	{
@@ -378,16 +408,32 @@ const TARGETS: readonly PureTarget[] = [
 		],
 		runs: 250
 	},
-	{ name: 'reduceBinaryNodeToDictionary', generate: random => [generateDictionaryNode(random), random.pick(['item', 'missing'])], runs: 250 },
+	{
+		name: 'reduceBinaryNodeToDictionary',
+		generate: random => [generateDictionaryNode(random), random.pick(['item', 'missing'])],
+		runs: 250
+	},
 	{ name: 'assertNodeErrorFree', generate: random => [generateErrorNode(random)], runs: 250 },
-	{ name: 'binaryNodeToString', generate: random => [generateBinaryNode(random) as BinaryNode['content']], runs: 200 },
+	{
+		name: 'binaryNodeToString',
+		generate: random => [generateBinaryNode(random) as unknown as BinaryNode['content']],
+		runs: 200
+	},
 	{ name: 'getBinaryNodeMessages', generate: random => [generateBinaryNode(random)], runs: 200 },
 
 	// ---- src/Utils/crypto.ts (the deterministic half) ----------------------
 	// Sizes are generated off-spec on purpose: a 31-byte AES key has to fail the
 	// same way on both sides, and "one throws, the other pads" is a real bug.
-	{ name: 'aesEncrypWithIV', generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)], runs: 200 },
-	{ name: 'aesDecryptWithIV', generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)], runs: 200 },
+	{
+		name: 'aesEncrypWithIV',
+		generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)],
+		runs: 200
+	},
+	{
+		name: 'aesDecryptWithIV',
+		generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)],
+		runs: 200
+	},
 	{ name: 'aesDecrypt', generate: random => [cryptoBuffer(random), cryptoKey(random)], runs: 200 },
 	{ name: 'aesEncryptCTR', generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)], runs: 200 },
 	{ name: 'aesDecryptCTR', generate: random => [cryptoBuffer(random), cryptoKey(random), cryptoIv(random)], runs: 200 },
@@ -406,13 +452,17 @@ const TARGETS: readonly PureTarget[] = [
 		generate: random => [
 			cryptoBuffer(random),
 			random.pick([0, 1, 16, 32, 64, 80, 255, 8_160, 8_161]),
-			random.bool(0.8) ? { salt: random.bool(0.6) ? cryptoBuffer(random) : undefined, info: generateString(random) } : {}
+			random.bool(0.8)
+				? { salt: random.bool(0.6) ? cryptoBuffer(random) : undefined, info: generateString(random) }
+				: {}
 		],
 		runs: 200
 	},
 	{
 		name: 'hkdfInfoKey',
-		generate: random => [random.pick(['image', 'video', 'audio', 'document', 'sticker', 'thumbnail-link', 'md-app-state', 'unknown', ''])]
+		generate: random => [
+			random.pick(['image', 'video', 'audio', 'document', 'sticker', 'thumbnail-link', 'md-app-state', 'unknown', ''])
+		]
 	},
 	{
 		name: 'hmacSign',
@@ -423,7 +473,13 @@ const TARGETS: readonly PureTarget[] = [
 	{ name: 'sha256', generate: random => [cryptoBuffer(random)], runs: 150 },
 	{
 		name: 'generateSignalPubKey',
-		generate: random => [random.weighted<unknown>([[4, random.bytes(32)], [3, random.bytes(33)], [2, generateBytes(random)]])],
+		generate: random => [
+			random.weighted<unknown>([
+				[4, random.bytes(32)],
+				[3, random.bytes(33)],
+				[2, generateBytes(random)]
+			])
+		],
 		runs: 150
 	},
 
@@ -431,7 +487,9 @@ const TARGETS: readonly PureTarget[] = [
 	{
 		name: 'assertMeId',
 		generate: random => [
-			random.bool(0.8) ? { me: random.bool(0.8) ? { id: generateMaybeJid(random) } : undefined } : generateAnyValue(random)
+			random.bool(0.8)
+				? { me: random.bool(0.8) ? { id: generateMaybeJid(random) } : undefined }
+				: generateAnyValue(random)
 		]
 	},
 	{
@@ -477,12 +535,24 @@ const TARGETS: readonly PureTarget[] = [
 	{ name: 'getChatId', generate: random => [messageKey(random)], runs: 200 },
 	{
 		name: 'isRealMessage',
-		generate: random => [{ key: messageKey(random), message: messageContent(random), messageStubType: random.bool(0.4) ? random.int(0, 80) : undefined }],
+		generate: random => [
+			{
+				key: messageKey(random),
+				message: messageContent(random),
+				messageStubType: random.bool(0.4) ? random.int(0, 80) : undefined
+			}
+		],
 		runs: 200
 	},
 	{
 		name: 'shouldIncrementChatUnread',
-		generate: random => [{ key: messageKey(random), message: messageContent(random), messageStubType: random.bool(0.4) ? random.int(0, 80) : undefined }],
+		generate: random => [
+			{
+				key: messageKey(random),
+				message: messageContent(random),
+				messageStubType: random.bool(0.4) ? random.int(0, 80) : undefined
+			}
+		],
 		runs: 200
 	},
 	{ name: 'getHistoryMsg', generate: random => [messageContent(random)], runs: 200 },
@@ -492,11 +562,23 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'getCompanionPlatformId',
-		generate: random => [[random.pick(['Ubuntu', 'Mac OS', 'Windows', '']), random.pick(['Chrome', 'Firefox', 'Safari', '']), random.pick(['110.0', ''])]]
+		generate: random => [
+			[
+				random.pick(['Ubuntu', 'Mac OS', 'Windows', '']),
+				random.pick(['Chrome', 'Firefox', 'Safari', '']),
+				random.pick(['110.0', ''])
+			]
+		]
 	},
 	{
 		name: 'getCompanionWebClientType',
-		generate: random => [[random.pick(['Ubuntu', 'Mac OS', 'Windows', '']), random.pick(['Chrome', 'Firefox', 'Safari', 'Edge', 'Opera', '']), random.pick(['110.0', ''])]]
+		generate: random => [
+			[
+				random.pick(['Ubuntu', 'Mac OS', 'Windows', '']),
+				random.pick(['Chrome', 'Firefox', 'Safari', 'Edge', 'Opera', '']),
+				random.pick(['110.0', ''])
+			]
+		]
 	},
 	{ name: 'getStatusCodeForMediaRetry', generate: random => [generateNumber(random)] },
 	{
@@ -578,7 +660,9 @@ const targetNames = TARGETS.map(target => target.name)
 
 describe('pure helper differential — baileyrs vs baileys', () => {
 	it('covers every helper this fuzzer claims to cover', () => {
-		const missing = targetNames.filter(name => typeof local[name] !== 'function' || typeof upstream[name] !== 'function')
+		const missing = targetNames.filter(
+			name => typeof local[name] !== 'function' || typeof upstream[name] !== 'function'
+		)
 		if (missing.length > 0) {
 			throw new Error(`not a shared function export in both packages: ${missing.join(', ')}`)
 		}

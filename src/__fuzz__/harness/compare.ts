@@ -84,7 +84,7 @@ export const normalise = (value: unknown, depth = 0): unknown => {
 			return BigInt(String(value))
 		}
 		const out: Record<string, unknown> = {}
-		for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+		for (const key of Object.keys(value as Record<string, unknown>).toSorted()) {
 			const nested = (value as Record<string, unknown>)[key]
 			// An explicit `undefined` property and an absent one are the same value
 			// to every consumer that reads it; only `in` can tell them apart.

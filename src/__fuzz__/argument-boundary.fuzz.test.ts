@@ -59,35 +59,190 @@ interface BoundaryCase {
 }
 
 const CASES: readonly BoundaryCase[] = [
-	{ method: 'updateBlockStatus', parameter: 'action', source: 'blocking.ts:updateBlockStatus:action', call: (s, v) => s.updateBlockStatus(USER, off(v)) },
-	{ method: 'sendPresenceUpdate', parameter: 'type', source: 'index.ts:sendPresenceUpdate:type', call: (s, v) => s.sendPresenceUpdate(off(v), USER) },
-	{ method: 'waUploadToServer', parameter: 'mediaType', source: 'index.ts:waUploadToServer:mediaType', call: (s, v) => s.waUploadToServer(off(Buffer.from('x')), off({ mediaType: v, fileEncSha256B64: '', mediaType2: undefined })) },
-	{ method: 'groupSettingUpdate', parameter: 'setting', source: 'groups.ts:groupSettingUpdate:setting', call: (s, v) => s.groupSettingUpdate(GROUP, off(v)) },
-	{ method: 'groupRequestParticipantsUpdate', parameter: 'action', source: 'groups.ts:groupRequestParticipantsUpdate:action', call: (s, v) => s.groupRequestParticipantsUpdate(GROUP, [USER], off(v)) },
-	{ method: 'groupParticipantsUpdate', parameter: 'action', source: 'groups.ts:groupParticipantsUpdate:action', call: (s, v) => s.groupParticipantsUpdate(GROUP, [USER], off(v)) },
-	{ method: 'groupMemberAddMode', parameter: 'mode', source: 'groups.ts:groupMemberAddMode:mode', call: (s, v) => s.groupMemberAddMode(GROUP, off(v)) },
-	{ method: 'groupJoinApprovalMode', parameter: 'mode', source: 'groups.ts:groupJoinApprovalMode:mode', call: (s, v) => s.groupJoinApprovalMode(GROUP, off(v)) },
-	{ method: 'sendReceipt', parameter: 'type', source: 'messages.ts:sendReceipt:type', call: (s, v) => s.sendReceipt(USER, undefined, ['ABC'], off(v)) },
-	{ method: 'sendReceipts', parameter: 'type', source: 'messages.ts:sendReceipts:type', call: (s, v) => s.sendReceipts([{ remoteJid: USER, id: 'ABC', fromMe: false }], off(v)) },
-	{ method: 'newsletterMetadata', parameter: 'type', source: 'newsletter.ts:newsletterMetadata:type', call: (s, v) => s.newsletterMetadata(off(v), 'key') },
-	{ method: 'cleanDirtyBits', parameter: 'type', source: 'server-queries.ts:cleanDirtyBits:type', call: (s, v) => s.cleanDirtyBits(off(v)) },
-	{ method: 'sendPresence', parameter: 'status', source: 'presence.ts:sendPresence:status', call: (s, v) => s.sendPresence(off(v)) },
-	{ method: 'sendChatState', parameter: 'state', source: 'presence.ts:sendChatState:state', call: (s, v) => s.sendChatState(USER, off(v)) },
-	{ method: 'updateLastSeenPrivacy', parameter: 'value', source: 'privacy.ts:updateLastSeenPrivacy:value', call: (s, v) => s.updateLastSeenPrivacy(off(v)) },
-	{ method: 'updateOnlinePrivacy', parameter: 'value', source: 'privacy.ts:updateOnlinePrivacy:value', call: (s, v) => s.updateOnlinePrivacy(off(v)) },
-	{ method: 'updateProfilePicturePrivacy', parameter: 'value', source: 'privacy.ts:updateProfilePicturePrivacy:value', call: (s, v) => s.updateProfilePicturePrivacy(off(v)) },
-	{ method: 'updateStatusPrivacy', parameter: 'value', source: 'privacy.ts:updateStatusPrivacy:value', call: (s, v) => s.updateStatusPrivacy(off(v)) },
-	{ method: 'updateReadReceiptsPrivacy', parameter: 'value', source: 'privacy.ts:updateReadReceiptsPrivacy:value', call: (s, v) => s.updateReadReceiptsPrivacy(off(v)) },
-	{ method: 'updateGroupsAddPrivacy', parameter: 'value', source: 'privacy.ts:updateGroupsAddPrivacy:value', call: (s, v) => s.updateGroupsAddPrivacy(off(v)) },
-	{ method: 'updateCallPrivacy', parameter: 'value', source: 'privacy.ts:updateCallPrivacy:value', call: (s, v) => s.updateCallPrivacy(off(v)) },
-	{ method: 'updateMessagesPrivacy', parameter: 'value', source: 'privacy.ts:updateMessagesPrivacy:value', call: (s, v) => s.updateMessagesPrivacy(off(v)) },
-	{ method: 'profilePictureUrl', parameter: 'type', source: 'contacts.ts:profilePictureUrl:type', call: (s, v) => s.profilePictureUrl(USER, off(v)) },
-	{ method: 'communityRequestParticipantsUpdate', parameter: 'action', source: 'communities.ts:communityRequestParticipantsUpdate:action', call: (s, v) => s.communityRequestParticipantsUpdate(GROUP, [USER], off(v)) },
-	{ method: 'communityParticipantsUpdate', parameter: 'action', source: 'communities.ts:communityParticipantsUpdate:action', call: (s, v) => s.communityParticipantsUpdate(GROUP, [USER], off(v)) },
-	{ method: 'communitySettingUpdate', parameter: 'setting', source: 'communities.ts:communitySettingUpdate:setting', call: (s, v) => s.communitySettingUpdate(GROUP, off(v)) },
-	{ method: 'communityMemberAddMode', parameter: 'mode', source: 'communities.ts:communityMemberAddMode:mode', call: (s, v) => s.communityMemberAddMode(GROUP, off(v)) },
-	{ method: 'communityJoinApprovalMode', parameter: 'mode', source: 'communities.ts:communityJoinApprovalMode:mode', call: (s, v) => s.communityJoinApprovalMode(GROUP, off(v)) },
-	{ method: 'downloadMedia', parameter: 'type', source: 'index.ts:downloadMedia:type', call: (s, v) => s.downloadMedia(off({ url: 'https://example.invalid/x', mediaKey: new Uint8Array(32), directPath: '/x', mimetype: 'image/jpeg' }), off(v)) }
+	{
+		method: 'updateBlockStatus',
+		parameter: 'action',
+		source: 'blocking.ts:updateBlockStatus:action',
+		call: (s, v) => s.updateBlockStatus(USER, off(v))
+	},
+	{
+		method: 'sendPresenceUpdate',
+		parameter: 'type',
+		source: 'index.ts:sendPresenceUpdate:type',
+		call: (s, v) => s.sendPresenceUpdate(off(v), USER)
+	},
+	{
+		method: 'waUploadToServer',
+		parameter: 'mediaType',
+		source: 'index.ts:waUploadToServer:mediaType',
+		call: (s, v) =>
+			s.waUploadToServer(off(Buffer.from('x')), off({ mediaType: v, fileEncSha256B64: '', mediaType2: undefined }))
+	},
+	{
+		method: 'groupSettingUpdate',
+		parameter: 'setting',
+		source: 'groups.ts:groupSettingUpdate:setting',
+		call: (s, v) => s.groupSettingUpdate(GROUP, off(v))
+	},
+	{
+		method: 'groupRequestParticipantsUpdate',
+		parameter: 'action',
+		source: 'groups.ts:groupRequestParticipantsUpdate:action',
+		call: (s, v) => s.groupRequestParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'groupParticipantsUpdate',
+		parameter: 'action',
+		source: 'groups.ts:groupParticipantsUpdate:action',
+		call: (s, v) => s.groupParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'groupMemberAddMode',
+		parameter: 'mode',
+		source: 'groups.ts:groupMemberAddMode:mode',
+		call: (s, v) => s.groupMemberAddMode(GROUP, off(v))
+	},
+	{
+		method: 'groupJoinApprovalMode',
+		parameter: 'mode',
+		source: 'groups.ts:groupJoinApprovalMode:mode',
+		call: (s, v) => s.groupJoinApprovalMode(GROUP, off(v))
+	},
+	{
+		method: 'sendReceipt',
+		parameter: 'type',
+		source: 'messages.ts:sendReceipt:type',
+		call: (s, v) => s.sendReceipt(USER, undefined, ['ABC'], off(v))
+	},
+	{
+		method: 'sendReceipts',
+		parameter: 'type',
+		source: 'messages.ts:sendReceipts:type',
+		call: (s, v) => s.sendReceipts([{ remoteJid: USER, id: 'ABC', fromMe: false }], off(v))
+	},
+	{
+		method: 'newsletterMetadata',
+		parameter: 'type',
+		source: 'newsletter.ts:newsletterMetadata:type',
+		call: (s, v) => s.newsletterMetadata(off(v), 'key')
+	},
+	{
+		method: 'cleanDirtyBits',
+		parameter: 'type',
+		source: 'server-queries.ts:cleanDirtyBits:type',
+		call: (s, v) => s.cleanDirtyBits(off(v))
+	},
+	{
+		method: 'sendPresence',
+		parameter: 'status',
+		source: 'presence.ts:sendPresence:status',
+		call: (s, v) => s.sendPresence(off(v))
+	},
+	{
+		method: 'sendChatState',
+		parameter: 'state',
+		source: 'presence.ts:sendChatState:state',
+		call: (s, v) => s.sendChatState(USER, off(v))
+	},
+	{
+		method: 'updateLastSeenPrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateLastSeenPrivacy:value',
+		call: (s, v) => s.updateLastSeenPrivacy(off(v))
+	},
+	{
+		method: 'updateOnlinePrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateOnlinePrivacy:value',
+		call: (s, v) => s.updateOnlinePrivacy(off(v))
+	},
+	{
+		method: 'updateProfilePicturePrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateProfilePicturePrivacy:value',
+		call: (s, v) => s.updateProfilePicturePrivacy(off(v))
+	},
+	{
+		method: 'updateStatusPrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateStatusPrivacy:value',
+		call: (s, v) => s.updateStatusPrivacy(off(v))
+	},
+	{
+		method: 'updateReadReceiptsPrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateReadReceiptsPrivacy:value',
+		call: (s, v) => s.updateReadReceiptsPrivacy(off(v))
+	},
+	{
+		method: 'updateGroupsAddPrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateGroupsAddPrivacy:value',
+		call: (s, v) => s.updateGroupsAddPrivacy(off(v))
+	},
+	{
+		method: 'updateCallPrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateCallPrivacy:value',
+		call: (s, v) => s.updateCallPrivacy(off(v))
+	},
+	{
+		method: 'updateMessagesPrivacy',
+		parameter: 'value',
+		source: 'privacy.ts:updateMessagesPrivacy:value',
+		call: (s, v) => s.updateMessagesPrivacy(off(v))
+	},
+	{
+		method: 'profilePictureUrl',
+		parameter: 'type',
+		source: 'contacts.ts:profilePictureUrl:type',
+		call: (s, v) => s.profilePictureUrl(USER, off(v))
+	},
+	{
+		method: 'communityRequestParticipantsUpdate',
+		parameter: 'action',
+		source: 'communities.ts:communityRequestParticipantsUpdate:action',
+		call: (s, v) => s.communityRequestParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'communityParticipantsUpdate',
+		parameter: 'action',
+		source: 'communities.ts:communityParticipantsUpdate:action',
+		call: (s, v) => s.communityParticipantsUpdate(GROUP, [USER], off(v))
+	},
+	{
+		method: 'communitySettingUpdate',
+		parameter: 'setting',
+		source: 'communities.ts:communitySettingUpdate:setting',
+		call: (s, v) => s.communitySettingUpdate(GROUP, off(v))
+	},
+	{
+		method: 'communityMemberAddMode',
+		parameter: 'mode',
+		source: 'communities.ts:communityMemberAddMode:mode',
+		call: (s, v) => s.communityMemberAddMode(GROUP, off(v))
+	},
+	{
+		method: 'communityJoinApprovalMode',
+		parameter: 'mode',
+		source: 'communities.ts:communityJoinApprovalMode:mode',
+		call: (s, v) => s.communityJoinApprovalMode(GROUP, off(v))
+	},
+	{
+		method: 'downloadMedia',
+		parameter: 'type',
+		source: 'index.ts:downloadMedia:type',
+		call: (s, v) =>
+			s.downloadMedia(
+				off({
+					url: 'https://example.invalid/x',
+					mediaKey: new Uint8Array(32),
+					directPath: '/x',
+					mimetype: 'image/jpeg'
+				}),
+				off<'buffer' | 'stream'>(v)
+			)
+	}
 ]
 
 /**
@@ -112,7 +267,17 @@ const generateOffDomainValue = (random: Random): unknown =>
 		[1, Symbol('off-domain')],
 		[1, 'x'.repeat(4_096)],
 		[1, Object.create(null)],
-		[1, new Proxy({}, { get: () => { throw new Error('hostile getter') } })]
+		[
+			1,
+			new Proxy(
+				{},
+				{
+					get: () => {
+						throw new Error('hostile getter')
+					}
+				}
+			)
+		]
 	])
 
 interface BoundaryFinding {
@@ -133,11 +298,19 @@ const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFindi
 	// boundary was built to prevent, and it is invisible to a type checker.
 	const stack = String(error.stack ?? '')
 	if (stack.includes('wasm://')) {
-		return { ok: false, detail: 'the rejection stack contains wasm frames', observed: stack.split('\n').slice(0, 4).join(' | ') }
+		return {
+			ok: false,
+			detail: 'the rejection stack contains wasm frames',
+			observed: stack.split('\n').slice(0, 4).join(' | ')
+		}
 	}
 
 	if (boom.isBoom !== true) {
-		return { ok: false, detail: 'the rejection is not a Boom', observed: `${error.name}: ${error.message.slice(0, 120)}` }
+		return {
+			ok: false,
+			detail: 'the rejection is not a Boom',
+			observed: `${error.name}: ${error.message.slice(0, 120)}`
+		}
 	}
 	if (boom.output?.statusCode !== 400) {
 		return { ok: false, detail: 'the rejection does not carry statusCode 400', observed: boom.output?.statusCode }
@@ -149,7 +322,11 @@ const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFindi
 		return { ok: false, detail: 'the rejection does not list the accepted values', observed: boom.data?.accepted }
 	}
 	if (!error.message.startsWith(`${testCase.method}: `)) {
-		return { ok: false, detail: 'the message does not open with the method the consumer called', observed: error.message.slice(0, 120) }
+		return {
+			ok: false,
+			detail: 'the message does not open with the method the consumer called',
+			observed: error.message.slice(0, 120)
+		}
 	}
 	return { ok: true }
 }
@@ -183,7 +360,15 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		const { state } = await useMultiFileAuthState(folder)
 		socket = makeWASocket({
 			auth: state,
-			logger: { level: 'silent', child: () => socket.logger, trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as never,
+			logger: {
+				level: 'silent',
+				child: () => socket.logger,
+				trace: () => {},
+				debug: () => {},
+				info: () => {},
+				warn: () => {},
+				error: () => {}
+			} as never,
 			// Nothing listens here, so a value that survives validation fails as
 			// "not connected" instead of reaching a server.
 			waWebSocketUrl: 'ws://127.0.0.1:1'
@@ -216,7 +401,10 @@ describe('closed-domain argument boundary, fuzzed', () => {
 			}
 		}
 
-		assert.ok(scanned.length > 20, `the source scan found only ${scanned.length} guarded parameters — has the pattern changed?`)
+		assert.ok(
+			scanned.length > 20,
+			`the source scan found only ${scanned.length} guarded parameters — has the pattern changed?`
+		)
 
 		const covered = new Set(CASES.map(testCase => testCase.source))
 		// downloadMediaMessage is a standalone helper rather than a socket method;

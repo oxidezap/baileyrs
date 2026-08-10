@@ -19,7 +19,7 @@ import type { Random } from '../harness/random.ts'
 import { generateJid, generateMaybeJid } from './jid.ts'
 import { generateAnyValue, generateNumber, generateString } from './values.ts'
 
-export const BRIDGE_EVENT_TYPES: readonly string[] = [...KNOWN_BRIDGE_EVENT_TYPES].sort()
+export const BRIDGE_EVENT_TYPES: readonly string[] = [...KNOWN_BRIDGE_EVENT_TYPES].toSorted()
 
 /** The properties the adapters read, so generated payloads reach real branches. */
 const FIELD_NAMES = [

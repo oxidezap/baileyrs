@@ -20,7 +20,7 @@ const local = (await import('../index.ts')) as unknown as Record<string, unknown
 
 const sharedFunctionExports = Object.keys(upstream)
 	.filter(name => typeof upstream[name] === 'function' && typeof local[name] === 'function')
-	.sort()
+	.toSorted()
 
 describe('fuzz coverage ledger', () => {
 	it('finds a meaningful shared surface at all', () => {

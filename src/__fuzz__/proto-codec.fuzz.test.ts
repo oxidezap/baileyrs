@@ -32,7 +32,6 @@ import {
 	fieldsOfPath,
 	generateProtoCase,
 	generateProtoObject,
-	HOT_PROTO_PATHS,
 	oneofGroups,
 	pickProtoPath,
 	proto3OptionalFields,
@@ -58,7 +57,10 @@ interface UpstreamType {
  * because of this guard.
  */
 const isUsableCase = (value: ProtoCase): boolean =>
-	typeof value?.path === 'string' && value.path.length > 0 && typeof value.message === 'object' && value.message !== null
+	typeof value?.path === 'string' &&
+	value.path.length > 0 &&
+	typeof value.message === 'object' &&
+	value.message !== null
 
 /**
  * protobufjs namespaces nest, so a schema path is a lookup chain.
@@ -74,9 +76,8 @@ const upstreamType = (path: string): UpstreamType | undefined => {
 		if (cursor === null || (typeof cursor !== 'object' && typeof cursor !== 'function')) return undefined
 		cursor = (cursor as Record<string, unknown>)[segment]
 	}
-	return typeof cursor === 'function' && typeof (cursor as UpstreamType).encode === 'function'
-		? (cursor as unknown as UpstreamType)
-		: undefined
+	const candidate = cursor as unknown as UpstreamType | undefined
+	return typeof cursor === 'function' && typeof candidate?.encode === 'function' ? candidate : undefined
 }
 
 /**
@@ -457,7 +458,11 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				if (sameWireContent(localBytes, remoteBytes)) return []
 
 				return {
-					target: byteTarget(path, localBytes, remoteBytes, 'proto:presence'),
+					// Not routed through byteTarget: this sweep already knows precisely
+					// what it is testing, and "an explicit-presence field was dropped" is
+					// a sharper diagnosis than the generic field-omission one it would
+					// otherwise be folded into.
+					target: encodeTarget(path, 'proto:presence'),
 					input: `${path}.${field} = ${JSON.stringify(zero instanceof Uint8Array ? '<empty bytes>' : zero)}`,
 					local: hex(localBytes) || '<nothing encoded>',
 					upstream: hex(remoteBytes) || '<nothing encoded>',

@@ -12,9 +12,28 @@ import type { Random } from '../harness/random.ts'
 
 /** Integer boundaries worth hitting on purpose, as numbers. */
 export const BOUNDARY_NUMBERS = [
-	0, 1, -1, 2, 7, 127, 128, 255, 256, 32_767, 32_768, 65_535, 65_536,
-	2_147_483_647, 2_147_483_648, -2_147_483_648, -2_147_483_649, 4_294_967_295, 4_294_967_296,
-	Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER - 1, -Number.MAX_SAFE_INTEGER
+	0,
+	1,
+	-1,
+	2,
+	7,
+	127,
+	128,
+	255,
+	256,
+	32_767,
+	32_768,
+	65_535,
+	65_536,
+	2_147_483_647,
+	2_147_483_648,
+	-2_147_483_648,
+	-2_147_483_649,
+	4_294_967_295,
+	4_294_967_296,
+	Number.MAX_SAFE_INTEGER,
+	Number.MAX_SAFE_INTEGER - 1,
+	-Number.MAX_SAFE_INTEGER
 ] as const
 
 /** Values that are numbers to JavaScript but not integers to a protobuf encoder. */
@@ -28,7 +47,10 @@ export const HOSTILE_NUMBERS = [
 	-1.5,
 	1e21,
 	1e-7,
-	9_007_199_254_740_993
+	// Written as an expression: the literal 9007199254740993 is not representable
+	// as a double, and the lint rule that says so is right — the point is to hand
+	// the encoders a value just past the safe-integer boundary.
+	Number.MAX_SAFE_INTEGER + 2
 ] as const
 
 /** 64-bit boundaries, as the decimal strings untyped callers actually pass. */
@@ -103,10 +125,7 @@ export const generateAnyValue = (random: Random, depth = 0): unknown =>
 		[2, () => null],
 		[2, () => generateBytes(random)],
 		[1, () => random.pick(BIG_INTEGER_STRINGS)],
-		[
-			depth < 2 ? 2 : 0,
-			() => Array.from({ length: random.int(0, 4) }, () => generateAnyValue(random, depth + 1))
-		],
+		[depth < 2 ? 2 : 0, () => Array.from({ length: random.int(0, 4) }, () => generateAnyValue(random, depth + 1))],
 		[
 			depth < 2 ? 2 : 0,
 			() => {

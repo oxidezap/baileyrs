@@ -55,7 +55,9 @@ export interface FuzzOptions<T> {
 	 * Inspects one input. Return the differences found (empty when the input is
 	 * fine); throwing is also a finding, reported as a crash.
 	 */
-	readonly check: (input: T) => readonly Divergence[] | Divergence | void | Promise<readonly Divergence[] | Divergence | void>
+	readonly check: (
+		input: T
+	) => readonly Divergence[] | Divergence | void | Promise<readonly Divergence[] | Divergence | void>
 	/** Iterations in smoke mode; deep mode multiplies this. Default 150. */
 	readonly runs?: number
 	/** Set false when the input is already minimal (raw byte strings, mostly). */
@@ -90,6 +92,10 @@ export interface FuzzReport {
 	readonly runs: number
 	readonly corpusReplayed: number
 	readonly excused: number
+	/** Registry ids that excused at least one finding, so stale entries can be found across targets. */
+	readonly excusedBy: readonly string[]
+	/** Of those, the ones still marked `open`. */
+	readonly openFindings: readonly string[]
 	/** Set when the time budget cut the run short, so a partial pass is never silent. */
 	readonly truncated?: { readonly ran: number; readonly planned: number }
 	readonly findings: readonly Divergence[]
@@ -111,7 +117,8 @@ const preview = (value: unknown, limit = 900): string => {
 			value,
 			(_key, nested: unknown) => {
 				if (typeof nested === 'bigint') return `${nested.toString()}n`
-				if (nested instanceof Uint8Array) return `<bytes ${nested.length}: ${Buffer.from(nested.slice(0, 32)).toString('hex')}>`
+				if (nested instanceof Uint8Array)
+					return `<bytes ${nested.length}: ${Buffer.from(nested.slice(0, 32)).toString('hex')}>`
 				if (typeof nested === 'object' && nested !== null) {
 					if (seen.has(nested)) return '<circular>'
 					seen.add(nested)
@@ -264,6 +271,8 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		runs: executed,
 		corpusReplayed: corpus.length,
 		excused,
+		excusedBy: outcome.used,
+		openFindings: outcome.openHits,
 		truncated: truncatedAt === undefined ? undefined : { ran: truncatedAt, planned: runs },
 		findings: outcome.unexcused
 	}
