@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { createRequire } from 'node:module'
 import type Long from 'long'
-import { BinaryReader } from '@oxidezap/whatsapp-rust-bridge'
+import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	PROTO_ENUM_SCHEMAS,
 	PROTO_FIELD_FLAG,
@@ -118,36 +118,42 @@ const appendBytes = (writer: unknown, bytes: Uint8Array): ProtoWriter => {
 const longFromWords = (low: number, high: number, unsigned: boolean): Long => LongRuntime.fromBits(low, high, unsigned)
 
 /**
- * The neutral codec normally returns safe JS numbers. The compatibility
- * facade supplies this reader so the same generated decoder materializes
- * protobuf 64-bit words directly as Long values, without a second decode or
- * an intermediate string/BigInt allocation.
+ * The neutral codec returns a JS number while a 64-bit value is exact as a
+ * double and a plain `{ low, high, unsigned }` past that. The compatibility
+ * facade supplies this reader so the same generated decoder materializes every
+ * 64-bit word as a long.js Long instead — uniformly, whatever the magnitude —
+ * without a second decode or an intermediate string/BigInt allocation.
+ *
+ * Uniformity is the point: upstream's types declare `Long` for these fields,
+ * so a consumer calling `.toNumber()` must not have that work only for values
+ * under 2^53. The neutral shape is structurally a Long minus its methods, and
+ * the methods are exactly what upstream code calls.
  */
 class LongBinaryReader extends BinaryReader {
-	override uint64Number(): number {
+	override uint64Value(): Int64 {
 		const [low, high] = this.varint64()
-		return longFromWords(low, high, true) as unknown as number
+		return longFromWords(low, high, true)
 	}
 
-	override int64Number(): number {
+	override int64Value(): Int64 {
 		const [low, high] = this.varint64()
-		return longFromWords(low, high, false) as unknown as number
+		return longFromWords(low, high, false)
 	}
 
-	override sint64Number(): number {
+	override sint64Value(): Int64 {
 		let [low, high] = this.varint64()
 		const sign = -(low & 1)
 		low = ((low >>> 1) | ((high & 1) << (WORD_BITS - 1))) ^ sign
 		high = (high >>> 1) ^ sign
-		return longFromWords(low, high, false) as unknown as number
+		return longFromWords(low, high, false)
 	}
 
-	override fixed64Number(): number {
-		return longFromWords(this.sfixed32(), this.sfixed32(), true) as unknown as number
+	override fixed64Value(): Int64 {
+		return longFromWords(this.sfixed32(), this.sfixed32(), true)
 	}
 
-	override sfixed64Number(): number {
-		return longFromWords(this.sfixed32(), this.sfixed32(), false) as unknown as number
+	override sfixed64Value(): Int64 {
+		return longFromWords(this.sfixed32(), this.sfixed32(), false)
 	}
 }
 
