@@ -633,6 +633,69 @@ const copyStrategyResidue = (local: unknown, upstream: unknown): boolean => {
 }
 
 /**
+ * The two event kinds whose buffered merges resolve differently.
+ *
+ * Not every kind: `chats.update` twice, and `groups.update` where the later one
+ * carries no subject, were measured alongside these and agree. Listing the two
+ * rather than allowing any kind is what stops this entry from covering a
+ * consolidation difference nobody has looked at.
+ */
+const MERGE_PRECEDENCE_KINDS: ReadonlySet<string> = new Set(['contacts.upsert', 'groups.update'])
+
+/**
+ * True when the two released sequences differ only in the fields of those
+ * kinds, for the same ids.
+ *
+ * Order-insensitive, and deliberately so. The release-order entry above
+ * documents that the two buffers interleave kinds differently, and the two
+ * differences co-occur constantly — measured, the finding that motivated this
+ * entry has `contacts.upsert` and `message-receipt.update` swapped *and* a
+ * contact field differing, so an index-wise comparison matched neither entry.
+ * Observations are paired by kind and identity first, then what is left has to
+ * be a field difference on one of those kinds. Composing this way is what the
+ * copy-strategy entries do, for the same reason.
+ *
+ * Still narrow: the multiset of kinds has to match, the ids have to match, at
+ * least one field has to actually differ, and any difference on any other
+ * release fails.
+ */
+const mergePrecedenceFieldsOnly = (local: unknown, upstream: unknown): boolean => {
+	if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
+
+	const idsOf = (data: unknown): string =>
+		Array.isArray(data)
+			? text(data.map(entry => (typeof entry === 'object' && entry !== null ? (entry as { id?: unknown }).id : entry)))
+			: text(data)
+
+	// A contacts.upsert pairs on its ids alone; everything else pairs on its whole
+	// content, so a changed payload elsewhere cannot find a partner and fails.
+	const pairKey = (item: unknown): string => {
+		const released = (item as { released?: unknown })?.released
+		return typeof released === 'string' && MERGE_PRECEDENCE_KINDS.has(released)
+			? `${released}\u0000${idsOf((item as { data?: unknown }).data)}`
+			: text(item)
+	}
+
+	const remaining = new Map<string, unknown[]>()
+	for (const item of upstream) {
+		const key = pairKey(item)
+		remaining.set(key, [...(remaining.get(key) ?? []), item])
+	}
+
+	let differing = 0
+	for (const mine of local) {
+		const key = pairKey(mine)
+		const bucket = remaining.get(key)
+		if (bucket === undefined || bucket.length === 0) return false
+		const theirs = bucket.shift()
+		if (text(mine) !== text(theirs)) differing++
+	}
+	// Something has to have differed *inside* a contacts.upsert. Without this the
+	// entry would excuse a pure reordering, which is the sibling entry's subject.
+	return differing > 0
+}
+
+/**
  * True when two values agree on every key they share, differing only by which
  * keys are present.
  *
@@ -1099,6 +1162,19 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// shapes an adapter reading straight into `data` cannot survive.
 			return plainObject(data)?.length !== undefined ? plainObject(data)!.length === 0 : true
 		}
+	},
+	{
+		id: 'event-buffer-merge-precedence',
+		target: 'buffer:differential',
+		status: 'open',
+		// Confined to the fields inside a `contacts.upsert` or `groups.update`
+		// release, for the same ids. Everything else in the released sequence has to
+		// match, so a lost event, a changed id, or a difference on any other release
+		// still fails.
+		when: divergence => mergePrecedenceFieldsOnly(divergence.local, divergence.upstream),
+		reason:
+			"The two buffers resolve a merge to different winners, and neither is consistently the newer one. Measured directly, buffering each pair and flushing: two `groups.update` for the same id with subjects 'first' then 'second' — baileyrs releases 'second', upstream releases 'first'; a `contacts.update` with name 'first' followed by a `contacts.upsert` with name 'second' — baileyrs releases 'first', upstream releases 'second'. So each library keeps the stale value on one of the two kinds and the fresh one on the other, and a consumer sees a different contact name or group subject depending on which library it is running. `chats.update` twice, and a `groups.update` whose second event carries no subject, agree — as do the four message-level consolidation branches (update into upsert, reaction and delete and receipt against a buffered upsert), all measured at the same time. Found only once the buffer generator started drawing ids from a shared pool: before that no two buffered events ever referred to the same entity, so none of this ran.",
+		review: '2026-11-01'
 	},
 	{
 		id: 'event-buffer-release-order',

@@ -336,6 +336,56 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		)
 	})
 
+	// The merge-precedence entry pairs observations by kind and identity rather
+	// than by position, so that it composes with the release-order entry. That is
+	// exactly the construction that can quietly start excusing a lost event, so
+	// the boundaries are pinned.
+	it('excuses the buffer merge precedence only for the two kinds it names', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'event-buffer-merge-precedence')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (local: unknown, upstream: unknown): boolean =>
+			applyAllowlist(
+				[{ target: 'buffer:differential', input: 'in', local, upstream }],
+				new Date('2026-01-01'),
+				registry
+			).unexcused.length === 0
+
+		const upsert = (name: string) => ({ released: 'contacts.upsert', data: [{ id: 'a@s.whatsapp.net', name }] })
+		const group = (subject: string) => ({ released: 'groups.update', data: [{ id: 'g@g.us', subject }] })
+		const receipt = { released: 'message-receipt.update', data: [{ key: { id: 'B2' } }] }
+
+		assert.ok(excused([upsert('first')], [upsert('second')]), 'the measured contacts precedence is the subject')
+		assert.ok(excused([group('second')], [group('first')]), 'so is the groups one, which runs the other way round')
+		// The case that forced the pairing: a field difference *and* a reordering.
+		assert.ok(
+			excused([upsert('first'), receipt], [receipt, upsert('second')]),
+			'a field difference alongside a reordering is the two documented entries together'
+		)
+
+		// Near-misses.
+		assert.ok(!excused([upsert('first'), receipt], [upsert('second')]), 'a dropped event is not this')
+		assert.ok(
+			!excused(
+				[{ released: 'chats.update', data: [{ id: 'a', name: 'first' }] }],
+				[{ released: 'chats.update', data: [{ id: 'a', name: 'second' }] }]
+			),
+			'chats.update was measured to agree, so a difference there is unexplained'
+		)
+		assert.ok(
+			!excused(
+				[upsert('same'), group('x')],
+				[upsert('same'), { released: 'groups.update', data: [{ id: 'OTHER@g.us', subject: 'x' }] }]
+			),
+			'a changed id is a different entity, not a merge precedence'
+		)
+		assert.ok(
+			!excused([upsert('same'), receipt], [receipt, upsert('same')]),
+			'a pure reordering belongs to the sibling entry'
+		)
+	})
+
 	it('excuses the cleanMessage JID rewrite only in the shape it documents', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'clean-message-empty-user-jid-server')

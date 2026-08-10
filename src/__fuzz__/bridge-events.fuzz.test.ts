@@ -467,7 +467,41 @@ const HISTORY_JIDS = [
 
 const historyJid = (random: Random): string => (random.bool(0.9) ? random.pick(HISTORY_JIDS) : generateJid(random))
 
-const payloadFor = (random: Random, event: string): unknown => {
+/**
+ * The identities one generated sequence draws from.
+ *
+ * The same reasoning as `historyJid` one level up, applied across steps rather
+ * than within one payload. The buffer's whole job is consolidation — absorbing a
+ * pending `messages.update` into an upsert, attaching a reaction or a receipt to
+ * a buffered message, folding a `chats.update` into a `chats.upsert` — and it
+ * keys all of that on `${remoteJid},${id},${fromMe}`. With every payload drawing
+ * a fresh independent key, none of those branches ran: measured over the fixed
+ * `buffer:differential` stream, **zero** of 466 update/reaction/receipt events
+ * shared a key with any preceding upsert in the same sequence.
+ *
+ * So a sequence picks from a handful of identities, and mostly reuses them. Not
+ * always: a follow-up for a message nobody buffered is its own branch, and a
+ * pool of one would collapse every event onto a single key and stop testing that
+ * the buffer keeps distinct messages apart.
+ */
+interface StepPool {
+	readonly keys: readonly Record<string, unknown>[]
+	readonly chats: readonly string[]
+}
+
+const makeStepPool = (random: Random): StepPool => ({
+	keys: Array.from({ length: random.int(2, 3) }, () => messageKey(random)),
+	chats: Array.from({ length: random.int(2, 3) }, () => generateJid(random))
+})
+
+/** A key from the pool most of the time, a fresh one otherwise. */
+const pooledKey = (random: Random, pool: StepPool): Record<string, unknown> =>
+	random.bool(0.75) ? { ...random.pick([...pool.keys]) } : messageKey(random)
+
+const pooledChat = (random: Random, pool: StepPool): string =>
+	random.bool(0.75) ? random.pick([...pool.chats]) : generateJid(random)
+
+const payloadFor = (random: Random, event: string, pool: StepPool): unknown => {
 	switch (event) {
 		// The buffer's largest stateful branch: it merges chats, contacts and
 		// messages into `historySets` by id, folds later chat updates into entries
@@ -507,38 +541,48 @@ const payloadFor = (random: Random, event: string): unknown => {
 				peerDataRequestSessionId: random.bool(0.3) ? generateString(random) : undefined
 			}
 		case 'chats.upsert':
-			return [{ id: generateJid(random), conversationTimestamp: generateNumber(random), unreadCount: random.int(0, 5) }]
+			return [
+				{ id: pooledChat(random, pool), conversationTimestamp: generateNumber(random), unreadCount: random.int(0, 5) }
+			]
 		case 'chats.update':
-			return [{ id: generateJid(random), unreadCount: random.int(0, 5), name: generateString(random) }]
+			return [{ id: pooledChat(random, pool), unreadCount: random.int(0, 5), name: generateString(random) }]
 		case 'chats.delete':
-			return [generateJid(random)]
+			return [pooledChat(random, pool)]
 		case 'contacts.upsert':
-			return [{ id: generateJid(random), name: generateString(random) }]
+			return [{ id: pooledChat(random, pool), name: generateString(random) }]
 		case 'contacts.update':
-			return [{ id: generateJid(random), name: generateString(random) }]
+			return [{ id: pooledChat(random, pool), name: generateString(random) }]
 		case 'messages.upsert':
 			return {
 				type: random.pick(['notify', 'append']),
 				messages: [
 					{
-						key: messageKey(random),
+						key: pooledKey(random, pool),
 						messageTimestamp: generateNumber(random),
 						message: { conversation: generateString(random) }
 					}
 				]
 			}
 		case 'messages.update':
-			return [{ key: messageKey(random), update: { status: random.int(0, 4) } }]
+			return [{ key: pooledKey(random, pool), update: { status: random.int(0, 4) } }]
 		case 'messages.delete':
-			return random.bool(0.5) ? { keys: [messageKey(random)] } : { jid: generateJid(random), all: true }
+			return random.bool(0.5) ? { keys: [pooledKey(random, pool)] } : { jid: pooledChat(random, pool), all: true }
 		case 'messages.reaction':
-			return [{ key: messageKey(random), reaction: { text: random.pick(['👍', '❤️', '']), key: messageKey(random) } }]
+			return [
+				{
+					key: pooledKey(random, pool),
+					reaction: { text: random.pick(['👍', '❤️', '']), key: pooledKey(random, pool) }
+				}
+			]
 		case 'message-receipt.update':
 			return [
-				{ key: messageKey(random), receipt: { userJid: generateJid(random), readTimestamp: generateNumber(random) } }
+				{
+					key: pooledKey(random, pool),
+					receipt: { userJid: pooledChat(random, pool), readTimestamp: generateNumber(random) }
+				}
 			]
 		case 'groups.update':
-			return [{ id: generateJid(random), subject: generateString(random) }]
+			return [{ id: pooledChat(random, pool), subject: generateString(random) }]
 		default:
 			return { connection: random.pick(['open', 'close', 'connecting']) }
 	}
@@ -546,6 +590,10 @@ const payloadFor = (random: Random, event: string): unknown => {
 
 const generateSteps = (random: Random): Step[] => {
 	const steps: Step[] = []
+	// One pool per sequence, so the events within it can refer to the same
+	// messages and chats — which is the only way the buffer's consolidation
+	// branches are reached at all.
+	const pool = makeStepPool(random)
 	// Drawn once: in the loop condition the bound would be re-rolled every pass.
 	const stepCount = random.int(2, 20)
 	for (let index = 0; index < stepCount; index++) {
@@ -555,7 +603,7 @@ const generateSteps = (random: Random): Step[] => {
 					6,
 					(() => {
 						const event = random.pick(EMITTABLE)
-						return { kind: 'emit', event, data: payloadFor(random, event) } as Step
+						return { kind: 'emit', event, data: payloadFor(random, event, pool) } as Step
 					})()
 				],
 				[2, { kind: 'buffer' } as Step],

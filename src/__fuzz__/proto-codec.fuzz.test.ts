@@ -496,7 +496,22 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						detail: 'the bridge decodes nothing at all from a field upstream encoded'
 					}
 				}
-				if (keys.includes(field)) return []
+				// Exactly the requested field, not merely including it. These are
+				// singletons — one declared field, one sample value — so a second key is
+				// a field the decoder materialised from nothing. The encoder-side sweep
+				// next door cannot see it (it compares bytes, not decoded objects) and
+				// decode-parity samples paths rather than sweeping them, so this is the
+				// only place guaranteed to visit every field's decode result.
+				if (keys.length === 1 && keys[0] === field) return []
+				if (keys.includes(field)) {
+					return {
+						target: encodeTarget(path, { [field]: sample }, 'proto:field-names'),
+						input: `${path}.${field}`,
+						local: keys.join(', '),
+						upstream: field,
+						detail: 'the bridge decodes the requested field plus keys upstream never encoded'
+					}
+				}
 
 				// The bridge round-trips the field under another name. Confirm the
 				// consequence rather than just the symptom: the upstream spelling is
