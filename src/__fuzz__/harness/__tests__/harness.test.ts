@@ -436,8 +436,16 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		// field 22, packed [0, 1] against two separate varints.
 		const packed = lengthDelimited(22, [0x00, 0x01])
 		const loose = concat(varint(22, [0x00]), varint(22, [0x01]))
-		assert.equal(differsOnlyByPacking(packed, loose), true)
-		assert.equal(differsOnlyByPacking(loose, packed), true)
+		assert.equal(differsOnlyByPacking(packed, loose, schemaFor([22])), true)
+		assert.equal(differsOnlyByPacking(loose, packed, schemaFor([22])), true)
+
+		// Only for a field the schema declares repeated. Two varint occurrences of a
+		// *singular* field are a duplicate-field or wrong-wire-type regression, not
+		// a spelling of one repeated field — and this used to be excused, because
+		// the schema was consulted only when the loose side held a single value.
+		assert.equal(differsOnlyByPacking(packed, loose, schemaFor([])), false)
+		// With no schema the two readings are indistinguishable, so it is reported.
+		assert.equal(differsOnlyByPacking(packed, loose), false)
 	})
 
 	/**
@@ -455,7 +463,7 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.match(canonicalWire(packed) ?? '', /\{131072:0:0\}/u, 'the payload should render as a nested message')
 
 		const loose = concat(varint(22, [0x80, 0x80, 0x40]), varint(22, [0x00]))
-		assert.equal(differsOnlyByPacking(packed, loose), true)
+		assert.equal(differsOnlyByPacking(packed, loose, schemaFor([22])), true)
 	})
 
 	/**
@@ -470,7 +478,6 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 	it('does not call a reordered repeated field a packing difference', () => {
 		const ascending = concat(varint(22, [0x01]), varint(22, [0x02]))
 		const descending = concat(varint(22, [0x02]), varint(22, [0x01]))
-		assert.equal(differsOnlyByPacking(ascending, descending), false)
 		assert.equal(differsOnlyByPacking(ascending, descending, schemaFor([22])), false)
 		// Nested one level down, where the recursion does its own comparison.
 		assert.equal(differsOnlyByPacking(lengthDelimited(3, [...ascending]), lengthDelimited(3, [...descending])), false)
@@ -482,7 +489,7 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		// Same repeated field spelled both ways, and field 2 present on one side only.
 		const packed = lengthDelimited(22, [0x80, 0x80, 0x40, 0x00])
 		const loose = concat(varint(22, [0x80, 0x80, 0x40]), varint(22, [0x00]))
-		assert.equal(isWireSubset(packed, concat(loose, varint(2, [0x09]))), true)
+		assert.equal(isWireSubset(packed, concat(loose, varint(2, [0x09])), schemaFor([22])), true)
 	})
 
 	/**

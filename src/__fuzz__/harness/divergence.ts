@@ -210,13 +210,30 @@ const namesUnknownCodecType = (input: unknown): boolean => {
 }
 
 /**
- * True when upstream is baileyrs plus keys that all hold the empty string.
+ * The two key fields `cleanMessage` re-encodes through `jidNormalizedUser`.
+ *
+ * Both, not just `remoteJid`: the same empty-user rewrite is observable on
+ * `participant`, and an entry scoped to one field reported the other as an
+ * unrelated finding. Measured — `{ key: { participant: '@hosted' } }` with an
+ * empty meId leaves `@hosted` in baileyrs and becomes `@s.whatsapp.net`
+ * upstream, exactly as `remoteJid` does.
+ */
+const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
+
+/**
+ * True when upstream is baileyrs plus JID keys that all hold the empty string.
  *
  * That is the whole of the `cleanMessage` difference: for a key with no
  * remoteJid or participant, upstream writes `jidNormalizedUser(undefined)` —
  * `''` — onto the caller's object where baileyrs leaves the property absent.
  * Anything else, including a changed value or a key upstream is missing, is a
  * different defect and still fails.
+ *
+ * "JID keys" is the part that has to be checked rather than assumed. Without it
+ * the rule read "upstream has an extra key holding `''`", which is also true of
+ * a dropped empty `conversation` or `reactionMessage.text` — measured, both were
+ * excused as the known missing-JID difference. Only the two fields
+ * `cleanMessage` actually normalises may appear this way.
  */
 const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boolean => {
 	if (depth > 12) return false
@@ -235,24 +252,13 @@ const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boo
 	for (const key of Object.keys(a)) if (!Object.hasOwn(b, key) && a[key] !== undefined) return false
 	for (const key of Object.keys(b)) {
 		if (!Object.hasOwn(a, key) || a[key] === undefined) {
-			if (b[key] !== '') return false
+			if (b[key] !== '' || !CLEANED_JID_FIELDS.has(key)) return false
 			continue
 		}
 		if (!sameShape(a[key], b[key]) && !addsOnlyEmptyStrings(a[key], b[key], depth + 1)) return false
 	}
 	return true
 }
-
-/**
- * The two key fields `cleanMessage` re-encodes through `jidNormalizedUser`.
- *
- * Both, not just `remoteJid`: the same empty-user rewrite is observable on
- * `participant`, and an entry scoped to one field reported the other as an
- * unrelated finding. Measured — `{ key: { participant: '@hosted' } }` with an
- * empty meId leaves `@hosted` in baileyrs and becomes `@s.whatsapp.net`
- * upstream, exactly as `remoteJid` does.
- */
-const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
 
 /**
  * Replaces every normalised key JID with a sentinel, recursively.
@@ -519,6 +525,60 @@ const maskInt64Truncations = (local: unknown, upstream: unknown, depth = 0): [un
 		maskedUpstream[key] = right
 	}
 	return [maskedLocal, maskedUpstream]
+}
+
+/** Every `contextInfo` removed, so the rest of a tuple can be compared alone. */
+const withoutContextInfo = (value: unknown, depth = 0): unknown => {
+	if (depth > 12 || typeof value !== 'object' || value === null) return value
+	if (Array.isArray(value)) return value.map(item => withoutContextInfo(item, depth + 1))
+	const out: Record<string, unknown> = {}
+	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+		if (key === 'contextInfo') continue
+		out[key] = withoutContextInfo(nested, depth + 1)
+	}
+	return out
+}
+
+/** The keys `generateForwardMessageContent` is allowed to leave in a `contextInfo`. */
+const FORWARDING_KEYS: ReadonlySet<string> = new Set(['forwardingScore', 'isForwarded'])
+
+/**
+ * True when every `contextInfo` that differs between the two sides is one
+ * baileyrs wrote the forwarding metadata into, and nothing else differs.
+ *
+ * Positional, not global. The mutation oracle reports one finding for the whole
+ * argument tuple, so "baileyrs mutated the argument" was true of the documented
+ * write *and* of anything that rode along with it. But requiring *every*
+ * `contextInfo` to hold only forwarding keys is the opposite error: a
+ * `contextInfo` the caller supplied deeper in the message is legitimately left
+ * alone — measured on a `deviceSentMessage` whose inner `extendedTextMessage`
+ * keeps its own `participant` while the forwarding metadata is written at the
+ * wrapper level. So each position is compared against upstream's, and only a
+ * `contextInfo` holding exactly the forwarding keys may differ.
+ */
+const onlyForwardingContextInfoDiffers = (local: unknown, upstream: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (text(local) === text(upstream)) return true
+	if (Array.isArray(local) || Array.isArray(upstream)) {
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
+		return local.every((item, index) => onlyForwardingContextInfoDiffers(item, upstream[index], depth + 1))
+	}
+	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) return false
+	const a = local as Record<string, unknown>
+	const b = upstream as Record<string, unknown>
+	for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+		if (text(a[key]) === text(b[key])) continue
+		if (key === 'contextInfo') {
+			// Added or replaced, either way it must hold the forwarding keys alone.
+			const written = a[key]
+			if (typeof written !== 'object' || written === null) return false
+			if (!Object.keys(written as Record<string, unknown>).every(inner => FORWARDING_KEYS.has(inner))) return false
+			continue
+		}
+		if (!Object.hasOwn(a, key) || !Object.hasOwn(b, key)) return false
+		if (!onlyForwardingContextInfoDiffers(a[key], b[key], depth + 1)) return false
+	}
+	return true
 }
 
 /**
@@ -799,12 +859,25 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'binary-node-messages-tolerates-bad-payload',
 		target: 'pure:getBinaryNodeMessages',
 		status: 'open',
-		// Exactly one side throwing, which is the whole claim. The generator now
-		// builds `<message>` children carrying a real, populated WebMessageInfo, so
-		// a target-wide entry would also excuse a dropped key or a misrendered
-		// timestamp on a *valid* message. If both decoded and disagreed, that is a
-		// decode difference on a payload they both accepted, and it still fails.
-		when: divergence => isThrow(divergence.local) !== isThrow(divergence.upstream),
+		// Exactly one side throwing, *and* a stanza that actually carries a payload
+		// the reference decoder cannot read back. One-sided-throw alone was not the
+		// whole claim: the generator builds `<message>` children carrying real,
+		// populated WebMessageInfo bytes in its dominant branch, so a regression
+		// that started throwing on a perfectly good stanza satisfied it too.
+		//
+		// Whether a payload is well-formed cannot be decided here — a truncated
+		// WebMessageInfo prefix is still valid protobuf, so a structural parse
+		// cannot tell it from a whole one, and this module deliberately depends on
+		// nothing but the harness. So the target tags its own input, where both
+		// libraries are already imported, and this reads the tag. Measured over 400
+		// draws: all 42 one-sided throws carry a malformed payload, none is tagged
+		// `well-formed payloads`.
+		//
+		// If both decoded and disagreed, that is a decode difference on a payload
+		// they both accepted, and it still fails.
+		when: divergence =>
+			isThrow(divergence.local) !== isThrow(divergence.upstream) &&
+			(divergence.detail ?? '').includes('[malformed payload]'),
 		reason:
 			'The two decoders disagree about which malformed `<message>` payloads are readable, in both directions. Upstream throws "illegal buffer" where baileyrs returns an empty message object; and for a truncated length prefix (`2a 16` with no body) baileyrs throws RangeError "premature EOF" where upstream returns `[{ participant: "" }]`. Whichever way round, a corrupt stanza becomes an empty message on one side and an exception on the other, so a caller cannot write one handler that works against both. Needs a maintainer call on which contract the stanza handlers should rely on.',
 		review: '2026-11-01'
@@ -883,8 +956,26 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// the second difference below, which had been hiding there.
 		target: 'pure:generateForwardMessageContent#mutation',
 		status: 'open',
+		// Confined to the documented mutation, which it was not before: the oracle
+		// reports one finding for the whole argument tuple, so "baileyrs mutated the
+		// argument" was satisfied by the forwarding write *and* by anything else
+		// that rode along with it — a replaced `conversation`, a deleted field. Two
+		// conditions now. Everything outside `contextInfo` has to be untouched, and
+		// every `contextInfo` baileyrs left behind has to hold forwarding metadata
+		// and nothing else.
+		when: divergence => {
+			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
+			const mine = normalise(divergence.local)
+			const theirs = normalise(divergence.upstream)
+			// Two conditions rather than one, because either alone is escapable.
+			// Everything outside `contextInfo` identical rules out a changed body or
+			// a deleted field; the positional walk then rules out a `contextInfo`
+			// changed to anything but the forwarding metadata.
+			if (text(withoutContextInfo(mine)) !== text(withoutContextInfo(theirs))) return false
+			return onlyForwardingContextInfoDiffers(mine, theirs)
+		},
 		reason:
-			"baileyrs writes `contextInfo.forwardingScore`/`isForwarded` onto the caller's own message object; upstream leaves the argument untouched and returns new content. Forwarding a message therefore mutates the original in one library and not the other, which is visible to any caller that forwards a message it still holds a reference to. Root cause is the copy: baileyrs shallow-clones with `{ ...content }`, so the nested message object is shared with the caller, where upstream rebuilds it via `proto.Message.decode(proto.Message.encode(content))`.",
+			"baileyrs replaces `contextInfo` on the caller's own message object with `{ forwardingScore, isForwarded }`; upstream leaves the argument untouched and returns new content. Two consequences, and the second is the sharper one: forwarding a message mutates the original in one library and not the other, and because it *replaces* rather than merges, a caller who forwards a quoted message finds `stanzaId` and `participant` gone from their own object afterwards. Measured on `{ extendedTextMessage: { text: 'x', contextInfo: { stanzaId: 'abc', participant: 'a@s.whatsapp.net' } } }`: the baileyrs argument comes back holding only the two forwarding keys, the upstream argument comes back unchanged. Both return values drop the quote metadata, so that part is agreed behaviour; only the write to the caller's object differs. Root cause is the copy: baileyrs shallow-clones with `{ ...content }`, so the nested message object is shared with the caller, where upstream rebuilds it via `proto.Message.decode(proto.Message.encode(content))`.",
 		review: '2026-11-01'
 	},
 	{

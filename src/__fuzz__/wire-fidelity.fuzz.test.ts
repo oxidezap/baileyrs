@@ -54,10 +54,40 @@ const preserves = (actual: unknown, reference: unknown): boolean =>
 interface WireCase {
 	readonly jid: string
 	readonly message: Record<string, unknown>
+	/** The message being replied to, for the builder's quoted-message branch. */
+	readonly quoted?: Record<string, unknown>
+	/** Disappearing-message expiry, for the builder's ephemeral branch. */
+	readonly ephemeralExpiration?: number
 }
 
 const isUsable = (value: WireCase): boolean =>
 	typeof value?.jid === 'string' && typeof value.message === 'object' && value.message !== null
+
+/**
+ * A message to quote, shaped the way the builder reads one.
+ *
+ * `generateWAMessageFromContent` resolves the quoted participant as
+ * `key.fromMe ? userJid : quoted.participant || key.participant || key.remoteJid`
+ * and then decides `remoteJid` by whether the quoted chat matches the target —
+ * so the key needs all four of those fields to vary, and the quoted chat has to
+ * sometimes differ from the JID being sent to.
+ */
+const quotedMessage = (random: Random): Record<string, unknown> => ({
+	key: {
+		remoteJid: random.weighted<string>([
+			[3, '120363000000000000@g.us'],
+			[2, '15551234567@s.whatsapp.net'],
+			[1, generateJid(random)]
+		]),
+		fromMe: random.bool(),
+		id: random.pick(['3EB0QUOTED000000', 'BAE5' + 'A'.repeat(12), '']),
+		participant: random.bool(0.5) ? generateJid(random) : undefined
+	},
+	participant: random.bool(0.3) ? generateJid(random) : undefined,
+	// The builder normalises this through `normalizeMessageContent` and then keeps
+	// exactly one content key, so a wrapper here exercises that unwrapping too.
+	message: generateProtoObject(random, 'Message', 2, { fieldProbability: 0.5 })
+})
 
 const generateCase = (random: Random): WireCase => ({
 	// Group, DM, newsletter and broadcast take different branches through the send
@@ -70,7 +100,17 @@ const generateCase = (random: Random): WireCase => ({
 		[1, 'status@broadcast'],
 		[1, generateJid(random)]
 	]),
-	message: generateProtoObject(random, 'Message', 3, { fieldProbability: 0.35 })
+	message: generateProtoObject(random, 'Message', 3, { fieldProbability: 0.35 }),
+	// Present about a third of the time each, and independently: the two branches
+	// are separate in the builder and both have to be reachable on their own as
+	// well as together.
+	...(random.bool(0.35) ? { quoted: quotedMessage(random) } : {}),
+	...(random.bool(0.35)
+		? // Zero is in the pool on purpose: it is falsy, so `!!ephemeralExpiration`
+			// rejects it and the branch is skipped — which is the behaviour, and the
+			// `|| WA_DEFAULT_EPHEMERAL` fallback below it never fires for that reason.
+			{ ephemeralExpiration: random.pick([0, 1, 86_400, 604_800, 7_776_000, -1]) }
+		: {})
 })
 
 describe('send-path wire fidelity on generated messages', () => {
@@ -223,10 +263,22 @@ describe('send-path wire fidelity on generated messages', () => {
 
 				// A fixed timestamp and message id: everything else about this call is
 				// deterministic, and without them the two sides differ on the clock.
+				//
+				// Plus the two options that decide the builder's other branches. With
+				// only the three deterministic ones, the quoted-message and ephemeral
+				// paths in `Utils/messages.ts` were never entered on either side — so
+				// a regression that dropped `quotedMessage`, wrote the wrong quoted
+				// participant, or omitted the expiration stayed green while this export
+				// was recorded as fuzz-covered. Both carry their own exceptions
+				// (newsletters take neither; protocol and already-ephemeral content
+				// skip the expiration), and the JID generator produces newsletter JIDs,
+				// so those exceptions are reached too.
 				const options = {
 					userJid: '15550000000@s.whatsapp.net',
 					messageId: '3EB0FUZZ0000000000',
-					timestamp: new Date(1_700_000_000_000)
+					timestamp: new Date(1_700_000_000_000),
+					...(value.quoted === undefined ? {} : { quoted: value.quoted }),
+					...(value.ephemeralExpiration === undefined ? {} : { ephemeralExpiration: value.ephemeralExpiration })
 				}
 
 				// Upstream first: if it rejects the generated shape, there is nothing to

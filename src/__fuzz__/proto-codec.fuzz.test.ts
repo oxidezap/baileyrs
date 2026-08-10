@@ -301,14 +301,31 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 			check: path => {
 				const upstreamSide = upstreamType(path)
 				if (!upstreamSide) return []
-				const local = attempt(() => encodeProto(path, {}))
-				if (local.ok) return []
+				// Both directions. "Known" used to mean only that `encodeProto`
+				// accepted an empty message, so a type registered in the bridge's
+				// encoder but missing from its decoder passed here — and nothing else
+				// was guaranteed to catch it: the decode targets sample paths rather
+				// than sweeping them, and a type with no non-map fields never reaches
+				// the field-name sweep either. An empty message encodes to zero bytes,
+				// so the decode probe is the exact inverse of the encode one.
+				const encoded = attempt(() => encodeProto(path, {}))
+				if (!encoded.ok) {
+					return {
+						target: 'proto:type-coverage',
+						input: path,
+						local: describeOutcome(encoded),
+						upstream: '<encodes an empty message>',
+						detail: 'the bridge codec cannot encode a message type upstream declares'
+					}
+				}
+				const decoded = attempt(() => decodeProto(path, new Uint8Array(0)))
+				if (decoded.ok) return []
 				return {
 					target: 'proto:type-coverage',
 					input: path,
-					local: describeOutcome(local),
-					upstream: '<encodes an empty message>',
-					detail: 'the bridge codec does not know a message type upstream declares'
+					local: describeOutcome(decoded),
+					upstream: '<decodes an empty message>',
+					detail: 'the bridge codec cannot decode a message type it can encode'
 				}
 			}
 		})

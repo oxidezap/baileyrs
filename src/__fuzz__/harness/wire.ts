@@ -348,10 +348,18 @@ const nestedDiffersOnlyByPacking = (
 		const looseSide = packedSide === leftEntries ? rightEntries : leftEntries
 		if (packedSide.length !== 1 || packedSide[0]!.wireType !== 2) return false
 		if (!looseSide.every(entry => entry.wireType === 0)) return false
-		// A single value is ambiguous with a singular scalar written at the wrong
-		// wire type, so it counts as packing only when the schema says this field
-		// number is repeated *in this message*. Two or more is unambiguous on its own.
-		if (looseSide.length < 2 && !packableHere(schema, field)) return false
+		// Only a field the schema declares repeated *in this message* can be packed.
+		// The rule used to apply to a single loose value only, on the reasoning that
+		// two or more varints cannot be a mis-encoded singular scalar and so must be
+		// repeated. That is backwards: when the schema says the field is singular,
+		// two occurrences of it *are* the defect — a duplicate field, or a wrong
+		// wire type — and calling them packing routed exactly that regression into
+		// the target-wide packing exception. Measured on a packed `[1, 2]` against
+		// two varints of a field declared singular: true before, false now.
+		//
+		// With no schema the pair is ambiguous either way, so it is reported rather
+		// than excused, which is the same direction the single-value rule took.
+		if (!packableHere(schema, field)) return false
 
 		const unpacked = unpackVarints(packedSide[0]!.raw ?? packedSide[0]!.value)
 		if (!unpacked) return false
@@ -411,11 +419,11 @@ const stripPackingDifferences = (
 					: undefined
 		if (!packedSide) continue
 		const looseSide = packedSide === mine ? theirs : mine
-		// Same ambiguity as in `nestedDiffersOnlyByPacking`: a single varint against
-		// one length-delimited field is a wrong wire type unless the schema declares
-		// this field number repeated.
+		// Same rule as in `nestedDiffersOnlyByPacking`, and for the same reason: a
+		// field the schema does not declare repeated here cannot be packed, whether
+		// the loose side holds one value or five.
 		if (looseSide.length === 0 || !looseSide.every(entry => entry.wireType === 0)) continue
-		if (looseSide.length < 2 && !packableHere(schema, field)) continue
+		if (!packableHere(schema, field)) continue
 
 		const unpacked = unpackVarints(packedSide[0]!.raw ?? packedSide[0]!.value)
 		if (!unpacked || unpacked.length !== looseSide.length) continue

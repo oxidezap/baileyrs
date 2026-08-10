@@ -279,12 +279,65 @@ const mediaWithDigest = (random: Random): Record<string, unknown> => {
 	return { [kind]: { url: generateString(random), mimetype: generateString(random), fileSha256: digest } }
 }
 
+/**
+ * True when a stanza carries a `<message>` child protobufjs cannot read back.
+ *
+ * "Cannot read back", not "cannot decode": a truncated `WebMessageInfo` prefix
+ * is still structurally valid protobuf and decodes without complaint, so a
+ * structural parse cannot tell it from a whole one — measured, 27 of 42
+ * malformed payloads parse cleanly. Re-encoding does tell them apart: only a
+ * faithful serialisation round-trips to the identical bytes.
+ *
+ * A non-bytes payload — a string, or nothing at all — counts as unreadable
+ * outright, which is what the generator produces for two of its five branches.
+ */
+const stanzaCarriesUnreadablePayload = (node: unknown): boolean => {
+	if (typeof node !== 'object' || node === null) return false
+	const content = (node as { content?: unknown }).content
+	if (!Array.isArray(content)) return false
+	const children = content.filter(
+		child => typeof child === 'object' && child !== null && (child as { tag?: unknown }).tag === 'message'
+	)
+	if (children.length === 0) return false
+	return children.some(child => {
+		const payload = (child as { content?: unknown }).content
+		if (!(payload instanceof Uint8Array)) return true
+		try {
+			const bytes = new Uint8Array(payload)
+			const proto = upstream.proto as { WebMessageInfo: UpstreamCodec }
+			return !Buffer.from(proto.WebMessageInfo.encode(proto.WebMessageInfo.decode(bytes)).finish()).equals(
+				Buffer.from(bytes)
+			)
+		} catch {
+			return true
+		}
+	})
+}
+
+interface UpstreamCodec {
+	encode(message: unknown): { finish(): Uint8Array }
+	decode(bytes: Uint8Array): unknown
+}
+
 interface PureTarget {
 	/** Export name, identical in both packages. */
 	readonly name: string
 	readonly generate: (random: Random) => Args
 	/** Iterations in smoke mode. */
 	readonly runs?: number
+	/**
+	 * A tag describing the *input*, appended to the finding's detail.
+	 *
+	 * For the handful of targets where "is this input well-formed" needs a
+	 * reference the allowlist registry cannot reach. `harness/divergence.ts`
+	 * deliberately depends on nothing but the harness, so a predicate there can
+	 * inspect the argument tuple structurally but cannot ask protobufjs whether a
+	 * payload is a real `WebMessageInfo` — and for `getBinaryNodeMessages` that
+	 * is the entire difference between the documented behaviour and a regression.
+	 * Classifying here, where both libraries are already imported, keeps the
+	 * registry honest without dragging a decoder into it.
+	 */
+	readonly tag?: (args: Args) => string | undefined
 }
 
 /**
@@ -735,10 +788,78 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{
 		name: 'aggregateMessageKeysNotFromMe',
-		generate: random => [Array.from({ length: random.int(0, 6) }, () => messageKey(random))],
+		// The helper buckets by `${remoteJid}:${participant || ''}`, so what it has
+		// to get right is which keys share a bucket. Independently generated keys
+		// never collided on a valid chat — 0 of 200 draws on the fixed seed — and
+		// the only repeated composite keys were the malformed `undefined:` ones. A
+		// regression that bucketed by `remoteJid` alone, merging two participants'
+		// receipts in a group, therefore passed every run.
+		//
+		// So a chat and a participant are drawn first and shared across the batch:
+		// same chat and same participant (one bucket), same chat and different
+		// participants (which must stay separate), and unrelated keys alongside.
+		generate: random => {
+			const chat = generateJid(random)
+			const participant = generateJid(random)
+			const other = generateJid(random)
+			return [
+				Array.from({ length: random.int(0, 6) }, () =>
+					random.weighted<() => Record<string, unknown>>([
+						[3, () => ({ ...messageKey(random), fromMe: false, remoteJid: chat, participant })],
+						[3, () => ({ ...messageKey(random), fromMe: false, remoteJid: chat, participant: other })],
+						// Same chat, no participant at all: `participant || ''` puts these in
+						// their own bucket, which is a third case and not the same as either.
+						[2, () => ({ ...messageKey(random), fromMe: false, remoteJid: chat, participant: undefined })],
+						// `fromMe` keys are skipped entirely, and unrelated keys keep the
+						// batch from being one bucket by construction.
+						[1, () => ({ ...messageKey(random), fromMe: true, remoteJid: chat, participant })],
+						[3, () => messageKey(random)]
+					])()
+				)
+			]
+		},
 		runs: 200
 	},
-	{ name: 'hasNonNullishProperty', generate: random => [generateAnyValue(random), random.pick(HOSTILE_STRINGS)] },
+	{
+		name: 'hasNonNullishProperty',
+		// The helper is `key in message && message[key] !== null && !== undefined`,
+		// so the whole of it lives in whether the object actually has the key.
+		// Drawing an arbitrary object and an independent hostile string as the key
+		// meant it essentially never did — 1 of 150 draws on the fixed seed — so
+		// every call took the false branch and an implementation that returned
+		// `false` unconditionally passed. The key is now drawn from the object's own
+		// property names most of the time, across the five cases that decide the
+		// answer: a real value, `null`, `undefined`, absent, and inherited.
+		generate: random => {
+			const value = random.weighted<() => unknown>([
+				[4, () => generateString(random)],
+				[2, () => null],
+				[2, () => undefined],
+				[1, () => 0],
+				[1, () => false]
+			])()
+			const own = random.pick(['text', 'caption', 'image', 'delete', '__proto__', 'constructor', ''])
+			const object: Record<string, unknown> = {}
+			// `defineProperty`, not assignment: `object.__proto__ = x` moves the
+			// prototype instead of creating an own property, and `__proto__` is one of
+			// the keys worth asking about.
+			Object.defineProperty(object, own, { value, enumerable: true, writable: true, configurable: true })
+
+			return [
+				random.bool(0.8) ? object : generateAnyValue(random),
+				random.weighted<() => unknown>([
+					// The key the object owns: the true branch, and the two nullish
+					// values that must still answer false despite `in` succeeding.
+					[5, () => own],
+					// A key it does not own, but which `in` finds on the prototype —
+					// `toString`, `valueOf`. The helper uses `in`, so these answer true,
+					// and that is worth pinning rather than discovering later.
+					[2, () => random.pick(['toString', 'valueOf', 'hasOwnProperty', 'constructor'])],
+					[2, () => random.pick(HOSTILE_STRINGS)]
+				])()
+			]
+		}
+	},
 	{
 		name: 'updateMessageWithReceipt',
 		// The helper merges in place when a receipt for the same `userJid` is already
@@ -883,7 +1004,15 @@ const TARGETS: readonly PureTarget[] = [
 	{
 		name: 'getBinaryNodeMessages',
 		generate: random => [random.bool(0.85) ? generateMessageStanza(random) : generateBinaryNode(random)],
-		runs: 200
+		runs: 200,
+		// Whether the stanza carries a `<message>` child the reference decoder
+		// cannot read back. The two decoders' documented difference is entirely
+		// about *malformed* payloads, and without this the allowlist entry could
+		// only say "exactly one side threw" — which a regression that started
+		// throwing on a perfectly good stanza also satisfies. Measured over 400
+		// draws: all 42 one-sided throws carry at least one unfaithful payload,
+		// and none carries only faithful ones.
+		tag: args => (stanzaCarriesUnreadablePayload(args[0]) ? 'malformed payload' : 'well-formed payloads')
 	},
 
 	// ---- src/Utils/crypto.ts (the deterministic half) ----------------------
@@ -1265,6 +1394,8 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 					// check unable to see one side deleting a property — and made
 					// `trimUndefined`, whose whole job is that deletion, untestable here.
 					const strict = { coerceScalars: false, preservePresence: true }
+					const tag = target.tag?.(args)
+					const withTag = (detail: string) => (tag === undefined ? detail : `${detail} [${tag}]`)
 					const comparison = compareOutcomes(localOutcome, upstreamOutcome, strict)
 					if (!comparison.same) {
 						findings.push({
@@ -1272,7 +1403,7 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 							input: args,
 							local: showOutcome(localOutcome),
 							upstream: showOutcome(upstreamOutcome),
-							detail: comparison.detail
+							detail: withTag(comparison.detail ?? 'return values differ')
 						})
 					}
 
@@ -1287,7 +1418,7 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 							input: args,
 							local: localArgs,
 							upstream: upstreamArgs,
-							detail: 'the helpers left their arguments in different states'
+							detail: withTag('the helpers left their arguments in different states')
 						})
 					}
 
