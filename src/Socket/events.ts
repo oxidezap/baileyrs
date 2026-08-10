@@ -58,6 +58,9 @@ import { mapReachoutTimelock } from './reachout.ts'
 import { isReconnectableConnectFailure } from './terminal-close.ts'
 import type { SocketContext } from './types.ts'
 
+/** The one `<stream:error>` code the engine answers by dropping the session. */
+const RATE_LIMIT_STREAM_CODE = '429'
+
 const CANONICAL_MESSAGE_EVENT = 'message'
 const MESSAGE_UPSERT_APPEND = 'append'
 const MESSAGE_UPSERT_NOTIFY = 'notify'
@@ -411,7 +414,7 @@ const DISPATCHERS: DispatcherMap = {
 		const status = mapConnectFailureToDisconnect(evt.reason)
 		emitClose(dispatchCtx, evt.message ?? 'Connection failure', status)
 	},
-	// NOT a close. The engine dispatches `StreamError` only from its catch-all
+	// NOT a close. The engine dispatches `StreamError` from its catch-all
 	// `<stream:error>` branch — an unknown code, an `<ack/>` it still owes the
 	// server, or `<xml-not-well-formed>` — and it keeps or deliberately recycles
 	// the connection in every one of those. This used to report
@@ -419,7 +422,18 @@ const DISPATCHERS: DispatcherMap = {
 	// re-pair, so a routine stream recycle could destroy a working session. The
 	// coded stream errors (401/409/515/516) never arrive here; they dispatch
 	// `loggedOut` / `streamReplaced` of their own.
-	streamError: (evt, { ctx }) => ctx.logger.warn({ code: evt.code }, 'stream error; the connection is preserved'),
+	//
+	// 429 is the exception and does not fit that sentence: the engine drops the
+	// session and reconnects on a backoff that reaches minutes, so saying the
+	// connection is preserved would be false. It reports the rate limit here
+	// because the socket end alone is indistinguishable from any other drop.
+	streamError: (evt, { ctx }) =>
+		evt.code === RATE_LIMIT_STREAM_CODE
+			? ctx.logger.warn(
+					{ code: evt.code },
+					'rate limited by the server; the engine dropped the session and will reconnect with an extended backoff'
+				)
+			: ctx.logger.warn({ code: evt.code }, 'stream error; the connection is preserved'),
 	streamReplaced: (_, dispatchCtx) =>
 		emitClose(dispatchCtx, 'Connection replaced', DisconnectReason.connectionReplaced),
 	// Carries the wire code (405), not `DisconnectReason.badSession`. Upstream

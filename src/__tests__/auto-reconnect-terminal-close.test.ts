@@ -415,3 +415,40 @@ describe('makeEventHandler stays usable without callbacks', () => {
 		expect(updates[0]?.connection).toBe('close')
 	})
 })
+
+describe('a stream error says what the engine actually did', () => {
+	/** Capture the warnings a dispatched bridge event produces. */
+	const warningsFor = (code: string) => {
+		const { ctx } = makeCtx()
+		const warnings: string[] = []
+		const logger = { ...noopLogger, warn: (_meta: unknown, message: string) => warnings.push(message) }
+
+		makeEventHandler({ ...ctx, logger: logger as never })({ type: 'stream_error', data: { code } } as never)
+		return warnings
+	}
+
+	it('does not claim the connection survived a 429', () => {
+		// The engine drops the session on 429 and reconnects on a backoff that
+		// reaches minutes. Reporting it like the codes that recycle the stream
+		// tells an operator the opposite of what happened.
+		const [warning] = warningsFor('429')
+
+		expect(warning).toBeDefined()
+		expect(warning?.includes('the connection is preserved')).toBe(false)
+		expect(warning?.includes('rate limited')).toBe(true)
+	})
+
+	it('still reports a preserved connection for the codes that keep it', () => {
+		const [warning] = warningsFor('xml-not-well-formed')
+
+		expect(warning?.includes('the connection is preserved')).toBe(true)
+	})
+
+	it('emits no connection.update either way', () => {
+		// A stream error is not a close. Both branches only log.
+		for (const code of ['429', 'xml-not-well-formed']) {
+			const { updates } = dispatch({ type: 'stream_error', data: { code } })
+			expect(`${code}: ${updates.length}`).toBe(`${code}: 0`)
+		}
+	})
+})
