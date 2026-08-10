@@ -358,18 +358,22 @@ const consolidateEvents = (data: BufferedEventData): BaileysEventData => {
 	const assignArray = <K extends keyof BaileysEventMap>(event: K, values: BaileysEventMap[K]) => {
 		if (Array.isArray(values) && values.length > 0) events[event] = values
 	}
+	// The order of these writes is the contract, not an implementation detail.
+	// A flush walks `Object.keys()` of this map, so insertion order decides both
+	// the key order a `process()` handler iterates and the order the individual
+	// events are re-dispatched to `.on()` listeners. Handlers that assume
+	// upstream's sequence — messages before the contacts they reference — see a
+	// different interleaving if these move. Keep them aligned with upstream's
+	// `consolidateEvents`.
 	assignArray('chats.upsert', Object.values(data.chatUpserts))
 	assignArray('chats.update', Object.values(data.chatUpdates))
 	assignArray('chats.delete', [...data.chatDeletes])
-	assignArray('contacts.upsert', Object.values(data.contactUpserts))
-	assignArray('contacts.update', Object.values(data.contactUpdates))
-	assignArray('messages.update', Object.values(data.messageUpdates))
-	assignArray('groups.update', Object.values(data.groupUpdates))
 
 	const upserts = Object.values(data.messageUpserts)
 	if (upserts.length) {
 		events['messages.upsert'] = { messages: upserts.map(item => item.message), type: upserts[0]!.type }
 	}
+	assignArray('messages.update', Object.values(data.messageUpdates))
 	const deleted = Object.values(data.messageDeletes)
 	if (deleted.length) events['messages.delete'] = { keys: deleted }
 	const reactions = Object.values(data.messageReactions).flatMap(({ key, reactions: values }) =>
@@ -380,6 +384,10 @@ const consolidateEvents = (data: BufferedEventData): BaileysEventData => {
 		userReceipt.map(receipt => ({ key, receipt }))
 	)
 	if (receipts.length) events['message-receipt.update'] = receipts
+
+	assignArray('contacts.upsert', Object.values(data.contactUpserts))
+	assignArray('contacts.update', Object.values(data.contactUpdates))
+	assignArray('groups.update', Object.values(data.groupUpdates))
 	return events
 }
 

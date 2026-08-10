@@ -675,18 +675,17 @@ const addsFieldsOrPinnedValues = (mine: unknown, theirs: unknown): boolean => {
  * True when the two released sequences differ only in the fields of those
  * kinds, for the same ids.
  *
- * Order-insensitive, and deliberately so. The release-order entry above
- * documents that the two buffers interleave kinds differently, and the two
- * differences co-occur constantly — measured, the finding that motivated this
- * entry has `contacts.upsert` and `message-receipt.update` swapped *and* a
- * contact field differing, so an index-wise comparison matched neither entry.
- * Observations are paired by kind and identity first, then what is left has to
- * be a field difference on one of those kinds. Composing this way is what the
- * copy-strategy entries do, for the same reason.
+ * Position-sensitive. It was not always: the two buffers used to interleave
+ * kinds differently, so the finding that motivated this entry had
+ * `contacts.upsert` and `message-receipt.update` swapped *and* a contact field
+ * differing, and pairing by index matched neither entry. `consolidateEvents`
+ * now writes its keys in upstream's order, so the release sequences line up and
+ * the slack is gone: a reordering is no longer a documented difference, and an
+ * entry that still tolerated one would be the thing excusing it.
  *
- * Still narrow: the multiset of kinds has to match, the ids have to match, at
- * least one field has to actually differ, and any difference on any other
- * release fails.
+ * Narrow: the kinds have to match in sequence, the ids have to match, at least
+ * one field has to actually differ, and any difference on any other release
+ * fails.
  */
 const mergePrecedenceFieldsOnly = (local: unknown, upstream: unknown): boolean => {
 	if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
@@ -705,26 +704,19 @@ const mergePrecedenceFieldsOnly = (local: unknown, upstream: unknown): boolean =
 			: text(item)
 	}
 
-	const remaining = new Map<string, unknown[]>()
-	for (const item of upstream) {
-		const key = pairKey(item)
-		remaining.set(key, [...(remaining.get(key) ?? []), item])
-	}
-
 	let differing = 0
-	for (const mine of local) {
-		const key = pairKey(mine)
-		const bucket = remaining.get(key)
-		if (bucket === undefined || bucket.length === 0) return false
-		const theirs = bucket.shift()
+	for (const [index, mine] of local.entries()) {
+		const theirs = upstream[index]
+		// A release that moved is a reordering, and nothing documents one now.
+		if (pairKey(mine) !== pairKey(theirs)) return false
 		if (text(mine) === text(theirs)) continue
 		if (!addsFieldsOrPinnedValues((mine as { data?: unknown })?.data, (theirs as { data?: unknown })?.data)) {
 			return false
 		}
 		differing++
 	}
-	// Something has to have differed *inside* a contacts.upsert. Without this the
-	// entry would excuse a pure reordering, which is the sibling entry's subject.
+	// Something has to have differed *inside* one of the pinned kinds. Without
+	// this the entry would excuse two identical sequences, which is not a finding.
 	return differing > 0
 }
 
@@ -840,22 +832,6 @@ const text = (value: unknown): string => {
  */
 const LONE_SURROGATE =
 	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
-
-/**
- * True when two observation streams hold the same entries in a different order.
- *
- * Compared as multisets of their serialised form: same events, same payloads,
- * same throws, different sequence.
- */
-const isPermutation = (left: unknown, right: unknown): boolean => {
-	if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
-	const key = (items: unknown[]) =>
-		items
-			.map(item => text(item))
-			.toSorted()
-			.join('\u0000')
-	return key(left) === key(right) && text(left) !== text(right)
-}
 
 /**
  * The registry.
@@ -1133,19 +1109,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		when: divergence => mergePrecedenceFieldsOnly(divergence.local, divergence.upstream),
 		reason:
 			"The two buffers consolidate `groups.update` and `contacts.upsert` differently, and on both kinds it is upstream that loses data rather than the two picking different winners. On groups, upstream stores only the *first* update for an id and discards every later one: `src/Utils/event-buffer.ts` merges with `Object.assign(data.groupUpdates[id] || {}, update)` where upstream guards the whole assignment with `if (!data.groupUpdates[id])`, which makes its own merge unreachable. Measured by buffering each pair and flushing: two updates for the same id with subjects 'first' then 'second' release 'second' here and 'first' upstream; and with *disjoint* fields — a subject then an announce — this releases both while upstream releases only the subject and drops the announce outright. On contacts, a buffered `contacts.update` carrying a name is folded into a later `contacts.upsert` here and is not folded upstream, so the released upsert carries the name here and does not upstream. baileyrs is the accumulating side on both, which is what the surrounding branches do for chats and messages and what 'consolidate' means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. `chats.update` twice, a `groups.update` whose second event carries nothing but the id, and the four message-level consolidation branches all agree, measured at the same time — the id-only case agreeing because there is no field to merge, which is why the `announce` case above does not. Found only once the buffer generator started drawing ids from a shared pool: before that no two buffered events ever referred to the same entity, so none of this ran.",
-		review: '2026-11-01'
-	},
-	{
-		id: 'event-buffer-release-order',
-		target: 'buffer:differential',
-		status: 'open',
-		// Ordering only. Without this predicate the entry would also excuse a
-		// corrupted payload, a different consolidation result or a different throw —
-		// all of which reach `buffer:differential`, and none of which
-		// `buffer:conservation` can see, since it only counts event names.
-		when: divergence => isPermutation(divergence.local, divergence.upstream),
-		reason:
-			"Flushing a buffer that holds several event kinds releases them in a different order than upstream: for the same sequence, baileyrs emitted contacts.upsert before message-receipt.update where upstream emitted them the other way round. No event is lost — buffer:conservation is clean — but a consumer whose handlers assume upstream's ordering (contacts populated before receipts reference them) sees a different interleaving.",
 		review: '2026-11-01'
 	},
 	{
