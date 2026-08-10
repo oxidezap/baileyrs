@@ -127,11 +127,55 @@ const corrupt = (random: Random, bytes: Buffer): Buffer => {
 const cryptoBuffer = (random: Random): Buffer =>
 	Buffer.from(random.bytes(random.pick([0, 1, 15, 16, 17, 31, 32, 33, 48, 64, 100])))
 
-const cryptoKey = (random: Random): Buffer => Buffer.from(random.bytes(random.pick([32, 16, 31, 33, 0, 64])))
+/**
+ * Weighted toward the only length the cipher accepts, with the near-misses kept.
+ *
+ * Drawn uniformly, a valid key and a valid IV coincided about once in 36 — so
+ * `aesDecryptCTR` produced output on 4 of 200 inputs and the other 196 compared
+ * two rejections, which the oracle reads as agreement. The off-by-one lengths
+ * are what make the reject path interesting, so they stay; they just stop being
+ * the whole test.
+ */
+const cryptoKey = (random: Random): Buffer =>
+	Buffer.from(
+		random.bytes(
+			random.weighted<number>([
+				[6, 32],
+				[1, 16],
+				[1, 31],
+				[1, 33],
+				[1, 0],
+				[1, 64]
+			])
+		)
+	)
 
-const cryptoIv = (random: Random): Buffer => Buffer.from(random.bytes(random.pick([16, 12, 15, 17, 0, 32])))
+const cryptoIv = (random: Random): Buffer =>
+	Buffer.from(
+		random.bytes(
+			random.weighted<number>([
+				[6, 16],
+				[1, 12],
+				[1, 15],
+				[1, 17],
+				[1, 0],
+				[1, 32]
+			])
+		)
+	)
 
-const cryptoNonce = (random: Random): Buffer => Buffer.from(random.bytes(random.pick([12, 16, 8, 0, 13])))
+const cryptoNonce = (random: Random): Buffer =>
+	Buffer.from(
+		random.bytes(
+			random.weighted<number>([
+				[6, 12],
+				[1, 16],
+				[1, 8],
+				[1, 0],
+				[1, 13]
+			])
+		)
+	)
 
 /** WebSocket errors carry their code in the message text, so the text is the input. */
 const wsError = (random: Random): Error => {
