@@ -125,9 +125,18 @@ const isLongPair = (value: unknown): boolean =>
 /**
  * The registry.
  *
- * Every entry below was produced by the first run of these fuzzers, not by
- * guesswork — each one has a minimised reproducer committed under
- * `src/__fuzz__/corpus/`, so the claim can be checked in seconds.
+ * Every entry below was produced by a run of these fuzzers, not by guesswork,
+ * and most carry a minimised reproducer under `src/__fuzz__/corpus/`.
+ *
+ * Several of the proto entries are *rediscoveries*, not discoveries: the
+ * schema-level gaps — the mediaKeyDomain presence drops, the three renamed
+ * fields, the pollResultSnapshotMessageV3 field number, the unimplemented
+ * BotAvatarMetadata — are already tracked by `KNOWN_WIRE_GAPS` and
+ * `KNOWN_UNSUPPORTED_CODECS` in `scripts/compatibility/proto-runtime-audit.ts`,
+ * and pinned by `scripts/compatibility/__tests__/wire-fidelity.test.ts`. Each
+ * such entry says so. That the fuzzers reached them independently, from
+ * generated input, is evidence the sweeps work — it is not new information, and
+ * recording it as new would misrepresent what this suite found.
  */
 export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
@@ -243,7 +252,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 					text(divergence.local).includes(bridgeName) && text(divergence.upstream).includes(upstreamName)
 			),
 		reason:
-			'Three fields round-trip under a different property name than upstream declares, and the bridge encoder silently drops the upstream spelling: SyncActionValue.ChatAssignmentAction.deviceAgentID becomes deviceAgentId, SyncActionValue.AgentAction.deviceID becomes deviceId, and Message.MessageHistoryMetadata.oldestMessageTimestamp becomes oldestMessageTimestampInWindow. The property name is the public API — code written against the upstream types reads undefined, and writes are lost with no error at all.',
+			'Three fields round-trip under a different property name than upstream declares, and the bridge encoder silently drops the upstream spelling: SyncActionValue.ChatAssignmentAction.deviceAgentID becomes deviceAgentId, SyncActionValue.AgentAction.deviceID becomes deviceId, and Message.MessageHistoryMetadata.oldestMessageTimestamp becomes oldestMessageTimestampInWindow. The property name is the public API — code written against the upstream types reads undefined, and writes are lost with no error at all. ALREADY TRACKED: all three are in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts; the sweep rediscovered them from generated input rather than finding them.',
 		review: '2026-10-01'
 	},
 	{
@@ -251,7 +260,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'proto:presence',
 		status: 'open',
 		reason:
-			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry.',
+			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
 		review: '2026-10-01'
 	},
 	{
@@ -259,7 +268,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'proto:field-omission',
 		status: 'open',
 		reason:
-			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Almost certainly the same root cause as the presence and unknown-type entries; kept separate until someone confirms that.',
+			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Overlaps the presence and unknown-type entries, which are themselves already tracked in KNOWN_WIRE_GAPS; kept separate because the classifier cannot attribute a cause, only a shape.',
 		review: '2026-10-01'
 	},
 	{
@@ -295,7 +304,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: /^proto:/u,
 		status: 'open',
 		reason:
-			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2275 singular fields, found by the proto:field-numbers sweep. Field numbers are the entire contract between two protobuf implementations: a field written at the wrong number is not a rename the peer can recover from, it is a different field. Anything baileyrs sends in it is read as field 115 by a Baileys peer, and a real field 114 arriving from the server is not read as this field at all.',
+			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2275 singular fields. ALREADY TRACKED, and documented in exactly these terms: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
 		review: '2026-10-01',
 		when: divergence => text(divergence.input).includes('pollResultSnapshotMessageV3')
 	},
@@ -320,7 +329,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: /^proto:(unknown-type-dropped|type-coverage)$/u,
 		status: 'open',
 		reason:
-			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. Silent omission is the problem more than the gap — a missing type should be visible. The unknown-type set is probed at runtime, so this entry stops matching by itself once the bridge implements them.',
+			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. ALREADY TRACKED: BotAvatarMetadata is in KNOWN_UNSUPPORTED_CODECS and its fields in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. The unknown-type set here is probed at runtime rather than listed, so this entry stops matching by itself once the bridge implements them.',
 		review: '2026-10-01'
 	},
 	{
