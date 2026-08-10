@@ -32,6 +32,13 @@ interface Report {
 	truncated?: { ran: number; planned: number }
 	findings: { target: string; detail?: string }[]
 	crashes?: string[]
+	/**
+	 * The real crash count. `crashes` holds a capped, deduplicated sample — a
+	 * systemic failure throws once per input and the runner stores five details for
+	 * it — so the array length understates a run by orders of magnitude. Older
+	 * reports carry no such field, hence the fallback.
+	 */
+	crashCount?: number
 }
 
 /**
@@ -85,7 +92,7 @@ const totals = reports.reduce(
 		corpus: accumulator.corpus + report.corpusReplayed,
 		excused: accumulator.excused + report.excused,
 		findings: accumulator.findings + report.findings.length,
-		crashes: accumulator.crashes + (report.crashes?.length ?? 0)
+		crashes: accumulator.crashes + (report.crashCount ?? report.crashes?.length ?? 0)
 	}),
 	{ runs: 0, corpus: 0, excused: 0, findings: 0, crashes: 0 }
 )

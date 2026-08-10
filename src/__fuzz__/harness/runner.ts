@@ -160,6 +160,15 @@ export interface FuzzReport {
 	 * actually failed. The job went red with a summary saying nothing was wrong.
 	 */
 	readonly crashes: readonly string[]
+	/**
+	 * How many crashes actually happened, which is not `crashes.length`.
+	 *
+	 * The details are capped and deduplicated — see `recordCrash` — so a systemic
+	 * failure stores a handful of entries rather than one per input. The count is
+	 * the number worth reporting, and the summariser prints this rather than the
+	 * length of the array it happens to have been handed.
+	 */
+	readonly crashCount: number
 }
 
 /**
@@ -226,6 +235,9 @@ const shellQuote = (value: string): string =>
  * there is a real value to pass, and omitted for exhaustive targets, which
  * ignore it.
  */
+/** How many distinct crash details one target keeps. The rest are counted only. */
+const CRASH_DETAIL_LIMIT = 5
+
 const replayHint = (target: string, exhaustive: boolean): string => {
 	const runs = exhaustive || runsOverride === undefined ? '' : ` FUZZ_RUNS=${runsOverride}`
 	// The mode too. Deep multiplies every target's run count, so a finding only the
@@ -335,6 +347,30 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 	let executed = 0
 
 	/**
+	 * Records a crash, bounded.
+	 *
+	 * A check that starts throwing throws for *every* input, and a deep run gives
+	 * the mutation target 10,000 of them. Storing a full `preview(input)` per
+	 * iteration made a systemic regression expensive twice over — the array grows
+	 * without bound in memory, and every entry is then interpolated into the thrown
+	 * test error, which is what reaches the Actions log. The most useful part of
+	 * that output, the summary the aggregator caps, arrives after thousands of
+	 * near-identical blocks.
+	 *
+	 * Deduplicated on the throw itself, since that is what makes two crashes the
+	 * same defect, and capped at five distinct ones. `preview` is only called for
+	 * an entry that will be kept, so the cost stops with the storage.
+	 */
+	const seenCrashes = new Set<string>()
+	let crashCount = 0
+	const recordCrash = (signature: string, render: () => string): void => {
+		crashCount++
+		if (seenCrashes.has(signature) || seenCrashes.size >= CRASH_DETAIL_LIMIT) return
+		seenCrashes.add(signature)
+		crashes.push(render())
+	}
+
+	/**
 	 * `reportCrash` is false for shrink candidates and the minimised re-check.
 	 *
 	 * Shrinking proposes values the generator would never produce — a required
@@ -351,8 +387,10 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		} catch (error) {
 			if (!reportCrash) return []
 			const failure = error as Error
-			crashes.push(
-				`  [crash] ${target} (${origin})\n      input   ${preview(input)}\n      threw   ${failure?.name ?? 'Error'}: ${failure?.message ?? String(error)}`
+			const threw = `${failure?.name ?? 'Error'}: ${failure?.message ?? String(error)}`
+			recordCrash(
+				threw,
+				() => `  [crash] ${target} (${origin})\n      input   ${preview(input)}\n      threw   ${threw}`
 			)
 			return []
 		}
@@ -392,6 +430,7 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			try {
 				input = generate(random)
 			} catch (error) {
+				crashCount++
 				crashes.push(`  [crash] ${target} generator threw: ${(error as Error).message}`)
 				break
 			}
@@ -515,8 +554,18 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		if (reportedExpiries.has(entry.id)) continue
 		reportedExpiries.add(entry.id)
 		const message = `fuzz: known-divergence "${entry.id}" was due for review on ${entry.review} — re-argue it or delete it`
-		if (strictAllowlist) crashes.push(`  [allowlist] ${message}`)
-		else console.warn(message)
+		if (strictAllowlist) {
+			crashCount++
+			crashes.push(`  [allowlist] ${message}`)
+		} else console.warn(message)
+	}
+
+	// One line for everything the cap held back, so the count in the report and the
+	// count a reader can see never disagree.
+	if (crashCount > crashes.length) {
+		crashes.push(
+			`  [crash] …and ${crashCount - crashes.length} more (repeats of the above, or past the ${CRASH_DETAIL_LIMIT}-detail cap)`
+		)
 	}
 
 	// Written here rather than earlier so `crashes` is complete: the report is what
@@ -533,7 +582,8 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 		openFindings: outcome.openHits,
 		truncated: truncatedAt === undefined ? undefined : { ran: truncatedAt, planned: runs },
 		findings: outcome.unexcused,
-		crashes
+		crashes,
+		crashCount
 	}
 	// A failed write is a failed target, not a logged inconvenience.
 	//
@@ -545,11 +595,14 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 	// deletion. Failing here means the fuzz step goes red, the summariser is
 	// invoked with `--run-failed`, and stale-entry enforcement stands down.
 	const writeFailure = writeReport(report)
-	if (writeFailure !== undefined) crashes.push(`fuzz: ${writeFailure}`)
+	if (writeFailure !== undefined) {
+		crashCount++
+		crashes.push(`fuzz: ${writeFailure}`)
+	}
 
-	if (outcome.unexcused.length > 0 || crashes.length > 0) {
+	if (outcome.unexcused.length > 0 || crashCount > 0) {
 		const lines = [
-			`fuzz found ${outcome.unexcused.length} divergence(s) and ${crashes.length} crash(es) on ${target}`,
+			`fuzz found ${outcome.unexcused.length} divergence(s) and ${crashCount} crash(es) on ${target}`,
 			`  seed      ${FUZZ_SEED} (mode ${FUZZ_MODE}, ${executed} inputs, ${corpus.length} from corpus)`,
 			`  replay    ${replayHint(target, options.exhaustive === true)}`,
 			`  record    add FUZZ_RECORD=1 to freeze the minimised input into the corpus`,
