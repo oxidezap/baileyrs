@@ -327,25 +327,49 @@ export const generateForwardMessageContent = (message: WAMessage, forceForward?:
 	}
 
 	content = normalizeMessageContent(content)
-	// Shallow clone — only the inner message object gets modified (contextInfo)
+	// Shallow clone of the outer map — one entry on it is rewritten below.
 	content = { ...content! }
 
 	let key = Object.keys(content)[0] as keyof proto.IMessage
 
 	let score = (content?.[key] as { contextInfo: proto.IContextInfo })?.contextInfo?.forwardingScore || 0
 	score += message.key.fromMe && !forceForward ? 0 : 1
-	if (key === 'conversation') {
-		content.extendedTextMessage = { text: content[key] }
-		delete content.conversation
 
+	const contextInfo: proto.IContextInfo = score > 0 ? { forwardingScore: score, isForwarded: true } : {}
+
+	// The nested message object is the *caller's*, reached through the shallow
+	// clone above, so writing `contextInfo` onto it wrote into their argument.
+	// And it replaces rather than merges: a caller who forwarded a quoted message
+	// found `stanzaId` and `participant` gone from their own object afterwards.
+	// Upstream leaves the argument untouched.
+	//
+	// Rebuilt rather than deep-copied, and only the one object being written.
+	// Upstream's copy is `proto.Message.decode(proto.Message.encode(content))` —
+	// a full serialise/parse round trip on a hot send path — which is not worth
+	// paying to fix an aliasing bug.
+	if (key === 'conversation') {
+		// This object is created here, so nothing of the caller's is aliased and
+		// the `contextInfo` goes straight in. Same allocation count as before.
+		content.extendedTextMessage = { text: content[key], contextInfo }
+		delete content.conversation
 		key = 'extendedTextMessage'
+		return content
 	}
 
-	const key_ = content?.[key] as { contextInfo: proto.IContextInfo }
-	if (score > 0) {
-		key_.contextInfo = { forwardingScore: score, isForwarded: true }
+	const nested = content[key] as { contextInfo: proto.IContextInfo } | undefined
+	// A plain object is the only thing worth copying, and the only thing that can
+	// be the caller's to damage. Anything else — an absent slot on an empty
+	// message, a primitive, an array — keeps the original assignment, which
+	// throws for exactly the inputs it threw for before and that upstream throws
+	// for too. Spreading those instead invented a property named `"undefined"`
+	// where upstream raised a TypeError.
+	if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+		// One shallow spread, of exactly the object being modified. This is the
+		// whole cost of the fix, and it is unavoidable: not writing into the
+		// caller's object means writing into a different one.
+		content[key] = { ...nested, contextInfo } as never
 	} else {
-		key_.contextInfo = {}
+		nested!.contextInfo = contextInfo
 	}
 
 	return content
