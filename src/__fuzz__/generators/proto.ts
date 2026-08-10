@@ -188,8 +188,12 @@ export const generateProtoObject = (
 	const usedOneofs = new Set<string>()
 
 	for (const field of fields) {
-		// Maps carry no key type in the compact schema, so their shape cannot be
-		// generated faithfully; the wire fuzzer covers them through real payloads.
+		// Map fields are not generated, and nothing else in this suite covers them:
+		// the wire fuzzer builds its messages here too, and the field-name sweep
+		// skips maps as well. The compact schema records the value kind but not the
+		// key type, so a faithful shape cannot be derived from it — closing this gap
+		// needs key metadata in `waproto-facade.ts` first. Stated rather than
+		// implied, because an unstated gap reads as coverage.
 		if (isMap(field)) continue
 		if (!random.bool(options.fieldProbability)) continue
 
@@ -260,6 +264,10 @@ export const reachableTypes = (path: string): ReadonlySet<string> => {
 	seen.delete(path)
 	return seen
 }
+
+/** The message type a message-kind field holds, or undefined for a scalar. */
+export const messagePathOfField = (field: ProtoFieldSchema): string | undefined =>
+	field[1] === PROTO_FIELD_KIND.message ? messageSchemas[field[2]]?.[0] : undefined
 
 /** The `oneof` groups declared on `path`, for the oneof fuzzer. */
 export const oneofGroups = (path: string): Map<string, ProtoFieldSchema[]> => {

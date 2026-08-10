@@ -47,15 +47,15 @@ replay it.
 
 ## The targets
 
-| File                             | Asks                                                                                      |
-| -------------------------------- | ----------------------------------------------------------------------------------------- |
-| `pure-differential.fuzz.test.ts` | do 92 shared pure helpers agree with upstream, on values and on throwing                  |
-| `proto-codec.fuzz.test.ts`       | do the Rust/WASM codec and protobufjs agree, across all 498 message types                 |
-| `proto-robustness.fuzz.test.ts`  | what does the decoder do with bytes a hostile peer chose                                  |
-| `wire-fidelity.fuzz.test.ts`     | does `relayMessage` hand the bridge everything the message carried                        |
-| `bridge-events.fuzz.test.ts`     | does the anti-corruption layer drop what it cannot parse, and does the buffer lose events |
-| `argument-boundary.fuzz.test.ts` | is an off-domain argument rejected before it reaches WASM, with a usable stack            |
-| `coverage.fuzz.test.ts`          | is every shared export either fuzzed or excused in writing                                |
+| File                             | Asks                                                                                                        |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `pure-differential.fuzz.test.ts` | do the shared pure helpers agree with upstream, on values and on throwing (the count lives in `targets.ts`) |
+| `proto-codec.fuzz.test.ts`       | do the Rust/WASM codec and protobufjs agree, across all 498 message types                                   |
+| `proto-robustness.fuzz.test.ts`  | what does the decoder do with bytes a hostile peer chose                                                    |
+| `wire-fidelity.fuzz.test.ts`     | does `relayMessage` hand the bridge everything the message carried                                          |
+| `bridge-events.fuzz.test.ts`     | does the anti-corruption layer drop what it cannot parse, and does the buffer lose events                   |
+| `argument-boundary.fuzz.test.ts` | is an off-domain argument rejected before it reaches WASM, with a usable stack                              |
+| `coverage.fuzz.test.ts`          | is every shared export either fuzzed or excused in writing                                                  |
 
 ## Design
 

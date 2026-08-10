@@ -21,9 +21,9 @@ const SEED = 20260808
  */
 const KNOWN_DIVERGENT = ['pollResultSnapshotMessageV3']
 
-const contextInfoFields = (
-	PROTO_MESSAGE_SCHEMAS.find(([path]) => path === 'MessageContextInfo')?.[1] ?? []
-).map(field => field[0])
+const contextInfoFields = (PROTO_MESSAGE_SCHEMAS.find(([path]) => path === 'MessageContextInfo')?.[1] ?? []).map(
+	field => field[0]
+)
 
 describe('send-path wire fidelity auditor', () => {
 	it('finds nothing dropped or altered on the current send path', async () => {

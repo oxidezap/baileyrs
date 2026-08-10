@@ -358,17 +358,22 @@ describe('closed-domain argument boundary, fuzzed', () => {
 	before(async () => {
 		folder = await mkdtemp(path.join(tmpdir(), 'baileyrs-fuzz-domains-'))
 		const { state } = await useMultiFileAuthState(folder)
+		// Self-referencing rather than closing over `socket`: `makeWASocket` calls
+		// `logger.child(...)` during construction, before the assignment below has
+		// happened, so a closure would dereference `undefined`.
+		const silentLogger: Record<string, unknown> = {
+			level: 'silent',
+			trace: () => {},
+			debug: () => {},
+			info: () => {},
+			warn: () => {},
+			error: () => {}
+		}
+		silentLogger.child = () => silentLogger
+
 		socket = makeWASocket({
 			auth: state,
-			logger: {
-				level: 'silent',
-				child: () => socket.logger,
-				trace: () => {},
-				debug: () => {},
-				info: () => {},
-				warn: () => {},
-				error: () => {}
-			} as never,
+			logger: silentLogger as never,
 			// Nothing listens here, so a value that survives validation fails as
 			// "not connected" instead of reaching a server.
 			waWebSocketUrl: 'ws://127.0.0.1:1'
@@ -378,7 +383,10 @@ describe('closed-domain argument boundary, fuzzed', () => {
 
 	after(async () => {
 		try {
-			socket.end(undefined)
+			// Awaited: teardown flushes the auth stores asynchronously, and removing
+			// the folder underneath an in-flight write recreates it or throws after
+			// the test has already reported success.
+			await socket.end(undefined)
 		} catch {
 			// The socket never connected; ending it is best-effort cleanup.
 		}
@@ -388,16 +396,18 @@ describe('closed-domain argument boundary, fuzzed', () => {
 	it('guards every assertArgumentDomain call site in the source', async () => {
 		// Auto-discovery, so a new guarded parameter cannot be added without also
 		// being fuzzed — the same ledger discipline as the pure-helper coverage test.
-		const roots = ['Socket', 'Utils']
+		// The whole of `src`, recursively, and all three quote styles: the claim in
+		// this file's header is "every call site in src/", and a scan of two
+		// directories' immediate children would let a guard in a new subdirectory
+		// pass without a fuzz case — the exact gap this test exists to close.
+		const sourceRoot = path.join(import.meta.dirname, '..')
 		const scanned: string[] = []
-		for (const root of roots) {
-			const directory = path.join(import.meta.dirname, '..', root)
-			for (const entry of await readdir(directory, { withFileTypes: true })) {
-				if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
-				const source = await readFile(path.join(directory, entry.name), 'utf8')
-				for (const match of source.matchAll(/assertArgumentDomain\(\s*'([^']+)',\s*'([^']+)'/gu)) {
-					scanned.push(`${entry.name}:${match[1]}:${match[2]}`)
-				}
+		for (const entry of await readdir(sourceRoot, { withFileTypes: true, recursive: true })) {
+			if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
+			if (entry.parentPath.includes('__fuzz__') || entry.parentPath.includes('__tests__')) continue
+			const source = await readFile(path.join(entry.parentPath, entry.name), 'utf8')
+			for (const match of source.matchAll(/assertArgumentDomain\(\s*['"`]([^'"`]+)['"`],\s*['"`]([^'"`]+)['"`]/gu)) {
+				scanned.push(`${entry.name}:${match[1]}:${match[2]}`)
 			}
 		}
 

@@ -293,7 +293,9 @@ const payloadFor = (random: Random, event: string): unknown => {
 
 const generateSteps = (random: Random): Step[] => {
 	const steps: Step[] = []
-	for (let index = 0; index < random.int(2, 20); index++) {
+	// Drawn once: in the loop condition the bound would be re-rolled every pass.
+	const stepCount = random.int(2, 20)
+	for (let index = 0; index < stepCount; index++) {
 		steps.push(
 			random.weighted<Step>([
 				[
@@ -361,6 +363,12 @@ const observe = (
 		})
 		if (!more) break
 	}
+
+	// Each buffer registers listeners, a history cache and up to two timers. The
+	// differential and conservation targets build two per case across 300 cases
+	// each, so releasing them keeps peak memory honest. `destroy` is not on the
+	// upstream interface, hence the guarded call.
+	;(emitter as { destroy?: () => void }).destroy?.()
 	return seen
 }
 

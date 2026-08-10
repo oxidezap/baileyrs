@@ -109,8 +109,15 @@ const value = (random: Random, depth: number): unknown =>
 
 const payload = (random: Random, depth = 2): Record<string, unknown> => {
 	const data: Record<string, unknown> = {}
-	for (let index = 0; index < random.int(0, 6); index++) {
-		data[random.pick(FIELD_NAMES)] = value(random, depth)
+	const keyCount = random.int(0, 6)
+	for (let index = 0; index < keyCount; index++) {
+		const key = random.pick(FIELD_NAMES)
+		Object.defineProperty(data, key, {
+			value: value(random, depth),
+			enumerable: true,
+			writable: true,
+			configurable: true
+		})
 	}
 	return data
 }
@@ -123,26 +130,29 @@ export interface BridgeEventCase {
 /** A plausible-but-fuzzed event for a type the adapter table declares. */
 export const generateKnownBridgeEvent = (random: Random): BridgeEventCase => ({
 	type: random.pick(BRIDGE_EVENT_TYPES),
-	data: random.weighted<unknown>([
-		[6, payload(random)],
-		[1, undefined],
-		[1, null],
-		[1, generateString(random)],
-		[1, []],
-		[1, generateNumber(random)]
-	])
+	// Thunks, so only the selected branch is built. Passing values would construct
+	// every branch and draw from `random` for all of them, coupling the stream to
+	// branches that are never used.
+	data: random.weighted<() => unknown>([
+		[6, () => payload(random)],
+		[1, () => undefined],
+		[1, () => null],
+		[1, () => generateString(random)],
+		[1, () => []],
+		[1, () => generateNumber(random)]
+	])()
 })
 
 /** An event the adapter table has never heard of: it must be dropped, not thrown on. */
 export const generateUnknownBridgeEvent = (random: Random): BridgeEventCase => ({
-	type: random.weighted<string>([
-		[3, generateString(random)],
-		[2, `${random.pick(BRIDGE_EVENT_TYPES)}_v2`],
-		[1, ''],
-		[1, '__proto__'],
-		[1, 'constructor'],
-		[1, 'toString']
-	]),
+	type: random.weighted<() => string>([
+		[3, () => generateString(random)],
+		[2, () => `${random.pick(BRIDGE_EVENT_TYPES)}_v2`],
+		[1, () => ''],
+		[1, () => '__proto__'],
+		[1, () => 'constructor'],
+		[1, () => 'toString']
+	])(),
 	data: payload(random)
 })
 
@@ -153,19 +163,29 @@ export const generateBridgeEvent = (random: Random): BridgeEventCase =>
 export const generateBridgeEventSequence = (random: Random, max = 12): BridgeEventCase[] =>
 	Array.from({ length: random.int(1, max) }, () => generateBridgeEvent(random))
 
-/** Message-wire payloads, adapted by their own entry point. */
-export const generateMessageWire = (random: Random): Record<string, unknown> => ({
+/**
+ * Message-wire payloads, adapted by their own entry point.
+ *
+ * `MessageWireInfo` is camelCase — `senderAlt`, `isFromMe`, `isViewOnce`,
+ * `unavailableRequestId`. An earlier version of this generator used the
+ * snake_case spelling the *event* payloads use, so every one of those adapter
+ * branches read `undefined` and was never exercised at all.
+ */
+export const generateMessageWire = (random: Random): { info: Record<string, unknown>; message: unknown } => ({
 	info: {
 		id: generateString(random),
 		chat: generateMaybeJid(random),
 		sender: generateMaybeJid(random),
-		sender_alt: random.bool(0.4) ? generateJid(random) : undefined,
-		is_from_me: random.bool(),
-		is_group: random.bool(),
-		push_name: random.bool(0.7) ? generateString(random) : undefined,
+		senderAlt: random.bool(0.4) ? generateJid(random) : undefined,
+		recipientAlt: random.bool(0.3) ? generateJid(random) : undefined,
+		isFromMe: random.bool(),
+		isGroup: random.bool(),
+		pushName: random.bool(0.7) ? generateString(random) : undefined,
 		timestamp: generateNumber(random),
-		type: random.bool(0.5) ? generateString(random) : undefined
+		isViewOnce: random.bool(0.3),
+		isOffline: random.bool(0.3),
+		unavailableRequestId: random.bool(0.25) ? generateString(random) : undefined,
+		edit: random.bool(0.25) ? random.pick(['1', '2', '7', '', 'x']) : undefined
 	},
-	message: random.bool(0.8) ? { conversation: generateString(random) } : (generateAnyValue(random) as never),
-	...(random.bool(0.3) ? { unavailable: random.bool(), unavailable_type: generateString(random) } : {})
+	message: random.bool(0.8) ? { conversation: generateString(random) } : generateAnyValue(random)
 })

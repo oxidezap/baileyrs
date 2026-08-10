@@ -87,7 +87,10 @@ describe('send-path wire fidelity on generated messages', () => {
 				// anything that differs is the send path's doing and not the codec's.
 				let reference: unknown
 				try {
-					reference = decodeProto('Message', encodeProto('Message', message))
+					// The reference encode gets its own copy: `relayMessage` may mutate the
+					// message it is handed, and a reference built from a mutated object
+					// would compare the send path against its own output.
+					reference = decodeProto('Message', encodeProto('Message', structuredClone(message)))
 				} catch {
 					// The codec cannot carry this message at all; that is the codec
 					// fuzzer's subject, not this one's.
@@ -181,13 +184,18 @@ describe('send-path wire fidelity on generated messages', () => {
 						detail: 'baileyrs cannot read back the bytes it handed the bridge'
 					}
 				}
-				if (!preserves(upstreamView, bridgeView) && !preserves(bridgeView, upstreamView)) {
+				// Only one direction is harmless: the bridge seeing a field upstream does
+				// not model. The reverse — upstream reading a field the bridge does not
+				// return — is data the library sent and cannot read back, and the
+				// fidelity check above cannot catch it because its reference goes
+				// through the same bridge encode/decode pair and lacks the field too.
+				if (!preserves(bridgeView, upstreamView)) {
 					findings.push({
 						target: 'wire:upstream-readable',
 						input: { jid, message },
 						local: normalise(bridgeView),
 						upstream: normalise(upstreamView),
-						detail: 'the two libraries read the sent bytes as different messages'
+						detail: 'upstream read fields from the sent bytes that the bridge does not return'
 					})
 				}
 				return findings
@@ -212,24 +220,44 @@ describe('send-path wire fidelity on generated messages', () => {
 					timestamp: new Date(1_700_000_000_000)
 				}
 
-				let localBuilt: unknown
+				// Upstream first: if it rejects the generated shape, there is nothing to
+				// compare against and the input says nothing about baileyrs.
 				let upstreamBuilt: unknown
-				try {
-					localBuilt = local.generateWAMessageFromContent(jid, structuredClone(message), { ...options })
-				} catch {
-					return []
-				}
 				try {
 					upstreamBuilt = upstream.generateWAMessageFromContent(jid, structuredClone(message), { ...options })
 				} catch {
-					// Upstream rejecting a generated shape is not a baileyrs defect.
 					return []
 				}
 
+				// A local-only throw is the divergence, not a reason to skip: upstream
+				// built an envelope from this content and baileyrs did not. Swallowing
+				// it would contradict the oracle's own rule that throwing is part of
+				// the contract.
+				let localBuilt: unknown
+				try {
+					localBuilt = local.generateWAMessageFromContent(jid, structuredClone(message), { ...options })
+				} catch (error) {
+					return {
+						target: 'wire:message-builder',
+						input: { jid, message },
+						local: `<threw ${(error as Error)?.name}: ${String((error as Error)?.message).slice(0, 160)}>`,
+						upstream: '<an envelope>',
+						detail: 'baileyrs could not build a message upstream built'
+					}
+				}
+
 				const strip = (built: unknown): unknown => {
-					const record = structuredClone(built) as Record<string, unknown>
-					// The envelope carries fields neither library promises to match:
-					// upstream stamps its own participant handling and status defaults.
+					let record: Record<string, unknown>
+					try {
+						record = structuredClone(built) as Record<string, unknown>
+					} catch {
+						// A builder output that will not clone is not something to crash the
+						// runner over; compare what can be read instead.
+						record = { ...(built as Record<string, unknown>) }
+					}
+					// `messageTimestamp` is the clock, and the two stamp it independently
+					// even with a fixed `timestamp` option. Everything else in the envelope
+					// — key, participant, status, message — is compared.
 					delete record.messageTimestamp
 					return normalise(record)
 				}

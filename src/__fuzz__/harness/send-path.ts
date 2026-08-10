@@ -29,8 +29,20 @@ const silentLogger = {
 } as unknown as ILogger
 
 const capturingContext = (captured: Uint8Array[]): SocketContext => {
+	// `relayMessage` dispatches on a relay plan: a normal send, a retransmission,
+	// or a status broadcast. The generator produces `status@broadcast` jids, so a
+	// client with only the first method would fail with "not a function" instead
+	// of yielding bytes — a harness gap that reads exactly like a send-path bug.
 	const client = {
 		relayMessageBytesWithOptions: async (_jid: string, bytes: Uint8Array, messageId: string) => {
+			captured.push(bytes)
+			return messageId
+		},
+		sendStatusMessageBytesWithOptions: async (bytes: Uint8Array, _recipients: unknown, messageId: string) => {
+			captured.push(bytes)
+			return messageId
+		},
+		retransmitMessageBytes: async (_jid: string, bytes: Uint8Array, messageId?: string) => {
 			captured.push(bytes)
 			return messageId
 		}

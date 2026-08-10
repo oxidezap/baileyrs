@@ -94,14 +94,30 @@ const text = (value: unknown): string => {
  * Enumerated from the prototype itself rather than written out, so the entry that
  * relies on it cannot drift from what the runtime actually inherits.
  */
-const PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
-	...Object.getOwnPropertyNames(Object.prototype),
-	...Object.getOwnPropertyNames(Function.prototype)
-])
+// Object.prototype only: the adapter table is a plain object literal, so that is
+// the whole of its prototype chain. Including Function.prototype names would
+// excuse a genuine unrecognised event type called `bind` or `name`.
+const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(Object.getOwnPropertyNames(Object.prototype))
 
 /** The TypeError shapes a missing or short `data` slot produces. */
 const MISSING_DATA_THROWS =
 	/Cannot read properties of (undefined|null)|is not iterable|Cannot use 'in' operator|is not a function/u
+
+/**
+ * True when two observation streams hold the same entries in a different order.
+ *
+ * Compared as multisets of their serialised form: same events, same payloads,
+ * same throws, different sequence.
+ */
+const isPermutation = (left: unknown, right: unknown): boolean => {
+	if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+	const key = (items: unknown[]) =>
+		items
+			.map(item => text(item))
+			.toSorted()
+			.join('\u0000')
+	return key(left) === key(right) && text(left) !== text(right)
+}
 
 const isLongPair = (value: unknown): boolean =>
 	typeof value === 'object' && value !== null && 'low' in value && 'high' in value
@@ -122,7 +138,12 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			'Upstream returns `t.low` for a Long without a toNumber method, silently dropping the high word and truncating any value past 2^32 (a millisecond timestamp, for one). baileyrs reconstructs `high * 2^32 + (low >>> 0)`, which is documented at the call site. Upstream also returns its argument unchanged for a non-Long, non-number input, where baileyrs returns 0 to honour its `number` return type.',
 		review: '2027-02-01',
 		when: divergence => {
-			const [argument] = (divergence.input as unknown[]) ?? []
+			// `??` only replaces null/undefined, and a corpus entry or a shrunk input
+			// need not be an array. Destructuring a plain object here would throw
+			// inside applyAllowlist, which has no catch, and fail the run with an
+			// error unrelated to the finding.
+			if (!Array.isArray(divergence.input)) return false
+			const [argument] = divergence.input as unknown[]
 			return isLongPair(argument) || typeof argument !== 'number'
 		}
 	},
@@ -188,6 +209,11 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'event-buffer-release-order',
 		target: 'buffer:differential',
 		status: 'open',
+		// Ordering only. Without this predicate the entry would also excuse a
+		// corrupted payload, a different consolidation result or a different throw —
+		// all of which reach `buffer:differential`, and none of which
+		// `buffer:conservation` can see, since it only counts event names.
+		when: divergence => isPermutation(divergence.local, divergence.upstream),
 		reason:
 			"Flushing a buffer that holds several event kinds releases them in a different order than upstream: for the same sequence, baileyrs emitted contacts.upsert before message-receipt.update where upstream emitted them the other way round. No event is lost — buffer:conservation is clean — but a consumer whose handlers assume upstream's ordering (contacts populated before receipts reference them) sees a different interleaving.",
 		review: '2026-11-01'
@@ -205,9 +231,11 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-field-renamed-and-dropped',
-		// Also matches on the decode side, where the rename surfaces as two objects
-		// carrying the same value under different keys.
-		target: /^proto:(field-names|decode-parity)$/u,
+		// Any proto target: the rename surfaces on the naming sweep, on decode
+		// parity, and on round-trip, always as two objects carrying the same value
+		// under different keys. The `when` predicate below is what keeps the entry
+		// narrow — it names the three fields exactly.
+		target: /^proto:/u,
 		status: 'open',
 		when: divergence =>
 			RENAMED_PROTO_FIELDS.some(
@@ -235,12 +263,14 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		review: '2026-10-01'
 	},
 	{
-		id: 'proto-float32-max-rejected',
+		id: 'proto-float32-out-of-range-rejected',
 		target: /^proto:/u,
 		status: 'open',
 		reason:
-			'The bridge rejects 3.4028235e+38 with "invalid float32" — that value is FLT_MAX, the largest finite float32 there is, and protobufjs encodes it without complaint. A legitimate value at the top of the declared range cannot be sent.',
+			'For a 32-bit float field given a double above FLT_MAX (3.4028234663852886e38), the bridge throws "invalid float32" and protobufjs encodes it anyway — silently, to Infinity. baileyrs is the stricter and arguably the correct one here, but the difference is caller-visible: the same value sends on Baileys and throws on baileyrs. Exact FLT_MAX itself is accepted by both; an earlier version of this entry claimed otherwise because the generator emitted the rounded literal 3.4028235e38, which is a larger double.',
 		review: '2026-11-01',
+		// Keyed on the message *and* on the bridge being the rejecting side, so a
+		// rejection of an in-range float stays visible.
 		when: divergence => text(divergence.local).includes('invalid float32')
 	},
 	{
@@ -259,6 +289,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
 		review: '2027-02-01'
+	},
+	{
+		id: 'proto-field-number-mismatch',
+		target: /^proto:/u,
+		status: 'open',
+		reason:
+			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2275 singular fields, found by the proto:field-numbers sweep. Field numbers are the entire contract between two protobuf implementations: a field written at the wrong number is not a rename the peer can recover from, it is a different field. Anything baileyrs sends in it is read as field 115 by a Baileys peer, and a real field 114 arriving from the server is not read as this field at all.',
+		review: '2026-10-01',
+		when: divergence => text(divergence.input).includes('pollResultSnapshotMessageV3')
 	},
 	{
 		id: 'proto-repeated-scalars-unpacked',

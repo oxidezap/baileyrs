@@ -11,6 +11,22 @@
  * a red test on the pull request that adds it.
  */
 
+/**
+ * The names the pure-helper fuzzer actually built a generator for.
+ *
+ * Registered at runtime by `pure-differential.fuzz.test.ts`, so "covered" means
+ * a case exists rather than a name was typed into a list. Listing a name in
+ * `PURE_TARGET_NAMES` without a generator now fails that file's own coverage
+ * check — the inventory below is the claim, this is the evidence.
+ */
+const registeredTargets = new Set<string>()
+
+export const registerFuzzedTargets = (names: readonly string[]): void => {
+	for (const name of names) registeredTargets.add(name)
+}
+
+export const fuzzedTargets = (): ReadonlySet<string> => registeredTargets
+
 /** Helpers driven by `pure-differential.fuzz.test.ts`. */
 export const PURE_TARGET_NAMES: readonly string[] = [
 	// src/WABinary/jid-utils.ts

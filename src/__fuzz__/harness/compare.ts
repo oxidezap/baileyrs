@@ -30,15 +30,6 @@ export const runOutcome = (call: () => unknown): Outcome => {
 	}
 }
 
-export const runOutcomeAsync = async (call: () => unknown): Promise<Outcome> => {
-	try {
-		return { kind: 'return', value: await call() }
-	} catch (error) {
-		const failure = error as Error
-		return { kind: 'throw', name: failure?.name ?? 'Error', message: String(failure?.message ?? error) }
-	}
-}
-
 const isBytes = (value: unknown): value is Uint8Array => value instanceof Uint8Array
 
 /** protobufjs Long, and the bridge's plain-object equivalent. */
@@ -63,33 +54,62 @@ const longToBigInt = (value: { low: number; high: number; unsigned?: boolean }):
  * Rust-side u64 and a protobufjs Long can be compared without either side
  * winning by accident.
  */
-export const normalise = (value: unknown, depth = 0): unknown => {
+export interface NormaliseOptions {
+	/**
+	 * Collapse integers written as `number`, `bigint`, `Long` or a decimal string
+	 * into one form (default true).
+	 *
+	 * Required to compare a Rust-side u64 against a protobufjs Long, and wrong
+	 * everywhere else: for a plain helper, returning the number `123` where
+	 * upstream returns the string `"123"` is a real API difference that `typeof`,
+	 * `===` and arithmetic all expose. The pure-helper differential therefore
+	 * turns this off.
+	 */
+	readonly coerceScalars?: boolean
+}
+
+export const normalise = (value: unknown, depth = 0, options: NormaliseOptions = {}): unknown => {
+	const coerce = options.coerceScalars ?? true
+	const nested = (item: unknown) => normalise(item, depth + 1, options)
+
 	if (depth > 12) return '<depth-limit>'
 	if (value === null) return null
-	if (typeof value === 'bigint') return value
+	if (typeof value === 'bigint') return coerce ? value : { __bigint__: value.toString() }
 	if (typeof value === 'number') {
-		if (Number.isInteger(value) && Number.isSafeInteger(value)) return BigInt(value)
+		if (coerce && Number.isInteger(value) && Number.isSafeInteger(value)) return BigInt(value)
 		return Object.is(value, -0) ? 0 : value
 	}
 	if (typeof value === 'string') {
 		// Only pure decimal integers; a JID or a base64 blob must stay a string.
-		if (/^-?\d{1,20}$/u.test(value)) return BigInt(value)
+		if (coerce && /^-?\d{1,20}$/u.test(value)) return BigInt(value)
 		return value
 	}
 	if (isBytes(value)) return { __bytes__: Buffer.from(value).toString('base64') }
-	if (Array.isArray(value)) return value.map(item => normalise(item, depth + 1))
+	if (Array.isArray(value)) return value.map(nested)
 	if (typeof value === 'object') {
+		// Date, Map and Set all have zero own enumerable keys, so without these they
+		// would every one normalise to `{}` and two different values would compare
+		// equal — an entire class of difference the oracle would never report.
+		if (value instanceof Date) return { __date__: value.getTime() }
+		if (value instanceof Map) {
+			return {
+				__map__: [...value.entries()]
+					.map(([key, entry]) => [nested(key), nested(entry)] as const)
+					.toSorted((left, right) => (JSON.stringify(left[0]) < JSON.stringify(right[0]) ? -1 : 1))
+			}
+		}
+		if (value instanceof Set) return { __set__: [...value].map(nested) }
 		if (isLongLike(value)) return longToBigInt(value)
 		if (typeof (value as { toString?: unknown }).toString === 'function' && value.constructor?.name === 'Long') {
 			return BigInt(String(value))
 		}
 		const out: Record<string, unknown> = {}
 		for (const key of Object.keys(value as Record<string, unknown>).toSorted()) {
-			const nested = (value as Record<string, unknown>)[key]
+			const entry = (value as Record<string, unknown>)[key]
 			// An explicit `undefined` property and an absent one are the same value
 			// to every consumer that reads it; only `in` can tell them apart.
-			if (nested === undefined) continue
-			out[key] = normalise(nested, depth + 1)
+			if (entry === undefined) continue
+			Object.defineProperty(out, key, { value: nested(entry), enumerable: true, writable: true, configurable: true })
 		}
 		return out
 	}
@@ -120,14 +140,15 @@ const deepSame = (left: unknown, right: unknown): boolean => {
 }
 
 /** Equal after normalisation. */
-export const equivalent = (left: unknown, right: unknown): boolean => deepSame(normalise(left), normalise(right))
+export const equivalent = (left: unknown, right: unknown, options?: NormaliseOptions): boolean =>
+	deepSame(normalise(left, 0, options), normalise(right, 0, options))
 
 export interface OutcomeComparison {
 	readonly same: boolean
 	readonly detail?: string
 }
 
-export const compareOutcomes = (local: Outcome, upstream: Outcome): OutcomeComparison => {
+export const compareOutcomes = (local: Outcome, upstream: Outcome, options?: NormaliseOptions): OutcomeComparison => {
 	if (local.kind !== upstream.kind) {
 		return {
 			same: false,
@@ -139,7 +160,7 @@ export const compareOutcomes = (local: Outcome, upstream: Outcome): OutcomeCompa
 	}
 	// Both threw: the fact of throwing is the contract, the wording is not.
 	if (local.kind === 'throw') return { same: true }
-	if (equivalent(local.value, (upstream as { value: unknown }).value)) return { same: true }
+	if (equivalent(local.value, (upstream as { value: unknown }).value, options)) return { same: true }
 	return { same: false, detail: 'return values differ' }
 }
 
@@ -168,6 +189,12 @@ export const omitsKeysOnly = (local: unknown, upstream: unknown): boolean => {
 		if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
 		const record = left as Record<string, unknown>
 		const reference = right as Record<string, unknown>
+		// `__bytes__`, `__date__`, `__map__` and `__set__` are wrappers normalise
+		// invents, not schema fields. Treating one as an omittable key would let
+		// `{}` versus `{ __bytes__: 'AA' }` read as a dropped field when it is a
+		// changed value — exactly the conflation this function exists to prevent.
+		const WRAPPERS = ['__bytes__', '__date__', '__map__', '__set__', '__bigint__']
+		if (WRAPPERS.some(tag => Object.hasOwn(record, tag) || Object.hasOwn(reference, tag))) return false
 		// Every key the local side has must exist upstream and match. Extra keys
 		// upstream are the omission being described, at whatever depth they appear —
 		// the values already differ (checked above), so subset alone is the question.

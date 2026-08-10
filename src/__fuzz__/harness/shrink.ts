@@ -38,6 +38,18 @@ const isTypedBytes = (value: unknown): value is Uint8Array => value instanceof U
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === 'object' && value !== null && !Array.isArray(value) && !isTypedBytes(value)
 
+/**
+ * Copies one key onto a candidate as an own data property.
+ *
+ * Plain assignment to `__proto__` calls the inherited setter instead: the key
+ * vanishes and, if the value is an object, it becomes the candidate's prototype.
+ * The generators produce own `__proto__` keys on purpose, so a shrunk candidate
+ * built by assignment would not be a smaller version of the input at all.
+ */
+const copyKey = (target: Record<string, unknown>, key: string, value: unknown): void => {
+	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true })
+}
+
 /** Simpler variants of `value`, cheapest-to-check first. */
 const candidatesFor = (value: unknown): unknown[] => {
 	if (value === undefined || value === null) return []
@@ -45,7 +57,10 @@ const candidatesFor = (value: unknown): unknown[] => {
 	if (typeof value === 'boolean') return value ? [false] : []
 
 	if (typeof value === 'number') {
-		if (value === 0) return []
+		// NaN would produce candidates equal to itself (Math.trunc(NaN) is NaN), and
+		// `!==` never rejects them, so the shrinker would burn its budget calling
+		// each one an improvement.
+		if (value === 0 || !Number.isFinite(value)) return []
 		const simpler: number[] = [0]
 		if (!Number.isInteger(value)) simpler.push(Math.trunc(value))
 		const half = Math.trunc(value / 2)
@@ -69,11 +84,16 @@ const candidatesFor = (value: unknown): unknown[] => {
 
 	if (isTypedBytes(value)) {
 		if (value.length === 0) return []
+		// `Buffer` is part of the call semantics for the crypto helpers — several
+		// take a Buffer and call Buffer methods on it — so a candidate that quietly
+		// became a plain Uint8Array would not be a smaller version of the input.
+		const keepType = (candidate: Uint8Array): Uint8Array =>
+			Buffer.isBuffer(value) ? Buffer.from(candidate) : candidate
 		return [
-			new Uint8Array(0),
-			value.slice(0, Math.floor(value.length / 2)),
-			value.slice(0, 1),
-			new Uint8Array(value.length)
+			keepType(new Uint8Array(0)),
+			keepType(value.slice(0, Math.floor(value.length / 2))),
+			keepType(value.slice(0, 1)),
+			keepType(new Uint8Array(value.length))
 		]
 	}
 
@@ -94,12 +114,12 @@ const candidatesFor = (value: unknown): unknown[] => {
 		const simpler: Record<string, unknown>[] = []
 		if (keys.length > 2) {
 			const half: Record<string, unknown> = {}
-			for (const key of keys.slice(0, Math.floor(keys.length / 2))) half[key] = value[key]
+			for (const key of keys.slice(0, Math.floor(keys.length / 2))) copyKey(half, key, value[key])
 			simpler.push(half)
 		}
 		for (const dropped of keys) {
 			const without: Record<string, unknown> = {}
-			for (const key of keys) if (key !== dropped) without[key] = value[key]
+			for (const key of keys) if (key !== dropped) copyKey(without, key, value[key])
 			simpler.push(without)
 		}
 		return simpler

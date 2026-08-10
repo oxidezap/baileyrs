@@ -228,11 +228,9 @@ export type WireSender = (message: Record<string, unknown>) => Promise<Uint8Arra
 export const relayedBytes: WireSender = async message => {
 	const captured: Uint8Array[] = []
 	const ctx = capturingContext(captured)
-	await makeMessageMethods(ctx).relayMessage(
-		'120363000000000000@g.us',
-		structuredClone(message) as WAProto.IMessage,
-		{ messageId: '3EB0FIDELITY000000' }
-	)
+	await makeMessageMethods(ctx).relayMessage('120363000000000000@g.us', structuredClone(message) as WAProto.IMessage, {
+		messageId: '3EB0FIDELITY000000'
+	})
 	const bytes = captured[0]
 	if (!bytes) throw new Error('the send path handed no bytes to the bridge')
 	return bytes
@@ -289,7 +287,12 @@ export const auditWireFidelity = async (
 				continue
 			}
 			if (valueAt(sent, path) === undefined) {
-				findings.push({ label: testCase.label, path, status: 'dropped', detail: 'absent from the bytes sent to the bridge' })
+				findings.push({
+					label: testCase.label,
+					path,
+					status: 'dropped',
+					detail: 'absent from the bytes sent to the bridge'
+				})
 				continue
 			}
 			try {
@@ -299,7 +302,12 @@ export const auditWireFidelity = async (
 				continue
 			}
 			if (!upstreamSees(sentBytes, path)) {
-				findings.push({ label: testCase.label, path, status: 'divergent', detail: 'upstream protobufjs reads this field at another number' })
+				findings.push({
+					label: testCase.label,
+					path,
+					status: 'divergent',
+					detail: 'upstream protobufjs reads this field at another number'
+				})
 				continue
 			}
 			findings.push({ label: testCase.label, path, status: 'preserved' })
@@ -328,7 +336,9 @@ export const renderFidelityReport = (report: FidelityReport, details = false): s
 	for (const finding of report.findings) {
 		if (finding.status === 'preserved') continue
 		if (finding.status === 'skipped' && !details) continue
-		lines.push(`- [${finding.status}] ${finding.label} :: ${finding.path}${finding.detail ? ` (${finding.detail})` : ''}`)
+		lines.push(
+			`- [${finding.status}] ${finding.label} :: ${finding.path}${finding.detail ? ` (${finding.detail})` : ''}`
+		)
 	}
 	return lines.join('\n')
 }

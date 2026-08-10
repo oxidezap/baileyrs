@@ -99,8 +99,14 @@ const ATTRIBUTE_VALUES = [
 
 const generateAttributes = (random: Random): Record<string, string> => {
 	const attributes: Record<string, string> = {}
-	for (let index = 0; index < random.int(0, 5); index++) {
-		attributes[random.pick(ATTRIBUTE_KEYS)] = random.bool(0.85) ? random.pick(ATTRIBUTE_VALUES) : generateString(random)
+	const count = random.int(0, 5)
+	for (let index = 0; index < count; index++) {
+		const key = random.pick(ATTRIBUTE_KEYS)
+		const value = random.bool(0.85) ? random.pick(ATTRIBUTE_VALUES) : generateString(random)
+		// `__proto__` has to stay an own property: assigning it would call the
+		// inherited setter, drop the key, and never hand the hostile shape to a
+		// BinaryNode consumer at all.
+		Object.defineProperty(attributes, key, { value, enumerable: true, writable: true, configurable: true })
 	}
 	return attributes
 }

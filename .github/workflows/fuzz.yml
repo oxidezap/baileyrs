@@ -131,3 +131,14 @@ jobs:
             }
         env:
           FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+
+      # The fuzz and summarise steps deliberately do not fail on the spot, so the
+      # artifacts get uploaded and the issue gets filed first. Without a final gate
+      # the job would then finish green holding findings, which is the one outcome
+      # that would make the whole nightly pointless.
+      - name: Fail the job when the run was not clean
+        if: always() && (steps.fuzz.outcome != 'success' || steps.report.outputs.clean != 'true')
+        run: |
+          echo "fuzz outcome: ${{ steps.fuzz.outcome }}"
+          echo "report clean: ${{ steps.report.outputs.clean }}"
+          exit 1

@@ -34,7 +34,9 @@ interface Report {
 }
 
 const argv = process.argv.slice(2)
-const directory = resolve(argv.find(argument => !argument.startsWith('--')) ?? process.env.FUZZ_REPORT_DIR ?? 'fuzz-reports')
+const directory = resolve(
+	argv.find(argument => !argument.startsWith('--')) ?? process.env.FUZZ_REPORT_DIR ?? 'fuzz-reports'
+)
 const markdown = argv.includes('--markdown')
 const failOnStale = argv.includes('--fail-on-stale')
 
@@ -81,7 +83,11 @@ const mode = reports[0]?.mode ?? 'smoke'
  * same bug comes back unnoticed.
  */
 const used = [...new Set(reports.flatMap(report => report.excusedBy ?? []))]
-const candidates = staleEntries(used)
+// A truncated target may simply not have reached the input that would have used
+// an entry, so "excused nothing" proves nothing this run. Expired entries are
+// still enforced — that check does not depend on coverage.
+const complete = truncated.length === 0
+const candidates = complete ? staleEntries(used) : []
 
 const today = new Date().toISOString().slice(0, 10)
 const expired = KNOWN_DIVERGENCES.filter(entry => entry.review < today)
@@ -94,7 +100,9 @@ lines.push(markdown ? '# Fuzz run' : 'fuzz run')
 lines.push(
 	`mode ${mode} · seed${seeds.length > 1 ? 's' : ''} ${seeds.join(', ')} · ${totals.runs} inputs across ${reports.length} targets`
 )
-lines.push(`${totals.findings} unexcused finding(s) · ${totals.excused} excused · ${totals.corpus} replayed from the corpus`)
+lines.push(
+	`${totals.findings} unexcused finding(s) · ${totals.excused} excused · ${totals.corpus} replayed from the corpus`
+)
 
 if (truncated.length > 0) {
 	heading('Truncated targets')
@@ -126,7 +134,10 @@ if (expired.length > 0) {
 	for (const entry of expired) lines.push(`- \`${entry.id}\` was due ${entry.review} — re-argue it or delete it`)
 }
 
-if (candidates.length > 0) {
+if (!complete) {
+	heading('Registry stale-entry check skipped')
+	lines.push('At least one target was truncated, so this run cannot establish which entries are unused.')
+} else if (candidates.length > 0) {
 	heading('Registry entries that excused nothing')
 	lines.push('These excused nothing anywhere in this run — fixed, or no longer reachable. Either way, delete them:')
 	for (const entry of candidates) lines.push(`- \`${entry.id}\``)

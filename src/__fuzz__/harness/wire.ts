@@ -52,9 +52,14 @@ const scan = (bytes: Uint8Array, depth: number): WireField[] | undefined => {
 		const tag = readVarint(cursor)
 		if (tag === undefined) return undefined
 
-		const field = Number(tag >> 3n)
+		const fieldNumber = tag >> 3n
+		// Protobuf caps field numbers at 2^29-1. Past 2^53 `Number()` also rounds,
+		// so two different payloads would render as the same field — and a payload
+		// with an impossible field number would be called well-formed, which flips
+		// the robustness fuzzer's well-formed/malformed classification.
+		if (fieldNumber < 1n || fieldNumber > 536_870_911n) return undefined
+		const field = Number(fieldNumber)
 		const wireType = Number(tag & 7n)
-		if (field === 0) return undefined
 
 		switch (wireType) {
 			case 0: {
@@ -158,7 +163,10 @@ export const differsOnlyByPacking = (left: Uint8Array, right: Uint8Array): boole
 	const a = scan(left, 12)
 	const b = scan(right, 12)
 	if (!a || !b) return false
+	return nestedDiffersOnlyByPacking(a, b)
+}
 
+const nestedDiffersOnlyByPacking = (a: readonly WireField[], b: readonly WireField[]): boolean => {
 	const group = (fields: readonly WireField[]) => {
 		const byField = new Map<number, WireField[]>()
 		for (const entry of fields) byField.set(entry.field, [...(byField.get(entry.field) ?? []), entry])
@@ -182,6 +190,20 @@ export const differsOnlyByPacking = (left: Uint8Array, right: Uint8Array): boole
 			.toSorted()
 			.join(',')
 		if (leftKey === rightKey) continue
+
+		// A packing difference inside a nested message is still a packing difference:
+		// without this, `47:2:{1:0:0}` versus `47:2:{1:2:00}` falls through as a
+		// generic encoder mismatch and gets reported as data loss.
+		if (
+			leftEntries.length === 1 &&
+			rightEntries.length === 1 &&
+			leftEntries[0]!.wireType === 2 &&
+			rightEntries[0]!.wireType === 2
+		) {
+			const leftNested = parseNested(leftEntries[0]!.value)
+			const rightNested = parseNested(rightEntries[0]!.value)
+			if (leftNested && rightNested && nestedDiffersOnlyByPacking(leftNested, rightNested)) continue
+		}
 
 		// One side must be a single packed run, the other a series of varints.
 		const packedSide = leftEntries.length === 1 && leftEntries[0]!.wireType === 2 ? leftEntries : rightEntries
@@ -215,6 +237,20 @@ export const isWireSubset = (left: Uint8Array, right: Uint8Array): boolean => {
 
 const subsetOf = (left: readonly WireField[], right: readonly WireField[]): boolean => {
 	const remaining = [...right]
+
+	// Packing is not data loss, so a field that differs only that way must not
+	// stop a message from reading as an omission. Without this, a payload with an
+	// omission in one field and a packing difference in another is classified as
+	// neither, and gets reported as a value mismatch it is not.
+	const packingEquivalent = (a: WireField, b: WireField): boolean => {
+		if (a.field !== b.field) return false
+		const single = a.wireType === 2 ? a : b
+		const other = single === a ? b : a
+		if (single.wireType !== 2 || other.wireType !== 0) return false
+		const unpacked = unpackVarints(single.value)
+		return unpacked !== undefined && unpacked.length === 1 && unpacked[0] === other.value
+	}
+
 	for (const entry of left) {
 		const exact = remaining.findIndex(
 			candidate =>
@@ -226,11 +262,21 @@ const subsetOf = (left: readonly WireField[], right: readonly WireField[]): bool
 		}
 		// Not identical: accept only when the same field on the other side is a
 		// nested message that contains everything this one does.
+		const packed = remaining.findIndex(candidate => packingEquivalent(entry, candidate))
+		if (packed >= 0) {
+			remaining.splice(packed, 1)
+			continue
+		}
+
 		const nested = remaining.findIndex(candidate => {
 			if (candidate.field !== entry.field || candidate.wireType !== 2 || entry.wireType !== 2) return false
 			const inner = parseNested(entry.value)
 			const outer = parseNested(candidate.value)
-			return inner !== undefined && outer !== undefined && subsetOf(inner, outer)
+			if (inner === undefined || outer === undefined) return false
+			// A nested message that differs only by how its repeated scalars are
+			// packed has lost nothing, so it must not block the omission reading of
+			// the message around it.
+			return subsetOf(inner, outer) || nestedDiffersOnlyByPacking(inner, outer)
 		})
 		if (nested < 0) return false
 		remaining.splice(nested, 1)

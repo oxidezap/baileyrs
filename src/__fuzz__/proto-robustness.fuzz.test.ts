@@ -31,7 +31,7 @@ import { canonicalWire } from './harness/wire.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, HOT_PROTO_PATHS } from './generators/proto.ts'
-import { mutate, MUTATORS, type MutatorName } from './generators/mutation.ts'
+import { mutate, MUTATORS } from './generators/mutation.ts'
 
 const upstream = (await import('baileys')) as unknown as { proto: Record<string, unknown> }
 
@@ -70,7 +70,8 @@ const PATHS = HOT_PROTO_PATHS.filter(path => upstreamType(path) !== undefined)
 
 interface MutationCase {
 	readonly path: string
-	readonly mutator: MutatorName
+	/** The mutator chain applied, in order. */
+	readonly mutator: string
 	readonly bytes: Uint8Array
 }
 
@@ -84,12 +85,19 @@ const generateCase = (random: Random): MutationCase => {
 	const path = PATHS.length > 0 ? random.pick(PATHS) : 'Message'
 	const base = validEncoding(random, path)
 	const other = validEncoding(random, path)
-	const mutator = random.pick(MUTATORS)
+	const first = random.pick(MUTATORS)
 	// A couple of rounds of mutation reach states one round cannot: a truncated
 	// message whose surviving length prefix is then made to lie, and so on.
-	let bytes = mutate(random, base, other, mutator).bytes
-	if (random.bool(0.3)) bytes = mutate(random, bytes, other, random.pick(MUTATORS)).bytes
-	return { path, mutator, bytes }
+	let bytes = mutate(random, base, other, first).bytes
+	const applied: string[] = [first]
+	if (random.bool(0.3)) {
+		const second = random.pick(MUTATORS)
+		bytes = mutate(random, bytes, other, second).bytes
+		applied.push(second)
+	}
+	// The whole chain is recorded, not just the first: the later mutation usually
+	// dominates the resulting bytes, and triage keys on what produced them.
+	return { path, mutator: applied.join(' → '), bytes }
 }
 
 const isUsable = (value: MutationCase): boolean =>
@@ -112,14 +120,31 @@ describe('protobuf decoder robustness under mutation', () => {
 				const result = attempt(() => decodeProto(path, bytes))
 				if (result.ok) return []
 
-				// A thrown Error is the contract. A thrown string, a thrown undefined,
-				// or a WASM `unreachable` surfacing as something else means the failure
-				// path is not one callers can handle.
-				if (result.error instanceof Error) return []
+				// A WebAssembly trap — `unreachable`, an out-of-bounds access — is an
+				// `Error` subclass, so an `instanceof Error` check alone would accept
+				// exactly the aborts this target says must never happen. The module is
+				// poisoned after a trap; that is not a validation failure.
+				const failure = result.error
+				const trapped =
+					failure instanceof WebAssembly.RuntimeError ||
+					/unreachable|out of bounds|memory access|RuntimeError/iu.test(String((failure as Error)?.message ?? ''))
+				if (trapped) {
+					return {
+						target: 'proto:mutation-safety',
+						input: { path, mutator, bytes: hex(bytes) },
+						local: `<WASM trap: ${String((failure as Error)?.message ?? failure).slice(0, 160)}>`,
+						upstream: '<a validation Error>',
+						detail: 'a malformed payload trapped the WASM module instead of being rejected'
+					}
+				}
+
+				// Otherwise a thrown Error is the contract. A thrown string or a thrown
+				// undefined means the failure path is not one callers can handle.
+				if (failure instanceof Error) return []
 				return {
 					target: 'proto:mutation-safety',
 					input: { path, mutator, bytes: hex(bytes) },
-					local: `<threw a non-Error: ${typeof result.error} ${String(result.error).slice(0, 120)}>`,
+					local: `<threw a non-Error: ${typeof failure} ${String(failure).slice(0, 120)}>`,
 					upstream: '<an Error>',
 					detail: 'a malformed payload produced something a caller cannot catch as an Error'
 				}
@@ -219,12 +244,15 @@ describe('protobuf decoder robustness under mutation', () => {
 		// got around to, so the test skips rather than reporting noise.
 		const collect = global.gc as () => void
 		const random = makeRandom('leak-probe')
-		const warmup = 200
-		const measured = 4_000
 
-		const run = (count: number) => {
-			for (let index = 0; index < count; index++) {
-				const value = generateCase(random)
+		// Cases are generated up front so the measured window contains decoding and
+		// nothing else — otherwise the generator's own allocation is what the delta
+		// would be measuring.
+		const warmupCases = Array.from({ length: 200 }, () => generateCase(random))
+		const measuredCases = Array.from({ length: 4_000 }, () => generateCase(random))
+
+		const run = (cases: readonly MutationCase[]) => {
+			for (const value of cases) {
 				try {
 					decodeProto(value.path, value.bytes)
 				} catch {
@@ -233,17 +261,31 @@ describe('protobuf decoder robustness under mutation', () => {
 			}
 		}
 
-		run(warmup)
+		/**
+		 * `heapUsed` alone is the wrong instrument here.
+		 *
+		 * A leaked WASM linear-memory allocation or a retained bridge buffer lives
+		 * outside the V8 managed heap, so `heapUsed` can stay flat while the memory
+		 * this probe exists to catch grows without bound. `external` and
+		 * `arrayBuffers` are where a WebAssembly.Memory backing store shows up, so
+		 * the budget is applied to the total.
+		 */
+		const footprint = () => {
+			const usage = process.memoryUsage()
+			return usage.heapUsed + usage.external + usage.arrayBuffers
+		}
+
+		run(warmupCases)
 		collect()
-		const before = process.memoryUsage().heapUsed
-		run(measured)
+		const before = footprint()
+		run(measuredCases)
 		collect()
-		const after = process.memoryUsage().heapUsed
+		const after = footprint()
 
 		const growthMb = (after - before) / (1024 * 1024)
 		assert.ok(
 			growthMb < 32,
-			`heap grew ${growthMb.toFixed(1)}MB across ${measured} malformed decodes — a handle or buffer is being retained`
+			`heap + external memory grew ${growthMb.toFixed(1)}MB across ${measuredCases.length} malformed decodes — a handle or buffer is being retained`
 		)
 	})
 })

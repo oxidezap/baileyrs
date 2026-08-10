@@ -71,6 +71,12 @@ const lyingLength = (random: Random, bytes: Uint8Array): Uint8Array =>
  * The shape that turns a recursive-descent parser into a stack overflow, and the
  * one a hostile peer would send. Kept under a few thousand so the test measures
  * the decoder's own limit rather than the harness's.
+ *
+ * Field 1 is hard-coded, so on a schema whose field 1 is a scalar the decoder
+ * sees a deeply nested *length-delimited* value rather than a chain of nested
+ * messages. That still exercises the length/bounds path at depth, which is the
+ * point, but it is not a recursive message descent — reaching that would need
+ * the bomb to pick a self-referencing message field per schema.
  */
 const nestingBomb = (random: Random, bytes: Uint8Array): Uint8Array => {
 	let payload = bytes.slice(0, Math.min(bytes.length, 8))

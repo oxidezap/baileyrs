@@ -130,7 +130,11 @@ export const generateAnyValue = (random: Random, depth = 0): unknown =>
 			depth < 2 ? 2 : 0,
 			() => {
 				const out: Record<string, unknown> = {}
-				for (let index = 0; index < random.int(0, 4); index++) {
+				// Drawn once: in the loop condition it would be re-rolled every pass,
+				// turning the length into a repeated coin flip and consuming an extra
+				// draw per iteration that shifts every later value for the same seed.
+				const keyCount = random.int(0, 4)
+				for (let index = 0; index < keyCount; index++) {
 					const key = random.pick(['a', 'b', 'id', 'key', 'type', 'value', '0', '__proto__', 'constructor'])
 					// `out.__proto__ = x` swaps the prototype; `defineProperty` keeps it
 					// an own data property. The latter is both the more hostile input and

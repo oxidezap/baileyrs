@@ -29,7 +29,7 @@ import {
 	generateString,
 	HOSTILE_STRINGS
 } from './generators/values.ts'
-import { PURE_TARGET_NAMES } from './targets.ts'
+import { PURE_TARGET_NAMES, registerFuzzedTargets } from './targets.ts'
 
 const upstream = (await import('baileys')) as unknown as Record<string, unknown>
 const local = (await import('../index.ts')) as unknown as Record<string, unknown>
@@ -54,7 +54,23 @@ const clone = <T>(value: T): T => {
 		// prototype: it satisfies `instanceof` without supporting the methods.
 		// Fall through to the structural copy, which works on anything.
 	}
-	if (value instanceof Error) return value
+	if (value instanceof Error) {
+		// Copied, not shared: returning the same object would give both sides the
+		// same reference, so the mutation check below could never see one side
+		// mutate it and a mutating helper would cross-contaminate the other run.
+		const copy = new Error(value.message)
+		copy.name = value.name
+		for (const key of Object.getOwnPropertyNames(value)) {
+			if (key === 'stack' || key === 'message') continue
+			Object.defineProperty(copy, key, {
+				value: (value as unknown as Record<string, unknown>)[key],
+				enumerable: true,
+				writable: true,
+				configurable: true
+			})
+		}
+		return copy as T
+	}
 	if (Array.isArray(value)) return value.map(item => clone(item)) as T
 	if (typeof value === 'object' && value !== null) {
 		const out: Record<string, unknown> = {}
@@ -289,10 +305,11 @@ const TARGETS: readonly PureTarget[] = [
 		name: 'trimUndefined',
 		generate: random => {
 			const object: Record<string, unknown> = {}
-			for (let index = 0; index < random.int(0, 6); index++) {
-				object[random.pick(['a', 'b', 'c', 'id', '__proto__', ''])] = random.bool(0.4)
-					? undefined
-					: generateAnyValue(random)
+			const keyCount = random.int(0, 6)
+			for (let index = 0; index < keyCount; index++) {
+				const key = random.pick(['a', 'b', 'c', 'id', '__proto__', ''])
+				const value = random.bool(0.4) ? undefined : generateAnyValue(random)
+				Object.defineProperty(object, key, { value, enumerable: true, writable: true, configurable: true })
 			}
 			return [object]
 		}
@@ -657,6 +674,7 @@ const TARGETS: readonly PureTarget[] = [
 ]
 
 const targetNames = TARGETS.map(target => target.name)
+registerFuzzedTargets(targetNames)
 
 describe('pure helper differential — baileyrs vs baileys', () => {
 	it('covers every helper this fuzzer claims to cover', () => {
@@ -669,6 +687,14 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 		const undeclared = targetNames.filter(name => !PURE_TARGET_NAMES.includes(name))
 		if (undeclared.length > 0) {
 			throw new Error(`add to PURE_TARGET_NAMES in targets.ts: ${undeclared.join(', ')}`)
+		}
+		// And the reverse. Without this, adding a name to PURE_TARGET_NAMES would
+		// satisfy the coverage ledger while the helper is never actually called —
+		// the ledger would be recording an intention rather than a fact.
+		const covered = new Set(targetNames)
+		const claimed = PURE_TARGET_NAMES.filter(name => !covered.has(name))
+		if (claimed.length > 0) {
+			throw new Error(`listed in PURE_TARGET_NAMES but no fuzz case builds arguments for them: ${claimed.join(', ')}`)
 		}
 	})
 
@@ -697,7 +723,13 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 
 					const findings: Divergence[] = []
 
-					const comparison = compareOutcomes(localOutcome, upstreamOutcome)
+					// `coerceScalars: false`: for a plain helper, returning the number 123
+					// where upstream returns the string "123" is a real API difference —
+					// `typeof`, `===` and arithmetic all expose it. The integer coercion
+					// exists so a Rust u64 can be compared against a protobufjs Long, and
+					// that is the codec fuzzer's problem, not this one's.
+					const strict = { coerceScalars: false }
+					const comparison = compareOutcomes(localOutcome, upstreamOutcome, strict)
 					if (!comparison.same) {
 						findings.push({
 							target: `pure:${target.name}`,
@@ -710,7 +742,8 @@ describe('pure helper differential — baileyrs vs baileys', () => {
 
 					const mutation = compareOutcomes(
 						{ kind: 'return', value: localArgs },
-						{ kind: 'return', value: upstreamArgs }
+						{ kind: 'return', value: upstreamArgs },
+						strict
 					)
 					if (!mutation.same) {
 						findings.push({

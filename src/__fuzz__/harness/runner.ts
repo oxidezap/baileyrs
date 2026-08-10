@@ -34,10 +34,28 @@ const environment = (name: string): string | undefined => {
 export const FUZZ_SEED = environment('FUZZ_SEED') ?? 'baileyrs-fuzz-v1'
 export const FUZZ_MODE = environment('FUZZ_MODE') === 'deep' ? 'deep' : 'smoke'
 
-const deepFactor = Number(environment('FUZZ_DEEP_FACTOR') ?? 25)
-const runsOverride = environment('FUZZ_RUNS') === undefined ? undefined : Number(environment('FUZZ_RUNS'))
-const timeBudgetOverride =
-	environment('FUZZ_TIME_BUDGET_MS') === undefined ? undefined : Number(environment('FUZZ_TIME_BUDGET_MS'))
+/**
+ * Parses a numeric override, refusing anything that is not a positive finite
+ * number.
+ *
+ * `Number('all')` is `NaN`, and `index < NaN` is false on the first iteration —
+ * so a typo in FUZZ_RUNS would make every target generate zero inputs and report
+ * a pass. A fuzz suite that silently checks nothing is worse than no suite, so
+ * this fails loudly instead.
+ */
+const positiveNumber = (name: string, fallback?: number): number | undefined => {
+	const raw = environment(name)
+	if (raw === undefined) return fallback
+	const parsed = Number(raw)
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		throw new Error(`fuzz: ${name}=${JSON.stringify(raw)} is not a positive finite number`)
+	}
+	return parsed
+}
+
+const deepFactor = positiveNumber('FUZZ_DEEP_FACTOR', 25)!
+const runsOverride = positiveNumber('FUZZ_RUNS')
+const timeBudgetOverride = positiveNumber('FUZZ_TIME_BUDGET_MS')
 const onlyFilter = environment('FUZZ_ONLY')
 const recording = environment('FUZZ_RECORD') === '1'
 const strictAllowlist = environment('FUZZ_STRICT_ALLOWLIST') === '1'
@@ -175,7 +193,12 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 	const { target, generate, check } = options
 
 	const baseRuns = options.runs ?? 150
-	const runs = runsOverride ?? (FUZZ_MODE === 'deep' ? Math.ceil(baseRuns * deepFactor) : baseRuns)
+	// An exhaustive sweep answers a finite question, so FUZZ_RUNS does not apply:
+	// honouring it would turn "every field is named correctly" into "the first N
+	// are" while still reporting a pass.
+	const runs = options.exhaustive
+		? baseRuns
+		: (runsOverride ?? (FUZZ_MODE === 'deep' ? Math.ceil(baseRuns * deepFactor) : baseRuns))
 	const timeBudgetMs = timeBudgetOverride ?? defaultTimeBudgetMs
 	const shrinkFailures = options.shrinkFailures ?? true
 
@@ -187,12 +210,22 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 	let excused = 0
 	let executed = 0
 
-	const runOne = async (input: T, origin: string): Promise<readonly Divergence[]> => {
+	/**
+	 * `reportCrash` is false for shrink candidates and the minimised re-check.
+	 *
+	 * Shrinking proposes values the generator would never produce — a required
+	 * field dropped, an object emptied — and a throw on one of those is the
+	 * shrinker exploring, not the library failing. Recording it would fail the
+	 * target on an input it was never given, and crashes bypass the allowlist, so
+	 * a known divergence could not excuse it either.
+	 */
+	const runOne = async (input: T, origin: string, reportCrash = true): Promise<readonly Divergence[]> => {
 		const startedAt = performance.now()
 		let produced: readonly Divergence[]
 		try {
 			produced = asList(await check(input))
 		} catch (error) {
+			if (!reportCrash) return []
 			const failure = error as Error
 			crashes.push(
 				`  [crash] ${target} (${origin})\n      input   ${preview(input)}\n      threw   ${failure?.name ?? 'Error'}: ${failure?.message ?? String(error)}`
@@ -242,17 +275,31 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			executed++
 			if (produced.length === 0) continue
 
-			// Minimise against "this input still produces a finding on this target",
-			// not against "produces the identical finding": generated inputs often
-			// carry several at once and the smallest reproducer is what matters.
+			// Minimise against "still produces a finding *of one of the original
+			// classes*", not merely "still produces a finding".
+			//
+			// Without the class constraint, shrinking can walk off onto a different
+			// defect: reducing a numeric string to '' or dropping a field turns an
+			// unexcused regression into an already-allowlisted empty-string or
+			// field-omission divergence, and since the minimised findings replace the
+			// original ones below, the regression is then reported — and excused — as
+			// the known difference. The allowlist discipline depends on this.
+			const originalTargets = new Set(produced.map(finding => finding.target))
+			const reproducesSameClass = async (candidate: T, origin: string) => {
+				const found = await runOne(candidate, origin, false)
+				return found.some(finding => originalTargets.has(finding.target))
+			}
+
 			const minimised = shrinkFailures
-				? await shrink(input, async candidate => (await runOne(candidate, 'shrink')).length > 0, {
+				? await shrink(input, candidate => reproducesSameClass(candidate, 'shrink'), {
 						maxEvaluations: FUZZ_MODE === 'deep' ? 1_200 : 300,
 						shrinkRoot: options.shrinkRoot ?? true
 					})
 				: input
 
-			const minimisedFindings = await runOne(minimised, 'minimised')
+			const minimisedFindings = (await runOne(minimised, 'minimised', false)).filter(finding =>
+				originalTargets.has(finding.target)
+			)
 			findings.push(...(minimisedFindings.length > 0 ? minimisedFindings : produced))
 
 			if (recording) {

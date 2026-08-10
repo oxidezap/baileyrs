@@ -12,36 +12,65 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-export const CORPUS_ROOT = resolve(dirname(new URL(import.meta.url).pathname), '..', 'corpus')
+// `URL.pathname` leaves percent escapes undecoded, so a checkout under a path
+// with a space or a non-ASCII character would read and write the corpus
+// somewhere else entirely.
+export const CORPUS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'corpus')
 
 const BYTES_TAG = '__bytes__'
 const BIGINT_TAG = '__bigint__'
 const UNDEFINED_TAG = '__undefined__'
+const NUMBER_TAG = '__number__'
 
-/** JSON cannot hold the values these fuzzers care most about, so tag them. */
+/**
+ * JSON cannot hold the values these fuzzers care most about, so tag them.
+ *
+ * `NaN`, `Infinity` and `-0` all survive `JSON.stringify` as `null` or `0`, and
+ * those are exactly the numbers a codec fuzzer plants on purpose — a corpus
+ * entry that replayed as `null` would stop reproducing what it was recorded for.
+ */
 const encode = (value: unknown): unknown => {
 	if (value === undefined) return { [UNDEFINED_TAG]: true }
 	if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() }
+	if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) {
+		return { [NUMBER_TAG]: Object.is(value, -0) ? '-0' : String(value) }
+	}
 	if (value instanceof Uint8Array) return { [BYTES_TAG]: Buffer.from(value).toString('base64') }
 	if (Array.isArray(value)) return value.map(encode)
 	if (typeof value === 'object' && value !== null) {
 		const out: Record<string, unknown> = {}
-		for (const [key, nested] of Object.entries(value)) out[key] = encode(nested)
+		for (const [key, nested] of Object.entries(value)) {
+			// `__proto__` must stay an own key: the generators plant it deliberately,
+			// and plain assignment would move the prototype instead.
+			Object.defineProperty(out, key, { value: encode(nested), enumerable: true, writable: true, configurable: true })
+		}
 		return out
 	}
 	return value
 }
 
+/** A tag object is one that carries the tag *and nothing else*, so an ordinary
+ * payload with a colliding key is not mistaken for an encoded value. */
+const taggedAs = (record: Record<string, unknown>, tag: string): boolean =>
+	Object.hasOwn(record, tag) && Object.keys(record).length === 1
+
 const decode = (value: unknown): unknown => {
 	if (Array.isArray(value)) return value.map(decode)
 	if (typeof value === 'object' && value !== null) {
 		const record = value as Record<string, unknown>
-		if (UNDEFINED_TAG in record) return undefined
-		if (BIGINT_TAG in record) return BigInt(String(record[BIGINT_TAG]))
-		if (BYTES_TAG in record) return new Uint8Array(Buffer.from(String(record[BYTES_TAG]), 'base64'))
+		if (taggedAs(record, UNDEFINED_TAG)) return undefined
+		if (taggedAs(record, BIGINT_TAG)) return BigInt(String(record[BIGINT_TAG]))
+		if (taggedAs(record, BYTES_TAG)) return new Uint8Array(Buffer.from(String(record[BYTES_TAG]), 'base64'))
+		if (taggedAs(record, NUMBER_TAG)) {
+			const raw = String(record[NUMBER_TAG])
+			return raw === '-0' ? -0 : Number(raw)
+		}
 		const out: Record<string, unknown> = {}
-		for (const [key, nested] of Object.entries(record)) out[key] = decode(nested)
+		for (const [key, nested] of Object.entries(record)) {
+			Object.defineProperty(out, key, { value: decode(nested), enumerable: true, writable: true, configurable: true })
+		}
 		return out
 	}
 	return value
