@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
-import { adaptBridgeEvent, adaptBridgeMessageWire } from '../adapt.ts'
+import { adaptBridgeEvent, adaptBridgeMessageWire, KNOWN_BRIDGE_EVENT_TYPES } from '../adapt.ts'
 import { expect } from '../../__tests__/expect.ts'
 import {
 	groupAnnouncementWireFixture,
@@ -776,6 +776,50 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 
 		it('truly unknown event types return null (caller drops)', () => {
 			expect(adaptBridgeEvent({ type: 'invented_2099', data: {} } as never)).toBe(null)
+		})
+
+		/**
+		 * The event type is untrusted: it comes from the runtime, which gets it from
+		 * the server, and the adapter table is a plain object literal.
+		 *
+		 * Every one of these resolves on `Object.prototype`. The lookup used to call
+		 * whatever it found and hand the result on as a canonical event —
+		 * `constructor` produced an object and `toString` a string — while
+		 * `__proto__` and `valueOf` threw instead. Found by the bridge fuzzer.
+		 */
+		it('does not resolve an event type through the prototype chain', () => {
+			for (const inherited of ['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnProperty', 'isPrototypeOf']) {
+				expect(adaptBridgeEvent({ type: inherited, data: {} } as never)).toBe(null)
+			}
+		})
+	})
+
+	/**
+	 * An event with no data slot must be adapted, not thrown on.
+	 *
+	 * The contract is "null on unrecoverable shape mismatch, never a throw", and a
+	 * throw here does not stay local — it propagates into the socket's event
+	 * dispatch and takes down the whole event loop rather than the one event. 30 of
+	 * the 58 declared types threw on this before the slot was normalised.
+	 */
+	describe('an absent data slot', () => {
+		it('never throws, for any declared event type', () => {
+			for (const type of KNOWN_BRIDGE_EVENT_TYPES) {
+				for (const data of [undefined, null]) {
+					expect(() => adaptBridgeEvent({ type, data } as never)).not.toThrow()
+				}
+			}
+		})
+
+		it('drops the events that need their data, and keeps the ones that do not', () => {
+			// `qr` reads a code it has not been given, so there is nothing to emit.
+			expect(adaptBridgeEvent({ type: 'qr' } as never)).toBe(null)
+			// `connected` never had a data slot to miss.
+			expect(adaptBridgeEvent({ type: 'connected' } as never)).toEqual({ type: 'connected' })
+			// And an adapter with its own fallback still uses it, rather than the
+			// event being dropped: this is why the slot is normalised rather than
+			// rejected outright.
+			expect(adaptBridgeEvent({ type: 'stream_error' } as never)).toEqual({ type: 'streamError', code: 'unknown' })
 		})
 	})
 })

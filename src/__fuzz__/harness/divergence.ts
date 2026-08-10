@@ -841,17 +841,6 @@ const text = (value: unknown): string => {
 }
 
 /**
- * Every property an empty object inherits.
- *
- * Enumerated from the prototype itself rather than written out, so the entry that
- * relies on it cannot drift from what the runtime actually inherits.
- */
-// Object.prototype only: the adapter table is a plain object literal, so that is
-// the whole of its prototype chain. Including Function.prototype names would
-// excuse a genuine unrecognised event type called `bind` or `name`.
-const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(Object.getOwnPropertyNames(Object.prototype))
-
-/**
  * An unpaired UTF-16 surrogate, which is what the newsletter encoder differs on.
  *
  * Serialised input renders surrogates as `\udXXX` escapes, so the check runs
@@ -859,10 +848,6 @@ const PROTOTYPE_KEYS: ReadonlySet<string> = new Set(Object.getOwnPropertyNames(O
  */
 const LONE_SURROGATE =
 	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
-
-/** The TypeError shapes a missing or short `data` slot produces. */
-const MISSING_DATA_THROWS =
-	/Cannot read properties of (undefined|null)|is not iterable|Cannot use 'in' operator|is not a function/u
 
 /**
  * True when two observation streams hold the same entries in a different order.
@@ -1193,36 +1178,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'For a 64-bit integer field holding a number that is not a 64-bit integer, the bridge encoder throws where upstream converts and encodes. Two rejections, one cause: `1.5`, `NaN` and `Infinity` fail the BigInt conversion (`RangeError: The number … cannot be converted to a BigInt`), and `1e300`, `2**63` and `1.5625e19` fail the range check (`Error: invalid int64: …`). Upstream accepts every one of them — `1.5` as 1, `NaN`/`Infinity`/`1e300` as 0, and `1.5625e19` as a wrapped value that is not the number it was given. Safe integers, numeric strings, `null` and `undefined` are byte-identical on both sides. Measured on `pollUpdateMessage.senderTimestampMs`. baileyrs is plainly the more correct side here — upstream silently sends a wrong value where baileyrs refuses — but it is caller-visible either way: the same content sends on Baileys and throws on baileyrs. Same shape as the float32 entry, and the pair should be decided together.',
 		review: '2026-11-01'
-	},
-	{
-		id: 'bridge-adapter-prototype-chain-lookup',
-		target: /^bridge:adapt-(unknown|total)$/u,
-		status: 'open',
-		reason:
-			'The adapter table is a plain object literal indexed by the event type string, so a type of "constructor", "toString" or "valueOf" resolves through Object.prototype: the inherited function is called and its return value is handed on as a canonical event, and "__proto__" resolves to a non-function and throws "adapter is not a function". The type comes from the runtime, which gets it from the server, so an untrusted string is indexing a prototype-bearing lookup table. Both outcomes break the layer\'s stated contract of dropping what it does not recognise. A Map, an Object.create(null) table, or an Object.hasOwn guard fixes it.',
-		review: '2026-10-01',
-		when: divergence => PROTOTYPE_KEYS.has(String((divergence.input as { type?: unknown })?.type))
-	},
-	{
-		id: 'bridge-adapter-throws-on-missing-data',
-		target: /^bridge:adapt-(total|coverage)$/u,
-		status: 'open',
-		reason:
-			'Adapters for declared event types read straight into `data` without checking it is there, so an event that arrives with no data slot — or with a slot missing the field the adapter reads — throws a TypeError instead of returning null. `adapt.ts` documents the opposite ("Result is null on unrecoverable shape mismatch"), and the throw does not stay local: it propagates into the socket event dispatch, which takes out the whole event loop rather than the one event.',
-		review: '2026-10-01',
-		// The throw shape *and* a `data` slot that is actually missing. On its own
-		// the regex matches the most common TypeErrors there are — "is not a
-		// function", "is not iterable" — so an adapter regression on a well-shaped
-		// event was classified as the known missing-data problem. The per-type
-		// coverage counter cannot catch that either: it sees a type that never
-		// adapts at all, not one that fails on one payload in eight.
-		when: divergence => {
-			if (!MISSING_DATA_THROWS.test(text(divergence.local))) return false
-			const data = (divergence.input as { data?: unknown } | undefined)?.data
-			// Absent, not a record at all, or a record with nothing in it — the three
-			// shapes an adapter reading straight into `data` cannot survive.
-			return plainObject(data)?.length !== undefined ? plainObject(data)!.length === 0 : true
-		}
 	},
 	{
 		id: 'event-buffer-merge-precedence',

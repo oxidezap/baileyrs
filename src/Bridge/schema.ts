@@ -556,14 +556,38 @@ export const KNOWN_BRIDGE_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys
  */
 export const adaptBridgeEventViaSchema = (event: WhatsAppEvent, logger?: ILogger): CanonicalEvent | null => {
 	const typed = event as { type: BridgeEventType; data?: unknown }
-	const adapter = (ADAPTERS as Record<string, AdapterFn<BridgeEventType>>)[typed.type]
-	if (!adapter) {
+	// An own property of the table, not anything the prototype chain answers.
+	//
+	// The type string comes from the runtime, which gets it from the server, so it
+	// is untrusted input into a plain-object lookup. `ADAPTERS.constructor` and
+	// `ADAPTERS.toString` resolve to inherited functions: they were called and
+	// their return values handed on as canonical events — measured, `constructor`
+	// produced an object and `toString` a string, neither of which is an event.
+	// `__proto__` and `valueOf` reached the other failure mode and threw.
+	if (!Object.hasOwn(ADAPTERS, typed.type)) {
 		logger?.debug({ eventType: typed.type }, 'unknown bridge event (no canonical mapping)')
 		return null
 	}
+	const adapter = (ADAPTERS as Record<string, AdapterFn<BridgeEventType>>)[typed.type]!
+	// A missing data slot reads as an empty one.
+	//
+	// The contract these adapters are documented under is "null on unrecoverable
+	// shape mismatch, never a throw", and a throw here does not stay local: it
+	// propagates into the socket's event dispatch and takes down the whole event
+	// loop rather than the one event. 30 of the 58 declared types threw on an
+	// event that arrived with no data — `data.code` on `undefined`.
+	//
+	// Normalised rather than rejected, because rejecting would change behaviour
+	// the adapters already define. Measured on those 30 with an empty slot: 16
+	// return null of their own accord, 11 return a `noop`, and the remaining three
+	// return the fallback their own author wrote — `stream_error` its
+	// `?? 'unknown'`, `pair_error` its 'Unknown pairing error', and
+	// `offline_sync_completed` its `count: 0`. Nothing is invented here; the throw
+	// simply becomes whatever the adapter already does with `{}`.
+	const data = typed.data ?? {}
 	// `data` cast here is the only `as` in the public path — the bridge
 	// runtime is the source of truth that the type matches the discriminator.
-	return adapter(typed.data as never, logger)
+	return adapter(data as never, logger)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
