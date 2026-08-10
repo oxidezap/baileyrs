@@ -120,6 +120,94 @@ const hex = (bytes: unknown): string =>
 
 const describeOutcome = (outcome: Outcome): unknown => (outcome.ok ? outcome.value : `<throw ${outcome.error}>`)
 
+/** A total stringifier for the tag helpers, mirroring the registry's own. */
+const text = (value: unknown): string => {
+	try {
+		return (
+			JSON.stringify(value, (_key, nested: unknown) => (typeof nested === 'bigint' ? nested.toString() : nested)) ?? ''
+		)
+	} catch {
+		return ''
+	}
+}
+
+/**
+ * The `path#number` of every top-level field upstream wrote and the bridge did
+ * not, as a detail tag.
+ *
+ * `proto:field-omission` was target-wide: the structural classifier proved the
+ * bridge's bytes were upstream's *minus whole fields*, which rules out a changed
+ * value but not a newly dropped one — so a future regression that dropped a
+ * field nothing else covers would have counted as another hit of the existing
+ * entry and kept the nightly green.
+ *
+ * An earlier attempt to pin this by *message* path was reverted on measurement:
+ * one smoke seed named 17 paths, four named 29, and the set kept growing.
+ * Naming the omitted *field* instead is a different question with a different
+ * answer — measured at 12 distinct `path#number` pairs, identical across nine
+ * seeds and 21,000 generated cases.
+ *
+ * Only top-level fields: a nested omission renders as a differing length-
+ * delimited value here, and the entry's structural bound still covers those.
+ */
+const topLevelFieldNumbers = (bytes: Uint8Array): Set<number> => {
+	const numbers = new Set<number>()
+	let cursor = 0
+	while (cursor < bytes.length) {
+		let shift = 0
+		let tag = 0
+		while (cursor < bytes.length) {
+			const byte = bytes[cursor++]!
+			tag |= (byte & 0x7f) << shift
+			if ((byte & 0x80) === 0) break
+			shift += 7
+		}
+		const wireType = tag & 7
+		const number = tag >>> 3
+		if (number === 0) break
+		numbers.add(number)
+		if (wireType === 0) {
+			while (cursor < bytes.length && (bytes[cursor++]! & 0x80) !== 0) {
+				// Skipping a varint's continuation bytes.
+			}
+		} else if (wireType === 1) cursor += 8
+		else if (wireType === 5) cursor += 4
+		else if (wireType === 2) {
+			let length = 0
+			let lengthShift = 0
+			while (cursor < bytes.length) {
+				const byte = bytes[cursor++]!
+				length |= (byte & 0x7f) << lengthShift
+				if ((byte & 0x80) === 0) break
+				lengthShift += 7
+			}
+			cursor += length
+		} else break
+	}
+	return numbers
+}
+
+const omissionTag = (path: string, localBytes: Uint8Array, remoteBytes: Uint8Array): string | undefined => {
+	const mine = topLevelFieldNumbers(localBytes)
+	const missing = [...topLevelFieldNumbers(remoteBytes)].filter(number => !mine.has(number)).toSorted()
+	return missing.length === 0 ? undefined : `omits ${missing.map(number => `${path}#${number}`).join(',')}`
+}
+
+/** Both message-level classifications, joined, so one detail can carry either. */
+const combinedTag = (
+	path: string,
+	message: unknown,
+	type: UpstreamType,
+	bytes?: { local: Uint8Array; remote: Uint8Array }
+): string | undefined => {
+	const tags = [
+		emptyStringCoercionTag(path, message),
+		renumberingTag(path, message, type),
+		bytes === undefined ? undefined : omissionTag(path, bytes.local, bytes.remote)
+	].filter((tag): tag is string => tag !== undefined)
+	return tags.length === 0 ? undefined : tags.join('; ')
+}
+
 /** Appends a classification the allowlist registry cannot compute for itself. */
 const withTag = (detail: string, tag: string | undefined): string => (tag === undefined ? detail : `${detail} [${tag}]`)
 
@@ -265,6 +353,50 @@ const encodeTarget = (path: string, message: unknown, fallback: string): string 
  * bridge's output is upstream's minus some fields, the defect is omission, and
  * saying so is more useful than "the bytes differ".
  */
+/**
+ * Whether removing `pollResultSnapshotMessageV3` makes the two encoders agree.
+ *
+ * The renumbering entry could only match this field by *name* on the byte-level
+ * views, because the rendering cannot express it: the canonicaliser descends
+ * into a nested message by field number, so upstream's 114 parses to a nested
+ * form where the bridge's 115 stays raw hex — the same bytes spelled two ways,
+ * as a direct consequence of the renumbering being excused. A comment here said
+ * pinning it needed the target's own tooling; this is that.
+ *
+ * Deleting the field and re-encoding answers the claim directly: if the
+ * renumbering is the whole difference, the two encodings agree without it. A
+ * corrupted value or a second changed field survives the deletion and does not.
+ */
+const RENUMBERED_FIELD = 'pollResultSnapshotMessageV3'
+
+const renumberingTag = (path: string, message: unknown, type: UpstreamType): string | undefined => {
+	if (!text(message).includes(RENUMBERED_FIELD)) return undefined
+	const without = (value: unknown, depth = 0): unknown => {
+		if (depth > 12 || typeof value !== 'object' || value === null) return value
+		if (Array.isArray(value)) return value.map(item => without(item, depth + 1))
+		const out: Record<string, unknown> = {}
+		for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+			if (key === RENUMBERED_FIELD) continue
+			out[key] = without(nested, depth + 1)
+		}
+		return out
+	}
+	const stripped = without(message)
+	const mine = attempt(() => encodeProto(path, stripped))
+	const theirs = attempt(() => type.encode(stripped).finish())
+	if (!mine.ok || !theirs.ok) return 'renumbering not isolated'
+	const left = mine.value as Uint8Array
+	const right = theirs.value as Uint8Array
+	// Compared with the same tolerances the target itself applies, not by raw
+	// byte equality: field order and packed-vs-unpacked are legal protobuf and
+	// have their own targets, so a message carrying the renumbering *and* one of
+	// those would otherwise be tagged "not isolated" and excused by neither entry.
+	if (hex(left) === hex(right)) return 'renumbering only'
+	if (sameWireContent(left, right, schemaAt(path))) return 'renumbering only'
+	if (differsOnlyByPacking(left, right, schemaAt(path))) return 'renumbering only'
+	return 'renumbering not isolated'
+}
+
 /**
  * Whether the bridge really coerced an empty string to zero, as a detail tag.
  *
@@ -711,7 +843,10 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					input: { path, message },
 					local: canonicalWire(localBytes, schemaAt(path)) ?? hex(localBytes),
 					upstream: canonicalWire(remoteBytes, schemaAt(path)) ?? hex(remoteBytes),
-					detail: withTag('encoders put different fields or values on the wire', emptyStringCoercionTag(path, message))
+					detail: withTag(
+						'encoders put different fields or values on the wire',
+						combinedTag(path, message, type, { local: localBytes, remote: remoteBytes })
+					)
 				}
 			}
 		})
@@ -1117,7 +1252,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 						input: { path, message },
 						local: describeOutcome(local),
 						upstream: describeOutcome(remote),
-						detail: withTag('one encoder accepted an integer the other rejected', emptyStringCoercionTag(path, message))
+						detail: withTag('one encoder accepted an integer the other rejected', combinedTag(path, message, type))
 					}
 				}
 				if (!local.ok || !remote.ok) return []
@@ -1128,7 +1263,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					input: { path, message },
 					local: canonicalWire(local.value as Uint8Array, schemaAt(path)) ?? hex(local.value),
 					upstream: canonicalWire(remote.value as Uint8Array, schemaAt(path)) ?? hex(remote.value),
-					detail: withTag('integer fields encode differently', emptyStringCoercionTag(path, message))
+					detail: withTag('integer fields encode differently', combinedTag(path, message, type))
 				}
 			}
 		})

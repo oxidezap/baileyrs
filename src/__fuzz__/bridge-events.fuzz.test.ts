@@ -731,7 +731,13 @@ describe('event buffer', () => {
 				// `notify`, the history-sync metadata). A consumer tells them apart with
 				// `Object.keys`, spread or `in`, so a consolidation change that altered
 				// the public event shape is a real difference, not a representation one.
-				if (equivalent(local, remote, { preservePresence: true })) return []
+				// `coerceScalars: false` alongside it. Coercion exists so a Rust u64 can be
+				// compared against a protobufjs Long — these are plain event payloads, and
+				// the generator emits numeric-looking strings on purpose, so folding
+				// `conversation: '0'` together with the number `0` would hide a
+				// consolidation that changed a text value's runtime type. A consumer sees
+				// that difference through `typeof`, `===` and arithmetic.
+				if (equivalent(local, remote, { preservePresence: true, coerceScalars: false })) return []
 				return {
 					target: 'buffer:differential',
 					input: steps,

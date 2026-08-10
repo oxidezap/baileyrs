@@ -366,6 +366,47 @@ const carriesOutOfRangeFloat = (value: unknown, depth = 0): boolean => {
 }
 
 /**
+ * Every top-level field the bridge encoder is known to drop.
+ *
+ * Measured rather than sampled: nine seeds and 21,000 generated cases produce
+ * exactly these twelve `path#number` pairs and no others. A thirteenth is new
+ * data loss and must be looked at, which is the entire point of listing them.
+ */
+const KNOWN_OMITTED_FIELDS: ReadonlySet<string> = new Set([
+	'BotMetadata#1',
+	'Message.AudioMessage#23',
+	'Message.DocumentMessage#22',
+	'Message.ImageMessage#33',
+	'Message.MMSThumbnailMetadata#8',
+	'Message.MessageHistoryMetadata#2',
+	'Message.PaymentExtendedMetadata#3',
+	'Message.StickerMessage#23',
+	'Message.VideoMessage#32',
+	'SyncActionValue#65',
+	'SyncActionValue.AgentAction#2',
+	'SyncActionValue.ChatAssignmentAction#1'
+])
+
+/**
+ * True when a finding carries a classification its target computed for it.
+ *
+ * Targets append `[tag]` to the detail — and `[tag-a; tag-b]` when more than one
+ * applies, which is why this looks inside the brackets rather than matching them
+ * whole. An earlier version anchored on `[tag]` and silently stopped matching
+ * the moment a second classification joined it, quietly un-excusing a
+ * documented difference.
+ */
+const hasTag = (divergence: Divergence, tag: string): boolean => {
+	const detail = divergence.detail ?? ''
+	const start = detail.lastIndexOf('[')
+	if (start < 0 || !detail.endsWith(']')) return false
+	return detail
+		.slice(start + 1, -1)
+		.split('; ')
+		.includes(tag)
+}
+
+/**
  * True when `value` holds a 64-bit magnitude outside ±(2^53−1).
  *
  * Strings as well as numbers: the generator seeds 64-bit fields as decimal
@@ -420,7 +461,7 @@ const coercedAnEmptyString = (divergence: Divergence): boolean => {
 	// `0a017520002803` where `'5'` gives `0a017520052803`, so a regression that
 	// wrote a different value or dropped the field is tagged `not coerced` and
 	// stops being excused here.
-	return (divergence.detail ?? '').includes('[empty string coerced to zero]')
+	return hasTag(divergence, 'empty string coerced to zero')
 }
 
 /** Removes one property wherever it appears, so a predicate can ask what is left. */
@@ -982,8 +1023,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// If both decoded and disagreed, that is a decode difference on a payload
 		// they both accepted, and it still fails.
 		when: divergence =>
-			isThrow(divergence.local) !== isThrow(divergence.upstream) &&
-			(divergence.detail ?? '').includes('[malformed payload]'),
+			isThrow(divergence.local) !== isThrow(divergence.upstream) && hasTag(divergence, 'malformed payload'),
 		reason:
 			'The two decoders disagree about which malformed `<message>` payloads are readable, in both directions. Upstream throws "illegal buffer" where baileyrs returns an empty message object; and for a truncated length prefix (`2a 16` with no body) baileyrs throws RangeError "premature EOF" where upstream returns `[{ participant: "" }]`. Whichever way round, a corrupt stanza becomes an empty message on one side and an exception on the other, so a caller cannot write one handler that works against both. Needs a maintainer call on which contract the stanza handlers should rely on.',
 		review: '2026-11-01'
@@ -1099,7 +1139,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// reproduces upstream's. A structural rule got this wrong in both directions
 		// before, first excusing a dropped `extendedTextMessage.text` and then
 		// reporting a legitimately dropped undeclared property.
-		when: divergence => (divergence.detail ?? '').includes('[copy strategy]'),
+		when: divergence => hasTag(divergence, 'copy strategy'),
 		reason:
 			"The same root cause as the mutation entry, seen in the return value: upstream copies the content through `proto.Message.decode(proto.Message.encode(content))` while baileyrs shallow-clones with `{ ...content }`. The round trip changes the key set in both directions — it drops properties the schema does not declare, and it materialises empty repeated fields the schema does declare. Measured on `{ extendedTextMessage: {} }`: upstream's result carries `endCardTiles: []`, baileyrs' does not; on `{ extendedTextMessage: { text: 'x', notAField: 1 } }` baileyrs keeps `notAField` and upstream loses it. Schema-valid content with no empty repeated fields agrees exactly, so callers are largely unaffected — but it is a second observable of one defect, and the mutation entry's over-broad target had been excusing it.",
 		review: '2026-11-01'
@@ -1312,26 +1352,33 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		id: 'proto-field-omission',
 		target: 'proto:field-omission',
 		status: 'open',
-		// Deliberately no path predicate. Enumerating the affected paths was tried
-		// and reverted on measurement: one smoke seed names 17, four name 29, and
-		// the set keeps growing — a list drawn from a sample is not a pin, it is a
-		// way to fail on an unlucky seed while adding no safety. What does bound
-		// this target is the classifier: a finding can only ever be one side's
-		// output minus whole fields, and any *changed* value is routed to
-		// encode-bytes or decode-parity instead.
+		// Named, not target-wide. The structural classifier proves the bridge's bytes
+		// are upstream's *minus whole fields*, which rules out a changed value but not
+		// a newly dropped one — so a future regression dropping a field nothing else
+		// covers counted as another hit of this entry and left the nightly green.
 		//
-		// Not one-directional, though. The byte classifier calls `isWireSubset`
-		// as `(localBytes, remoteBytes)`, so it does mean bridge-minus-upstream;
-		// the round-trip classifier tests `omitsKeysOnly` both ways round, so a
-		// finding there can also be upstream-minus-bridge. That is deliberate —
-		// upstream dropping a field the bridge kept is data loss too — but it means
-		// this entry covers both, which an earlier version of this comment denied.
-		//
-		// Pinning the omitted field rather than the message would be the real fix,
-		// and needs the scanner to report which fields went missing.
-
+		// Pinning the *message* path was tried and reverted on measurement: one smoke
+		// seed named 17, four named 29, and the set kept growing. The omitted *field*
+		// is a different question with a different answer — 12 distinct `path#number`
+		// pairs, identical across nine seeds and 21,000 generated cases. The
+		// encode-bytes target reports them; a finding that omits anything else is not
+		// this entry.
+		when: divergence => {
+			const detail = divergence.detail ?? ''
+			const marker = detail.indexOf('omits ')
+			// The views that carry no byte-level tag keep the structural bound alone:
+			// round-trip and the field sweeps compare decoded objects, where the omitted
+			// field numbers are not available. Narrowing those needs the same treatment
+			// and is the remaining gap in this entry.
+			if (marker < 0) return true
+			const listed = detail
+				.slice(marker + 'omits '.length)
+				.split(/[;\]]/u)[0]!
+				.split(',')
+			return listed.every(entry => KNOWN_OMITTED_FIELDS.has(entry.trim()))
+		},
 		reason:
-			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. Overlaps the presence and unknown-type entries, which are themselves already tracked in KNOWN_WIRE_GAPS; kept separate because the classifier cannot attribute a cause, only a shape.',
+			'Cases where the bridge output is upstream output minus whole fields — an empty nested message, a sub-field of a type it models differently. Classified by structural subset rather than by name, so a *changed* value can never land here: those still fail as encode-bytes or decode-parity. The twelve top-level fields it covers are listed in KNOWN_OMITTED_FIELDS and were measured, not sampled: identical across nine seeds and 21,000 generated cases. Overlaps the presence and unknown-type entries, which are themselves already tracked in KNOWN_WIRE_GAPS.',
 		review: '2026-10-01'
 	},
 	{
@@ -1407,17 +1454,24 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			if (text(divergence.local).includes('<no keys decoded>')) return true
 			if (text(divergence.local).includes('<nothing encoded>')) return true
 			// The byte-level targets render the wire as `field:wireType:value`, and
-			// there the renumbering cannot be pinned from the rendering alone. The
-			// renderer descends into a nested message *by field number*, so upstream's
-			// 114 is parsed to `{4:0:0}` where the bridge's 115 stays raw hex — the
-			// same bytes, spelled two ways, as a direct consequence of the very
-			// renumbering being excused. Splitting on commas to compare entries does
-			// not work either: the commas inside a nested group split with it.
-			// Pinning these views needs the target to report the raw bytes alongside
-			// the rendering, which is a change to `proto-codec.fuzz.test.ts`. Until
-			// then this is the name match it always was, and the tightening above
-			// covers the view Codex named.
-			if (typeof divergence.local === 'string' && typeof divergence.upstream === 'string') return true
+			// the renumbering cannot be pinned from that rendering: the renderer
+			// descends into a nested message *by field number*, so upstream's 114 is
+			// parsed to `{4:0:0}` where the bridge's 115 stays raw hex — the same
+			// bytes spelled two ways, as a direct consequence of the renumbering being
+			// excused. Splitting on commas does not work either, since the commas
+			// inside a nested group split with it.
+			//
+			// A comment here used to say pinning this needed the target's own tooling
+			// and left it as a bare name match. It now has that: the target deletes
+			// the field, re-encodes on both sides, and tags whether the encodings then
+			// agree. If they do, the renumbering was the whole difference; a corrupted
+			// value or a second changed field survives the deletion and is not tagged.
+			if (typeof divergence.local === 'string' && typeof divergence.upstream === 'string') {
+				return (
+					(divergence.detail ?? '').includes('[renumbering only') ||
+					(divergence.detail ?? '').includes('; renumbering only')
+				)
+			}
 			const mine = withoutKey(normalise(divergence.local), 'pollResultSnapshotMessageV3')
 			const theirs = withoutKey(normalise(divergence.upstream), 'pollResultSnapshotMessageV3')
 			return sameShape(mine, theirs) && !sameShape(normalise(divergence.local), normalise(divergence.upstream))

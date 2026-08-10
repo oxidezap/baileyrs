@@ -1195,13 +1195,31 @@ const TARGETS: readonly PureTarget[] = [
 		// still be kept, and it is the pair that pins the `&&`.
 		generate: random => {
 			const myJid = generateJid(random)
-			const myLid = generateJid(random)
+			// `myLid` is compared raw against each row's *decoded user part*
+			// (`myLid !== user`), while every call site in the repository passes a
+			// full JID — so for well-formed input that half of the guard can never
+			// be false, in either library. It is reachable only with a bare user,
+			// which is why one is drawn some of the time: off-contract, but the only
+			// input that executes the branch, and both sides should still agree on it.
+			const myLid = random.bool(0.7) ? generateJid(random) : generateJid(random).split('@')[0]!
+			const myLidUser = myLid.split('@')[0]!
 			const myUser = myJid.split('@')[0]!
 			const myDevice = Number(myUser.split(':')[1] ?? 0)
 			const rows = Array.from({ length: random.int(0, 3) }, () => ({
-				// One row in three is the caller's own user, so the exclusion is
-				// reachable at all; the rest are peers.
-				id: random.bool(0.35) ? myJid : generateJid(random),
+				// The caller's own phone-number identity, the caller's own LID, or a
+				// peer. Both identities on purpose: the guard reads
+				// `myUser !== user && myLid !== user`, so rows that only ever matched
+				// `myJid` left the second half untested and an implementation that
+				// excluded the phone number alone still passed.
+				id: random.weighted<string>([
+					[3, myJid],
+					// A well-formed JID whose *user part* is the caller's LID identity.
+					// Passing `myLid` itself would not do: the guard compares it against
+					// each row's decoded user, so the row has to carry that user, and a
+					// bare string is not a JID the decoder accepts as a row id at all.
+					[2, `${myLidUser}@lid`],
+					[5, generateJid(random)]
+				]),
 				devices: {
 					deviceList: Array.from({ length: random.int(0, 3) }, () => ({
 						// And within such a row, the caller's own device number as often as

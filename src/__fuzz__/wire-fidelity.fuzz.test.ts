@@ -236,7 +236,14 @@ describe('send-path wire fidelity on generated messages', () => {
 				// cannot read back, which the fidelity check above cannot catch either
 				// — its reference goes through the same bridge encode/decode pair and
 				// lacks the field too.
-				if (!equivalent(bridgeView, upstreamView)) {
+				// Schema-aware, as the codec differentials are. `normalise` folds every
+				// decimal string into a bigint so a Rust u64 can be compared against a
+				// protobufjs Long, which also folds a declared string holding `'0'`
+				// together with the number `0` — and `generateProtoObject` emits `'0'`
+				// deliberately. A bridge decoder that returned a number where upstream
+				// returns the string is exactly the readability regression this target is
+				// named for.
+				if (!equivalent(bridgeView, upstreamView, { isTextField: textFieldPredicate('Message') })) {
 					findings.push({
 						target: 'wire:upstream-readable',
 						input: { jid, message },

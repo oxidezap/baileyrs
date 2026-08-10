@@ -35,7 +35,9 @@ export const runCli = async (argv: string[]): Promise<number> => {
 
 	for (let index = 0; index < argv.length; index++) {
 		const option = argv[index]!
-		const [name, inline] = option.includes('=') ? [option.slice(0, option.indexOf('=')), option.slice(option.indexOf('=') + 1)] : [option, undefined]
+		const [name, inline] = option.includes('=')
+			? [option.slice(0, option.indexOf('=')), option.slice(option.indexOf('=') + 1)]
+			: [option, undefined]
 		const takeValue = () => {
 			if (inline !== undefined) return inline
 			const value = argv[index + 1]

@@ -34,6 +34,18 @@ interface Report {
 	crashes?: string[]
 }
 
+/**
+ * A value the reader can paste into a shell and get back verbatim.
+ *
+ * The seed reaches here from the report files, which take it from a free-form
+ * workflow input. The runner's replay hint and the tracking-issue body already
+ * quote it; this summary is embedded verbatim in that same issue, so leaving it
+ * unquoted advertised the unsafe command right beside the safe one. Single
+ * quotes rather than JSON, because double quotes still expand `$` and backticks.
+ */
+const shellQuote = (value: string): string =>
+	/^[\w.:@/+=-]+$/u.test(value) ? value : `'${value.replaceAll("'", String.raw`'\''`)}'`
+
 const argv = process.argv.slice(2)
 const directory = resolve(
 	argv.find(argument => !argument.startsWith('--')) ?? process.env.FUZZ_REPORT_DIR ?? 'fuzz-reports'
@@ -150,7 +162,7 @@ if (totals.findings > 0) {
 		for (const detail of details.slice(0, 5)) lines.push(`  - ${detail}`)
 	}
 	lines.push('')
-	lines.push(`Reproduce with \`FUZZ_SEED=${seeds[0]} FUZZ_ONLY="<target>" npm run fuzz\`.`)
+	lines.push(`Reproduce with \`FUZZ_SEED=${shellQuote(String(seeds[0] ?? ''))} FUZZ_ONLY="<target>" npm run fuzz\`.`)
 }
 
 // A crash is a failure with no divergence attached — a check or generator that
