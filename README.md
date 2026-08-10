@@ -212,6 +212,11 @@ A few behaviors that differ from upstream — almost always to your advantage:
   | anything else | reconnect, after a short delay |
 
   `Example/example.ts` implements exactly this.
+- **`connecting` is not a short state here.** The engine's backoff grows with
+  each consecutive failure, so a single `connecting` can stand for minutes of
+  downtime with nothing else emitted in between. See
+  [When `connecting` lasts minutes](#when-connecting-lasts-minutes): a
+  readiness timeout written for upstream's `connecting` misreads this one.
 - **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
   side caches group metadata and message keys natively. You can still pass
   them — they're respected as overrides — but they're optional.
@@ -223,6 +228,53 @@ A few behaviors that differ from upstream — almost always to your advantage:
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**
   See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
   one can break a boot path, so it has its own section.
+
+### When `connecting` lasts minutes
+
+Upstream Baileys emits `connecting` once per socket, and it resolves to `open`
+or `close` within seconds, because upstream never retries on its own. On
+baileyrs the same value also covers every drop the engine is retrying, and the
+backoff between those retries climbs with each consecutive failure.
+
+Here is what that costs on a rate-limited account. Three `429 rate-overlimit`
+in a row, measured against the production reconnect path:
+
+| failure | next attempt in | offline so far |
+| --- | --- | --- |
+| `429` #1 | 8.4s | 8.4s |
+| `429` #2 | 146.2s | 154.6s |
+| `429` #3 | 813.9s | 968.5s |
+| `429` #4 | 903.5s | 1872.0s |
+
+About 16 minutes offline after the third one. For all 16 of those minutes the
+consumer sees exactly **one** `connection: 'connecting'`: no `lastDisconnect`,
+no status code, no repeat. `isConnected` and `isLoggedIn` are both `false`
+throughout, exactly as they are during a first connection, so neither tells you
+a retry is scheduled.
+
+**Do not arm a readiness timeout on `connecting`, and above all do not restart
+the process when one expires.** The backoff counter lives in the Rust client
+that your socket owns, so it dies with the process. The next boot connects
+immediately, replays the whole startup burst against a server that just asked
+for less traffic, and earns the next `429` sooner. Restarting is the single
+worst answer to a rate limit, and an upstream-shaped readiness timeout leads
+straight to it.
+
+What to do instead:
+
+- Treat `open` and `close` as the only decision points. `connecting` carries no
+  failure to react to, and it is never a reason to build a second socket. Only
+  `close` is.
+- Read `connecting` in context: after an `open` it means the engine is retrying
+  a drop it owns and will keep retrying; with no `open` before it, it is a first
+  connection still being established. Neither one is stuck.
+- If you need a liveness watchdog anyway, budget it well past the ladder above,
+  tens of minutes rather than seconds, and have it alert a human instead of
+  killing the process. A shorter one fires on a backoff that was about to
+  succeed.
+- Fix the cause on your side: send less. The engine restores the connection,
+  but it does not pace your traffic, and the traffic is what earned the `429`.
+  Queueing, throttling and deferral are yours to decide, the same as upstream.
 
 ### Bridge state in your key store
 
