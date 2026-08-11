@@ -872,6 +872,42 @@ const LONE_SURROGATE =
 	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
 
 /**
+ * True when the bridge kept fields upstream dropped, and nothing else differs.
+ *
+ * Directional and total: upstream may not carry a key the bridge lacks, no value
+ * both sides hold may differ, and at least one field has to have been kept — so
+ * this can never excuse a misread, only a retention.
+ */
+const keptFieldsUpstreamDropped = (local: unknown, upstream: unknown, depth = 0): number | undefined => {
+	if (depth > 12) return sameShape(local, upstream) ? 0 : undefined
+	if (Array.isArray(local) || Array.isArray(upstream)) {
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return undefined
+		let kept = 0
+		for (const [index, item] of local.entries()) {
+			const inner = keptFieldsUpstreamDropped(item, upstream[index], depth + 1)
+			if (inner === undefined) return undefined
+			kept += inner
+		}
+		return kept
+	}
+	const ourKeys = plainObject(local)
+	const theirKeys = plainObject(upstream)
+	if (ourKeys === undefined || theirKeys === undefined) return sameShape(local, upstream) ? 0 : undefined
+	const ours = local as Record<string, unknown>
+	const theirs = upstream as Record<string, unknown>
+	// A key only upstream produced is the bridge losing data, which is the
+	// opposite defect and must still be reported.
+	if (theirKeys.some(key => !Object.hasOwn(ours, key))) return undefined
+	let kept = ourKeys.length - theirKeys.length
+	for (const key of theirKeys) {
+		const inner = keptFieldsUpstreamDropped(ours[key], theirs[key], depth + 1)
+		if (inner === undefined) return undefined
+		kept += inner
+	}
+	return kept
+}
+
+/**
  * The registry.
  *
  * Every entry below was produced by a run of these fuzzers, not by guesswork,
@@ -1340,6 +1376,20 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// in-range 1.5, 0.1 or exact FLT_MAX with the same generic error be
 		// classified as this known difference, on every proto target.
 		when: divergence => text(divergence.local).includes('invalid float32') && carriesOutOfRangeFloat(divergence.input)
+	},
+	{
+		id: 'proto-concatenated-message-merge',
+		target: 'proto:mutation-agreement',
+		status: 'intended',
+		reason:
+			'Protobuf defines concatenation as merging: "for embedded message fields, the parser merges multiple instances of the same field, as if with the Message::MergeFrom method". From bridge 0.8.1 the codec does that — a singular message field read twice merges instead of the second read replacing the first — and protobufjs assigns, dropping everything the earlier instance carried. So on a payload carrying the same message field twice, the bridge returns the merged object and upstream returns only the last one. Measured across five mutated payloads after the 0.8.1 bump: SyncActionValue, MessageContextInfo, Message.ReactionMessage and Message.ExtendedTextMessage, retaining between one and nine fields. This is the one entry in the registry where the *reference* implementation is the non-conforming side, so it is intended rather than open: aligning would mean deliberately dropping fields the wire format says are there.',
+		review: '2027-02-01',
+		// Retention only, and it has to be the whole difference. Upstream carrying a
+		// key the bridge lacks is the bridge losing data — the opposite defect —
+		// and any value that differs where both sides hold the key is a misread.
+		// Both still fail. Without the `> 0` this would also excuse two identical
+		// decodes, which is not a finding at all.
+		when: divergence => (keptFieldsUpstreamDropped(divergence.local, divergence.upstream) ?? 0) > 0
 	},
 	{
 		id: 'proto-decode-invalid-utf8',

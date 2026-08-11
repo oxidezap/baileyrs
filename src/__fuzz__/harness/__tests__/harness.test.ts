@@ -607,6 +607,35 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		)
 	})
 
+	// The one entry where the reference implementation is the non-conforming side,
+	// so its direction is the whole point and is pinned from both ends.
+	it('excuses a concatenated merge only when the bridge kept what upstream dropped', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-concatenated-message-merge')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (local: unknown, upstream: unknown): boolean =>
+			applyAllowlist(
+				[{ target: 'proto:mutation-agreement', input: { mutator: 'concatenate' }, local, upstream }],
+				new Date('2026-01-01'),
+				registry
+			).unexcused.length === 0
+
+		// The documented shape: the merge kept a field the second copy did not carry.
+		assert.ok(excused({ muteAction: { muted: true }, statusPrivacy: { mode: '2' } }, { statusPrivacy: { mode: '2' } }))
+		// Nested, since a merge happens at whatever depth the field sits.
+		assert.ok(excused({ a: { b: { kept: 1, shared: 2 } } }, { a: { b: { shared: 2 } } }), 'retention nested')
+
+		// The bridge losing a field is the opposite defect and must still be reported.
+		assert.ok(!excused({ shared: 2 }, { shared: 2, lost: 1 }), 'a field only upstream produced is not this')
+		// A value both sides hold that differs is a misread, whatever else was kept.
+		assert.ok(!excused({ kept: 1, shared: 2 }, { shared: 3 }), 'a changed value is never this entry')
+		// Two identical decodes are not a finding to excuse.
+		assert.ok(!excused({ shared: 2 }, { shared: 2 }), 'nothing kept is nothing to explain')
+		// And retention in one branch does not license a loss in another.
+		assert.ok(!excused({ a: { kept: 1 }, b: {} }, { a: {}, b: { lost: 1 } }), 'a loss beside a retention still fails')
+	})
+
 	it('keeps every shipped registry entry well-formed', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const ids = new Set<string>()
