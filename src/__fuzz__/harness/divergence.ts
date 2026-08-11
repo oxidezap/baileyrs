@@ -881,10 +881,14 @@ const LONE_SURROGATE =
 const keptFieldsUpstreamDropped = (local: unknown, upstream: unknown, depth = 0): number | undefined => {
 	if (depth > 12) return sameShape(local, upstream) ? 0 : undefined
 	if (Array.isArray(local) || Array.isArray(upstream)) {
-		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return undefined
-		let kept = 0
-		for (const [index, item] of local.entries()) {
-			const inner = keptFieldsUpstreamDropped(item, upstream[index], depth + 1)
+		// Merging concatenates repeated fields, so the bridge's array is upstream's
+		// with the later copy's elements appended. A prefix, exactly: every element
+		// upstream produced has to match at its own index, and upstream being the
+		// longer side is the bridge losing elements, which still fails.
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length < upstream.length) return undefined
+		let kept = local.length - upstream.length
+		for (const [index, item] of upstream.entries()) {
+			const inner = keptFieldsUpstreamDropped(local[index], item, depth + 1)
 			if (inner === undefined) return undefined
 			kept += inner
 		}
@@ -1382,7 +1386,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'proto:mutation-agreement',
 		status: 'intended',
 		reason:
-			'Protobuf defines concatenation as merging: "for embedded message fields, the parser merges multiple instances of the same field, as if with the Message::MergeFrom method". From bridge 0.8.1 the codec does that — a singular message field read twice merges instead of the second read replacing the first — and protobufjs assigns, dropping everything the earlier instance carried. So on a payload carrying the same message field twice, the bridge returns the merged object and upstream returns only the last one. Measured across five mutated payloads after the 0.8.1 bump: SyncActionValue, MessageContextInfo, Message.ReactionMessage and Message.ExtendedTextMessage, retaining between one and nine fields. This is the one entry in the registry where the *reference* implementation is the non-conforming side, so it is intended rather than open: aligning would mean deliberately dropping fields the wire format says are there.',
+			'Protobuf defines concatenation as merging: "for embedded message fields, the parser merges multiple instances of the same field, as if with the Message::MergeFrom method". From bridge 0.8.1 the codec does that — a singular message field read twice merges instead of the second read replacing the first — and protobufjs assigns, dropping everything the earlier instance carried. So on a payload carrying the same message field twice, the bridge returns the merged object and upstream returns only the last one. The same rule applies to repeated fields, which merging concatenates rather than replaces: on a payload carrying three copies of a Message.PollCreationMessage, contextInfo.mentionedJid holds both elements here and only the last one upstream. Measured across six mutated payloads after the 0.8.1 bump: SyncActionValue, MessageContextInfo, Message.ReactionMessage, Message.ExtendedTextMessage and Message.PollCreationMessage, retaining between one and nine fields. This is the one entry in the registry where the *reference* implementation is the non-conforming side, so it is intended rather than open: aligning would mean deliberately dropping fields the wire format says are there.',
 		review: '2027-02-01',
 		// Retention only, and it has to be the whole difference. Upstream carrying a
 		// key the bridge lacks is the bridge losing data — the opposite defect —

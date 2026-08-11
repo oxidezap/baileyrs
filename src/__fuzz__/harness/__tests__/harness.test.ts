@@ -634,6 +634,12 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(!excused({ shared: 2 }, { shared: 2 }), 'nothing kept is nothing to explain')
 		// And retention in one branch does not license a loss in another.
 		assert.ok(!excused({ a: { kept: 1 }, b: {} }, { a: {}, b: { lost: 1 } }), 'a loss beside a retention still fails')
+
+		// Repeated fields concatenate on merge, so the bridge's array is upstream's
+		// with the later copy appended — a prefix, checked as one.
+		assert.ok(excused({ ids: ['a', 'a'] }, { ids: ['a'] }), 'an appended repeated element is the same rule')
+		assert.ok(!excused({ ids: ['b', 'a'] }, { ids: ['a'] }), 'a changed element is not an append')
+		assert.ok(!excused({ ids: ['a'] }, { ids: ['a', 'a'] }), 'the bridge holding fewer elements is a loss')
 	})
 
 	it('keeps every shipped registry entry well-formed', async () => {
