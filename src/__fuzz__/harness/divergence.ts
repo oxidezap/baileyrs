@@ -68,12 +68,17 @@ export interface KnownDivergence {
 const NOT_ENCODED_FIELDS: readonly string[] = [
 	'Message.AudioMessage.mediaKeyDomain',
 	'Message.DocumentMessage.mediaKeyDomain',
+	// Not absent but renamed — see RENAMED_PROTO_FIELDS. Handed upstream's
+	// spelling the bridge writes nothing, which is what this sweep measures.
+	'Message.ExtendedTextMessage.faviconMMSMetadata',
+	// Not absent but renamed — see RENAMED_PROTO_FIELDS. Given upstream's
+	// spelling the bridge writes nothing, which is what these sweeps measure.
+	'Message.ExtendedTextMessage.faviconMMSMetadata',
 	'Message.ImageMessage.mediaKeyDomain',
 	'Message.MMSThumbnailMetadata.mediaKeyDomain',
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
 	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
-	'Message.PaymentExtendedMetadata.messageParamsJson',
 	'SyncActionValue.businessBroadcastAssociationAction',
 	'SyncActionValue.AgentAction.deviceID',
 	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
@@ -90,6 +95,10 @@ const NOT_ENCODED_FIELDS: readonly string[] = [
 const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string])[] = [
 	['deviceAgentID', 'deviceAgentId'],
 	['deviceID', 'deviceId'],
+	// WhatsApp schema 2.3000.1044659339, which bridge 0.10.0 regenerated against.
+	// Field 33 is unchanged, so only the key differs; it closes when upstream
+	// regenerates its own proto.
+	['faviconMMSMetadata', 'faviconMmsMetadata'],
 	['oldestMessageTimestamp', 'oldestMessageTimestampInWindow']
 ]
 
@@ -150,7 +159,17 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 	// never writes, and this is the path a generative draw puts it at. Listed
 	// rather than matched by leaf, so the same field under another holder is still
 	// a drop nobody has looked at.
-	'ContextInfo.quotedMessage.videoMessage.mediaKeyDomain'
+	'ContextInfo.quotedMessage.videoMessage.mediaKeyDomain',
+	// Measured after the 0.10.0 bump, all four the same two gaps reached through
+	// paths the older schema did not put a generative draw at. `mediaKeyDomain`
+	// is one of the eleven the bridge never writes; `pollResultSnapshotMessageV3`
+	// is field 114 upstream and 115 here, so upstream's bytes for it are a field
+	// this side does not have. Listed by path, like the video one above, so the
+	// same leaf under a holder nobody has looked at is still a drop.
+	'ContextInfo.quotedMessage.audioMessage.mediaKeyDomain',
+	'ContextInfo.quotedMessage.pollResultSnapshotMessageV3',
+	'Message.ExtendedTextMessage.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
+	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
 ])
 
 /**
@@ -444,6 +463,10 @@ const KNOWN_OMITTED_FIELDS: ReadonlySet<string> = new Set([
 	'BotMetadata#1',
 	'Message.AudioMessage#23',
 	'Message.DocumentMessage#22',
+	// The renamed favicon field — see RENAMED_PROTO_FIELDS. Handed upstream's
+	// spelling the bridge writes nothing for it, so the bytes come out short by
+	// exactly this field.
+	'Message.ExtendedTextMessage#33',
 	'Message.ImageMessage#33',
 	'Message.MMSThumbnailMetadata#8',
 	'Message.MessageHistoryMetadata#2',
@@ -927,50 +950,6 @@ const keptFieldsUpstreamDropped = (local: unknown, upstream: unknown, depth = 0)
  * generated input, is evidence the sweeps work — it is not new information, and
  * recording it as new would misrepresent what this suite found.
  */
-const FAVICON_OLD = 'faviconMMSMetadata'
-const FAVICON_NEW = 'faviconMmsMetadata'
-
-/**
- * Whether the renamed favicon field is the *whole* difference, not merely
- * present in a payload that also diverges for another reason.
- *
- * The sweeps report it in three shapes, so each is checked on its own terms: a
- * name sweep names the two spellings, an omission names field 33 of the message
- * that carries it, and a decode compares two objects — where the test is that
- * dropping both spellings makes them agree, and that they disagreed before.
- * Anything else through the same field stays a finding.
- *
- * Compared rather than serialized: a decoded message carries BigInt for its
- * 64-bit fields and `JSON.stringify` throws on one, inside `applyAllowlist`,
- * which has no catch.
- */
-const isFaviconRenameOnly = (divergence: Divergence): boolean => {
-	// Each sweep reports it in its own shape, so each is judged on its own terms
-	// rather than by looking for the word anywhere in the finding.
-	//
-	// An omission names the field number it left out.
-	if (typeof divergence.detail === 'string' && divergence.detail.includes('Message.ExtendedTextMessage#33')) {
-		return true
-	}
-	// The name and number sweeps name the field itself, one side reporting that
-	// it wrote nothing for it.
-	if (typeof divergence.input === 'string') {
-		return divergence.input === `Message.ExtendedTextMessage.${FAVICON_OLD}`
-	}
-	if (typeof divergence.local === 'string' && typeof divergence.upstream === 'string') {
-		const spellings = new Set([FAVICON_OLD, FAVICON_NEW])
-		return spellings.has(divergence.local) && spellings.has(divergence.upstream)
-	}
-	// A decode compares two messages: dropping both spellings has to make them
-	// agree, and they have to have disagreed before. Anything else that travels
-	// through the same message stays a finding.
-	const strip = (value: unknown) => withoutKey(withoutKey(normalise(value), FAVICON_OLD), FAVICON_NEW)
-	return (
-		sameShape(strip(divergence.local), strip(divergence.upstream)) &&
-		!sameShape(normalise(divergence.local), normalise(divergence.upstream))
-	)
-}
-
 /** Every step of a mutation chain, which `mutate` records as `a → b`. */
 const mutatorChain = (input: unknown): readonly string[] => {
 	const mutator = (input as { mutator?: unknown } | undefined)?.mutator
@@ -997,17 +976,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			inputPath(divergence.input) === 'Message.ImageMessage' &&
 			(plainObject(normalise(divergence.local))?.length ?? 0) > 0 &&
 			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
-	},
-	{
-		id: 'favicon-mms-metadata-rename',
-		// Every proto sweep reaches it: the name differs, so the number is written
-		// by one side only, the bytes differ, and a decode reads a different key.
-		target: /^proto:/,
-		status: 'open',
-		reason:
-			"WhatsApp renamed `Message.ExtendedTextMessage#33` from `faviconMMSMetadata` to `faviconMmsMetadata` in schema 2.3000.1044659339, which bridge 0.10.0 regenerated against. Field 33 is unchanged, so the wire is identical; only the key differs, and baileys 7.0.0-rc13 still declares the old spelling. Nothing here can reconcile them: accepting the upstream spelling on encode means walking the message tree to find it, on every send, for a link-preview favicon — and the divergence disappears on its own when upstream regenerates its proto. Open rather than intended: the cost of carrying it is a caller who wrote `faviconMMSMetadata` against upstream's declaration and gets no bytes for it, which is worth revisiting if anyone reports it.",
-		review: '2026-11-12',
-		when: isFaviconRenameOnly
 	},
 	{
 		id: 'to-number-high-word',
