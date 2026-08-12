@@ -130,12 +130,33 @@ describe('useMultiFileAuthState device hydration', () => {
 		// its own device from these bytes whatever this makes of them.
 		const folder = makeFolder()
 		const store = await useBridgeStore(folder)
-		await store.set('device', 'device', new Uint8Array([0x7b, 0x00, 0x01]))
+		await store.set('device', 'device', GARBAGE)
 
 		const { state } = await useMultiFileAuthState(folder)
 		assert.equal(state.creds.registered, false)
 	})
+
+	it('keeps the device when only the account record is unreadable', async () => {
+		// The two records are read in one loop, and each is only worth what it
+		// carries: an account that will not decode must cost the account and
+		// nothing else. Guarded because the two are easy to collapse into one
+		// try, and the loss would be silent — the mirror would just be emptier.
+		const source = pairedCreds()
+		const folder = makeFolder()
+		const store = await useBridgeStore(folder)
+		await store.set('device', 'device', createDeviceProjection(source).read('device')!)
+		await store.set('device', 'account', GARBAGE)
+
+		const { state } = await useMultiFileAuthState(folder)
+		assert.equal(state.creds.registered, true)
+		assert.equal(state.creds.me?.id, PN)
+		// And the unreadable half is left absent rather than half-applied.
+		assert.equal(state.creds.account, undefined)
+	})
 })
+
+/** Not a device record under any codec: `illegal tag: field no 0 wire type 0`. */
+const GARBAGE = new Uint8Array([0x7b, 0x00, 0x01])
 
 /** A real baileys@7.0.0-rc.9 session, deep-copied so no test can leak into another. */
 function legacySessionRecord(): unknown {
