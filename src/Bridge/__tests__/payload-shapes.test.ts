@@ -99,6 +99,22 @@ describe('bridge payload shapes', () => {
 			}
 		})
 
+		it('refuses the 24:00 rollover, which RFC 3339 does not allow', () => {
+			// `Date.parse('2023-11-14T24:00:00Z')` is midnight on the 15th, so this
+			// is the other component that moves the instant to another day.
+			const rollover = adapt({
+				type: 'presence',
+				data: { from: JID, unavailable: false, last_seen: '2023-11-14T24:00:00Z' }
+			})
+			expect((rollover as { lastSeen?: number }).lastSeen).toBeUndefined()
+			// The last instant the hour does allow still parses.
+			const last = adapt({
+				type: 'presence',
+				data: { from: JID, unavailable: false, last_seen: '2023-11-14T23:59:59Z' }
+			})
+			expect(typeof (last as { lastSeen?: number }).lastSeen).toBe('number')
+		})
+
 		it('keeps the leap days that do exist, centuries included', () => {
 			// 2000 is a leap year and 1900 is not, which is the rule a plain
 			// `year % 4` check gets wrong.
@@ -228,6 +244,21 @@ describe('bridge payload shapes', () => {
 			const check = expectedDeadline()
 			const plain = adapt({ type: 'temporary_ban', data: { code: 101, expire: HOUR } })
 			check((plain as { expire?: number }).expire)
+		})
+
+		it('refuses a deadline a Date cannot hold', () => {
+			// The socket formats this with `new Date(expire * 1000).toISOString()`,
+			// which throws past ±8.64e15 ms — and that throw would land inside the
+			// event dispatch. No deadline beats one that takes the dispatch down.
+			const absurd = adapt({
+				type: 'temporary_ban',
+				data: { code: 101, expire: { secs: 8_640_000_000_000, nanos: 0 } }
+			})
+			expect((absurd as { expire?: number }).expire).toBeUndefined()
+			// And the socket's own formatting stays safe on what does get through.
+			const ban = adapt({ type: 'temporary_ban', data: { code: 101, expire: HOUR } })
+			const expire = (ban as { expire?: number }).expire!
+			expect(() => new Date(expire * 1000).toISOString()).not.toThrow()
 		})
 
 		it('an absent expire stays absent rather than becoming right now', () => {

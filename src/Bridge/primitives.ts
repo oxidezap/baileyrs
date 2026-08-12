@@ -102,6 +102,9 @@ const parseRfc3339Seconds = (raw: string): number | undefined => {
 	// March 2. That is the one component worth checking here.
 	const year = digits2(raw, 0) * 100 + digits2(raw, 2)
 	if (digits2(raw, 8) > daysInMonth(year, digits2(raw, 5))) return undefined
+	// The other one it rolls forward rather than refusing: RFC 3339 stops the
+	// hour at 23, while `2023-11-14T24:00:00Z` parses as midnight the next day.
+	if (digits2(raw, 11) > 23) return undefined
 	const ms = Date.parse(raw)
 	return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
 }
@@ -199,5 +202,14 @@ export const normalizeDiscriminator = (x: unknown): string | undefined => {
  * from it, so handing either of them a relative count puts the ban in 1970 and
  * lets a bot retry immediately.
  */
-export const absoluteFromDuration = (seconds: number | undefined): number | undefined =>
-	seconds === undefined ? undefined : Math.floor(Date.now() / 1000) + seconds
+export const absoluteFromDuration = (seconds: number | undefined): number | undefined => {
+	if (seconds === undefined) return undefined
+	const deadline = Math.floor(Date.now() / 1000) + seconds
+	// A deadline `Date` cannot hold is worse than none: the socket formats this
+	// with `new Date(expire * 1000).toISOString()`, which throws a RangeError
+	// past ±8.64e15 ms and would take the event dispatch down with it.
+	return Number.isSafeInteger(deadline) && Math.abs(deadline) <= MAX_DATE_SECONDS ? deadline : undefined
+}
+
+/** `Date` holds ±8.64e15 ms, which is this many whole seconds. */
+const MAX_DATE_SECONDS = 8_640_000_000_000
