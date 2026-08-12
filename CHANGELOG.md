@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.0](https://github.com/oxidezap/baileyrs/compare/v0.1.3...v0.2.0) (2026-08-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **events:** move to bridge 0.10.0 and deliver the events it added ([#55](https://github.com/oxidezap/baileyrs/issues/55))
+
+### Features
+
+* **events:** move to bridge 0.10.0 and deliver the events it added ([#55](https://github.com/oxidezap/baileyrs/issues/55)) ([a687c45](https://github.com/oxidezap/baileyrs/commit/a687c45bf641fabb5061700772d3738d69e9bbed))
+
+
+### Bug Fixes
+
+* **auth:** rebuild the credential mirror from the persisted device ([#57](https://github.com/oxidezap/baileyrs/issues/57)) ([efb1e14](https://github.com/oxidezap/baileyrs/commit/efb1e141e4f27c35e61817e6e7b1e47e0c8404e8))
+* **bridge:** read the payload shapes the bridge actually sends ([#59](https://github.com/oxidezap/baileyrs/issues/59)) ([c62b568](https://github.com/oxidezap/baileyrs/commit/c62b56844af28c0a75d6f5791e34a5fb4f917842))
+* **deps:** bump @oxidezap/whatsapp-rust-bridge to 0.7.2 ([#45](https://github.com/oxidezap/baileyrs/issues/45)) ([d43dcea](https://github.com/oxidezap/baileyrs/commit/d43dceaded0736080aeecb2b34395cdce5b9f1eb))
+* **event-buffer:** let a contacts.upsert win over an update buffered before it ([#52](https://github.com/oxidezap/baileyrs/issues/52)) ([8615dd6](https://github.com/oxidezap/baileyrs/commit/8615dd62abc0165b217a5fa22fcf8ca079969f50))
+* **event-buffer:** release consolidated events in upstream's order ([#51](https://github.com/oxidezap/baileyrs/issues/51)) ([31c8576](https://github.com/oxidezap/baileyrs/commit/31c8576400657fd8d55d90762abe18deb52fbf90))
+* **history:** return undefined when there is no history sync notification ([#48](https://github.com/oxidezap/baileyrs/issues/48)) ([bddb2bf](https://github.com/oxidezap/baileyrs/commit/bddb2bf69fc274bab346235c6429c35d9a9ec76e))
+* **send:** keep a caller's &lt;biz&gt; working, on bridge 0.11.0 ([#61](https://github.com/oxidezap/baileyrs/issues/61)) ([46bdb82](https://github.com/oxidezap/baileyrs/commit/46bdb82ed795bb4c683e8483c3570b9837160537))
+* three parity defects the differential fuzzers found ([#47](https://github.com/oxidezap/baileyrs/issues/47)) ([a7ffb68](https://github.com/oxidezap/baileyrs/commit/a7ffb68f40149da8e891c5550911c66952c72e3f))
+
 ## [0.1.3](https://github.com/oxidezap/baileyrs/compare/v0.1.2...v0.1.3) (2026-08-09)
 
 
