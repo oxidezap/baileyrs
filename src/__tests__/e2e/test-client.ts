@@ -36,6 +36,15 @@ export interface CreateTestClientOptions {
 	connectTimeoutMs?: number
 	/** Pre-existing auth folder (rarely needed here; handoff uses its own factory). */
 	authFolder?: string
+	/**
+	 * Called with the socket before anything is attached to it.
+	 *
+	 * The bootstrap `connecting` is published from a microtask queued during
+	 * `makeWASocket`, so a listener attached after this factory returns has
+	 * already missed it. Anything judging the lifecycle from its first event
+	 * has to get in here.
+	 */
+	onSocket?: (sock: WASocket) => void
 }
 
 export interface TestClient {
@@ -64,6 +73,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 		logger: defaultLogger.child({ user: opts.label })
 	})
 
+	opts.onSocket?.(sock)
 	attachQrAutoresponder(sock, url)
 	const startupSync = waitForEvent(
 		sock,
