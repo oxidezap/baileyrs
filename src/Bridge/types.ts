@@ -45,6 +45,17 @@ export interface CanonicalPairSuccess {
 export interface CanonicalPairError {
 	type: 'pairError'
 	error: string
+	/**
+	 * The server's own refusal code, when it answered with one.
+	 *
+	 * Absent when the failure was local (validation, no connection) or the
+	 * request went unanswered — nothing was refused, so there is no status.
+	 * Carried for the log only: the consumer-visible outcome is the same
+	 * either way, and the engine owns the retry.
+	 */
+	rejection?: number
+	/** Seconds the server asked the client to wait before asking again. */
+	backoff?: number
 	/** Account JID after pairing (may be set even on error). */
 	id?: string
 	/** LID for the account. */
@@ -472,6 +483,21 @@ export interface CanonicalAppStateSyncFailed {
 	connected: boolean
 }
 
+/**
+ * An account-wide setting another linked device changed.
+ *
+ * Upstream reaches the same place through app state — `Utils/chat-utils.ts`
+ * emits `settings.update` for a `privacySettingDisableLinkPreviewsAction` —
+ * so this is that channel's payload arriving over a different pipe, not a
+ * new contract. The shape is the event's rather than one setting's: another
+ * setting the bridge starts reporting is a new arm here, not a new event.
+ */
+export interface CanonicalSettingUpdate {
+	type: 'settingUpdate'
+	setting: 'disableLinkPreviews'
+	value: proto.SyncActionValue.IPrivacySettingDisableLinkPreviewsAction
+}
+
 // ── Calls ──
 
 export type CanonicalCallActionType =
@@ -731,6 +757,7 @@ export type CanonicalEvent =
 	| CanonicalLabelAssociation
 	| CanonicalAppStateSyncFailed
 	| CanonicalQrCodesExhausted
+	| CanonicalSettingUpdate
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate

@@ -385,7 +385,10 @@ const DISPATCHERS: DispatcherMap = {
 	// belongs on the bus: the QR the user was shown is spent, and `connecting`
 	// clears it while telling the consumer a fresh one is coming.
 	pairError: (evt, { ctx }) => {
-		ctx.logger.error({ err: evt.error }, 'pairing failed; the engine will retry')
+		ctx.logger.error(
+			{ err: evt.error, rejection: evt.rejection, backoff: evt.backoff },
+			'pairing failed; the engine will retry'
+		)
 		emitRetrying(ctx)
 	},
 	loggedOut: (evt, dispatchCtx) =>
@@ -766,6 +769,11 @@ const DISPATCHERS: DispatcherMap = {
 	// (`Socket/socket.ts`), so the canonical reconnect handler already knows
 	// this state. Reporting anything else would make it learn a second one.
 	qrCodesExhausted: (_, dispatchCtx) => emitClose(dispatchCtx, 'QR refs attempts ended', DisconnectReason.timedOut),
+
+	// Straight onto upstream's own channel for this: `settings.update` already
+	// declares the `disableLinkPreviews` arm, and a consumer that reads it is
+	// reading the account-wide setting whichever device changed it.
+	settingUpdate: (evt, { ctx }) => ctx.ev.emit('settings.update', { setting: evt.setting, value: evt.value }),
 
 	// ── Calls ──
 	incomingCall: (evt, { ctx, callbacks }) => {

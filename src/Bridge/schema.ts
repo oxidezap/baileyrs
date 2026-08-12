@@ -39,6 +39,7 @@ import type {
 } from './types.ts'
 import {
 	absoluteFromDuration,
+	asBool,
 	asBoolOr,
 	asStringArray,
 	asDurationSeconds,
@@ -76,8 +77,11 @@ type AdapterMap = { [K in BridgeEventType]: AdapterFn<K> }
  * the unexported `PinAction` / `MuteAction` (resolves to `any`). Narrow
  * once at the call site.
  */
-const extractAction = (data: { action?: unknown }): Record<string, unknown> | undefined =>
-	isObject(data.action) ? data.action : undefined
+// Tolerates a missing `data` slot: the adapter table has to be total against
+// whatever the runtime sends, and an entry that reads the action before any
+// other guard would otherwise throw rather than drop (`bridge:adapt-total`).
+const extractAction = (data: { action?: unknown } | undefined): Record<string, unknown> | undefined =>
+	isObject(data?.action) ? data.action : undefined
 
 /** A group JID is authoritative when an older producer leaves `is_group` false. */
 const resolveIsGroup = (wireValue: unknown, chatJid: string): boolean =>
@@ -393,19 +397,60 @@ const ADAPTERS = {
 	 */
 	pairing_qr_codes_exhausted: () => ({ type: 'qrCodesExhausted' }),
 
+	/**
+	 * Another linked device turned link previews on or off account-wide.
+	 *
+	 * Upstream carries this on `settings.update`, reached through app state
+	 * (`Utils/chat-utils.ts` branches on `privacySettingDisableLinkPreviewsAction`
+	 * and emits the action as the value). Same event, different pipe — so the
+	 * value is the action itself, not the decoded flag.
+	 *
+	 * `previews_disabled` is that flag already decoded by the bridge, which is
+	 * what fills the action in when the payload carried the flag alone. The
+	 * bridge only emits this event when the wire carried the flag, so the last
+	 * fallback is unreachable in practice and exists so the value always has
+	 * the field upstream's consumers read.
+	 */
+	disable_link_previews_update: data => {
+		const action = extractAction(data)
+		return {
+			type: 'settingUpdate',
+			setting: 'disableLinkPreviews',
+			value: {
+				...action,
+				isPreviewsDisabled: asBool(action?.isPreviewsDisabled) ?? asBoolOr(data?.previews_disabled, false)
+			}
+		}
+	},
+
+	/**
+	 * A pair-code request failed, so any code the user was shown is spent.
+	 *
+	 * Same lifecycle as `pair_error`, which is why it adapts to the same
+	 * canonical event: the socket lives on and the engine takes another
+	 * request, so this must not read as a close, and the code on screen has to
+	 * stop being offered. `pairError` is the handler that does both — a
+	 * pairing code surfaces as `qr` (see `pairing_code` above), and `connecting`
+	 * clears it while saying a fresh one can be asked for.
+	 *
+	 * `rejection` and `backoff` ride along for the log. Neither changes what a
+	 * consumer does here, and the engine owns the retry — but a throttle the
+	 * server named itself is the difference between a code that will come back
+	 * and one that will not, and dropping it leaves that unexplained.
+	 */
+	pairing_code_error: data => ({
+		type: 'pairError',
+		error: asString(data?.error) ?? 'pairing code rejected',
+		rejection: asNumber(data?.rejection),
+		backoff: asNumber(data?.backoff)
+	}),
+
 	// Acknowledged with no Baileys equivalent: upstream has no channel for a
-	// contact deletion (`contacts.update` only upserts), for the account-wide
-	// link-preview setting, for quick replies, for a call placed on the phone,
-	// or for a pairing-code rejection that arrives after the code was shown.
+	// contact deletion (`contacts.update` only upserts), for quick replies, or
+	// for a call placed on the phone.
 	contact_removed: () => ({ type: 'noop', bridgeType: 'contact_removed' }),
-	disable_link_previews_update: () => ({ type: 'noop', bridgeType: 'disable_link_previews_update' }),
 	quick_reply_update: () => ({ type: 'noop', bridgeType: 'quick_reply_update' }),
 	call_log_sync: () => ({ type: 'noop', bridgeType: 'call_log_sync' }),
-	pairing_code_error: data => ({
-		type: 'noop',
-		bridgeType: 'pairing_code_error',
-		detail: asString(data?.error) ?? 'unknown'
-	}),
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
