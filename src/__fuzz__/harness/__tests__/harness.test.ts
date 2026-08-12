@@ -682,15 +682,22 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		// byte and keeps them — so upstream's ASCII is a subsequence of ours.
 		const url = { local: 'A�B�C', upstream: 'A\u{10FFFF}C' }
 		assert.ok(excused({ kept: '1', url: url.local }, { url: url.upstream }), 'retention and substitution together')
-		assert.ok(excused({ url: url.local }, { url: url.upstream }), 'substitution alone')
 		assert.ok(excused({ kept: '1', url: 'A�C' }, { url: 'A�C' }), 'retention alone')
 
+		// The retention is what satisfies the entry; the substitution rides beside
+		// it and can never carry it alone, or a Unicode decoding regression on this
+		// route would excuse itself.
+		assert.ok(!excused({ url: url.local }, { url: url.upstream }), 'a substitution with nothing retained')
+		// And U+FFFD is the substitution. Without requiring it, "both sides hold
+		// some non-ASCII with a matching ASCII skeleton" admits any two decodings.
+		assert.ok(!excused({ kept: '1', url: 'a雪b' }, { url: 'aéb' }), 'two decodings, neither a substitution')
+
 		// Each half of "the difference is the salvage" fails on its own terms.
-		assert.ok(!excused({ url: url.local }, { url: url.upstream, lost: 1 }), 'a field only upstream produced')
+		assert.ok(!excused({ kept: '1', url: url.local }, { url: url.upstream, lost: 1 }), 'a field only upstream produced')
 		assert.ok(!excused({ kept: 1, mode: '2' }, { mode: '3' }), 'a changed scalar beside a retention')
 		assert.ok(!excused({ kept: 1, name: 'goodbye' }, { name: 'hello' }), 'a changed ASCII string')
-		assert.ok(!excused({ url: 'A�C' }, { url: 'AB\u{10FFFF}C' }), 'ASCII upstream produced that we lack')
-		assert.ok(!excused({ url: 'AB�' }, { url: '\u{10FFFF}BA' }), 'the same ASCII in a different order')
+		assert.ok(!excused({ kept: '1', url: 'A�C' }, { url: 'AB\u{10FFFF}C' }), 'ASCII upstream produced that we lack')
+		assert.ok(!excused({ kept: '1', url: 'AB�' }, { url: '\u{10FFFF}BA' }), 'the same ASCII in a different order')
 		assert.ok(!excused({ kept: 1, s: 'ab' }, { s: 'ba' }), 'a reordered pure-ASCII string is not a substitution')
 		assert.ok(!excused({ url: url.local }, { url: url.local }), 'nothing differs at all')
 

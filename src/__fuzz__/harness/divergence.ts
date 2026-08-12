@@ -926,20 +926,25 @@ const isSubsequence = (needle: string, haystack: string): boolean => {
  * two decoders resolve it differently in a *directional* way, which is what
  * makes it checkable. protobufjs decodes greedily: a lead byte swallows the
  * bytes after it into one code point, ASCII ones included. The bridge rejects
- * the sequence and substitutes per byte, so every ASCII byte it met survives.
+ * the sequence and substitutes U+FFFD per byte, so every ASCII byte it met
+ * survives.
  *
- * So upstream's ASCII must appear in the bridge's, in order — measured on the
- * one case this entry covers, 88 characters against 98. That direction is what
- * separates a substitution from a misread: a value genuinely read differently
- * drops, reorders or rewrites a character upstream produced, and fails here.
- * Both sides must also have met something undecodable, or there was no salvage
- * to explain and an ordinary ASCII difference would pass.
+ * Two conditions, and both are needed. The bridge's side must actually carry
+ * U+FFFD — that is the substitution itself, and without it "both sides have
+ * some non-ASCII" says nothing: `a\u96eab` against `a\u00e9b` would pass while
+ * being an ordinary decoder disagreement, not a salvage. Measured on the one
+ * case this entry covers: 25 of them.
+ *
+ * And upstream's ASCII must appear in the bridge's, in order — 88 characters
+ * against 98 in that same case. That direction is what separates a substitution
+ * from a misread: a value genuinely read differently drops, reorders or
+ * rewrites a character upstream produced, and fails here.
  */
-const differsOnlyOutsideAscii = (local: unknown, upstream: unknown): boolean =>
+const substitutedUndecodableBytes = (local: unknown, upstream: unknown): boolean =>
 	typeof local === 'string' &&
 	typeof upstream === 'string' &&
 	local !== upstream &&
-	NON_ASCII.test(local) &&
+	local.includes('\ufffd') &&
 	NON_ASCII.test(upstream) &&
 	isSubsequence(asciiOf(upstream), asciiOf(local))
 
@@ -951,10 +956,12 @@ const differsOnlyOutsideAscii = (local: unknown, upstream: unknown): boolean =>
  * this can never excuse a misread, only a retention.
  *
  * `alsoExplains` is the one seam. A caller may name a *specific* leaf difference
- * its entry documents and have it counted as explained rather than fatal; the
- * default explains nothing, so an entry that does not opt in keeps the strict
- * reading. Everything else stays as it was: a key only upstream produced still
- * fails whatever the hook says, because that is the bridge losing data.
+ * its entry documents, which then stops being fatal — but it contributes
+ * nothing to the count, so it can never satisfy an entry on its own. The
+ * retention still has to be there. The default explains nothing, so an entry
+ * that does not opt in keeps the strict reading. Everything else stays as it
+ * was: a key only upstream produced still fails whatever the hook says,
+ * because that is the bridge losing data.
  */
 const keptFieldsUpstreamDropped = (
 	local: unknown,
@@ -988,7 +995,8 @@ const keptFieldsUpstreamDropped = (
 		const theirKeys = plainObject(theirs)
 		if (ourKeys === undefined || theirKeys === undefined) {
 			if (sameShape(ours, theirs)) return 0
-			return alsoExplains(ours, theirs) ? 1 : undefined
+			// Zero, not one: an explained leaf is permitted, never sufficient.
+			return alsoExplains(ours, theirs) ? 0 : undefined
 		}
 		const ourRecord = ours as Record<string, unknown>
 		const theirRecord = theirs as Record<string, unknown>
@@ -1046,16 +1054,18 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// "Both sides decoded something non-empty" was true of any misdecode
 			// under this mutator, which is what left a real regression excusable.
 			//
-			// The two documented halves are exactly the two this admits: fields the
-			// bridge read out of the region the rewritten prefix now covers and
-			// protobufjs stepped past (counted as retention), and a string whose
-			// undecodable bytes each side substituted its own way. Everything else
-			// — a key only upstream produced, a changed number, a string that moved
-			// bytes both sides could decode — still fails.
+			// The two documented halves are exactly the two this admits, and the
+			// retention is the one that counts: fields the bridge read out of the
+			// region the rewritten prefix now covers and protobufjs stepped past.
+			// A string whose undecodable bytes the bridge replaced with U+FFFD is
+			// permitted beside it but never sufficient alone, or a Unicode decoding
+			// regression on this route would excuse itself. Everything else — a key
+			// only upstream produced, a changed number, a string that moved bytes
+			// both sides could decode — still fails.
 			(keptFieldsUpstreamDropped(
 				normalise(divergence.local),
 				normalise(divergence.upstream),
-				differsOnlyOutsideAscii
+				substitutedUndecodableBytes
 			) ?? 0) > 0
 	},
 	{
