@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,7 @@ import {
 	LIFECYCLE_INVARIANTS,
 	lifecycleAuditFailed,
 	normalizeUpdate,
+	recordLifecycle,
 	renderLifecycleReport,
 	runScenario,
 	unexercisedInvariants,
@@ -134,6 +136,27 @@ const VIOLATIONS: Array<{ id: string; subject: LifecycleTrace; also?: string[] }
 	{
 		id: 'LC-011',
 		subject: trace('messages-before-open', [connecting(0), { at: 1, name: 'messages.upsert' }])
+	},
+	{
+		// A socket that opened once is not open forever. Judging against the
+		// first `open` ever seen would wave through everything a reconnect
+		// publishes while it is still re-establishing.
+		id: 'LC-009',
+		subject: trace('pending-while-reconnecting', [
+			connecting(0),
+			conn(1, { connection: 'open' }),
+			connecting(2),
+			conn(3, { receivedPendingNotifications: true })
+		])
+	},
+	{
+		id: 'LC-011',
+		subject: trace('messages-while-reconnecting', [
+			connecting(0),
+			conn(1, { connection: 'open' }),
+			connecting(2),
+			{ at: 3, name: 'messages.upsert' }
+		])
 	}
 ]
 
@@ -211,6 +234,42 @@ describe('lifecycle contract auditor', () => {
 			consumerEndedAt: 45_000
 		})
 		assert.ok(violationsOf(late).has('LC-004'))
+	})
+
+	it('orders by position, not by the millisecond they share', () => {
+		// `Date.now()` has millisecond resolution and a socket publishes several
+		// events inside one, so a message emitted just before `open` carries the
+		// same timestamp. Ordering on `at` would read that as simultaneous and
+		// let it through.
+		const sameMillisecond = trace('all-at-once', [
+			connecting(0),
+			{ at: 0, name: 'messages.upsert' },
+			conn(0, { connection: 'open' })
+		])
+		assert.ok(violationsOf(sameMillisecond).has('LC-011'))
+	})
+
+	it('leaves LC-010 unexercised when the socket never opened', () => {
+		// Its premise is what follows an `open`. Counting a QR-only session as
+		// holding would let `--strict` keep claiming coverage even if every
+		// opening scenario regressed.
+		const qrOnly = trace('qr-only', [connecting(0), conn(1, { qr: 'code' })])
+		const finding = evaluateLifecycle([qrOnly]).findings.find(entry => entry.invariant === 'LC-010')
+		assert.equal(finding?.status, 'not-exercised')
+	})
+
+	it('takes an already-authenticated socket as authenticated', () => {
+		// A socket resuming a stored session publishes no `creds.update` merely
+		// because it is logged in, so without this LC-004 has no premise and a
+		// resumed session that hangs reports as unexercised.
+		const ev = new EventEmitter()
+		const recorder = recordLifecycle({ ev } as never, {
+			label: 'resumed',
+			authenticatedAtStart: true,
+			now: () => 0
+		})
+		const recorded = { ...recorder.stop(), settled: true }
+		assert.ok(violationsOf(recorded).has('LC-004'))
 	})
 
 	it('rejects a trace whose clock runs backwards', () => {

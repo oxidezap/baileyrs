@@ -121,13 +121,46 @@ const holds = (detail?: string): CheckResult => ({ status: 'holds', detail })
 const violated = (detail: string): CheckResult => ({ status: 'violated', detail })
 const notExercised = (detail: string): CheckResult => ({ status: 'not-exercised', detail })
 
-const connectionUpdates = (trace: LifecycleTrace) =>
-	trace.events.filter((event): event is LifecycleEvent & { update: LifecycleUpdate } => event.update !== undefined)
+/**
+ * An event with the position it was recorded at.
+ *
+ * Order comes from the position, never from `at`: `Date.now()` has millisecond
+ * resolution and a socket publishes several events inside one, so a message
+ * emitted just before `open` shares its timestamp and would read as
+ * simultaneous. `at` still answers "how long", which is what the deadline in
+ * LC-004 needs; it just does not answer "before or after".
+ */
+type PositionedEvent = LifecycleEvent & { at_: number }
+type PositionedUpdate = PositionedEvent & { update: LifecycleUpdate }
 
-const statefulUpdates = (trace: LifecycleTrace) => connectionUpdates(trace).filter(event => event.update.connection)
+const positioned = (trace: LifecycleTrace): PositionedEvent[] =>
+	trace.events.map((event, index) => ({ ...event, at_: index }))
 
-const firstOpenAt = (trace: LifecycleTrace): number | undefined =>
-	statefulUpdates(trace).find(event => event.update.connection === 'open')?.at
+const connectionUpdates = (trace: LifecycleTrace): PositionedUpdate[] =>
+	positioned(trace).filter((event): event is PositionedUpdate => event.update !== undefined)
+
+const statefulUpdates = (trace: LifecycleTrace): PositionedUpdate[] =>
+	connectionUpdates(trace).filter(event => event.update.connection)
+
+const firstOpen = (trace: LifecycleTrace): PositionedUpdate | undefined =>
+	statefulUpdates(trace).find(event => event.update.connection === 'open')
+
+/**
+ * The connection state in effect when the event at `position` was published.
+ *
+ * The state a socket is in, not the state it once reached: after
+ * `open → connecting`, a socket is connecting, and something that may only
+ * happen while open may not happen there either. Comparing against the first
+ * `open` instead would let everything after a reconnect through.
+ */
+const stateAt = (trace: LifecycleTrace, position: number): LifecycleConnection | undefined => {
+	let state: LifecycleConnection | undefined
+	for (const event of statefulUpdates(trace)) {
+		if (event.at_ > position) break
+		state = event.update.connection
+	}
+	return state
+}
 
 /**
  * The contract, one entry per promise upstream makes.
@@ -195,11 +228,11 @@ export const LIFECYCLE_INVARIANTS: readonly LifecycleInvariant[] = [
 		title: 'a socket that authenticates reaches `open` or `close`',
 		upstream: 'Socket/socket.ts:1138',
 		check: (trace, options) => {
-			const authenticated = trace.events.find(event => event.authenticated === true)
+			const authenticated = positioned(trace).find(event => event.authenticated === true)
 			if (!authenticated) return notExercised('the socket did not authenticate during the recording')
 			const settledState = statefulUpdates(trace).find(
 				event =>
-					event.at >= authenticated.at && (event.update.connection === 'open' || event.update.connection === 'close')
+					event.at_ >= authenticated.at_ && (event.update.connection === 'open' || event.update.connection === 'close')
 			)
 			if (settledState) {
 				return holds(
@@ -280,15 +313,19 @@ export const LIFECYCLE_INVARIANTS: readonly LifecycleInvariant[] = [
 	},
 	{
 		id: 'LC-009',
-		title: 'pending notifications are only reported once the socket is open',
+		title: 'pending notifications are only reported while the socket is open',
 		upstream: 'Socket/socket.ts:1228',
 		check: trace => {
 			const targets = connectionUpdates(trace).filter(event => event.update.receivedPendingNotifications === true)
 			if (!targets.length) return notExercised('pending notifications were never reported')
-			const openAt = firstOpenAt(trace)
-			if (openAt === undefined) return violated('pending notifications were reported by a socket that never opened')
-			const early = targets.find(event => event.at < openAt)
-			return early ? violated(`reported at ${early.at}ms, before the socket opened at ${openAt}ms`) : holds()
+			// Judged against the state in effect, not against the first `open`
+			// ever seen: `open → connecting → reported` is a socket reporting an
+			// offline batch for a connection it is still re-establishing, and
+			// comparing with the first `open` would call that fine.
+			const stray = targets.find(event => stateAt(trace, event.at_) !== 'open')
+			return stray
+				? violated(`reported at ${stray.at}ms while the socket was \`${stateAt(trace, stray.at_) ?? 'in no state'}\``)
+				: holds(`${targets.length} checked`)
 		}
 	},
 	{
@@ -298,24 +335,32 @@ export const LIFECYCLE_INVARIANTS: readonly LifecycleInvariant[] = [
 		check: trace => {
 			const codes = connectionUpdates(trace).filter(event => event.update.qr === 'code')
 			if (!codes.length) return notExercised('no QR was published')
-			const openAt = firstOpenAt(trace)
-			if (openAt === undefined) return holds('QR published, socket never opened')
-			const late = codes.find(event => event.at > openAt)
-			return late ? violated(`QR published at ${late.at}ms, after the socket opened at ${openAt}ms`) : holds()
+			const open = firstOpen(trace)
+			// The premise is what happens *after* opening, so a session that
+			// only ever showed a QR has not exercised this. Reporting it as
+			// holding would let `--strict` keep claiming coverage even if every
+			// scenario regressed into a QR-only session.
+			if (!open) return notExercised('the socket never opened, so nothing followed an open')
+			const late = codes.find(event => event.at_ > open.at_)
+			return late ? violated(`QR published at ${late.at}ms, after the socket opened at ${open.at}ms`) : holds()
 		}
 	},
 	{
 		id: 'LC-011',
-		title: 'no message reaches the consumer before the socket opens',
+		title: 'no message reaches the consumer while the socket is not open',
 		upstream: 'Socket/socket.ts:1206',
 		check: trace => {
-			const upserts = trace.events.filter(event => event.name === 'messages.upsert')
+			const upserts = positioned(trace).filter(event => event.name === 'messages.upsert')
 			if (!upserts.length) return notExercised('no message was published')
-			const openAt = firstOpenAt(trace)
-			if (openAt === undefined)
-				return violated(`${upserts.length} message batches published by a socket that never opened`)
-			const early = upserts.find(event => event.at < openAt)
-			return early ? violated(`messages published at ${early.at}ms, before the socket opened at ${openAt}ms`) : holds()
+			// Same reasoning as LC-009: upstream buffers until the offline flush
+			// that follows `<success>`, so a consumer is never handed messages
+			// for a connection that is not up, first one or fifth.
+			const stray = upserts.find(event => stateAt(trace, event.at_) !== 'open')
+			return stray
+				? violated(
+						`messages published at ${stray.at}ms while the socket was \`${stateAt(trace, stray.at_) ?? 'in no state'}\``
+					)
+				: holds(`${upserts.length} checked`)
 		}
 	}
 ]
@@ -446,12 +491,27 @@ export interface RecordableSocket {
  */
 export const recordLifecycle = (
 	sock: RecordableSocket,
-	options: { label: string; fromSocketStart?: boolean; now?: () => number } = { label: 'live' }
+	options: {
+		label: string
+		fromSocketStart?: boolean
+		/**
+		 * The socket was already authenticated when the recording started.
+		 *
+		 * A socket resuming a stored session never publishes `creds.update`
+		 * merely because it is logged in, so without this LC-004 has no premise
+		 * and a resumed session that hangs without ever opening reports as
+		 * unexercised — which is the liveness regression, missed. Pass
+		 * `Boolean(sock.authState?.creds?.me?.id)` at construction.
+		 */
+		authenticatedAtStart?: boolean
+		now?: () => number
+	} = { label: 'live' }
 ): LifecycleRecorder => {
 	const now = options.now ?? (() => Date.now())
 	const start = now()
 	const events: LifecycleEvent[] = []
 	const at = () => now() - start
+	if (options.authenticatedAtStart) events.push({ at: 0, name: 'creds.update', authenticated: true })
 
 	const onConnection = (update: BaileysEventMap['connection.update']) => {
 		events.push({ at: at(), name: 'connection.update', update: normalizeUpdate(update) })

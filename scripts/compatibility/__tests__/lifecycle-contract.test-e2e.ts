@@ -56,31 +56,47 @@ const OPEN_DEADLINE_MS = 30_000
 const KNOWN_VIOLATIONS = new Set(['LC-009', 'LC-011'])
 
 describe('E2E: lifecycle contract', { timeout: 180_000 }, () => {
-	let alice: TestClient
+	let alice: TestClient | undefined
 	let recorder: LifecycleRecorder | undefined
+	let setupError: Error | undefined
 
 	before(async () => {
-		alice = await createTestClient({
-			label: 'alice',
-			folderPrefix: 'baileys-e2e-lifecycle',
-			// Attached before the factory returns: the bootstrap `connecting` is
-			// published from a microtask queued inside `makeWASocket`, so a
-			// listener added afterwards has already missed the first state.
-			onSocket: sock => {
-				recorder = recordLifecycle(sock, { label: 'fresh-pair-live' })
-			}
-		})
+		try {
+			alice = await createTestClient({
+				label: 'alice',
+				folderPrefix: 'baileys-e2e-lifecycle',
+				// Longer than the deadline the trace is judged by, so a socket
+				// that authenticates and then goes quiet has already breached
+				// LC-004 by the time the factory gives up. Matched the other way
+				// round, the run would end inside the deadline and the finding
+				// would report as unexercised.
+				connectTimeoutMs: OPEN_DEADLINE_MS + 15_000,
+				// Attached before the factory returns: the bootstrap `connecting` is
+				// published from a microtask queued inside `makeWASocket`, so a
+				// listener added afterwards has already missed the first state.
+				onSocket: sock => {
+					recorder = recordLifecycle(sock, { label: 'fresh-pair-live' })
+				}
+			})
+		} catch (error) {
+			// Kept rather than thrown. The factory waits for `open`, so the exact
+			// regression this file exists to catch — authenticates, never opens —
+			// would surface as its connect timeout and the trace explaining why
+			// would never be read. The test body reports the finding first and
+			// falls back to this only if the trace turns out to be clean.
+			setupError = error instanceof Error ? error : new Error(String(error))
+		}
 	})
 
 	after(async () => {
 		// Before the teardown, so a trace still open at this point cannot read
 		// our own disposal as the library going quiet.
 		recorder?.noteConsumerEnd()
-		await destroyTestClient(alice)
+		if (alice) await destroyTestClient(alice)
 	})
 
 	test('a freshly paired session keeps every promise upstream makes', () => {
-		assert.ok(recorder, 'the recorder never attached')
+		assert.ok(recorder, `the recorder never attached${setupError ? `: ${setupError.message}` : ''}`)
 		const report = evaluateLifecycle([recorder.stop()], { openDeadlineMs: OPEN_DEADLINE_MS })
 		const rendered = renderLifecycleReport(report, true)
 		if (process.env.LOG_LEVEL === 'debug') process.stdout.write(`${rendered}\n`)
@@ -99,6 +115,11 @@ describe('E2E: lifecycle contract', { timeout: 180_000 }, () => {
 			.filter(finding => finding.status === 'holds' && KNOWN_VIOLATIONS.has(finding.invariant))
 			.map(finding => finding.invariant)
 		assert.deepEqual(fixed, [], `${rendered}\n\nfixed — remove from KNOWN_VIOLATIONS: ${fixed.join(', ')}`)
+
+		// Only once the trace has had its say: a setup that failed for a reason
+		// the contract does not describe still has to fail the run, but the
+		// findings above are the better explanation when there are any.
+		assert.equal(setupError, undefined, `${setupError?.message}\n\n${rendered}`)
 
 		// The session has to have got far enough to be worth judging. `LC-004`
 		// is the one that fails when a socket pairs and never announces, so a
