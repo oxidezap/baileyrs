@@ -1,3 +1,4 @@
+import type Long from 'long'
 import type { Buffer } from 'node:buffer'
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '../WAProto/runtime.ts'
@@ -44,7 +45,13 @@ export type AccountSettings = {
 	/** unarchive chats when a new message is received */
 	unarchiveChats: boolean
 	/** the default mode to start new conversations with */
-	defaultDisappearingMode?: Pick<proto.IConversation, 'ephemeralExpiration' | 'ephemeralSettingTimestamp'>
+	// `ephemeralSettingTimestamp` restated for the same reason `WAMessage`
+	// restates `messageTimestamp`: the neutral codec types a 64-bit field as a
+	// method-less `{ low, high, unsigned }`, and the value this library actually
+	// stores here is a long.js Long.
+	defaultDisappearingMode?: Pick<proto.IConversation, 'ephemeralExpiration'> & {
+		ephemeralSettingTimestamp?: number | Long | null
+	}
 }
 
 /**

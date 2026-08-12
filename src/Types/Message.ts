@@ -1,3 +1,4 @@
+import type Long from 'long'
 import type { Readable } from 'stream'
 import type { URL } from 'url'
 import type {
@@ -14,8 +15,23 @@ import type { CacheStore } from './Socket.ts'
 
 // export the WAMessage Prototypes
 export { proto as WAProto }
-export type WAMessage = Omit<proto.IWebMessageInfo, 'messageStubParameters'> & {
+export type WAMessage = Omit<proto.IWebMessageInfo, 'messageStubParameters' | 'messageTimestamp'> & {
 	key: WAMessageKey
+	/**
+	 * `number | Long`, as upstream declares it — not the neutral codec's `Int64`.
+	 *
+	 * From bridge 0.8.0 a 64-bit field is typed `number | { low, high, unsigned }`,
+	 * a plain data shape carrying none of Long's methods. That is what the *codec*
+	 * produces; it is not what this library hands out. The compatibility facade
+	 * supplies a reader that materialises every 64-bit word as a long.js Long
+	 * whatever its magnitude, and the published declaration has always said so, so
+	 * a consumer calling `.toNumber()` is right to expect one.
+	 *
+	 * Declared here rather than left to flow through, because the neutral shape
+	 * otherwise reaches every type derived from `WAMessage` and stops them being
+	 * assignable to upstream's.
+	 */
+	messageTimestamp?: number | Long | null
 	category?: string
 	retryCount?: number
 	// Kept deliberately broad by upstream Baileys for legacy stub payloads.

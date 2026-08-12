@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { createRequire } from 'node:module'
 import type Long from 'long'
-import { BinaryReader } from '@oxidezap/whatsapp-rust-bridge'
+import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	PROTO_ENUM_SCHEMAS,
 	PROTO_FIELD_FLAG,
@@ -115,39 +115,77 @@ const appendBytes = (writer: unknown, bytes: Uint8Array): ProtoWriter => {
 	return appendable as ProtoWriter
 }
 
+/**
+ * A UTF-16 code unit with no partner. There is no UTF-8 form for one, so the
+ * codec refuses it rather than letting `TextEncoder` substitute silently.
+ */
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu
+
+/**
+ * Puts back what the codec used to do with an input it now refuses.
+ *
+ * Two cases, both measured against upstream Baileys, which still encodes both:
+ *
+ * - An empty string where the schema declares a 64-bit integer. Every one of the
+ *   134 send-path failures this addresses carried exactly `''`; a string that is
+ *   merely not a number — `'abc'`, `'1.5'` — is left to throw, because that was
+ *   never accepted and silently writing a value nobody sent is the worse answer.
+ * - An unpaired surrogate in a text field, replaced with U+FFFD. That is the
+ *   substitution `TextEncoder` used to make, so the bytes are unchanged from what
+ *   this library sent before.
+ *
+ * Returns `item` itself when it has nothing to do, so the caller can tell a
+ * repair from a failure it does not understand.
+ */
+const repairScalar = (kind: number, item: unknown): unknown => {
+	if (typeof item !== 'string') return item
+	if (kind === PROTO_FIELD_KIND.signed64 || kind === PROTO_FIELD_KIND.unsigned64) {
+		return item === '' ? 0 : item
+	}
+	if (kind !== PROTO_FIELD_KIND.string) return item
+	const replaced = item.replace(UNPAIRED_SURROGATE, '\uFFFD')
+	return replaced === item ? item : replaced
+}
+
 const longFromWords = (low: number, high: number, unsigned: boolean): Long => LongRuntime.fromBits(low, high, unsigned)
 
 /**
- * The neutral codec normally returns safe JS numbers. The compatibility
- * facade supplies this reader so the same generated decoder materializes
- * protobuf 64-bit words directly as Long values, without a second decode or
- * an intermediate string/BigInt allocation.
+ * The neutral codec returns a JS number while a 64-bit value is exact as a
+ * double and a plain `{ low, high, unsigned }` past that. The compatibility
+ * facade supplies this reader so the same generated decoder materializes every
+ * 64-bit word as a long.js Long instead — uniformly, whatever the magnitude —
+ * without a second decode or an intermediate string/BigInt allocation.
+ *
+ * Uniformity is the point: upstream's types declare `Long` for these fields,
+ * so a consumer calling `.toNumber()` must not have that work only for values
+ * under 2^53. The neutral shape is structurally a Long minus its methods, and
+ * the methods are exactly what upstream code calls.
  */
 class LongBinaryReader extends BinaryReader {
-	override uint64Number(): number {
+	override uint64Value(): Int64 {
 		const [low, high] = this.varint64()
-		return longFromWords(low, high, true) as unknown as number
+		return longFromWords(low, high, true)
 	}
 
-	override int64Number(): number {
+	override int64Value(): Int64 {
 		const [low, high] = this.varint64()
-		return longFromWords(low, high, false) as unknown as number
+		return longFromWords(low, high, false)
 	}
 
-	override sint64Number(): number {
+	override sint64Value(): Int64 {
 		let [low, high] = this.varint64()
 		const sign = -(low & 1)
 		low = ((low >>> 1) | ((high & 1) << (WORD_BITS - 1))) ^ sign
 		high = (high >>> 1) ^ sign
-		return longFromWords(low, high, false) as unknown as number
+		return longFromWords(low, high, false)
 	}
 
-	override fixed64Number(): number {
-		return longFromWords(this.sfixed32(), this.sfixed32(), true) as unknown as number
+	override fixed64Value(): Int64 {
+		return longFromWords(this.sfixed32(), this.sfixed32(), true)
 	}
 
-	override sfixed64Number(): number {
-		return longFromWords(this.sfixed32(), this.sfixed32(), false) as unknown as number
+	override sfixed64Value(): Int64 {
+		return longFromWords(this.sfixed32(), this.sfixed32(), false)
 	}
 }
 
@@ -279,6 +317,93 @@ const defineLazyValue = (target: DynamicObject, key: string, build: () => unknow
 			settle(this, value)
 		}
 	})
+}
+
+/**
+ * Type path to schema index, built on first use.
+ *
+ * Only the repair path needs it, and that path is only reached after an encode
+ * has already failed — so an importer that never sends a refused value never
+ * pays for the 498 entries.
+ */
+let schemaIdsByPath: Map<string, number> | undefined
+const schemaIdFor = (path: string): number | undefined => {
+	schemaIdsByPath ??= new Map(PROTO_MESSAGE_SCHEMAS.map(([name], index) => [name, index]))
+	return schemaIdsByPath.get(path)
+}
+
+/**
+ * Coerces the two inputs the bridge codec stopped accepting back to what it
+ * used to write, and returns `value` itself when there was nothing to coerce.
+ *
+ * Reference equality is the signal: the caller only reaches here after an
+ * encode threw, and an unchanged result means the failure was something else
+ * — a genuinely invalid number, a missing codec — which must keep propagating.
+ *
+ * Copy-on-write throughout, like `projectForEncode`: a branch with nothing to
+ * fix is shared, not rebuilt.
+ */
+const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>): unknown => {
+	if (!isObject(value)) return value
+	const fields = PROTO_MESSAGE_SCHEMAS[schemaId]?.[1]
+	if (!fields) return value
+	// A message that contains itself, not one that is merely deep. A fixed depth
+	// cap was the earlier guard and it silently stopped repairing below it: 12
+	// nested `ephemeralMessage.message` wrappers is 24 levels, and an empty-string
+	// int64 under that many threw instead of being coerced. Recursive protobuf
+	// messages have no depth limit, so only an actual cycle can be refused.
+	const seen = ancestors ?? new Set<object>()
+	if (seen.has(value)) return value
+	seen.add(value)
+	let output: DynamicObject | undefined
+	for (const field of fields) {
+		if (!hasOwn(value, field[0])) continue
+		const current = value[field[0]]
+		if (current === null || current === undefined) continue
+		const repair = (item: unknown): unknown =>
+			field[1] === PROTO_FIELD_KIND.message ? repairMessage(field[2], item, seen) : repairScalar(field[1], item)
+		let converted: unknown = current
+		if (field[3] & PROTO_FIELD_FLAG.repeated) {
+			if (Array.isArray(current)) {
+				let items: unknown[] | undefined
+				for (let index = 0; index < current.length; index++) {
+					const item = repair(current[index])
+					if (item !== current[index]) (items ??= current.slice())[index] = item
+				}
+				converted = items ?? current
+			}
+		} else if (field[3] & PROTO_FIELD_FLAG.map) {
+			if (isObject(current)) {
+				let entries: DynamicObject | undefined
+				for (const key in current) {
+					const item = repair(current[key])
+					if (item !== current[key]) (entries ??= { ...current })[key] = item
+				}
+				converted = entries ?? current
+			}
+		} else {
+			converted = repair(current)
+		}
+		if (converted !== current) (output ??= { ...value })[field[0]] = converted
+	}
+	// The ancestor path, not everything ever visited: the same object reached
+	// twice in different branches is legitimate and must still be repaired.
+	seen.delete(value)
+	return output ?? value
+}
+
+/**
+ * Repairs a message for a codec addressed by type name rather than schema index.
+ *
+ * The send path calls the neutral `encodeProto` directly instead of going
+ * through this facade's constructors, so it cannot reach the repair the way
+ * `proto.Message.encode` does. Same coercion, same copy-on-write contract:
+ * reference equality still means "nothing to fix", so a caller can tell a
+ * repair from a failure it does not understand.
+ */
+export const repairProtoMessage = (path: string, message: unknown): unknown => {
+	const schemaId = schemaIdFor(path)
+	return schemaId === undefined ? message : repairMessage(schemaId, message)
 }
 
 class ProtoCompatibilityRuntime {
@@ -425,8 +550,39 @@ class ProtoCompatibilityRuntime {
 		}
 		constructor.encode = (message, writer) => {
 			if (!sourceCodec) throw new Error(`protobuf codec unavailable for ${path}`)
-			const encoded = sourceCodec.encode(this.projectForEncode(schemaId, message))
-			return writer === undefined ? encoded : appendBytes(writer, encoded.finish())
+			const projected = this.projectForEncode(schemaId, message)
+			const encoded = sourceCodec.encode(projected)
+			// The bridge refuses two inputs it used to accept silently, and upstream
+			// Baileys still encodes both. Repairing on failure rather than checking
+			// every field on the way in is what keeps the ordinary encode free: a
+			// message the codec accepts never reaches the repair, and one that does
+			// not was already going to throw.
+			//
+			// The retry hangs off `finish` because the bridge's writer is lazy —
+			// `encode` queues the fields and `finish` is what writes them, so a
+			// refused value surfaces there. Re-encoding from the repaired message is
+			// safe for the same reason it would not be inside an overridden
+			// `string()`: that would have to resume after a tag and a length were
+			// already emitted, where this starts from a fresh writer.
+			const write = encoded.finish.bind(encoded)
+			const finish = (): Uint8Array => {
+				try {
+					return write()
+				} catch (error) {
+					const repaired = repairMessage(schemaId, projected)
+					if (repaired === projected) throw error
+					return sourceCodec.encode(repaired).finish()
+				}
+			}
+			if (writer !== undefined) return appendBytes(writer, finish())
+			// The codec's own writer is what comes back, with `finish` shadowed on
+			// the instance rather than replaced by a bare `{ finish }`. The published
+			// declaration types this return as a protobufjs `Writer`, and a caller
+			// that chains anything on it — `fork`, `join`, another field — has to
+			// find the rest of the surface still there. The writer is freshly made
+			// by this call, so shadowing one method on it touches nothing else.
+			encoded.finish = finish
+			return encoded
 		}
 		constructor.decode = (input, length) => {
 			if (!sourceCodec) throw new Error(`protobuf codec unavailable for ${path}`)

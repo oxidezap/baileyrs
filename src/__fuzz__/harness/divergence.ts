@@ -68,12 +68,14 @@ export interface KnownDivergence {
 const NOT_ENCODED_FIELDS: readonly string[] = [
 	'Message.AudioMessage.mediaKeyDomain',
 	'Message.DocumentMessage.mediaKeyDomain',
+	// Not absent but renamed — see RENAMED_PROTO_FIELDS. Handed upstream's
+	// spelling the bridge writes nothing, which is what this sweep measures.
+	'Message.ExtendedTextMessage.faviconMMSMetadata',
 	'Message.ImageMessage.mediaKeyDomain',
 	'Message.MMSThumbnailMetadata.mediaKeyDomain',
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
 	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
-	'Message.PaymentExtendedMetadata.messageParamsJson',
 	'SyncActionValue.businessBroadcastAssociationAction',
 	'SyncActionValue.AgentAction.deviceID',
 	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
@@ -90,6 +92,10 @@ const NOT_ENCODED_FIELDS: readonly string[] = [
 const RENAMED_PROTO_FIELDS: readonly (readonly [upstream: string, bridge: string])[] = [
 	['deviceAgentID', 'deviceAgentId'],
 	['deviceID', 'deviceId'],
+	// WhatsApp schema 2.3000.1044659339, which bridge 0.10.0 regenerated against.
+	// Field 33 is unchanged, so only the key differs; it closes when upstream
+	// regenerates its own proto.
+	['faviconMMSMetadata', 'faviconMmsMetadata'],
 	['oldestMessageTimestamp', 'oldestMessageTimestampInWindow']
 ]
 
@@ -133,17 +139,39 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
  * `ChatAssignmentAction.deviceAgentID` would pass, because `undoRenames`
  * restores the first and the set forgives the second.
  *
- * And a leaf name is not unique. `messageParamsJson` is unwritten on
- * `Message.PaymentExtendedMetadata`, while the schema declares another on
- * `Message.InteractiveMessage.NativeFlowMessage` — so accepting the bare leaf
- * at any nesting depth would excuse a new drop of the second as though it were
- * the documented first.
+ * And a leaf name is not unique. `messageParamsJson` was the live case — a gap
+ * on `Message.PaymentExtendedMetadata` while the schema declares another on
+ * `Message.InteractiveMessage.NativeFlowMessage`, so a bare leaf accepted at any
+ * nesting depth would have excused a new drop of the second as though it were
+ * the documented first. Bridge 0.10.0 writes both, which closes that example
+ * without closing the hazard: of the leaves left, only `mediaKeyDomain` sits on
+ * more than one type, and it is a gap on all six. The first holder to be fixed
+ * on its own puts the case straight back, and keying by path is what means it
+ * does not have to be noticed for the sweep to catch it.
  *
  * Keyed by `<decoded type>.<key path>` and measured rather than derived: this
  * is the absence the decode targets actually produced. A drop anywhere else,
  * including the same leaf under a different holder, still fails.
  */
-const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set(['SyncActionValue.businessBroadcastAssociationAction'])
+const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
+	'SyncActionValue.businessBroadcastAssociationAction',
+	// Measured after the 0.8.0 bump, on a ContextInfo whose quoted message is a
+	// video: `Message.VideoMessage.mediaKeyDomain` is one of the eleven the bridge
+	// never writes, and this is the path a generative draw puts it at. Listed
+	// rather than matched by leaf, so the same field under another holder is still
+	// a drop nobody has looked at.
+	'ContextInfo.quotedMessage.videoMessage.mediaKeyDomain',
+	// Measured after the 0.10.0 bump, all four the same two gaps reached through
+	// paths the older schema did not put a generative draw at. `mediaKeyDomain`
+	// is one of the eleven the bridge never writes; `pollResultSnapshotMessageV3`
+	// is field 114 upstream and 115 here, so upstream's bytes for it are a field
+	// this side does not have. Listed by path, like the video one above, so the
+	// same leaf under a holder nobody has looked at is still a drop.
+	'ContextInfo.quotedMessage.audioMessage.mediaKeyDomain',
+	'ContextInfo.quotedMessage.pollResultSnapshotMessageV3',
+	'Message.ExtendedTextMessage.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
+	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
+])
 
 /**
  * True when the two decodes agree once the documented absences are allowed on
@@ -208,13 +236,16 @@ const inputPath = (input: unknown): string | undefined => {
 }
 
 /**
- * The ten explicit-presence fields the bridge encoder drops at their zero value.
+ * The nine explicit-presence fields the bridge encoder drops at their zero value.
  *
  * Enumerated rather than left to the target name. The `proto:presence` sweep
  * covers all 1696 proto3-optional fields, and the whole value of a sweep is that
- * an eleventh has to fail rather than be absorbed into the entry describing the
- * ten. (`BotAvatarMetadata`'s five presence fields are not here: the bridge does
- * not implement that type at all, so they route to the unknown-type entry.)
+ * a tenth has to fail rather than be absorbed into the entry describing the
+ * nine. `PaymentExtendedMetadata.messageParamsJson` was here until bridge 0.10.0
+ * started writing it — measured, not assumed: both encoders now emit `1a 00` for
+ * an explicit empty string. (`BotAvatarMetadata`'s five presence fields are not
+ * here either: the bridge does not implement that type at all, so they route to
+ * the unknown-type entry.)
  */
 const PRESENCE_DROPPED_FIELDS: readonly string[] = [
 	'Message.AudioMessage.mediaKeyDomain',
@@ -224,7 +255,6 @@ const PRESENCE_DROPPED_FIELDS: readonly string[] = [
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
 	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
-	'Message.PaymentExtendedMetadata.messageParamsJson',
 	'SyncActionValue.AgentAction.deviceID',
 	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
 ]
@@ -431,15 +461,25 @@ const carriesOutOfRangeFloat = (value: unknown, depth = 0): boolean => {
  * Measured rather than sampled: nine seeds and 21,000 generated cases produce
  * exactly these twelve `path#number` pairs and no others. A thirteenth is new
  * data loss and must be looked at, which is the entire point of listing them.
+ *
+ * Bridge 0.10.0 turned one over without changing the count: `#33` on
+ * `ExtendedTextMessage` joined (the favicon rename) and
+ * `Message.PaymentExtendedMetadata#3` left, because that field is now written —
+ * both encoders emit `1a 00` for an explicit empty string. A member that no
+ * longer reproduces excuses nothing today and silently excuses a regression the
+ * day the field breaks again, which is why it is removed rather than left.
  */
 const KNOWN_OMITTED_FIELDS: ReadonlySet<string> = new Set([
 	'BotMetadata#1',
 	'Message.AudioMessage#23',
 	'Message.DocumentMessage#22',
+	// The renamed favicon field — see RENAMED_PROTO_FIELDS. Handed upstream's
+	// spelling the bridge writes nothing for it, so the bytes come out short by
+	// exactly this field.
+	'Message.ExtendedTextMessage#33',
 	'Message.ImageMessage#33',
 	'Message.MMSThumbnailMetadata#8',
 	'Message.MessageHistoryMetadata#2',
-	'Message.PaymentExtendedMetadata#3',
 	'Message.StickerMessage#23',
 	'Message.VideoMessage#32',
 	'SyncActionValue#65',
@@ -487,41 +527,6 @@ const carriesBeyondSafeInteger = (value: unknown, depth = 0): boolean => {
 	if (Array.isArray(value)) return value.some(item => carriesBeyondSafeInteger(item, depth + 1))
 	if (typeof value !== 'object' || value === null) return false
 	return Object.values(value as Record<string, unknown>).some(nested => carriesBeyondSafeInteger(nested, depth + 1))
-}
-
-/**
- * True when the input really carries an empty string and the bridge still encoded.
- *
- * The entry documents one coercion, and keying on upstream's error text alone
- * excused every local outcome — including the bridge dropping the field or
- * writing something else entirely. This ties the excuse to an input that
- * actually holds the empty string, and to the bridge having produced bytes
- * rather than nothing.
- *
- * It stops short of proving the coerced field encoded as *zero*: the message
- * carries other populated fields whose values are legitimately non-zero, so
- * telling the coerced field from its neighbours needs the schema, which this
- * registry has no access to. That is the remaining gap, and it is smaller than
- * the one it replaces.
- */
-const coercedAnEmptyString = (divergence: Divergence): boolean => {
-	const carriesEmptyString = (value: unknown, depth = 0): boolean => {
-		if (depth > 12) return false
-		if (value === '') return true
-		if (Array.isArray(value)) return value.some(item => carriesEmptyString(item, depth + 1))
-		if (typeof value !== 'object' || value === null) return false
-		return Object.values(value as Record<string, unknown>).some(nested => carriesEmptyString(nested, depth + 1))
-	}
-	if (!carriesEmptyString(divergence.input)) return false
-	// And the bridge really did coerce it to zero. The registry cannot tell the
-	// coerced field from its neighbours — that needs the schema — so the target
-	// answers instead: it re-encodes the same message with every empty string
-	// replaced by `'0'` and tags the finding with whether the bytes match.
-	// Measured on `Message.AudioMessage.fileLength`, `''` and `'0'` both encode to
-	// `0a017520002803` where `'5'` gives `0a017520052803`, so a regression that
-	// wrote a different value or dropped the field is tagged `not coerced` and
-	// stops being excused here.
-	return hasTag(divergence, 'empty string coerced to zero')
 }
 
 /** Removes one property wherever it appears, so a predicate can ask what is left. */
@@ -898,6 +903,117 @@ const text = (value: unknown): string => {
 const LONE_SURROGATE =
 	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
 
+/** Characters outside ASCII — all that either decoder had to invent a rendering for. */
+const NON_ASCII = /\P{ASCII}/u
+const NON_ASCII_GLOBAL = /\P{ASCII}/gu
+
+/** The ASCII characters of a string, in order: what both decoders could represent. */
+const asciiOf = (value: string): string => value.replaceAll(NON_ASCII_GLOBAL, '')
+
+const isSubsequence = (needle: string, haystack: string): boolean => {
+	let index = 0
+	for (const character of haystack) {
+		if (character === needle[index]) index++
+		if (index === needle.length) return true
+	}
+	return index === needle.length
+}
+
+/**
+ * A string pair that differs only in how each side rendered bytes it could not decode.
+ *
+ * `lying-length` makes a prefix cover a region that is not valid UTF-8, and the
+ * two decoders resolve it differently in a *directional* way, which is what
+ * makes it checkable. protobufjs decodes greedily: a lead byte swallows the
+ * bytes after it into one code point, ASCII ones included. The bridge rejects
+ * the sequence and substitutes U+FFFD per byte, so every ASCII byte it met
+ * survives.
+ *
+ * Two conditions, and both are needed. The bridge's side must actually carry
+ * U+FFFD — that is the substitution itself, and without it "both sides have
+ * some non-ASCII" says nothing: `a\u96eab` against `a\u00e9b` would pass while
+ * being an ordinary decoder disagreement, not a salvage. Measured on the one
+ * case this entry covers: 25 of them.
+ *
+ * And upstream's ASCII must appear in the bridge's, in order — 88 characters
+ * against 98 in that same case. That direction is what separates a substitution
+ * from a misread: a value genuinely read differently drops, reorders or
+ * rewrites a character upstream produced, and fails here.
+ */
+const substitutedUndecodableBytes = (local: unknown, upstream: unknown): boolean =>
+	typeof local === 'string' &&
+	typeof upstream === 'string' &&
+	local !== upstream &&
+	local.includes('\ufffd') &&
+	NON_ASCII.test(upstream) &&
+	isSubsequence(asciiOf(upstream), asciiOf(local))
+
+/**
+ * True when the bridge kept fields upstream dropped, and nothing else differs.
+ *
+ * Directional and total: upstream may not carry a key the bridge lacks, no value
+ * both sides hold may differ, and at least one field has to have been kept — so
+ * this can never excuse a misread, only a retention.
+ *
+ * `alsoExplains` is the one seam. A caller may name a *specific* leaf difference
+ * its entry documents, which then stops being fatal — but it contributes
+ * nothing to the count, so it can never satisfy an entry on its own. The
+ * retention still has to be there. The default explains nothing, so an entry
+ * that does not opt in keeps the strict reading. Everything else stays as it
+ * was: a key only upstream produced still fails whatever the hook says,
+ * because that is the bridge losing data.
+ */
+const keptFieldsUpstreamDropped = (
+	local: unknown,
+	upstream: unknown,
+	alsoExplains: (ours: unknown, theirs: unknown) => boolean = () => false
+): number | undefined => {
+	const walk = (ours: unknown, theirs: unknown, depth: number): number | undefined => {
+		if (depth > 12) return sameShape(ours, theirs) ? 0 : undefined
+		if (Array.isArray(ours) || Array.isArray(theirs)) {
+			// A *suffix*, not a prefix — the direction is the whole point and was
+			// backwards here. The repeated field that diverges sits inside a singular
+			// submessage the payload carries twice: merging concatenates every copy's
+			// elements, while upstream replaces the submessage and keeps only the last
+			// copy's. So upstream's array is our tail, and the elements before it are
+			// what merging retained. Measured on the deep sweep: 18 array pairs in that
+			// relation against 2 the old prefix reading matched.
+			//
+			// Upstream being the longer side is still the bridge losing elements, and
+			// still fails.
+			if (!Array.isArray(ours) || !Array.isArray(theirs) || ours.length < theirs.length) return undefined
+			const retained = ours.length - theirs.length
+			let kept = retained
+			for (const [index, item] of theirs.entries()) {
+				const inner = walk(ours[retained + index], item, depth + 1)
+				if (inner === undefined) return undefined
+				kept += inner
+			}
+			return kept
+		}
+		const ourKeys = plainObject(ours)
+		const theirKeys = plainObject(theirs)
+		if (ourKeys === undefined || theirKeys === undefined) {
+			if (sameShape(ours, theirs)) return 0
+			// Zero, not one: an explained leaf is permitted, never sufficient.
+			return alsoExplains(ours, theirs) ? 0 : undefined
+		}
+		const ourRecord = ours as Record<string, unknown>
+		const theirRecord = theirs as Record<string, unknown>
+		// A key only upstream produced is the bridge losing data, which is the
+		// opposite defect and must still be reported.
+		if (theirKeys.some(key => !Object.hasOwn(ourRecord, key))) return undefined
+		let kept = ourKeys.length - theirKeys.length
+		for (const key of theirKeys) {
+			const inner = walk(ourRecord[key], theirRecord[key], depth + 1)
+			if (inner === undefined) return undefined
+			kept += inner
+		}
+		return kept
+	}
+	return walk(local, upstream, 0)
+}
+
 /**
  * The registry.
  *
@@ -914,7 +1030,44 @@ const LONE_SURROGATE =
  * generated input, is evidence the sweeps work — it is not new information, and
  * recording it as new would misrepresent what this suite found.
  */
+/** Every step of a mutation chain, which `mutate` records as `a → b`. */
+const mutatorChain = (input: unknown): readonly string[] => {
+	const mutator = (input as { mutator?: unknown } | undefined)?.mutator
+	return typeof mutator === 'string' ? mutator.split('\u2192').map(step => step.trim()) : []
+}
+
+/** The mutator that shaped the bytes last, which is what the framing reflects. */
+const lastMutator = (input: unknown): string | undefined => mutatorChain(input).at(-1)
+
 export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
+	{
+		id: 'proto-lying-length-salvage',
+		target: 'proto:mutation-agreement',
+		status: 'open',
+		reason:
+			'The `lying-length` mutator rewrites a length prefix so a submessage claims a different extent, and the result still frames as protobuf — so it lands here rather than under mutation-interpretation. Both decoders then salvage the overlapping bytes, and they salvage different things: the bridge reads fields out of the region the prefix now covers that protobufjs steps past, and each side replaces the invalid UTF-8 it meets with its own substitution. No wire this library sends produces those bytes, and neither reading is more correct than the other, since the sender never wrote either value. Open rather than intended because nobody has decided whether the bridge should refuse a submessage whose declared length disagrees with its content, which is the only answer that would make the two agree.',
+		review: '2026-11-12',
+		when: divergence =>
+			lastMutator(divergence.input) === 'lying-length' &&
+			inputPath(divergence.input) === 'Message.ImageMessage' &&
+			// The difference has to *be* the salvage, not merely accompany it.
+			// "Both sides decoded something non-empty" was true of any misdecode
+			// under this mutator, which is what left a real regression excusable.
+			//
+			// The two documented halves are exactly the two this admits, and the
+			// retention is the one that counts: fields the bridge read out of the
+			// region the rewritten prefix now covers and protobufjs stepped past.
+			// A string whose undecodable bytes the bridge replaced with U+FFFD is
+			// permitted beside it but never sufficient alone, or a Unicode decoding
+			// regression on this route would excuse itself. Everything else — a key
+			// only upstream produced, a changed number, a string that moved bytes
+			// both sides could decode — still fails.
+			(keptFieldsUpstreamDropped(
+				normalise(divergence.local),
+				normalise(divergence.upstream),
+				substitutedUndecodableBytes
+			) ?? 0) > 0
+	},
 	{
 		id: 'to-number-high-word',
 		target: 'pure:toNumber',
@@ -975,6 +1128,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// string field comes back as U+FFFD there too — measured, `\ud800` becomes
 		// three replacement characters upstream and stays raw in baileyrs, which does
 		// not round-trip. The predicate keeps this to inputs that actually carry one.
+		//
+		// From bridge 0.8.0 the substitution is deliberate rather than incidental:
+		// the codec refuses the surrogate outright, and `encodeProtoCompat` puts
+		// U+FFFD back so the bytes are the ones this library has always sent.
+		// Upstream writes the surrogate raw as WTF-8 (`edbfbf` against this side's
+		// `efbfbd`), which is not valid UTF-8 — the difference the entry describes
+		// is unchanged, only its cause moved.
 		target: /^pure:(encodeNewsletterMessage|generateForwardMessageContent)$/u,
 		status: 'open',
 		// Scoped to the surrogate, not the whole helper. Without a predicate this
@@ -1275,8 +1435,8 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'proto:presence',
 		status: 'open',
 		// Named, not target-wide. The sweep's whole point is that it covers every
-		// proto3-optional field; an entry matching the target alone would route an
-		// eleventh drop into the finding that describes the ten and leave the
+		// proto3-optional field; an entry matching the target alone would route a
+		// tenth drop into the finding that describes the nine and leave the
 		// nightly green on a new regression.
 		when: divergence =>
 			typeof divergence.input === 'string' &&
@@ -1284,7 +1444,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 				field => divergence.input === `${field} = 0` || divergence.input === `${field} = ""`
 			),
 		reason:
-			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
+			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 9 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. Bridge 0.10.0 closed a tenth, PaymentExtendedMetadata.messageParamsJson, which is why the count moved. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
 		review: '2026-10-01'
 	},
 	{
@@ -1306,7 +1466,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			(divergence.local === '<nothing encoded>' || divergence.local === '<no keys decoded>') &&
 			NOT_ENCODED_FIELDS.some(field => text(divergence.input).includes(field)),
 		reason:
-			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, PaymentExtendedMetadata.messageParamsJson, SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
+			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, ExtendedTextMessage.faviconMMSMetadata (renamed rather than absent — see RENAMED_PROTO_FIELDS; handed upstream spelling the bridge writes nothing, which is what this sweep measures), SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. PaymentExtendedMetadata.messageParamsJson was a twelfth until bridge 0.10.0 started writing it. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
 		review: '2026-10-01'
 	},
 	{
@@ -1360,6 +1520,34 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// in-range 1.5, 0.1 or exact FLT_MAX with the same generic error be
 		// classified as this known difference, on every proto target.
 		when: divergence => text(divergence.local).includes('invalid float32') && carriesOutOfRangeFloat(divergence.input)
+	},
+	{
+		id: 'proto-concatenated-message-merge',
+		target: 'proto:mutation-agreement',
+		status: 'intended',
+		reason:
+			'Protobuf defines concatenation as merging: "for embedded message fields, the parser merges multiple instances of the same field, as if with the Message::MergeFrom method". From bridge 0.8.1 the codec does that — a singular message field read twice merges instead of the second read replacing the first — and protobufjs assigns, dropping everything the earlier instance carried. So on a payload carrying the same message field twice, the bridge returns the merged object and upstream returns only the last one. The same rule applies to repeated fields, which merging concatenates rather than replaces: on a payload carrying three copies of a Message.PollCreationMessage, contextInfo.mentionedJid holds both elements here and only the last one upstream. Measured across six mutated payloads after the 0.8.1 bump: SyncActionValue, MessageContextInfo, Message.ReactionMessage, Message.ExtendedTextMessage and Message.PollCreationMessage, retaining between one and nine fields. This is the one entry in the registry where the *reference* implementation is the non-conforming side, so it is intended rather than open: aligning would mean deliberately dropping fields the wire format says are there.',
+		review: '2027-02-01',
+		// The mutator as well as the shape. Merge semantics is the justification, and
+		// it only applies to a payload that actually carries the message twice —
+		// without this, any other mutator that made the bridge invent a field or an
+		// array element produced the same retention shape and was filed as the
+		// intended concatenation difference. Both reviewers caught it independently.
+		//
+		// *Contains* concatenate, not ends with it. Both reviewers proposed the last
+		// step, and that is too strict: concatenation is what put the message in
+		// twice, and a bit flipped afterwards does not undo it. Measured — scoping
+		// to the final step left `concatenate → flip-bit` and
+		// `concatenate → replace-byte` unexcused, both pure retentions.
+		//
+		// Retention only, and it has to be the whole difference. Upstream carrying a
+		// key the bridge lacks is the bridge losing data — the opposite defect —
+		// and any value that differs where both sides hold the key is a misread.
+		// Both still fail. Without the `> 0` this would also excuse two identical
+		// decodes, which is not a finding at all.
+		when: divergence =>
+			mutatorChain(divergence.input).includes('concatenate') &&
+			(keptFieldsUpstreamDropped(divergence.local, divergence.upstream) ?? 0) > 0
 	},
 	{
 		id: 'proto-decode-invalid-utf8',
@@ -1452,10 +1640,12 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
 		review: '2027-02-01',
 		when: divergence =>
-			// The exact mutator, not a substring of the chain. `mutate` records
-			// `nesting-bomb → flip-bit`, so a substring test excused whatever the
-			// *second* mutator produced merely because a nesting bomb ran first.
-			(divergence.input as { mutator?: unknown } | undefined)?.mutator === 'nesting-bomb' &&
+			// The *last* mutator of the chain, not a substring of it. `mutate`
+			// records `nesting-bomb → flip-bit`, and a substring test would excuse
+			// whatever the second mutator produced merely because a nesting bomb ran
+			// first. Reading the tail keeps that out while still covering
+			// `truncate → nesting-bomb`, where the bomb is what shaped the bytes.
+			lastMutator(divergence.input) === 'nesting-bomb' &&
 			// Narrow to the direction the reason argues: the bridge decoded an empty
 			// message, upstream decoded a non-empty one. The reverse, and any
 			// disagreement over a field both sides read, is not this and must still
@@ -1505,21 +1695,6 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. ALREADY TRACKED: BotAvatarMetadata is in KNOWN_UNSUPPORTED_CODECS and its fields in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. The unknown-type set here is probed at runtime rather than listed, so this entry stops matching by itself once the bridge implements them.',
 		review: '2026-10-01'
-	},
-	{
-		id: 'proto-empty-string-for-numeric-field',
-		target: /^proto:/u,
-		status: 'open',
-		reason:
-			'Given an empty string where the schema declares a 64-bit integer, the bridge coerces to 0 and protobufjs throws "empty string" — it routes 64-bit fields through Long.fromString, which rejects it. 32-bit fields are not affected: both sides coerce to 0 there, which is why the generator seeds the empty string into the 64-bit pools only. Same shape as the toNumber difference: baileyrs is the tolerant one. Tolerant is defensible, but it means a caller\'s type error is silently encoded as a real value instead of surfacing.',
-		review: '2026-11-01',
-		// The upstream error *and* what the bridge actually wrote. Keyed on the
-		// message alone, a regression that encoded the empty string as a nonzero
-		// value, or dropped the field, stayed green under a "coerces to 0"
-		// exception. A zero-valued 64-bit field encodes as the tag followed by a
-		// single `00`, or is omitted entirely when the field has no explicit
-		// presence — so those are the two outputs this accepts.
-		when: divergence => text(divergence.upstream).includes('empty string') && coercedAnEmptyString(divergence)
 	},
 	{
 		id: 'poll-vote-aggregation-order',

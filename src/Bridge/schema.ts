@@ -39,7 +39,9 @@ import type {
 } from './types.ts'
 import {
 	absoluteFromDuration,
+	asBool,
 	asBoolOr,
+	asStringArray,
 	asDurationSeconds,
 	asInt64,
 	asJidAddressString,
@@ -75,8 +77,11 @@ type AdapterMap = { [K in BridgeEventType]: AdapterFn<K> }
  * the unexported `PinAction` / `MuteAction` (resolves to `any`). Narrow
  * once at the call site.
  */
-const extractAction = (data: { action?: unknown }): Record<string, unknown> | undefined =>
-	isObject(data.action) ? data.action : undefined
+// Tolerates a missing `data` slot: the adapter table has to be total against
+// whatever the runtime sends, and an entry that reads the action before any
+// other guard would otherwise throw rather than drop (`bridge:adapt-total`).
+const extractAction = (data: { action?: unknown } | undefined): Record<string, unknown> | undefined =>
+	isObject(data?.action) ? data.action : undefined
 
 /** A group JID is authoritative when an older producer leaves `is_group` false. */
 const resolveIsGroup = (wireValue: unknown, chatJid: string): boolean =>
@@ -351,6 +356,101 @@ const ADAPTERS = {
 		// `action.labeled === true` → label added to the chat, else removed.
 		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
 	},
+
+	/**
+	 * The per-message half of `labels.association`, which used to have no path.
+	 * Same canonical event as the chat one, told apart by carrying a message.
+	 */
+	message_label_association_update: data => {
+		const labelId = asString(data?.label_id)
+		const chatJid = asJidString(data?.chat_jid)
+		const messageId = asString(data?.message_id)
+		if (!labelId || !chatJid || !messageId) {
+			return { type: 'noop', bridgeType: 'message_label_association_update' }
+		}
+		return {
+			type: 'labelAssociation',
+			labelId,
+			chatJid,
+			messageId,
+			labeled: asBoolOr(extractAction(data)?.labeled, true)
+		}
+	},
+
+	/**
+	 * What a degraded app-state sync left behind. The engine announces the
+	 * connection anyway, so without this a consumer is told a session with no
+	 * push name is healthy and has nothing to read that says otherwise.
+	 */
+	app_state_sync_failed: data => ({
+		type: 'appStateSyncFailed',
+		fatal: asStringArray(data?.fatal),
+		retryable: asStringArray(data?.retryable),
+		skipped: asStringArray(data?.skipped),
+		connected: asBoolOr(data?.connected, false)
+	}),
+
+	/**
+	 * The QR refs ran out. Upstream ends the socket with `timedOut` when its own
+	 * QR timer gives up (`Socket/socket.ts`), which is the same end state, so
+	 * this becomes the same terminal close rather than a new signal to learn.
+	 */
+	pairing_qr_codes_exhausted: () => ({ type: 'qrCodesExhausted' }),
+
+	/**
+	 * Another linked device turned link previews on or off account-wide.
+	 *
+	 * Upstream carries this on `settings.update`, reached through app state
+	 * (`Utils/chat-utils.ts` branches on `privacySettingDisableLinkPreviewsAction`
+	 * and emits the action as the value). Same event, different pipe — so the
+	 * value is the action itself, not the decoded flag.
+	 *
+	 * `previews_disabled` is that flag already decoded by the bridge, which is
+	 * what fills the action in when the payload carried the flag alone. The
+	 * bridge only emits this event when the wire carried the flag, so the last
+	 * fallback is unreachable in practice and exists so the value always has
+	 * the field upstream's consumers read.
+	 */
+	disable_link_previews_update: data => {
+		const action = extractAction(data)
+		return {
+			type: 'settingUpdate',
+			setting: 'disableLinkPreviews',
+			value: {
+				...action,
+				isPreviewsDisabled: asBool(action?.isPreviewsDisabled) ?? asBoolOr(data?.previews_disabled, false)
+			}
+		}
+	},
+
+	/**
+	 * A pair-code request failed, so any code the user was shown is spent.
+	 *
+	 * Same lifecycle as `pair_error`, which is why it adapts to the same
+	 * canonical event: the socket lives on and the engine takes another
+	 * request, so this must not read as a close, and the code on screen has to
+	 * stop being offered. `pairError` is the handler that does both — a
+	 * pairing code surfaces as `qr` (see `pairing_code` above), and `connecting`
+	 * clears it while saying a fresh one can be asked for.
+	 *
+	 * `rejection` and `backoff` ride along for the log. Neither changes what a
+	 * consumer does here, and the engine owns the retry — but a throttle the
+	 * server named itself is the difference between a code that will come back
+	 * and one that will not, and dropping it leaves that unexplained.
+	 */
+	pairing_code_error: data => ({
+		type: 'pairError',
+		error: asString(data?.error) ?? 'pairing code rejected',
+		rejection: asNumber(data?.rejection),
+		backoff: asNumber(data?.backoff)
+	}),
+
+	// Acknowledged with no Baileys equivalent: upstream has no channel for a
+	// contact deletion (`contacts.update` only upserts), for quick replies, or
+	// for a call placed on the phone.
+	contact_removed: () => ({ type: 'noop', bridgeType: 'contact_removed' }),
+	quick_reply_update: () => ({ type: 'noop', bridgeType: 'quick_reply_update' }),
+	call_log_sync: () => ({ type: 'noop', bridgeType: 'call_log_sync' }),
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),

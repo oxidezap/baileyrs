@@ -28,6 +28,7 @@ import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise } from './harness/compare.ts'
 import { canonicalWire } from './harness/wire.ts'
+import { schemaAt } from './harness/schema-context.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, textFieldPredicate, HOT_PROTO_PATHS } from './generators/proto.ts'
@@ -265,7 +266,16 @@ describe('protobuf decoder robustness under mutation', () => {
 				// differently is a bug. Bytes that do not frame as protobuf at all have
 				// no defined meaning, so disagreement there is a strictness difference
 				// and is reported separately.
-				const wellFormed = canonicalWire(bytes) !== undefined
+				//
+				// With the schema, not without. Unschooled, the scan cannot tell a
+				// nested message from a `bytes` field, so it frames only the top level
+				// and calls a payload well-formed whose *submessage* is corrupt — which
+				// is where a `lying-length` or a `flip-bit` usually lands. Measured on
+				// the four findings this fixed: three framed at the top and not inside,
+				// and belong to the interpretation class the entry beside this one
+				// already calls undefined behaviour. `wire.ts` states the rule — every
+				// caller that has a schema passes it — and this one has `path`.
+				const wellFormed = canonicalWire(bytes, schemaAt(path)) !== undefined
 				return {
 					target: wellFormed ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
 					input: { path, mutator, bytes: hex(bytes) },

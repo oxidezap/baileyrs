@@ -62,10 +62,10 @@ const silentLogger = {
  * The canonical tag a bridge event type is expected to adapt to.
  *
  * A convention plus its exceptions, not a transcription of the adapter's own
- * dispatch: the convention is snake_case to camelCase, which holds for 47 of the
- * 58 declared types, and the eleven below are the real renames and merges — each
- * one a decision somebody made rather than a mechanical transformation. Changing
- * any of them has to be a deliberate edit here, which is the point.
+ * dispatch: the convention is snake_case to camelCase, which holds for every one
+ * of the 66 declared types except the fifteen below — each of those a decision
+ * somebody made rather than a mechanical transformation. Changing any of them
+ * has to be a deliberate edit here, which is the point.
  *
  * The last four were missed on the first pass because the fixed seed never drew
  * a payload that cleared their guards: all four returned `noop` on every run and
@@ -91,7 +91,17 @@ const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
 	clear_chat_update: 'chatClear',
 	delete_message_for_me_update: 'messageDelete',
 	// A changed contact number is how the runtime tells us about a LID mapping.
-	contact_number_changed: 'lidMappingUpdate'
+	contact_number_changed: 'lidMappingUpdate',
+	// The per-message half of the same canonical association as the chat one.
+	message_label_association_update: 'labelAssociation',
+	// Named after the state it reports rather than after the pairing signal.
+	pairing_qr_codes_exhausted: 'qrCodesExhausted',
+	// A failed pair-code request leaves the socket in the same place a failed
+	// pairing does, so it adapts to the same canonical event.
+	pairing_code_error: 'pairError',
+	// Named after the channel it lands on — one of upstream's settings, not a
+	// signal of its own.
+	disable_link_previews_update: 'settingUpdate'
 }
 
 /**
@@ -130,7 +140,13 @@ const UNCONDITIONALLY_INERT: ReadonlySet<string> = new Set([
 	'business_status_update',
 	'contact_sync_requested',
 	'user_about_update',
-	'user_status_mute_update'
+	'user_status_mute_update',
+	// Acknowledged with no Baileys equivalent. Upstream has no channel for a
+	// contact deletion, quick replies, or a call placed on the phone. See
+	// `Bridge/schema.ts` for the reason on each.
+	'contact_removed',
+	'quick_reply_update',
+	'call_log_sync'
 ])
 
 /**
@@ -157,6 +173,7 @@ const NOT_YET_REACHABLE: ReadonlySet<string> = new Set([
 	'disappearing_mode_changed',
 	'label_association_update',
 	'label_edit_update',
+	'message_label_association_update',
 	'newsletter_live_update'
 ])
 

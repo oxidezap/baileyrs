@@ -45,6 +45,17 @@ export interface CanonicalPairSuccess {
 export interface CanonicalPairError {
 	type: 'pairError'
 	error: string
+	/**
+	 * The server's own refusal code, when it answered with one.
+	 *
+	 * Absent when the failure was local (validation, no connection) or the
+	 * request went unanswered — nothing was refused, so there is no status.
+	 * Carried for the log only: the consumer-visible outcome is the same
+	 * either way, and the engine owns the retry.
+	 */
+	rejection?: number
+	/** Seconds the server asked the client to wait before asking again. */
+	backoff?: number
 	/** Account JID after pairing (may be set even on error). */
 	id?: string
 	/** LID for the account. */
@@ -432,8 +443,59 @@ export interface CanonicalLabelAssociation {
 	type: 'labelAssociation'
 	labelId: string
 	chatJid: string
-	/** `true` = label added to the chat, `false` = removed. */
+	/**
+	 * The message the label is on, for a per-message association.
+	 *
+	 * Absent means the label is on the chat itself. The two arrive on separate
+	 * bridge events and upstream carries both on `labels.association`, keyed by
+	 * the association's own `type`.
+	 */
+	messageId?: string
+	/** `true` = label added, `false` = removed. */
 	labeled: boolean
+}
+
+/**
+ * The server ran out of QR refs before anyone scanned one.
+ *
+ * Terminal: nothing else is coming on this socket, and the consumer builds a
+ * new one to be shown a fresh code.
+ */
+export interface CanonicalQrCodesExhausted {
+	type: 'qrCodesExhausted'
+}
+
+/**
+ * A batched app-state sync that did not leave every collection synced.
+ *
+ * Collections are named as they appear on the wire. `fatal` is the one a
+ * consumer usually has to act on: the server refused it and asking again gets
+ * the same answer. `connected` says whether the session was announced anyway,
+ * which is the difference between "degraded but usable" and "still retrying" —
+ * the engine connects on a degraded sync rather than withholding the session,
+ * so this event is the only thing that says what is missing from it.
+ */
+export interface CanonicalAppStateSyncFailed {
+	type: 'appStateSyncFailed'
+	fatal: string[]
+	retryable: string[]
+	skipped: string[]
+	connected: boolean
+}
+
+/**
+ * An account-wide setting another linked device changed.
+ *
+ * Upstream reaches the same place through app state — `Utils/chat-utils.ts`
+ * emits `settings.update` for a `privacySettingDisableLinkPreviewsAction` —
+ * so this is that channel's payload arriving over a different pipe, not a
+ * new contract. The shape is the event's rather than one setting's: another
+ * setting the bridge starts reporting is a new arm here, not a new event.
+ */
+export interface CanonicalSettingUpdate {
+	type: 'settingUpdate'
+	setting: 'disableLinkPreviews'
+	value: proto.SyncActionValue.IPrivacySettingDisableLinkPreviewsAction
 }
 
 // ── Calls ──
@@ -693,6 +755,9 @@ export type CanonicalEvent =
 	| CanonicalMarkChatAsReadUpdate
 	| CanonicalLabelEdit
 	| CanonicalLabelAssociation
+	| CanonicalAppStateSyncFailed
+	| CanonicalQrCodesExhausted
+	| CanonicalSettingUpdate
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate

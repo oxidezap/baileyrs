@@ -51,10 +51,14 @@ const KNOWN_WIRE_GAPS = [
 	'BotMetadata.avatarMetadata',
 	'Message.AudioMessage.mediaKeyDomain',
 	'Message.DocumentMessage.mediaKeyDomain',
+	// Renamed rather than absent: WhatsApp schema 2.3000.1044659339 spells field
+	// 33 `faviconMmsMetadata`, which bridge 0.10.0 regenerated against, while
+	// baileys 7.0.0-rc13 still declares `faviconMMSMetadata`. The wire is
+	// identical; the gap closes when upstream regenerates its proto.
+	'Message.ExtendedTextMessage.faviconMMSMetadata',
 	'Message.ImageMessage.mediaKeyDomain',
 	'Message.MMSThumbnailMetadata.mediaKeyDomain',
 	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
-	'Message.PaymentExtendedMetadata.messageParamsJson',
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
 	'Message.pollResultSnapshotMessageV3',

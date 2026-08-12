@@ -385,7 +385,10 @@ const DISPATCHERS: DispatcherMap = {
 	// belongs on the bus: the QR the user was shown is spent, and `connecting`
 	// clears it while telling the consumer a fresh one is coming.
 	pairError: (evt, { ctx }) => {
-		ctx.logger.error({ err: evt.error }, 'pairing failed; the engine will retry')
+		ctx.logger.error(
+			{ err: evt.error, rejection: evt.rejection, backoff: evt.backoff },
+			'pairing failed; the engine will retry'
+		)
 		emitRetrying(ctx)
 	},
 	loggedOut: (evt, dispatchCtx) =>
@@ -732,12 +735,45 @@ const DISPATCHERS: DispatcherMap = {
 			predefinedId: evt.predefinedId
 		}),
 	labelAssociation: (evt, { ctx }) =>
-		// Inbound sync only ever carries chat associations (the bridge event
-		// has a `chat_jid`); message-label associations are a separate path.
 		ctx.ev.emit('labels.association', {
-			association: { type: LabelAssociationType.Chat, chatId: evt.chatJid, labelId: evt.labelId },
+			// The two halves arrive on separate bridge events and upstream tells
+			// them apart by the association's own type, so a message id is what
+			// decides which of the two shapes this is.
+			association: evt.messageId
+				? {
+						type: LabelAssociationType.Message,
+						chatId: evt.chatJid,
+						messageId: evt.messageId,
+						labelId: evt.labelId
+					}
+				: { type: LabelAssociationType.Chat, chatId: evt.chatJid, labelId: evt.labelId },
 			type: evt.labeled ? 'add' : 'remove'
 		}),
+
+	appStateSyncFailed: (evt, { ctx }) => {
+		// Logged as well as published: a fatal collection is an operator's
+		// problem before it is a handler's, and `critical_block` carries the
+		// push name, so presence stays unavailable until it syncs.
+		if (evt.fatal.length) {
+			ctx.logger.warn({ fatal: evt.fatal, connected: evt.connected }, 'app state collections refused by the server')
+		}
+		ctx.ev.emit('app-state-sync.failed', {
+			fatal: evt.fatal,
+			retryable: evt.retryable,
+			skipped: evt.skipped,
+			connected: evt.connected
+		})
+	},
+
+	// Upstream ends the socket with `timedOut` when its own QR timer gives up
+	// (`Socket/socket.ts`), so the canonical reconnect handler already knows
+	// this state. Reporting anything else would make it learn a second one.
+	qrCodesExhausted: (_, dispatchCtx) => emitClose(dispatchCtx, 'QR refs attempts ended', DisconnectReason.timedOut),
+
+	// Straight onto upstream's own channel for this: `settings.update` already
+	// declares the `disableLinkPreviews` arm, and a consumer that reads it is
+	// reading the account-wide setting whichever device changed it.
+	settingUpdate: (evt, { ctx }) => ctx.ev.emit('settings.update', { setting: evt.setting, value: evt.value }),
 
 	// ── Calls ──
 	incomingCall: (evt, { ctx, callbacks }) => {

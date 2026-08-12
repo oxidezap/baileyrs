@@ -607,6 +607,106 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		)
 	})
 
+	// The one entry where the reference implementation is the non-conforming side,
+	// so its direction is the whole point and is pinned from both ends.
+	it('excuses a concatenated merge only when the bridge kept what upstream dropped', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-concatenated-message-merge')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excusedWith = (mutator: string, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist(
+				[{ target: 'proto:mutation-agreement', input: { mutator }, local, upstream }],
+				new Date('2026-01-01'),
+				registry
+			).unexcused.length === 0
+		const excused = (local: unknown, upstream: unknown): boolean => excusedWith('concatenate', local, upstream)
+
+		// The documented shape: the merge kept a field the second copy did not carry.
+		assert.ok(excused({ muteAction: { muted: true }, statusPrivacy: { mode: '2' } }, { statusPrivacy: { mode: '2' } }))
+		// Nested, since a merge happens at whatever depth the field sits.
+		assert.ok(excused({ a: { b: { kept: 1, shared: 2 } } }, { a: { b: { shared: 2 } } }), 'retention nested')
+
+		// The bridge losing a field is the opposite defect and must still be reported.
+		assert.ok(!excused({ shared: 2 }, { shared: 2, lost: 1 }), 'a field only upstream produced is not this')
+		// A value both sides hold that differs is a misread, whatever else was kept.
+		assert.ok(!excused({ kept: 1, shared: 2 }, { shared: 3 }), 'a changed value is never this entry')
+		// Two identical decodes are not a finding to excuse.
+		assert.ok(!excused({ shared: 2 }, { shared: 2 }), 'nothing kept is nothing to explain')
+		// And retention in one branch does not license a loss in another.
+		assert.ok(!excused({ a: { kept: 1 }, b: {} }, { a: {}, b: { lost: 1 } }), 'a loss beside a retention still fails')
+
+		// The repeated field that diverges sits inside a singular submessage the
+		// payload carries twice: merging concatenates every copy's elements, while
+		// upstream replaces the submessage and keeps only the last copy's. So
+		// upstream's array is our *tail*, and what precedes it is what merging kept.
+		// Distinct values on purpose — equal ones pass under either reading and hid
+		// this being backwards.
+		assert.ok(excused({ ids: ['first', 'last'] }, { ids: ['last'] }), 'the earlier copy retained ahead of upstream')
+		assert.ok(excused({ ids: ['a', 'b', 'c'] }, { ids: ['b', 'c'] }), 'two copies merged, upstream kept the last')
+		assert.ok(!excused({ ids: ['first', 'last'] }, { ids: ['first'] }), 'upstream keeps the last copy, not the first')
+		assert.ok(!excused({ ids: ['a', 'b'] }, { ids: ['c'] }), 'a changed element is not a retention')
+		assert.ok(!excused({ ids: ['a'] }, { ids: ['a', 'a'] }), 'the bridge holding fewer elements is a loss')
+
+		// Merge semantics is the justification, so the payload has to actually carry
+		// the message twice. The same retention shape from any other mutator is a
+		// field the bridge invented, which is a different thing entirely.
+		const retained = [{ kept: 1, shared: 2 }, { shared: 2 }] as const
+		assert.ok(!excusedWith('flip-bit', ...retained), 'a retention from another mutator is not merge')
+		assert.ok(!excusedWith('lying-length', ...retained), 'nor from a lying length')
+		// A chain counts wherever the concatenation sits: it is what put the message
+		// in twice, and a byte corrupted afterwards does not undo that.
+		assert.ok(excusedWith('flip-bit → concatenate', ...retained), 'concatenation last')
+		assert.ok(excusedWith('concatenate → flip-bit', ...retained), 'concatenation first')
+		assert.ok(excusedWith('concatenate → concatenate', ...retained), 'three copies')
+	})
+
+	// The two decoders resolve an undecodable region in opposite directions, and
+	// that asymmetry is the only thing separating this entry's salvage from a
+	// misread — so it is pinned from both ends, like the merge entry above.
+	it('excuses a lying-length salvage only when it is the whole difference', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-lying-length-salvage')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excusedWith = (input: unknown, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist([{ target: 'proto:mutation-agreement', input, local, upstream }], new Date('2026-01-01'), registry)
+				.unexcused.length === 0
+		const salvage = { mutator: 'lying-length', path: 'Message.ImageMessage' }
+		const excused = (local: unknown, upstream: unknown): boolean => excusedWith(salvage, local, upstream)
+
+		// The shape measured on the one case in a 10001-run deep sweep: the bridge
+		// kept two fields upstream stepped past, and the one shared string differs
+		// only where each side rendered bytes it could not decode. protobufjs
+		// swallows the ASCII bytes after a lead byte; the bridge substitutes per
+		// byte and keeps them — so upstream's ASCII is a subsequence of ours.
+		const url = { local: 'A�B�C', upstream: 'A\u{10FFFF}C' }
+		assert.ok(excused({ kept: '1', url: url.local }, { url: url.upstream }), 'retention and substitution together')
+		assert.ok(excused({ kept: '1', url: 'A�C' }, { url: 'A�C' }), 'retention alone')
+
+		// The retention is what satisfies the entry; the substitution rides beside
+		// it and can never carry it alone, or a Unicode decoding regression on this
+		// route would excuse itself.
+		assert.ok(!excused({ url: url.local }, { url: url.upstream }), 'a substitution with nothing retained')
+		// And U+FFFD is the substitution. Without requiring it, "both sides hold
+		// some non-ASCII with a matching ASCII skeleton" admits any two decodings.
+		assert.ok(!excused({ kept: '1', url: 'a雪b' }, { url: 'aéb' }), 'two decodings, neither a substitution')
+
+		// Each half of "the difference is the salvage" fails on its own terms.
+		assert.ok(!excused({ kept: '1', url: url.local }, { url: url.upstream, lost: 1 }), 'a field only upstream produced')
+		assert.ok(!excused({ kept: 1, mode: '2' }, { mode: '3' }), 'a changed scalar beside a retention')
+		assert.ok(!excused({ kept: 1, name: 'goodbye' }, { name: 'hello' }), 'a changed ASCII string')
+		assert.ok(!excused({ kept: '1', url: 'A�C' }, { url: 'AB\u{10FFFF}C' }), 'ASCII upstream produced that we lack')
+		assert.ok(!excused({ kept: '1', url: 'AB�' }, { url: '\u{10FFFF}BA' }), 'the same ASCII in a different order')
+		assert.ok(!excused({ kept: 1, s: 'ab' }, { s: 'ba' }), 'a reordered pure-ASCII string is not a substitution')
+		assert.ok(!excused({ url: url.local }, { url: url.local }), 'nothing differs at all')
+
+		// The mutator and the path are the premise: this salvage is what a rewritten
+		// length prefix does, on the one type the sweep produced it for.
+		assert.ok(!excusedWith({ ...salvage, mutator: 'flip-bit' }, { kept: 1, a: 1 }, { a: 1 }), 'another mutator')
+		assert.ok(!excusedWith({ ...salvage, path: 'Message.AudioMessage' }, { kept: 1, a: 1 }, { a: 1 }), 'another type')
+	})
+
 	it('keeps every shipped registry entry well-formed', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const ids = new Set<string>()
@@ -786,5 +886,31 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		// 2^29 is one past the last legal field number, so the payload does not parse.
 		assert.equal(canonicalWire(Uint8Array.from([...tag(536_870_912, 0), 0x00])), undefined)
 		assert.notEqual(canonicalWire(Uint8Array.from([...tag(536_870_911, 0), 0x00])), undefined)
+	})
+
+	/**
+	 * The scan reads a field number under either encoder's spelling, which is only
+	 * safe while no number is claimed by two different fields.
+	 *
+	 * True across the schema today — 2422 claims, no collisions — and the thing
+	 * that would break it is a schema regeneration, which is exactly the moment
+	 * nobody re-reads the comment asserting it. So it is swept rather than
+	 * assumed. `factsFor` already degrades a contested number to opaque bytes so a
+	 * run cannot misframe silently; this is what says the degradation happened.
+	 */
+	it('finds no field number claimed by two different fields, anywhere in the schema', async () => {
+		const { contestedFieldNumbers } = await import('../schema-context.ts')
+		const { PROTO_MESSAGE_SCHEMAS } = await import('../../../WAProto/compatibility-schema.ts')
+
+		const collisions = PROTO_MESSAGE_SCHEMAS.map(([path]) => [path, contestedFieldNumbers(path)] as const).filter(
+			([, numbers]) => numbers.length > 0
+		)
+		assert.deepEqual(
+			collisions,
+			[],
+			`a field number is claimed by two fields, so the scan degraded it to opaque bytes: ${collisions
+				.map(([path, numbers]) => `${path} #${numbers.join(', #')}`)
+				.join('; ')}`
+		)
 	})
 })

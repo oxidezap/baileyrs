@@ -30,11 +30,14 @@ import {
 	isWireSubset,
 	orderedWire,
 	sameWireContent,
-	sameWireOrdering,
-	type SchemaContext
+	sameWireOrdering
 } from './harness/wire.ts'
 import { undoRenames, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
+import { firstFieldNumber, sampleFor, schemaAt, upstreamType, type UpstreamType } from './harness/schema-context.ts'
+
+/** The kinds protobufjs routes through `Long.fromString`, which rejects `''`. */
+const SIXTY_FOUR_BIT_KINDS: ReadonlySet<number> = new Set([PROTO_FIELD_KIND.signed64, PROTO_FIELD_KIND.unsigned64])
 import type { Random } from './harness/random.ts'
 import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND } from '../WAProto/compatibility-schema.ts'
 import {
@@ -50,14 +53,6 @@ import {
 	type ProtoCase
 } from './generators/proto.ts'
 
-const upstream = (await import('baileys')) as unknown as { proto: Record<string, unknown> }
-
-interface UpstreamType {
-	encode(message: unknown): { finish(): Uint8Array }
-	decode(bytes: Uint8Array): unknown
-	toObject(message: unknown, options: Record<string, unknown>): Record<string, unknown>
-}
-
 /**
  * Rejects a candidate the shrinker invented that is not a valid case at all.
  *
@@ -71,24 +66,6 @@ const isUsableCase = (value: ProtoCase): boolean =>
 	value.path.length > 0 &&
 	typeof value.message === 'object' &&
 	value.message !== null
-
-/**
- * protobufjs namespaces nest, so a schema path is a lookup chain.
- *
- * The intermediate segments are *functions*, not objects: `proto.Message` is the
- * generated Type constructor, and `Message.ExtendedTextMessage` hangs off it as a
- * static. A `typeof === 'object'` guard here silently skips every nested type,
- * which is most of the schema — `resolves nested message types` pins that.
- */
-const upstreamType = (path: string): UpstreamType | undefined => {
-	let cursor: unknown = upstream.proto
-	for (const segment of path.split('.')) {
-		if (cursor === null || (typeof cursor !== 'object' && typeof cursor !== 'function')) return undefined
-		cursor = (cursor as Record<string, unknown>)[segment]
-	}
-	const candidate = cursor as unknown as UpstreamType | undefined
-	return typeof cursor === 'function' && typeof candidate?.encode === 'function' ? candidate : undefined
-}
 
 /**
  * The one shape both decoders can be compared in.
@@ -211,84 +188,6 @@ const combinedTag = (
 
 /** Appends a classification the allowlist registry cannot compute for itself. */
 const withTag = (detail: string, tag: string | undefined): string => (tag === undefined ? detail : `${detail} [${tag}]`)
-
-/**
- * The field kinds protobuf actually packs, and that unpack as varints.
- *
- * "Repeated" is not the same as "packable": a repeated string or bytes field is
- * always one length-delimited entry per element and is never packed, so a
- * wire-type change on one is a codec regression rather than a spelling
- * difference. Floats are packable but fixed-width, so they never appear as the
- * varint run this comparison looks for.
- */
-/** The kinds protobufjs routes through `Long.fromString`, which rejects `''`. */
-const SIXTY_FOUR_BIT_KINDS: ReadonlySet<number> = new Set([PROTO_FIELD_KIND.signed64, PROTO_FIELD_KIND.unsigned64])
-
-const PACKABLE_KINDS: ReadonlySet<number> = new Set([
-	PROTO_FIELD_KIND.enum,
-	PROTO_FIELD_KIND.bool,
-	PROTO_FIELD_KIND.signed32,
-	PROTO_FIELD_KIND.unsigned32,
-	PROTO_FIELD_KIND.signed64,
-	PROTO_FIELD_KIND.unsigned64
-])
-
-/**
- * Per-message field-number metadata, for telling packing apart from a wrong wire
- * type.
- *
- * `differsOnlyByPacking` cannot distinguish a one-element packed run from a
- * singular scalar written length-delimited — the bytes are identical — so it asks
- * the schema. Field numbers are unique per message, not globally, and this schema
- * has 30 repeated scalar fields against 1734 singular ones drawing from the same
- * small numbers: a global set would answer "repeated" for nearly every singular
- * field and excuse exactly the regression this exists to catch.
- *
- * The compact schema records the repeated flag and the nested type but not the
- * number, so each number is recovered the way the field-number sweep recovers it
- * — encode the field alone, read the tag back. Built per message, lazily, so a
- * run only pays for the types it actually compares.
- */
-interface FieldFacts {
-	readonly repeated: ReadonlySet<number>
-	readonly messages: ReadonlyMap<number, string>
-}
-
-const fieldFactsByPath = new Map<string, FieldFacts>()
-
-const factsFor = (path: string): FieldFacts => {
-	const cached = fieldFactsByPath.get(path)
-	if (cached) return cached
-
-	const repeated = new Set<number>()
-	const messages = new Map<number, string>()
-	const type = upstreamType(path)
-	if (type) {
-		for (const field of fieldsOfPath(path)) {
-			if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
-			const isMessage = field[1] === PROTO_FIELD_KIND.message
-			const one = isMessage ? {} : sampleFor(field[1])
-			const value = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 ? [one] : one
-			const encoded = attempt(() => type.encode({ [field[0]]: value }).finish())
-			if (!encoded.ok) continue
-			const number = firstFieldNumber(encoded.value as Uint8Array)
-			if (number === undefined) continue
-			if ((field[3] & PROTO_FIELD_FLAG.repeated) !== 0 && PACKABLE_KINDS.has(field[1])) repeated.add(number)
-			const nested = messagePathOfField(field)
-			if (nested !== undefined) messages.set(number, nested)
-		}
-	}
-
-	const facts: FieldFacts = { repeated, messages }
-	fieldFactsByPath.set(path, facts)
-	return facts
-}
-
-const schemaAt = (path: string): SchemaContext => ({
-	path,
-	isRepeated: (at, field) => factsFor(at).repeated.has(field),
-	messageAt: (at, field) => factsFor(at).messages.get(field)
-})
 
 /**
  * Message types upstream declares that the bridge codec has never heard of.
@@ -1390,35 +1289,5 @@ function defaultFor(kind: number): unknown {
 			return new Uint8Array(0)
 		default:
 			return 0
-	}
-}
-
-/** The field number of the first tag in a payload, or undefined if it does not parse. */
-function firstFieldNumber(bytes: Uint8Array): number | undefined {
-	let result = 0n
-	let shift = 0n
-	for (let index = 0; index < bytes.length && index < 10; index++) {
-		const byte = bytes[index]!
-		result |= BigInt(byte & 0x7f) << shift
-		if ((byte & 0x80) === 0) {
-			const field = result >> 3n
-			return field >= 1n && field <= 536_870_911n ? Number(field) : undefined
-		}
-		shift += 7n
-	}
-	return undefined
-}
-
-/** A non-default sample for a field kind, for the field-name sweep. */
-function sampleFor(kind: number): unknown {
-	switch (kind) {
-		case PROTO_FIELD_KIND.string:
-			return 'x'
-		case PROTO_FIELD_KIND.bool:
-			return true
-		case PROTO_FIELD_KIND.bytes:
-			return new Uint8Array([1])
-		default:
-			return 7
 	}
 }

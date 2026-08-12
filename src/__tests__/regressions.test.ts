@@ -333,6 +333,59 @@ describe('adapter: pair_error', () => {
 	})
 })
 
+describe('adapter: pairing_code_error', () => {
+	const evt = (data: Record<string, unknown>) => ({ type: 'pairing_code_error', data })
+
+	it('lands on the same canonical event a pair_error does', () => {
+		expect(adapt(evt({ error: 'rejected', rejection: 3, backoff: 300 }), 'pairError')).toEqual({
+			type: 'pairError',
+			error: 'rejected',
+			rejection: 3,
+			backoff: 300
+		})
+	})
+
+	it('leaves rejection and backoff absent when the server named neither', () => {
+		const c = adapt(evt({ error: 'no connection' }), 'pairError')
+		expect(c.rejection).toBeUndefined()
+		expect(c.backoff).toBeUndefined()
+	})
+
+	// The spent code is displayed through `connection.update.qr` (a pairing code
+	// surfaces as a QR does), so `connecting` with an explicit `qr: undefined`
+	// is what stops it being offered. Dropping the event left it on screen.
+	it('clears the spent code and keeps the socket open', () => {
+		const updates = collect(evt({ error: 'rejected' }), 'connection.update')
+		expect(updates).toEqual([{ connection: 'connecting', qr: undefined, receivedPendingNotifications: false }])
+	})
+})
+
+describe('adapter: disable_link_previews_update', () => {
+	const evt = (data: Record<string, unknown>) => ({ type: 'disable_link_previews_update', data })
+
+	it('carries the action through as upstream does', () => {
+		expect(adapt(evt({ previews_disabled: true, action: { isPreviewsDisabled: true } }), 'settingUpdate')).toEqual({
+			type: 'settingUpdate',
+			setting: 'disableLinkPreviews',
+			value: { isPreviewsDisabled: true }
+		})
+	})
+
+	// The flag the bridge decoded is the same bit; it fills the action in rather
+	// than handing consumers a value missing the only field they read.
+	it('falls back to the decoded flag when the action omits it', () => {
+		expect(adapt(evt({ previews_disabled: true, action: {} }), 'settingUpdate').value).toEqual({
+			isPreviewsDisabled: true
+		})
+	})
+
+	it('emits on upstream own settings.update channel', () => {
+		expect(
+			collect(evt({ previews_disabled: false, action: { isPreviewsDisabled: false } }), 'settings.update')
+		).toEqual([{ setting: 'disableLinkPreviews', value: { isPreviewsDisabled: false } }])
+	})
+})
+
 describe('adapter: connect_failure', () => {
 	it('captures the numeric reason code', () => {
 		expect(

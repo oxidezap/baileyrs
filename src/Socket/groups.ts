@@ -13,7 +13,7 @@ import {
 	type WAMessageKey
 } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
-import { generateMessageIDV2, unixTimestampSeconds } from '../Utils/generics.ts'
+import { generateMessageIDV2, toNumber, unixTimestampSeconds } from '../Utils/generics.ts'
 import { proto } from '../WAProto/runtime.ts'
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import type { SocketContext } from './types.ts'
@@ -42,8 +42,11 @@ export const JOIN_APPROVAL_MODES = ['on', 'off'] as const
 
 export type JoinApprovalMode = (typeof JOIN_APPROVAL_MODES)[number]
 
-const inviteExpirationNumber = (value: number | { toNumber(): number } | null | undefined): number =>
-	typeof value === 'number' ? value : (value?.toNumber() ?? 0)
+// `toNumber` rather than calling `.toNumber()`: a 64-bit field now crosses the
+// bridge as a plain `{ low, high, unsigned }` once the value is too wide to be
+// exact as a double, and that shape carries no methods. The helper reads both
+// forms, and reconstructs the high word instead of dropping it.
+const inviteExpirationNumber = (value: proto.Message.IGroupInviteMessage['inviteExpiration']): number => toNumber(value)
 
 export const makeGroupMethods = (ctx: SocketContext) => {
 	const groupMetadata = async (jid: string): Promise<GroupMetadata> => {
