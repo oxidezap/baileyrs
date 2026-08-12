@@ -927,24 +927,48 @@ const keptFieldsUpstreamDropped = (local: unknown, upstream: unknown, depth = 0)
  * generated input, is evidence the sweeps work — it is not new information, and
  * recording it as new would misrepresent what this suite found.
  */
+const FAVICON_OLD = 'faviconMMSMetadata'
+const FAVICON_NEW = 'faviconMmsMetadata'
+
 /**
- * Whether a finding is about the renamed favicon field, whatever shape it took.
+ * Whether the renamed favicon field is the *whole* difference, not merely
+ * present in a payload that also diverges for another reason.
  *
- * Walked rather than serialized: a decoded message carries BigInt for its 64-bit
- * fields, and `JSON.stringify` throws on one — inside `applyAllowlist`, which
- * has no catch, so the run fails with an error about the predicate rather than
- * about the finding.
+ * The sweeps report it in three shapes, so each is checked on its own terms: a
+ * name sweep names the two spellings, an omission names field 33 of the message
+ * that carries it, and a decode compares two objects — where the test is that
+ * dropping both spellings makes them agree, and that they disagreed before.
+ * Anything else through the same field stays a finding.
+ *
+ * Compared rather than serialized: a decoded message carries BigInt for its
+ * 64-bit fields and `JSON.stringify` throws on one, inside `applyAllowlist`,
+ * which has no catch.
  */
-const mentionsFavicon = (value: unknown, depth = 0): boolean => {
-	if (depth > 6) return false
-	if (typeof value === 'string') return value.toLowerCase().includes('favicon')
-	if (Array.isArray(value)) return value.some(item => mentionsFavicon(item, depth + 1))
-	if (value === null || typeof value !== 'object') return false
-	for (const [key, item] of Object.entries(value)) {
-		if (key.toLowerCase().includes('favicon')) return true
-		if (mentionsFavicon(item, depth + 1)) return true
+const isFaviconRenameOnly = (divergence: Divergence): boolean => {
+	// Each sweep reports it in its own shape, so each is judged on its own terms
+	// rather than by looking for the word anywhere in the finding.
+	//
+	// An omission names the field number it left out.
+	if (typeof divergence.detail === 'string' && divergence.detail.includes('Message.ExtendedTextMessage#33')) {
+		return true
 	}
-	return false
+	// The name and number sweeps name the field itself, one side reporting that
+	// it wrote nothing for it.
+	if (typeof divergence.input === 'string') {
+		return divergence.input === `Message.ExtendedTextMessage.${FAVICON_OLD}`
+	}
+	if (typeof divergence.local === 'string' && typeof divergence.upstream === 'string') {
+		const spellings = new Set([FAVICON_OLD, FAVICON_NEW])
+		return spellings.has(divergence.local) && spellings.has(divergence.upstream)
+	}
+	// A decode compares two messages: dropping both spellings has to make them
+	// agree, and they have to have disagreed before. Anything else that travels
+	// through the same message stays a finding.
+	const strip = (value: unknown) => withoutKey(withoutKey(normalise(value), FAVICON_OLD), FAVICON_NEW)
+	return (
+		sameShape(strip(divergence.local), strip(divergence.upstream)) &&
+		!sameShape(normalise(divergence.local), normalise(divergence.upstream))
+	)
 }
 
 /** Every step of a mutation chain, which `mutate` records as `a → b`. */
@@ -953,13 +977,8 @@ const mutatorChain = (input: unknown): readonly string[] => {
 	return typeof mutator === 'string' ? mutator.split('\u2192').map(step => step.trim()) : []
 }
 
-/** The mutator that shaped the bytes, which is the last one of the chain. */
-const lastMutator = (input: unknown): string | undefined => {
-	const mutator = (input as { mutator?: unknown } | undefined)?.mutator
-	if (typeof mutator !== 'string') return undefined
-	const steps = mutator.split('→')
-	return steps[steps.length - 1]?.trim()
-}
+/** The mutator that shaped the bytes last, which is what the framing reflects. */
+const lastMutator = (input: unknown): string | undefined => mutatorChain(input).at(-1)
 
 export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
@@ -969,7 +988,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'The `lying-length` mutator rewrites a length prefix so a submessage claims a different extent, and the result still frames as protobuf — so it lands here rather than under mutation-interpretation. Both decoders then salvage the overlapping bytes, and they salvage different things: the bridge reads fields out of the region the prefix now covers that protobufjs steps past, and each side replaces the invalid UTF-8 it meets with its own substitution. No wire this library sends produces those bytes, and neither reading is more correct than the other, since the sender never wrote either value. Open rather than intended because nobody has decided whether the bridge should refuse a submessage whose declared length disagrees with its content, which is the only answer that would make the two agree.',
 		review: '2026-11-12',
-		when: divergence => lastMutator(divergence.input) === 'lying-length'
+		when: divergence =>
+			lastMutator(divergence.input) === 'lying-length' &&
+			// The observed shape, not the mutator alone: both sides salvaged an
+			// object, and they disagree on what was in the region the rewritten
+			// prefix now covers. A mutator label on its own would excuse the next
+			// real misdecode reached through the same mutation.
+			inputPath(divergence.input) === 'Message.ImageMessage' &&
+			(plainObject(normalise(divergence.local))?.length ?? 0) > 0 &&
+			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
 	},
 	{
 		id: 'favicon-mms-metadata-rename',
@@ -980,7 +1007,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			"WhatsApp renamed `Message.ExtendedTextMessage#33` from `faviconMMSMetadata` to `faviconMmsMetadata` in schema 2.3000.1044659339, which bridge 0.10.0 regenerated against. Field 33 is unchanged, so the wire is identical; only the key differs, and baileys 7.0.0-rc13 still declares the old spelling. Nothing here can reconcile them: accepting the upstream spelling on encode means walking the message tree to find it, on every send, for a link-preview favicon — and the divergence disappears on its own when upstream regenerates its proto. Open rather than intended: the cost of carrying it is a caller who wrote `faviconMMSMetadata` against upstream's declaration and gets no bytes for it, which is worth revisiting if anyone reports it.",
 		review: '2026-11-12',
-		when: divergence => mentionsFavicon(divergence)
+		when: isFaviconRenameOnly
 	},
 	{
 		id: 'to-number-high-word',

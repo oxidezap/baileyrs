@@ -445,6 +445,16 @@ export interface CanonicalLabelAssociation {
 }
 
 /**
+ * The server ran out of QR refs before anyone scanned one.
+ *
+ * Terminal: nothing else is coming on this socket, and the consumer builds a
+ * new one to be shown a fresh code.
+ */
+export interface CanonicalQrCodesExhausted {
+	type: 'qrCodesExhausted'
+}
+
+/**
  * A batched app-state sync that did not leave every collection synced.
  *
  * Collections are named as they appear on the wire. `fatal` is the one a
@@ -454,10 +464,6 @@ export interface CanonicalLabelAssociation {
  * the engine connects on a degraded sync rather than withholding the session,
  * so this event is the only thing that says what is missing from it.
  */
-export interface CanonicalQrCodesExhausted {
-	type: 'qrCodesExhausted'
-}
-
 export interface CanonicalAppStateSyncFailed {
 	type: 'appStateSyncFailed'
 	fatal: string[]
