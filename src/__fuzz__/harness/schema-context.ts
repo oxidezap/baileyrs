@@ -97,6 +97,8 @@ const PACKABLE_KINDS: ReadonlySet<number> = new Set([
 interface FieldFacts {
 	readonly repeated: ReadonlySet<number>
 	readonly messages: ReadonlyMap<number, string>
+	/** Numbers two different fields claim — see `factsFor`. Empty across the schema today. */
+	readonly contested: ReadonlySet<number>
 }
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
@@ -136,12 +138,31 @@ const numbersFor = (path: string, type: UpstreamType | undefined, name: string, 
 	return numbers
 }
 
+/**
+ * Two encoders' numbers per field means a number could, in principle, be claimed
+ * by two different fields — and the scan would then frame a payload against
+ * whichever one it wrote down last.
+ *
+ * Measured across the whole schema: 2422 claims, no collisions, so the ambiguity
+ * is theoretical today. It stays checked rather than asserted in a comment
+ * because the thing that would create one is a schema regeneration, which is
+ * exactly the moment nobody re-reads this file. `harness.test.ts` fails on the
+ * first collision anywhere in the schema, which is the loud half.
+ *
+ * The quiet half is here: a contested number is recorded by *neither* field.
+ * The scan then treats it as opaque bytes — the answer it gave before this file
+ * knew about nested messages at all. Wrong-but-conservative beats confidently
+ * framing a payload against the wrong submessage, which is a finding reported at
+ * a location that does not exist.
+ */
 const factsFor = (path: string): FieldFacts => {
 	const cached = fieldFactsByPath.get(path)
 	if (cached) return cached
 
 	const repeated = new Set<number>()
 	const messages = new Map<number, string>()
+	const claimant = new Map<number, string>()
+	const contested = new Set<number>()
 	const type = upstreamType(path)
 	if (type) {
 		for (const field of fieldsOfPath(path)) {
@@ -151,16 +172,31 @@ const factsFor = (path: string): FieldFacts => {
 			const isRepeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
 			const nested = messagePathOfField(field)
 			for (const number of numbersFor(path, type, field[0], isRepeated ? [one] : one)) {
+				const prior = claimant.get(number)
+				if (prior !== undefined && prior !== field[0]) {
+					contested.add(number)
+					continue
+				}
+				claimant.set(number, field[0])
 				if (isRepeated && PACKABLE_KINDS.has(field[1])) repeated.add(number)
 				if (nested !== undefined) messages.set(number, nested)
 			}
 		}
 	}
+	// After the sweep, not during: the first field to claim a number has already
+	// recorded it by the time the second one arrives.
+	for (const number of contested) {
+		repeated.delete(number)
+		messages.delete(number)
+	}
 
-	const facts: FieldFacts = { repeated, messages }
+	const facts: FieldFacts = { repeated, messages, contested }
 	fieldFactsByPath.set(path, facts)
 	return facts
 }
+
+/** The numbers more than one field claims on this message. Empty across the schema today. */
+export const contestedFieldNumbers = (path: string): readonly number[] => [...factsFor(path).contested]
 
 export const schemaAt = (path: string): SchemaContext => ({
 	path,

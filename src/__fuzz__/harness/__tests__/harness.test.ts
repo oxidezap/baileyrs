@@ -874,4 +874,30 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.equal(canonicalWire(Uint8Array.from([...tag(536_870_912, 0), 0x00])), undefined)
 		assert.notEqual(canonicalWire(Uint8Array.from([...tag(536_870_911, 0), 0x00])), undefined)
 	})
+
+	/**
+	 * The scan reads a field number under either encoder's spelling, which is only
+	 * safe while no number is claimed by two different fields.
+	 *
+	 * True across the schema today — 2422 claims, no collisions — and the thing
+	 * that would break it is a schema regeneration, which is exactly the moment
+	 * nobody re-reads the comment asserting it. So it is swept rather than
+	 * assumed. `factsFor` already degrades a contested number to opaque bytes so a
+	 * run cannot misframe silently; this is what says the degradation happened.
+	 */
+	it('finds no field number claimed by two different fields, anywhere in the schema', async () => {
+		const { contestedFieldNumbers } = await import('../schema-context.ts')
+		const { PROTO_MESSAGE_SCHEMAS } = await import('../../../WAProto/compatibility-schema.ts')
+
+		const collisions = PROTO_MESSAGE_SCHEMAS.map(([path]) => [path, contestedFieldNumbers(path)] as const).filter(
+			([, numbers]) => numbers.length > 0
+		)
+		assert.deepEqual(
+			collisions,
+			[],
+			`a field number is claimed by two fields, so the scan degraded it to opaque bytes: ${collisions
+				.map(([path, numbers]) => `${path} #${numbers.join(', #')}`)
+				.join('; ')}`
+		)
+	})
 })
