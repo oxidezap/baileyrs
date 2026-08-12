@@ -1,4 +1,4 @@
-import { derivedNodeConflictTag, withoutDerivedNode } from '../Compatibility/derived-stanza-nodes.ts'
+import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { planMessageRelay } from '../Compatibility/message-relay.ts'
 import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
@@ -195,48 +195,38 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			return plan.messageId
 		}
 
-		if (plan.kind === 'status') {
-			return client.sendStatusMessageBytesWithOptions(
-				bytes,
-				plan.recipients,
-				plan.messageId,
-				plan.nodes,
-				plan.refreshDevices
-			)
-		}
-
-		try {
-			return await client.relayMessageBytesWithOptions(
-				jid,
-				bytes,
-				plan.messageId,
-				plan.nodes,
-				plan.refreshGroupMetadata,
-				plan.refreshDevices
-			)
-		} catch (error) {
-			// Retried rather than filtered up front: only the engine knows which
-			// nodes it derives for a given message, and the refusal happens while
-			// it validates, before it encrypts or sends anything — so this cannot
-			// deliver the message twice. A caller node it did not derive never
-			// reaches here, which is what keeps the escape hatch open for the
-			// shapes it does not infer.
-			const tag = derivedNodeConflictTag(error)
-			const retained = tag === undefined ? undefined : withoutDerivedNode(plan.nodes, tag)
-			if (!retained) throw error
+		// Both sends go through the same retry: a caller node the engine derives
+		// is refused the same way whether the message is bound for a chat or for
+		// status, and the escape hatch — a node it does not derive — survives
+		// either way.
+		const drop = (tag: string) =>
 			ctx.logger.debug(
 				{ jid, messageId: plan.messageId, tag },
 				'dropped an additionalNodes entry the engine derives from the message'
 			)
-			return await client.relayMessageBytesWithOptions(
-				jid,
-				bytes,
-				plan.messageId,
-				retained,
-				plan.refreshGroupMetadata,
-				plan.refreshDevices
+
+		if (plan.kind === 'status') {
+			return sendDroppingDerivedNodes(
+				plan.nodes,
+				nodes =>
+					client.sendStatusMessageBytesWithOptions(bytes, plan.recipients, plan.messageId, nodes, plan.refreshDevices),
+				drop
 			)
 		}
+
+		return sendDroppingDerivedNodes(
+			plan.nodes,
+			nodes =>
+				client.relayMessageBytesWithOptions(
+					jid,
+					bytes,
+					plan.messageId,
+					nodes,
+					plan.refreshGroupMetadata,
+					plan.refreshDevices
+				),
+			drop
+		)
 	},
 
 	readMessages: async (keys: WAMessageKey[]) => {

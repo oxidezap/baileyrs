@@ -47,3 +47,35 @@ export const withoutDerivedNode = (nodes: readonly BinaryNode[], tag: string): B
 	const kept = nodes.filter(node => node.tag !== tag)
 	return kept.length === nodes.length ? undefined : kept
 }
+
+/**
+ * Send, dropping whichever derived node the engine names, until it stops
+ * naming one.
+ *
+ * A loop rather than a single retry: a DM carrying an interactive payload
+ * derives both `<biz>` and `<bot>`, and the engine reports one conflicting tag
+ * per attempt — so a caller supplying both would have the first dropped and
+ * fail on the second. Each pass removes at least one node, and the caller's own
+ * list bounds the passes, so this cannot spin.
+ *
+ * Every attempt is refused before the engine encrypts or sends, which is what
+ * makes retrying safe here and nowhere else.
+ */
+export const sendDroppingDerivedNodes = async <T>(
+	nodes: readonly BinaryNode[],
+	send: (nodes: BinaryNode[]) => Promise<T>,
+	onDrop: (tag: string) => void
+): Promise<T> => {
+	let current = [...nodes]
+	for (let passes = nodes.length; ; passes--) {
+		try {
+			return await send(current)
+		} catch (error) {
+			const tag = passes > 0 ? derivedNodeConflictTag(error) : undefined
+			const kept = tag === undefined ? undefined : withoutDerivedNode(current, tag)
+			if (tag === undefined || !kept) throw error
+			onDrop(tag)
+			current = kept
+		}
+	}
+}

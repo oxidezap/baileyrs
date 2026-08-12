@@ -89,7 +89,7 @@ describe('a stanza node the engine derives for itself', () => {
  * A relay whose first attempt is refused for `refusedTag`, recording the nodes
  * of every attempt so the retry can be told apart from the original.
  */
-const relayRefusing = (refusedTag: string | undefined) => {
+const relayRefusing = (...refusedTags: readonly string[]) => {
 	const attempts: BinaryNode[][] = []
 	const logger = {
 		level: 'silent',
@@ -101,9 +101,23 @@ const relayRefusing = (refusedTag: string | undefined) => {
 		error: () => undefined
 	}
 	const client = {
+		// The engine reports one conflicting tag per attempt, so the double is
+		// driven by the same list: attempt N is refused for `refusedTags[N]`.
 		relayMessageBytesWithOptions: async (_jid: string, _bytes: Uint8Array, messageId: string, nodes: BinaryNode[]) => {
 			attempts.push(nodes)
-			if (attempts.length === 1 && refusedTag) throw conflict(refusedTag)
+			const refused = refusedTags[attempts.length - 1]
+			if (refused) throw conflict(refused)
+			return messageId
+		},
+		sendStatusMessageBytesWithOptions: async (
+			_bytes: Uint8Array,
+			_recipients: string[],
+			messageId: string,
+			nodes: BinaryNode[]
+		) => {
+			attempts.push(nodes)
+			const refused = refusedTags[attempts.length - 1]
+			if (refused) throw conflict(refused)
 			return messageId
 		}
 	}
@@ -148,7 +162,7 @@ describe('relayMessage against an engine that derives its own stanza children', 
 	})
 
 	it('sends once when nothing is refused', async () => {
-		const { attempts, relay } = relayRefusing(undefined)
+		const { attempts, relay } = relayRefusing()
 		await relay('120363000000000000@g.us', INTERACTIVE, {
 			messageId: '3EB0DERIVED0003',
 			additionalNodes: [biz]
@@ -159,9 +173,14 @@ describe('relayMessage against an engine that derives its own stanza children', 
 	it('propagates a rejection that is not this one, without a second send', async () => {
 		// The failure mode that matters: retrying an unrelated error is how one
 		// send becomes two messages.
-		const { attempts } = relayRefusing('biz')
+		const attempts: BinaryNode[][] = []
 		const boom = { kind: 'not-connected' }
-		const client = { relayMessageBytesWithOptions: async () => Promise.reject(boom) }
+		const client = {
+			relayMessageBytesWithOptions: async (_jid: string, _bytes: Uint8Array, _id: string, nodes: BinaryNode[]) => {
+				attempts.push(nodes)
+				throw boom
+			}
+		}
 		const logger = {
 			level: 'silent',
 			child: () => logger,
@@ -189,6 +208,48 @@ describe('relayMessage against an engine that derives its own stanza children', 
 				}),
 			(error: unknown) => error === boom
 		)
-		assert.equal(attempts.length, 0)
+		// One attempt, not zero: the send has to have happened once and not been
+		// repeated. Counting on a client the test never installs would pass on
+		// both, which is what this assertion used to do.
+		assert.equal(attempts.length, 1)
+	})
+
+	it('drops every tag the engine names, one refusal at a time', async () => {
+		// A DM carrying an interactive payload derives both `<biz>` and `<bot>`,
+		// and the engine reports one per attempt. Stopping after the first would
+		// leave the caller failing on the second.
+		const { attempts, relay } = relayRefusing('biz', 'bot')
+		await relay('15550000001@s.whatsapp.net', INTERACTIVE, {
+			messageId: '3EB0DERIVED0005',
+			additionalNodes: [biz, bot, unrelated]
+		})
+
+		assert.equal(attempts.length, 3)
+		assert.deepEqual(attempts[1], [bot, unrelated])
+		assert.deepEqual(attempts[2], [unrelated], 'only the derived tags come off')
+	})
+
+	it('gives up rather than looping when the engine keeps naming a tag that is gone', async () => {
+		// Defensive: a refusal naming a tag the caller never sent cannot be fixed
+		// by dropping anything, and must not become an endless resend.
+		const { attempts, relay } = relayRefusing('bot', 'bot', 'bot')
+		await assert.rejects(() =>
+			relay('120363000000000000@g.us', INTERACTIVE, {
+				messageId: '3EB0DERIVED0006',
+				additionalNodes: [biz]
+			})
+		)
+		assert.equal(attempts.length, 1)
+	})
+
+	it('retries a status relay the same way', async () => {
+		const { attempts, relay } = relayRefusing('biz')
+		await relay('status@broadcast', INTERACTIVE, {
+			messageId: '3EB0DERIVED0007',
+			additionalNodes: [biz],
+			statusJidList: ['15550000002@s.whatsapp.net']
+		})
+		assert.equal(attempts.length, 2)
+		assert.deepEqual(attempts[1], [])
 	})
 })
