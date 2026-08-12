@@ -14,6 +14,7 @@
  * so a run only pays for the types it actually looks at.
  */
 
+import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND } from '../../WAProto/compatibility-schema.ts'
 import { fieldsOfPath, messagePathOfField } from '../generators/proto.ts'
 import type { SchemaContext } from './wire.ts'
@@ -100,6 +101,41 @@ interface FieldFacts {
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
 
+/**
+ * Every number a field is written under, asking both encoders rather than one.
+ *
+ * The two disagree on exactly one field out of 2421 —
+ * `Message.pollResultSnapshotMessageV3` is 114 upstream and 115 in the bridge —
+ * and the payloads these scans read are bridge-produced, so upstream's number
+ * alone leaves the bridge's spelling of that submessage looking like opaque
+ * bytes. Both are recorded because both are correct, each for the encoder that
+ * wrote the payload; nothing else in `Message` claims either number, on either
+ * side, so recording both cannot make a different field misframe.
+ *
+ * Measured rather than listed: a hardcoded exception would be exactly the
+ * hand-kept list the field-number sweep exists to replace. A field only one
+ * encoder can write (17 of them, all bridge-unwritable) keeps the one number
+ * that exists for it.
+ */
+const numbersFor = (path: string, type: UpstreamType | undefined, name: string, value: unknown): number[] => {
+	const numbers: number[] = []
+	const record = (bytes: Uint8Array | undefined): void => {
+		const number = bytes === undefined ? undefined : firstFieldNumber(bytes)
+		if (number !== undefined && !numbers.includes(number)) numbers.push(number)
+	}
+	try {
+		record(type?.encode({ [name]: value }).finish())
+	} catch {
+		/* the field is one this encoder refuses; the other may still write it */
+	}
+	try {
+		record(encodeProto(path, { [name]: value }))
+	} catch {
+		/* same */
+	}
+	return numbers
+}
+
 const factsFor = (path: string): FieldFacts => {
 	const cached = fieldFactsByPath.get(path)
 	if (cached) return cached
@@ -112,18 +148,12 @@ const factsFor = (path: string): FieldFacts => {
 			if ((field[3] & PROTO_FIELD_FLAG.map) !== 0) continue
 			const isMessage = field[1] === PROTO_FIELD_KIND.message
 			const one = isMessage ? {} : sampleFor(field[1])
-			const value = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0 ? [one] : one
-			let encoded: Uint8Array | undefined
-			try {
-				encoded = type.encode({ [field[0]]: value }).finish()
-			} catch {
-				continue
-			}
-			const number = firstFieldNumber(encoded)
-			if (number === undefined) continue
-			if ((field[3] & PROTO_FIELD_FLAG.repeated) !== 0 && PACKABLE_KINDS.has(field[1])) repeated.add(number)
+			const isRepeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
 			const nested = messagePathOfField(field)
-			if (nested !== undefined) messages.set(number, nested)
+			for (const number of numbersFor(path, type, field[0], isRepeated ? [one] : one)) {
+				if (isRepeated && PACKABLE_KINDS.has(field[1])) repeated.add(number)
+				if (nested !== undefined) messages.set(number, nested)
+			}
 		}
 	}
 

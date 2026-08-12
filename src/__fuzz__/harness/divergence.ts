@@ -71,9 +71,6 @@ const NOT_ENCODED_FIELDS: readonly string[] = [
 	// Not absent but renamed — see RENAMED_PROTO_FIELDS. Handed upstream's
 	// spelling the bridge writes nothing, which is what this sweep measures.
 	'Message.ExtendedTextMessage.faviconMMSMetadata',
-	// Not absent but renamed — see RENAMED_PROTO_FIELDS. Given upstream's
-	// spelling the bridge writes nothing, which is what these sweeps measure.
-	'Message.ExtendedTextMessage.faviconMMSMetadata',
 	'Message.ImageMessage.mediaKeyDomain',
 	'Message.MMSThumbnailMetadata.mediaKeyDomain',
 	'Message.StickerMessage.mediaKeyDomain',
@@ -142,11 +139,15 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
  * `ChatAssignmentAction.deviceAgentID` would pass, because `undoRenames`
  * restores the first and the set forgives the second.
  *
- * And a leaf name is not unique. `messageParamsJson` is unwritten on
- * `Message.PaymentExtendedMetadata`, while the schema declares another on
- * `Message.InteractiveMessage.NativeFlowMessage` — so accepting the bare leaf
- * at any nesting depth would excuse a new drop of the second as though it were
- * the documented first.
+ * And a leaf name is not unique. `messageParamsJson` was the live case — a gap
+ * on `Message.PaymentExtendedMetadata` while the schema declares another on
+ * `Message.InteractiveMessage.NativeFlowMessage`, so a bare leaf accepted at any
+ * nesting depth would have excused a new drop of the second as though it were
+ * the documented first. Bridge 0.10.0 writes both, which closes that example
+ * without closing the hazard: of the leaves left, only `mediaKeyDomain` sits on
+ * more than one type, and it is a gap on all six. The first holder to be fixed
+ * on its own puts the case straight back, and keying by path is what means it
+ * does not have to be noticed for the sweep to catch it.
  *
  * Keyed by `<decoded type>.<key path>` and measured rather than derived: this
  * is the absence the decode targets actually produced. A drop anywhere else,
@@ -235,13 +236,16 @@ const inputPath = (input: unknown): string | undefined => {
 }
 
 /**
- * The ten explicit-presence fields the bridge encoder drops at their zero value.
+ * The nine explicit-presence fields the bridge encoder drops at their zero value.
  *
  * Enumerated rather than left to the target name. The `proto:presence` sweep
  * covers all 1696 proto3-optional fields, and the whole value of a sweep is that
- * an eleventh has to fail rather than be absorbed into the entry describing the
- * ten. (`BotAvatarMetadata`'s five presence fields are not here: the bridge does
- * not implement that type at all, so they route to the unknown-type entry.)
+ * a tenth has to fail rather than be absorbed into the entry describing the
+ * nine. `PaymentExtendedMetadata.messageParamsJson` was here until bridge 0.10.0
+ * started writing it — measured, not assumed: both encoders now emit `1a 00` for
+ * an explicit empty string. (`BotAvatarMetadata`'s five presence fields are not
+ * here either: the bridge does not implement that type at all, so they route to
+ * the unknown-type entry.)
  */
 const PRESENCE_DROPPED_FIELDS: readonly string[] = [
 	'Message.AudioMessage.mediaKeyDomain',
@@ -251,7 +255,6 @@ const PRESENCE_DROPPED_FIELDS: readonly string[] = [
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
 	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
-	'Message.PaymentExtendedMetadata.messageParamsJson',
 	'SyncActionValue.AgentAction.deviceID',
 	'SyncActionValue.ChatAssignmentAction.deviceAgentID'
 ]
@@ -458,6 +461,13 @@ const carriesOutOfRangeFloat = (value: unknown, depth = 0): boolean => {
  * Measured rather than sampled: nine seeds and 21,000 generated cases produce
  * exactly these twelve `path#number` pairs and no others. A thirteenth is new
  * data loss and must be looked at, which is the entire point of listing them.
+ *
+ * Bridge 0.10.0 turned one over without changing the count: `#33` on
+ * `ExtendedTextMessage` joined (the favicon rename) and
+ * `Message.PaymentExtendedMetadata#3` left, because that field is now written —
+ * both encoders emit `1a 00` for an explicit empty string. A member that no
+ * longer reproduces excuses nothing today and silently excuses a regression the
+ * day the field breaks again, which is why it is removed rather than left.
  */
 const KNOWN_OMITTED_FIELDS: ReadonlySet<string> = new Set([
 	'BotMetadata#1',
@@ -470,7 +480,6 @@ const KNOWN_OMITTED_FIELDS: ReadonlySet<string> = new Set([
 	'Message.ImageMessage#33',
 	'Message.MMSThumbnailMetadata#8',
 	'Message.MessageHistoryMetadata#2',
-	'Message.PaymentExtendedMetadata#3',
 	'Message.StickerMessage#23',
 	'Message.VideoMessage#32',
 	'SyncActionValue#65',
@@ -1344,8 +1353,8 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'proto:presence',
 		status: 'open',
 		// Named, not target-wide. The sweep's whole point is that it covers every
-		// proto3-optional field; an entry matching the target alone would route an
-		// eleventh drop into the finding that describes the ten and leave the
+		// proto3-optional field; an entry matching the target alone would route a
+		// tenth drop into the finding that describes the nine and leave the
 		// nightly green on a new regression.
 		when: divergence =>
 			typeof divergence.input === 'string' &&
@@ -1353,7 +1362,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 				field => divergence.input === `${field} = 0` || divergence.input === `${field} = ""`
 			),
 		reason:
-			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 10 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
+			'An explicit-presence (proto3 optional) field set to its zero value is not encoded by the bridge, where protobufjs writes it. 9 of the 1696 such fields are affected, including mediaKeyDomain on all six media message types (image, video, audio, document, sticker, thumbnail). Explicit presence exists precisely so a zero can be distinguished from unset, so this loses information the schema was written to carry. Bridge 0.10.0 closed a tenth, PaymentExtendedMetadata.messageParamsJson, which is why the count moved. ALREADY TRACKED: every affected field appears in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. What is new here is only the count and the exhaustive sweep behind it.',
 		review: '2026-10-01'
 	},
 	{
@@ -1375,7 +1384,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			(divergence.local === '<nothing encoded>' || divergence.local === '<no keys decoded>') &&
 			NOT_ENCODED_FIELDS.some(field => text(divergence.input).includes(field)),
 		reason:
-			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, PaymentExtendedMetadata.messageParamsJson, SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
+			'Upstream encodes these fields and the bridge writes nothing at all for them. Eleven of 2421 non-map fields: mediaKeyDomain on all six media types, MessageHistoryMetadata.oldestMessageTimestamp, ExtendedTextMessage.faviconMMSMetadata (renamed rather than absent — see RENAMED_PROTO_FIELDS; handed upstream spelling the bridge writes nothing, which is what this sweep measures), SyncActionValue.businessBroadcastAssociationAction, AgentAction.deviceID and ChatAssignmentAction.deviceAgentID. PaymentExtendedMetadata.messageParamsJson was a twelfth until bridge 0.10.0 started writing it. ALREADY TRACKED: every one is in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts — the six presence drops and the two renames also have their own entries here, seen from a different angle. The sweep previously skipped the case where only the bridge produced no bytes, so it reported exhaustive coverage of fields it had not checked; this entry is what that skip was hiding.',
 		review: '2026-10-01'
 	},
 	{

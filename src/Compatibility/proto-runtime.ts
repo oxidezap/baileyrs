@@ -559,16 +559,25 @@ class ProtoCompatibilityRuntime {
 			// safe for the same reason it would not be inside an overridden
 			// `string()`: that would have to resume after a tag and a length were
 			// already emitted, where this starts from a fresh writer.
+			const write = encoded.finish.bind(encoded)
 			const finish = (): Uint8Array => {
 				try {
-					return encoded.finish()
+					return write()
 				} catch (error) {
 					const repaired = repairMessage(schemaId, projected)
 					if (repaired === projected) throw error
 					return sourceCodec.encode(repaired).finish()
 				}
 			}
-			return writer === undefined ? { finish } : appendBytes(writer, finish())
+			if (writer !== undefined) return appendBytes(writer, finish())
+			// The codec's own writer is what comes back, with `finish` shadowed on
+			// the instance rather than replaced by a bare `{ finish }`. The published
+			// declaration types this return as a protobufjs `Writer`, and a caller
+			// that chains anything on it — `fork`, `join`, another field — has to
+			// find the rest of the surface still there. The writer is freshly made
+			// by this call, so shadowing one method on it touches nothing else.
+			encoded.finish = finish
+			return encoded
 		}
 		constructor.decode = (input, length) => {
 			if (!sourceCodec) throw new Error(`protobuf codec unavailable for ${path}`)

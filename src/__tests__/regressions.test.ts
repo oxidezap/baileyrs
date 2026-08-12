@@ -380,9 +380,9 @@ describe('adapter: disable_link_previews_update', () => {
 	})
 
 	it('emits on upstream own settings.update channel', () => {
-		expect(collect(evt({ previews_disabled: false, action: { isPreviewsDisabled: false } }), 'settings.update')).toEqual(
-			[{ setting: 'disableLinkPreviews', value: { isPreviewsDisabled: false } }]
-		)
+		expect(
+			collect(evt({ previews_disabled: false, action: { isPreviewsDisabled: false } }), 'settings.update')
+		).toEqual([{ setting: 'disableLinkPreviews', value: { isPreviewsDisabled: false } }])
 	})
 })
 
