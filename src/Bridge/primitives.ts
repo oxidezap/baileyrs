@@ -83,8 +83,25 @@ export const asJidAddressString = (x: unknown): string | undefined => {
  */
 const RFC_3339 = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:?\d{2})$/
 
+const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+/** Gregorian, so a century is only a leap year when it divides by 400. */
+const daysInMonth = (year: number, month: number): number =>
+	month === 2 && year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : (MONTH_LENGTHS[month - 1] ?? 0)
+
+/** Fixed-width digits at a known offset, which the pattern above guarantees. */
+const digits2 = (raw: string, at: number): number => (raw.charCodeAt(at) - 48) * 10 + (raw.charCodeAt(at + 1) - 48)
+
 const parseRfc3339Seconds = (raw: string): number | undefined => {
+	// `test` rather than `exec`: the components come out of fixed offsets
+	// below, and asking the engine for capture groups costs more than the whole
+	// rest of this function.
 	if (!RFC_3339.test(raw)) return undefined
+	// `Date.parse` refuses month 13, hour 25 and second 61, but rolls a day
+	// past the end of its month forward instead: `2023-02-30` comes back as
+	// March 2. That is the one component worth checking here.
+	const year = digits2(raw, 0) * 100 + digits2(raw, 2)
+	if (digits2(raw, 8) > daysInMonth(year, digits2(raw, 5))) return undefined
 	const ms = Date.parse(raw)
 	return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
 }

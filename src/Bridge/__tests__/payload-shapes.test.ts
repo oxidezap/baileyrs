@@ -90,6 +90,35 @@ describe('bridge payload shapes', () => {
 			}
 		})
 
+		it('refuses a day the calendar does not have, which Date.parse rolls forward', () => {
+			// `Date.parse('2023-02-30T…')` is March 2, not NaN — so a malformed
+			// producer would move an instant by days and still look believable.
+			for (const impossible of ['2023-02-30T12:00:00Z', '2023-11-31T12:00:00Z', '2023-02-29T12:00:00Z']) {
+				const update = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: impossible } })
+				expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
+			}
+		})
+
+		it('keeps the leap days that do exist, centuries included', () => {
+			// 2000 is a leap year and 1900 is not, which is the rule a plain
+			// `year % 4` check gets wrong.
+			const leap = adapt({
+				type: 'presence',
+				data: { from: JID, unavailable: false, last_seen: '2024-02-29T12:00:00Z' }
+			})
+			expect(typeof (leap as { lastSeen?: number }).lastSeen).toBe('number')
+			const century = adapt({
+				type: 'presence',
+				data: { from: JID, unavailable: false, last_seen: '2000-02-29T12:00:00Z' }
+			})
+			expect(typeof (century as { lastSeen?: number }).lastSeen).toBe('number')
+			const notLeap = adapt({
+				type: 'presence',
+				data: { from: JID, unavailable: false, last_seen: '1900-02-29T12:00:00Z' }
+			})
+			expect((notLeap as { lastSeen?: number }).lastSeen).toBeUndefined()
+		})
+
 		it('accepts the offset form chrono writes for a non-UTC zone', () => {
 			const offset = adapt({
 				type: 'presence',
