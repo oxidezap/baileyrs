@@ -1,8 +1,13 @@
 import { EventEmitter } from 'node:events'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { makeWASocket } from '../../src/index.ts'
 import { makeEventHandlers } from '../../src/Socket/events.ts'
 import type { SocketContext } from '../../src/Socket/types.ts'
 import type { BaileysEventEmitter, BaileysEventMap, ConnectionState } from '../../src/Types/index.ts'
 import type { Boom } from '../../src/Utils/boom.ts'
+import { useMultiFileAuthState } from '../../src/Utils/use-multi-file-auth-state.ts'
 
 /**
  * Lifecycle contract auditor.
@@ -560,6 +565,11 @@ export const recordLifecycle = (
 // ─────────────────────────────────────────────────────────────────────────────
 
 const noopLogger = {
+	// `level` included because a real socket reads it. Without it `init()`
+	// throws before it queues the bootstrap update, and the failure is swallowed
+	// by the socket's own `initPromise.catch`, so the recording just comes back
+	// empty with nothing to say why.
+	level: 'silent',
 	trace() {},
 	debug() {},
 	info() {},
@@ -570,23 +580,23 @@ const noopLogger = {
 	}
 }
 
-/** The bootstrap update `makeWASocket` publishes before the client exists (`src/Socket/index.ts:462`). */
-const BOOTSTRAP_UPDATE: Partial<ConnectionState> = {
-	connection: 'connecting',
-	receivedPendingNotifications: false,
-	qr: undefined
-}
-
 export interface LifecycleScenario {
 	label: string
 	/** Bridge events, in the order the engine would dispatch them. */
 	events: readonly { type: string; data?: unknown }[]
-	/** Omit the socket's own bootstrap `connecting`, for scenarios about a late listener. */
-	skipBootstrap?: boolean
 	autoReconnect?: boolean
 }
 
 /**
+ * Run a scenario through the real dispatcher.
+ *
+ * `fromSocketStart` is false for all of them, and deliberately: a scenario
+ * starts at the dispatcher, which is downstream of the socket's own bootstrap
+ * update. Claiming otherwise would have LC-001 judging a `connecting` written
+ * here rather than the one `makeWASocket` publishes, and a fixture cannot
+ * regress with the implementation it stands in for. `recordBootstrap` covers
+ * that one against a real socket.
+ *
  * Every scenario ends `settled`: the dispatcher is synchronous, so once the
  * last bridge event has been handed over, nothing else can arrive. That is what
  * lets a missing `open` count as evidence here without waiting out a deadline.
@@ -622,14 +632,51 @@ export const runScenario = (scenario: LifecycleScenario): LifecycleTrace => {
 		isAutoReconnectEnabled: () => scenario.autoReconnect ?? true
 	})
 
-	if (!scenario.skipBootstrap) ev.emit('connection.update', BOOTSTRAP_UPDATE)
 	for (const event of scenario.events) {
 		clock += 1
 		handlers.onEvent?.(event as never)
 	}
 
 	const trace = recorder.stop()
-	return { ...trace, settled: true, fromSocketStart: !scenario.skipBootstrap }
+	return { ...trace, settled: true, fromSocketStart: false }
+}
+
+/**
+ * Record what a real socket publishes before it has a client at all.
+ *
+ * The one invariant a dispatcher scenario cannot cover: the bootstrap update is
+ * published from a microtask queued inside `makeWASocket` (`src/Socket/index.ts`),
+ * upstream of everything the dispatcher does. Standing in for it with a literal
+ * would leave LC-001 and LC-002 asserting a fixture, green forever even if the
+ * socket stopped publishing `connecting` first or dropped one of the fields
+ * that clears the previous QR.
+ *
+ * No server is involved: the socket is pointed at an unreachable port and torn
+ * down as soon as the update lands, which happens before any I/O is attempted.
+ */
+export const recordBootstrap = async (): Promise<LifecycleTrace> => {
+	const folder = await mkdtemp(join(tmpdir(), 'lifecycle-bootstrap-'))
+	try {
+		const { state } = await useMultiFileAuthState(folder)
+		const sock = makeWASocket({
+			auth: state,
+			// Reserved as "discard" and unreachable, so the socket cannot connect
+			// to anything a developer happens to be running.
+			waWebSocketUrl: 'wss://127.0.0.1:9/ws',
+			logger: noopLogger as never
+		})
+		const recorder = recordLifecycle(sock, { label: 'socket-bootstrap' })
+		// One macrotask: the update is queued as a microtask during construction,
+		// so it has already landed by the time this resolves.
+		await new Promise(resolve => setTimeout(resolve, 0))
+		recorder.noteConsumerEnd()
+		const trace = recorder.stop()
+		sock.setAutoReconnect(false)
+		await sock.end(undefined).catch(() => {})
+		return { ...trace, settled: true, fromSocketStart: true }
+	} finally {
+		await rm(folder, { recursive: true, force: true })
+	}
 }
 
 /**
@@ -720,7 +767,14 @@ function MESSAGE_FIXTURE() {
 	}
 }
 
-export const auditLifecycleScenarios = (
+/**
+ * The suite: the real bootstrap, then every dispatcher scenario.
+ *
+ * Async because the bootstrap is a real socket. It is the only invariant here
+ * that no dispatcher scenario can reach, and leaving it to a literal was the
+ * one place this auditor claimed coverage it did not have.
+ */
+export const auditLifecycleScenarios = async (
 	scenarios: readonly LifecycleScenario[] = LIFECYCLE_SCENARIOS,
 	options: LifecycleOptions = DEFAULT_LIFECYCLE_OPTIONS
-): LifecycleReport => evaluateLifecycle(scenarios.map(runScenario), options)
+): Promise<LifecycleReport> => evaluateLifecycle([await recordBootstrap(), ...scenarios.map(runScenario)], options)

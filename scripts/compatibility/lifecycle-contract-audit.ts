@@ -40,7 +40,7 @@ const readTraces = (file: string): LifecycleTrace[] => {
 	return parsed as LifecycleTrace[]
 }
 
-export const runCli = (argv: string[]): number => {
+export const runCli = async (argv: string[]): Promise<number> => {
 	let details = false
 	let strict = false
 	let traceFile: string | undefined
@@ -86,7 +86,7 @@ export const runCli = (argv: string[]): number => {
 	const options = { openDeadlineMs }
 	const report = traceFile
 		? evaluateLifecycle(readTraces(traceFile), options)
-		: auditLifecycleScenarios(undefined, options)
+		: await auditLifecycleScenarios(undefined, options)
 	process.stdout.write(`${renderLifecycleReport(report, details)}\n`)
 
 	if (!strict) return 0
@@ -98,7 +98,7 @@ export const runCli = (argv: string[]): number => {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	try {
-		process.exitCode = runCli(process.argv.slice(2))
+		process.exitCode = await runCli(process.argv.slice(2))
 	} catch (error) {
 		process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
 		process.exitCode = 2

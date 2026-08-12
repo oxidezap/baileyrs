@@ -16,9 +16,12 @@
  */
 
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
-import { createTestClient, destroyTestClient, type TestClient } from '../../../src/__tests__/e2e/test-client.ts'
+import { createTestClient, type TestClient } from '../../../src/__tests__/e2e/test-client.ts'
 import {
 	evaluateLifecycle,
 	recordLifecycle,
@@ -56,15 +59,24 @@ const OPEN_DEADLINE_MS = 30_000
 const KNOWN_VIOLATIONS = new Set(['LC-009', 'LC-011'])
 
 describe('E2E: lifecycle contract', { timeout: 180_000 }, () => {
-	let alice: TestClient | undefined
 	let recorder: LifecycleRecorder | undefined
 	let setupError: Error | undefined
+	/**
+	 * The socket and folder as seen from outside the factory.
+	 *
+	 * The factory only hands back a client once it has connected, so on the
+	 * failure this file exists to diagnose there is nothing to tear down through
+	 * it — while the socket it built is live, reconnecting, and holding an auth
+	 * folder. Owning both here is what lets the teardown run either way.
+	 */
+	let socket: TestClient['sock'] | undefined
+	const folder = mkdtempSync(join(tmpdir(), 'baileys-e2e-lifecycle-'))
 
 	before(async () => {
 		try {
-			alice = await createTestClient({
+			await createTestClient({
 				label: 'alice',
-				folderPrefix: 'baileys-e2e-lifecycle',
+				authFolder: folder,
 				// Longer than the deadline the trace is judged by, so a socket
 				// that authenticates and then goes quiet has already breached
 				// LC-004 by the time the factory gives up. Matched the other way
@@ -75,6 +87,7 @@ describe('E2E: lifecycle contract', { timeout: 180_000 }, () => {
 				// published from a microtask queued inside `makeWASocket`, so a
 				// listener added afterwards has already missed the first state.
 				onSocket: sock => {
+					socket = sock
 					recorder = recordLifecycle(sock, { label: 'fresh-pair-live' })
 				}
 			})
@@ -92,7 +105,18 @@ describe('E2E: lifecycle contract', { timeout: 180_000 }, () => {
 		// Before the teardown, so a trace still open at this point cannot read
 		// our own disposal as the library going quiet.
 		recorder?.noteConsumerEnd()
-		if (alice) await destroyTestClient(alice)
+		if (socket) {
+			// Not `destroyTestClient`: there may be no client, and the socket is
+			// what actually has to be stopped. Auto-reconnect goes first or the
+			// engine keeps the process alive retrying an account nobody wants.
+			try {
+				socket.setAutoReconnect(false)
+				await socket.end(undefined)
+			} catch {
+				/* best effort: the run is over either way */
+			}
+		}
+		rmSync(folder, { recursive: true, force: true })
 	})
 
 	test('a freshly paired session keeps every promise upstream makes', () => {

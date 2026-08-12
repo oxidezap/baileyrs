@@ -294,13 +294,13 @@ describe('lifecycle contract auditor', () => {
 })
 
 describe('lifecycle contract scenarios', () => {
-	it('holds for every session the engine produces', () => {
-		const report = auditLifecycleScenarios()
+	it('holds for every session the engine produces', async () => {
+		const report = await auditLifecycleScenarios()
 		assert.equal(report.summary.violated, 0, renderLifecycleReport(report, true))
 	})
 
-	it('exercises every invariant', () => {
-		assert.deepEqual(unexercisedInvariants(auditLifecycleScenarios()), [])
+	it('exercises every invariant', async () => {
+		assert.deepEqual(unexercisedInvariants(await auditLifecycleScenarios()), [])
 	})
 
 	/**
@@ -343,22 +343,22 @@ describe('lifecycle contract scenarios', () => {
 })
 
 describe('lifecycle contract CLI', () => {
-	it('passes on the built-in suite under --strict', () => {
-		assert.equal(runCli(['--strict']), 0)
+	it('passes on the built-in suite under --strict', async () => {
+		assert.equal(await runCli(['--strict']), 0)
 	})
 
-	it('fails on a recorded trace that breaks the contract', () => {
+	it('fails on a recorded trace that breaks the contract', async () => {
 		const folder = mkdtempSync(join(tmpdir(), 'lifecycle-contract-'))
 		try {
 			const file = join(folder, 'trace.json')
 			writeFileSync(file, JSON.stringify([VIOLATIONS[0]!.subject]))
-			assert.equal(runCli(['--trace', file, '--strict']), 1)
+			assert.equal(await runCli(['--trace', file, '--strict']), 1)
 		} finally {
 			rmSync(folder, { recursive: true, force: true })
 		}
 	})
 
-	it('rejects a non-positive deadline instead of judging with it', () => {
-		assert.throws(() => runCli(['--open-deadline', '0']), /--open-deadline/)
+	it('rejects a non-positive deadline instead of judging with it', async () => {
+		await assert.rejects(() => runCli(['--open-deadline', '0']), /--open-deadline/)
 	})
 })
