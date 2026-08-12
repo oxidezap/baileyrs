@@ -655,6 +655,45 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(excusedWith('concatenate → concatenate', ...retained), 'three copies')
 	})
 
+	// The two decoders resolve an undecodable region in opposite directions, and
+	// that asymmetry is the only thing separating this entry's salvage from a
+	// misread — so it is pinned from both ends, like the merge entry above.
+	it('excuses a lying-length salvage only when it is the whole difference', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-lying-length-salvage')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excusedWith = (input: unknown, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist([{ target: 'proto:mutation-agreement', input, local, upstream }], new Date('2026-01-01'), registry)
+				.unexcused.length === 0
+		const salvage = { mutator: 'lying-length', path: 'Message.ImageMessage' }
+		const excused = (local: unknown, upstream: unknown): boolean => excusedWith(salvage, local, upstream)
+
+		// The shape measured on the one case in a 10001-run deep sweep: the bridge
+		// kept two fields upstream stepped past, and the one shared string differs
+		// only where each side rendered bytes it could not decode. protobufjs
+		// swallows the ASCII bytes after a lead byte; the bridge substitutes per
+		// byte and keeps them — so upstream's ASCII is a subsequence of ours.
+		const url = { local: 'A�B�C', upstream: 'A\u{10FFFF}C' }
+		assert.ok(excused({ kept: '1', url: url.local }, { url: url.upstream }), 'retention and substitution together')
+		assert.ok(excused({ url: url.local }, { url: url.upstream }), 'substitution alone')
+		assert.ok(excused({ kept: '1', url: 'A�C' }, { url: 'A�C' }), 'retention alone')
+
+		// Each half of "the difference is the salvage" fails on its own terms.
+		assert.ok(!excused({ url: url.local }, { url: url.upstream, lost: 1 }), 'a field only upstream produced')
+		assert.ok(!excused({ kept: 1, mode: '2' }, { mode: '3' }), 'a changed scalar beside a retention')
+		assert.ok(!excused({ kept: 1, name: 'goodbye' }, { name: 'hello' }), 'a changed ASCII string')
+		assert.ok(!excused({ url: 'A�C' }, { url: 'AB\u{10FFFF}C' }), 'ASCII upstream produced that we lack')
+		assert.ok(!excused({ url: 'AB�' }, { url: '\u{10FFFF}BA' }), 'the same ASCII in a different order')
+		assert.ok(!excused({ kept: 1, s: 'ab' }, { s: 'ba' }), 'a reordered pure-ASCII string is not a substitution')
+		assert.ok(!excused({ url: url.local }, { url: url.local }), 'nothing differs at all')
+
+		// The mutator and the path are the premise: this salvage is what a rewritten
+		// length prefix does, on the one type the sweep produced it for.
+		assert.ok(!excusedWith({ ...salvage, mutator: 'flip-bit' }, { kept: 1, a: 1 }, { a: 1 }), 'another mutator')
+		assert.ok(!excusedWith({ ...salvage, path: 'Message.AudioMessage' }, { kept: 1, a: 1 }, { a: 1 }), 'another type')
+	})
+
 	it('keeps every shipped registry entry well-formed', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const ids = new Set<string>()

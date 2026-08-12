@@ -903,44 +903,100 @@ const text = (value: unknown): string => {
 const LONE_SURROGATE =
 	/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu
 
+/** Characters outside ASCII — all that either decoder had to invent a rendering for. */
+const NON_ASCII = /\P{ASCII}/u
+const NON_ASCII_GLOBAL = /\P{ASCII}/gu
+
+/** The ASCII characters of a string, in order: what both decoders could represent. */
+const asciiOf = (value: string): string => value.replaceAll(NON_ASCII_GLOBAL, '')
+
+const isSubsequence = (needle: string, haystack: string): boolean => {
+	let index = 0
+	for (const character of haystack) {
+		if (character === needle[index]) index++
+		if (index === needle.length) return true
+	}
+	return index === needle.length
+}
+
+/**
+ * A string pair that differs only in how each side rendered bytes it could not decode.
+ *
+ * `lying-length` makes a prefix cover a region that is not valid UTF-8, and the
+ * two decoders resolve it differently in a *directional* way, which is what
+ * makes it checkable. protobufjs decodes greedily: a lead byte swallows the
+ * bytes after it into one code point, ASCII ones included. The bridge rejects
+ * the sequence and substitutes per byte, so every ASCII byte it met survives.
+ *
+ * So upstream's ASCII must appear in the bridge's, in order — measured on the
+ * one case this entry covers, 88 characters against 98. That direction is what
+ * separates a substitution from a misread: a value genuinely read differently
+ * drops, reorders or rewrites a character upstream produced, and fails here.
+ * Both sides must also have met something undecodable, or there was no salvage
+ * to explain and an ordinary ASCII difference would pass.
+ */
+const differsOnlyOutsideAscii = (local: unknown, upstream: unknown): boolean =>
+	typeof local === 'string' &&
+	typeof upstream === 'string' &&
+	local !== upstream &&
+	NON_ASCII.test(local) &&
+	NON_ASCII.test(upstream) &&
+	isSubsequence(asciiOf(upstream), asciiOf(local))
+
 /**
  * True when the bridge kept fields upstream dropped, and nothing else differs.
  *
  * Directional and total: upstream may not carry a key the bridge lacks, no value
  * both sides hold may differ, and at least one field has to have been kept — so
  * this can never excuse a misread, only a retention.
+ *
+ * `alsoExplains` is the one seam. A caller may name a *specific* leaf difference
+ * its entry documents and have it counted as explained rather than fatal; the
+ * default explains nothing, so an entry that does not opt in keeps the strict
+ * reading. Everything else stays as it was: a key only upstream produced still
+ * fails whatever the hook says, because that is the bridge losing data.
  */
-const keptFieldsUpstreamDropped = (local: unknown, upstream: unknown, depth = 0): number | undefined => {
-	if (depth > 12) return sameShape(local, upstream) ? 0 : undefined
-	if (Array.isArray(local) || Array.isArray(upstream)) {
-		// Merging concatenates repeated fields, so the bridge's array is upstream's
-		// with the later copy's elements appended. A prefix, exactly: every element
-		// upstream produced has to match at its own index, and upstream being the
-		// longer side is the bridge losing elements, which still fails.
-		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length < upstream.length) return undefined
-		let kept = local.length - upstream.length
-		for (const [index, item] of upstream.entries()) {
-			const inner = keptFieldsUpstreamDropped(local[index], item, depth + 1)
+const keptFieldsUpstreamDropped = (
+	local: unknown,
+	upstream: unknown,
+	alsoExplains: (ours: unknown, theirs: unknown) => boolean = () => false
+): number | undefined => {
+	const walk = (ours: unknown, theirs: unknown, depth: number): number | undefined => {
+		if (depth > 12) return sameShape(ours, theirs) ? 0 : undefined
+		if (Array.isArray(ours) || Array.isArray(theirs)) {
+			// Merging concatenates repeated fields, so the bridge's array is upstream's
+			// with the later copy's elements appended. A prefix, exactly: every element
+			// upstream produced has to match at its own index, and upstream being the
+			// longer side is the bridge losing elements, which still fails.
+			if (!Array.isArray(ours) || !Array.isArray(theirs) || ours.length < theirs.length) return undefined
+			let kept = ours.length - theirs.length
+			for (const [index, item] of theirs.entries()) {
+				const inner = walk(ours[index], item, depth + 1)
+				if (inner === undefined) return undefined
+				kept += inner
+			}
+			return kept
+		}
+		const ourKeys = plainObject(ours)
+		const theirKeys = plainObject(theirs)
+		if (ourKeys === undefined || theirKeys === undefined) {
+			if (sameShape(ours, theirs)) return 0
+			return alsoExplains(ours, theirs) ? 1 : undefined
+		}
+		const ourRecord = ours as Record<string, unknown>
+		const theirRecord = theirs as Record<string, unknown>
+		// A key only upstream produced is the bridge losing data, which is the
+		// opposite defect and must still be reported.
+		if (theirKeys.some(key => !Object.hasOwn(ourRecord, key))) return undefined
+		let kept = ourKeys.length - theirKeys.length
+		for (const key of theirKeys) {
+			const inner = walk(ourRecord[key], theirRecord[key], depth + 1)
 			if (inner === undefined) return undefined
 			kept += inner
 		}
 		return kept
 	}
-	const ourKeys = plainObject(local)
-	const theirKeys = plainObject(upstream)
-	if (ourKeys === undefined || theirKeys === undefined) return sameShape(local, upstream) ? 0 : undefined
-	const ours = local as Record<string, unknown>
-	const theirs = upstream as Record<string, unknown>
-	// A key only upstream produced is the bridge losing data, which is the
-	// opposite defect and must still be reported.
-	if (theirKeys.some(key => !Object.hasOwn(ours, key))) return undefined
-	let kept = ourKeys.length - theirKeys.length
-	for (const key of theirKeys) {
-		const inner = keptFieldsUpstreamDropped(ours[key], theirs[key], depth + 1)
-		if (inner === undefined) return undefined
-		kept += inner
-	}
-	return kept
+	return walk(local, upstream, 0)
 }
 
 /**
@@ -978,13 +1034,22 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		review: '2026-11-12',
 		when: divergence =>
 			lastMutator(divergence.input) === 'lying-length' &&
-			// The observed shape, not the mutator alone: both sides salvaged an
-			// object, and they disagree on what was in the region the rewritten
-			// prefix now covers. A mutator label on its own would excuse the next
-			// real misdecode reached through the same mutation.
 			inputPath(divergence.input) === 'Message.ImageMessage' &&
-			(plainObject(normalise(divergence.local))?.length ?? 0) > 0 &&
-			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
+			// The difference has to *be* the salvage, not merely accompany it.
+			// "Both sides decoded something non-empty" was true of any misdecode
+			// under this mutator, which is what left a real regression excusable.
+			//
+			// The two documented halves are exactly the two this admits: fields the
+			// bridge read out of the region the rewritten prefix now covers and
+			// protobufjs stepped past (counted as retention), and a string whose
+			// undecodable bytes each side substituted its own way. Everything else
+			// — a key only upstream produced, a changed number, a string that moved
+			// bytes both sides could decode — still fails.
+			(keptFieldsUpstreamDropped(
+				normalise(divergence.local),
+				normalise(divergence.upstream),
+				differsOnlyOutsideAscii
+			) ?? 0) > 0
 	},
 	{
 		id: 'to-number-high-word',
