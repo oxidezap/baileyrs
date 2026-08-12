@@ -39,10 +39,13 @@ import type {
 } from './types.ts'
 import {
 	asBoolOr,
+	asDurationSeconds,
+	asInt64,
 	asJidAddressString,
 	asJidString,
 	asNumber,
 	asString,
+	asUnixSeconds,
 	isObject,
 	normalizeDiscriminator,
 	toUnixSeconds
@@ -114,7 +117,7 @@ const ADAPTERS = {
 	temporary_ban: data => ({
 		type: 'temporaryBan',
 		code: asNumber(data?.code),
-		expire: asNumber(data?.expire)
+		expire: asDurationSeconds(data?.expire)
 	}),
 	qr_scanned_without_multidevice: () => ({ type: 'qrScannedWithoutMultidevice' }),
 	logged_out: data => ({
@@ -188,7 +191,7 @@ const ADAPTERS = {
 			id,
 			class: asString(data?.class),
 			from: asJidString(data?.from),
-			timestamp: asNumber(data?.timestamp),
+			timestamp: asUnixSeconds(data?.timestamp),
 			error: asString(data?.error)
 		}
 	},
@@ -255,7 +258,7 @@ const ADAPTERS = {
 			type: 'presence',
 			from,
 			unavailable: asBoolOr(data?.unavailable, false),
-			lastSeen: asNumber(data?.last_seen)
+			lastSeen: asUnixSeconds(data?.last_seen)
 		}
 	},
 
@@ -297,7 +300,7 @@ const ADAPTERS = {
 		return {
 			type: 'pinUpdate',
 			jid,
-			timestamp: asNumber(data?.timestamp),
+			timestamp: asUnixSeconds(data?.timestamp),
 			pinned: asBoolOr(extractAction(data)?.pinned, true)
 		}
 	},
@@ -308,9 +311,9 @@ const ADAPTERS = {
 		return {
 			type: 'muteUpdate',
 			jid,
-			timestamp: asNumber(data?.timestamp),
+			timestamp: asUnixSeconds(data?.timestamp),
 			muted: asBoolOr(action?.muted, true),
-			muteEndTimestamp: asNumber(action?.muteEndTimestamp) ?? asNumber(action?.mute_end_timestamp)
+			muteEndTimestamp: asInt64(action?.muteEndTimestamp) ?? asInt64(action?.mute_end_timestamp)
 		}
 	},
 	star_update: data => adaptStarUpdate(data),
