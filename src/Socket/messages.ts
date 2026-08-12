@@ -1,3 +1,4 @@
+import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { planMessageRelay } from '../Compatibility/message-relay.ts'
 import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
@@ -194,23 +195,37 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			return plan.messageId
 		}
 
+		// Both sends go through the same retry: a caller node the engine derives
+		// is refused the same way whether the message is bound for a chat or for
+		// status, and the escape hatch — a node it does not derive — survives
+		// either way.
+		const drop = (tag: string) =>
+			ctx.logger.debug(
+				{ jid, messageId: plan.messageId, tag },
+				'dropped an additionalNodes entry the engine derives from the message'
+			)
+
 		if (plan.kind === 'status') {
-			return client.sendStatusMessageBytesWithOptions(
-				bytes,
-				plan.recipients,
-				plan.messageId,
+			return sendDroppingDerivedNodes(
 				plan.nodes,
-				plan.refreshDevices
+				nodes =>
+					client.sendStatusMessageBytesWithOptions(bytes, plan.recipients, plan.messageId, nodes, plan.refreshDevices),
+				drop
 			)
 		}
 
-		return client.relayMessageBytesWithOptions(
-			jid,
-			bytes,
-			plan.messageId,
+		return sendDroppingDerivedNodes(
 			plan.nodes,
-			plan.refreshGroupMetadata,
-			plan.refreshDevices
+			nodes =>
+				client.relayMessageBytesWithOptions(
+					jid,
+					bytes,
+					plan.messageId,
+					nodes,
+					plan.refreshGroupMetadata,
+					plan.refreshDevices
+				),
+			drop
 		)
 	},
 
