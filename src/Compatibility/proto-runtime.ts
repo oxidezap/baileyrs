@@ -115,7 +115,6 @@ const appendBytes = (writer: unknown, bytes: Uint8Array): ProtoWriter => {
 	return appendable as ProtoWriter
 }
 
-
 /**
  * A UTF-16 code unit with no partner. There is no UTF-8 form for one, so the
  * codec refuses it rather than letting `TextEncoder` substitute silently.
