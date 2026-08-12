@@ -38,6 +38,7 @@ import type {
 	CanonicalReceipt
 } from './types.ts'
 import {
+	absoluteFromDuration,
 	asBoolOr,
 	asDurationSeconds,
 	asInt64,
@@ -117,7 +118,12 @@ const ADAPTERS = {
 	temporary_ban: data => ({
 		type: 'temporaryBan',
 		code: asNumber(data?.code),
-		expire: asDurationSeconds(data?.expire)
+		// The wire sends how long the ban lasts, and WA Web renders it that way
+		// ("you'll be able to use WhatsApp again in {duration}"). The canonical
+		// event promises the instant it lifts, which is what the socket formats
+		// and what a reconnect delay subtracts `Date.now()` from — so the
+		// conversion happens here, once, rather than in each of them.
+		expire: absoluteFromDuration(asDurationSeconds(data?.expire))
 	}),
 	qr_scanned_without_multidevice: () => ({ type: 'qrScannedWithoutMultidevice' }),
 	logged_out: data => ({

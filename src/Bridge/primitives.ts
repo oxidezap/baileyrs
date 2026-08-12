@@ -75,16 +75,29 @@ export const asJidAddressString = (x: unknown): string | undefined => {
 }
 
 /**
- * Coerce a timestamp value into unix seconds. Accepts both numbers and ISO
- * strings — the bridge serializes `DateTime<Utc>` as ISO unless explicitly
- * typed with `ts_seconds`, so being lenient here insulates us from drift.
+ * The shape chrono writes for a `DateTime` it serializes plainly.
+ *
+ * Checked before parsing because `Date.parse` accepts far more than that, and
+ * silently: `Date.parse('0')` is the year 2000, so a numeric-string sentinel
+ * would become a plausible, wrong instant instead of being refused.
+ */
+const RFC_3339 = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:?\d{2})$/
+
+const parseRfc3339Seconds = (raw: string): number | undefined => {
+	if (!RFC_3339.test(raw)) return undefined
+	const ms = Date.parse(raw)
+	return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
+}
+
+/**
+ * Coerce a timestamp value into unix seconds. Accepts both numbers and RFC 3339
+ * strings — the bridge serializes `DateTime<Utc>` as a string unless the field
+ * names one of chrono's `ts_*` modules, so being lenient about which of the two
+ * arrives insulates us from drift.
  */
 export const toUnixSeconds = (raw: unknown): number => {
 	if (typeof raw === 'number' && Number.isFinite(raw)) return raw
-	if (typeof raw === 'string') {
-		const ms = Date.parse(raw)
-		if (Number.isFinite(ms)) return Math.floor(ms / 1000)
-	}
+	if (typeof raw === 'string') return parseRfc3339Seconds(raw) ?? 0
 	return 0
 }
 
@@ -97,10 +110,7 @@ export const toUnixSeconds = (raw: unknown): number => {
  */
 export const asUnixSeconds = (raw: unknown): number | undefined => {
 	if (typeof raw === 'number' && Number.isFinite(raw)) return raw
-	if (typeof raw === 'string') {
-		const ms = Date.parse(raw)
-		if (Number.isFinite(ms)) return Math.floor(ms / 1000)
-	}
+	if (typeof raw === 'string') return parseRfc3339Seconds(raw)
 	return undefined
 }
 
@@ -118,18 +128,22 @@ export const asUnixSeconds = (raw: unknown): number | undefined => {
  * and a wrong timestamp is worse than a missing one.
  */
 export const asInt64 = (x: unknown): number | undefined => {
-	if (typeof x === 'number') return Number.isFinite(x) ? x : undefined
+	if (typeof x === 'number') return Number.isSafeInteger(x) ? x : undefined
 	if (!isObject(x)) return undefined
 	if (typeof x.toNumber === 'function') {
 		const value = (x.toNumber as () => unknown)()
-		return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+		// `Long.toNumber` rounds rather than refusing, so a value past 2^53
+		// comes back finite and wrong. Only exact ones are worth reporting.
+		return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined
 	}
 	const low = x.low
-	const high = x.high
 	if (typeof low !== 'number') return undefined
-	if (high === 0) return low >>> 0
-	if (high === -1) return low | 0
-	return undefined
+	const high = typeof x.high === 'number' ? x.high : 0
+	// The pair is `high * 2^32 + (low >>> 0)`, signed through `high`. Reading
+	// the halves separately gets the sign right only by accident: `high: -1`
+	// with `low: 0` is -2^32, not 0.
+	const value = high * 2 ** 32 + (low >>> 0)
+	return Number.isSafeInteger(value) ? value : undefined
 }
 
 /**
@@ -158,3 +172,15 @@ export const normalizeDiscriminator = (x: unknown): string | undefined => {
 	const s = asString(x)
 	return s ? s.toLowerCase() : undefined
 }
+
+/**
+ * Turn a duration in seconds into the unix-seconds instant it ends at.
+ *
+ * The bridge reports a temporary ban the way the wire states it, as how long
+ * the ban lasts. Consumers are promised the deadline: the socket formats it
+ * with `new Date(expire * 1000)` and a reconnect policy subtracts `Date.now()`
+ * from it, so handing either of them a relative count puts the ban in 1970 and
+ * lets a bot retry immediately.
+ */
+export const absoluteFromDuration = (seconds: number | undefined): number | undefined =>
+	seconds === undefined ? undefined : Math.floor(Date.now() / 1000) + seconds

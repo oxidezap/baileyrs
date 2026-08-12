@@ -58,11 +58,15 @@ describe('bridge payload shapes', () => {
 		it('pin_update: timestamp', () => {
 			const iso = adapt({ type: 'pin_update', data: { jid: JID, timestamp: ISO, action: { pinned: true } } })
 			expect(iso).toMatchObject({ type: 'pinUpdate', timestamp: SECONDS, pinned: true })
+			const seconds = adapt({ type: 'pin_update', data: { jid: JID, timestamp: SECONDS, action: { pinned: true } } })
+			expect(seconds).toMatchObject({ type: 'pinUpdate', timestamp: SECONDS, pinned: true })
 		})
 
 		it('mute_update: timestamp', () => {
 			const iso = adapt({ type: 'mute_update', data: { jid: JID, timestamp: ISO, action: { muted: true } } })
 			expect(iso).toMatchObject({ type: 'muteUpdate', timestamp: SECONDS, muted: true })
+			const seconds = adapt({ type: 'mute_update', data: { jid: JID, timestamp: SECONDS, action: { muted: true } } })
+			expect(seconds).toMatchObject({ type: 'muteUpdate', timestamp: SECONDS, muted: true })
 		})
 
 		it('an absent timestamp stays absent rather than becoming the epoch', () => {
@@ -74,6 +78,24 @@ describe('bridge payload shapes', () => {
 		it('a timestamp that is neither is dropped, not guessed', () => {
 			const update = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: 'not a date' } })
 			expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
+		})
+
+		it('a string Date.parse would accept but chrono never writes is refused', () => {
+			// `Date.parse('0')` is the year 2000 and `Date.parse('1')` is 2001, so
+			// a numeric-string sentinel would otherwise surface as a plausible,
+			// wrong instant.
+			for (const sentinel of ['0', '1', '2023', 'Jan 1 2023']) {
+				const update = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: sentinel } })
+				expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
+			}
+		})
+
+		it('accepts the offset form chrono writes for a non-UTC zone', () => {
+			const offset = adapt({
+				type: 'presence',
+				data: { from: JID, unavailable: false, last_seen: '2023-11-14T23:13:20+01:00' }
+			})
+			expect(offset).toMatchObject({ lastSeen: SECONDS })
 		})
 	})
 
@@ -110,33 +132,79 @@ describe('bridge payload shapes', () => {
 			expect(long).toMatchObject({ muteEndTimestamp: SECONDS })
 		})
 
+		it('reads the pair as one signed value, not as two halves', () => {
+			// `high: -1, low: 0` is -2^32. Reading the halves separately reports
+			// 0, which is a different instant and a plausible one.
+			const negative = adapt({
+				type: 'mute_update',
+				data: {
+					jid: JID,
+					timestamp: ISO,
+					action: { muted: true, muteEndTimestamp: { low: 0, high: -1, unsigned: false } }
+				}
+			})
+			expect(negative).toMatchObject({ muteEndTimestamp: -(2 ** 32) })
+		})
+
 		it('a value past what a JS number holds exactly is dropped rather than rounded', () => {
-			// high beyond 0 / -1 exceeds 2^53 once recombined. A wrong instant is
-			// worse than a missing one.
+			// 2^21 * 2^32 is 2^53, so this pair is the first value a JS number
+			// cannot represent exactly. A wrong instant is worse than a missing one.
 			const huge = adapt({
 				type: 'mute_update',
 				data: {
 					jid: JID,
 					timestamp: ISO,
-					action: { muted: true, muteEndTimestamp: { low: 1, high: 4096, unsigned: false } }
+					action: { muted: true, muteEndTimestamp: { low: 1, high: 2_097_152, unsigned: false } }
 				}
 			})
 			expect((huge as { muteEndTimestamp?: number }).muteEndTimestamp).toBeUndefined()
 		})
+
+		it('a Long whose own toNumber rounds is refused too', () => {
+			// protobufjs rounds rather than refusing, so the escape hatch has to
+			// be checked as strictly as the pair.
+			const rounded = adapt({
+				type: 'mute_update',
+				data: {
+					jid: JID,
+					timestamp: ISO,
+					action: { muted: true, muteEndTimestamp: { low: 1, high: 2_097_152, toNumber: () => 2 ** 53 + 2 } }
+				}
+			})
+			expect((rounded as { muteEndTimestamp?: number }).muteEndTimestamp).toBeUndefined()
+		})
 	})
 
-	describe('a Duration crosses as { secs, nanos }', () => {
+	describe('a Duration crosses as { secs, nanos }, and the ban is reported as a deadline', () => {
+		const HOUR = 3600
+
+		/** The instant a ban of `HOUR` seconds starting now would lift. */
+		const expectedDeadline = () => {
+			const before = Math.floor(Date.now() / 1000) + HOUR
+			return (actual: number | undefined) => {
+				const after = Math.floor(Date.now() / 1000) + HOUR
+				expect(typeof actual).toBe('number')
+				expect(actual! >= before && actual! <= after).toBe(true)
+			}
+		}
+
 		it('temporary_ban: expire', () => {
-			const structured = adapt({ type: 'temporary_ban', data: { code: 101, expire: { secs: 3600, nanos: 0 } } })
-			expect(structured).toMatchObject({ type: 'temporaryBan', code: 101, expire: 3600 })
+			const check = expectedDeadline()
+			const structured = adapt({ type: 'temporary_ban', data: { code: 101, expire: { secs: HOUR, nanos: 0 } } })
+			expect(structured).toMatchObject({ type: 'temporaryBan', code: 101 })
+			check((structured as { expire?: number }).expire)
 		})
 
 		it('temporary_ban: expire, as a plain count of seconds', () => {
-			const plain = adapt({ type: 'temporary_ban', data: { code: 101, expire: 3600 } })
-			expect(plain).toMatchObject({ expire: 3600 })
+			const check = expectedDeadline()
+			const plain = adapt({ type: 'temporary_ban', data: { code: 101, expire: HOUR } })
+			check((plain as { expire?: number }).expire)
 		})
 
-		it('an absent expire stays absent', () => {
+		it('an absent expire stays absent rather than becoming right now', () => {
+			// `expire` gates the message the socket builds and the delay a
+			// reconnect policy waits out; a ban with no duration must not read as
+			// one that has already lifted.
 			const ban = adapt({ type: 'temporary_ban', data: { code: 101 } })
 			expect((ban as { expire?: number }).expire).toBeUndefined()
 		})
