@@ -115,11 +115,6 @@ const appendBytes = (writer: unknown, bytes: Uint8Array): ProtoWriter => {
 	return appendable as ProtoWriter
 }
 
-/**
- * Deep enough for the schema's real nesting and bounded so a cyclic object
- * cannot spin here. Only reached after an encode already threw.
- */
-const MAX_REPAIR_DEPTH = 24
 
 /**
  * A UTF-16 code unit with no partner. There is no UTF-8 form for one, so the
@@ -349,17 +344,25 @@ const schemaIdFor = (path: string): number | undefined => {
  * Copy-on-write throughout, like `projectForEncode`: a branch with nothing to
  * fix is shared, not rebuilt.
  */
-const repairMessage = (schemaId: number, value: unknown, depth = 0): unknown => {
-	if (depth > MAX_REPAIR_DEPTH || !isObject(value)) return value
+const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>): unknown => {
+	if (!isObject(value)) return value
 	const fields = PROTO_MESSAGE_SCHEMAS[schemaId]?.[1]
 	if (!fields) return value
+	// A message that contains itself, not one that is merely deep. A fixed depth
+	// cap was the earlier guard and it silently stopped repairing below it: 12
+	// nested `ephemeralMessage.message` wrappers is 24 levels, and an empty-string
+	// int64 under that many threw instead of being coerced. Recursive protobuf
+	// messages have no depth limit, so only an actual cycle can be refused.
+	const seen = ancestors ?? new Set<object>()
+	if (seen.has(value)) return value
+	seen.add(value)
 	let output: DynamicObject | undefined
 	for (const field of fields) {
 		if (!hasOwn(value, field[0])) continue
 		const current = value[field[0]]
 		if (current === null || current === undefined) continue
 		const repair = (item: unknown): unknown =>
-			field[1] === PROTO_FIELD_KIND.message ? repairMessage(field[2], item, depth + 1) : repairScalar(field[1], item)
+			field[1] === PROTO_FIELD_KIND.message ? repairMessage(field[2], item, seen) : repairScalar(field[1], item)
 		let converted: unknown = current
 		if (field[3] & PROTO_FIELD_FLAG.repeated) {
 			if (Array.isArray(current)) {
@@ -384,6 +387,9 @@ const repairMessage = (schemaId: number, value: unknown, depth = 0): unknown => 
 		}
 		if (converted !== current) (output ??= { ...value })[field[0]] = converted
 	}
+	// The ancestor path, not everything ever visited: the same object reached
+	// twice in different branches is legitimate and must still be repaired.
+	seen.delete(value)
 	return output ?? value
 }
 

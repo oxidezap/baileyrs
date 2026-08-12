@@ -964,14 +964,21 @@ const keptFieldsUpstreamDropped = (
 	const walk = (ours: unknown, theirs: unknown, depth: number): number | undefined => {
 		if (depth > 12) return sameShape(ours, theirs) ? 0 : undefined
 		if (Array.isArray(ours) || Array.isArray(theirs)) {
-			// Merging concatenates repeated fields, so the bridge's array is upstream's
-			// with the later copy's elements appended. A prefix, exactly: every element
-			// upstream produced has to match at its own index, and upstream being the
-			// longer side is the bridge losing elements, which still fails.
+			// A *suffix*, not a prefix — the direction is the whole point and was
+			// backwards here. The repeated field that diverges sits inside a singular
+			// submessage the payload carries twice: merging concatenates every copy's
+			// elements, while upstream replaces the submessage and keeps only the last
+			// copy's. So upstream's array is our tail, and the elements before it are
+			// what merging retained. Measured on the deep sweep: 18 array pairs in that
+			// relation against 2 the old prefix reading matched.
+			//
+			// Upstream being the longer side is still the bridge losing elements, and
+			// still fails.
 			if (!Array.isArray(ours) || !Array.isArray(theirs) || ours.length < theirs.length) return undefined
-			let kept = ours.length - theirs.length
+			const retained = ours.length - theirs.length
+			let kept = retained
 			for (const [index, item] of theirs.entries()) {
-				const inner = walk(ours[index], item, depth + 1)
+				const inner = walk(ours[retained + index], item, depth + 1)
 				if (inner === undefined) return undefined
 				kept += inner
 			}

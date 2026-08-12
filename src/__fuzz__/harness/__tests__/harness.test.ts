@@ -636,10 +636,16 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		// And retention in one branch does not license a loss in another.
 		assert.ok(!excused({ a: { kept: 1 }, b: {} }, { a: {}, b: { lost: 1 } }), 'a loss beside a retention still fails')
 
-		// Repeated fields concatenate on merge, so the bridge's array is upstream's
-		// with the later copy appended — a prefix, checked as one.
-		assert.ok(excused({ ids: ['a', 'a'] }, { ids: ['a'] }), 'an appended repeated element is the same rule')
-		assert.ok(!excused({ ids: ['b', 'a'] }, { ids: ['a'] }), 'a changed element is not an append')
+		// The repeated field that diverges sits inside a singular submessage the
+		// payload carries twice: merging concatenates every copy's elements, while
+		// upstream replaces the submessage and keeps only the last copy's. So
+		// upstream's array is our *tail*, and what precedes it is what merging kept.
+		// Distinct values on purpose — equal ones pass under either reading and hid
+		// this being backwards.
+		assert.ok(excused({ ids: ['first', 'last'] }, { ids: ['last'] }), 'the earlier copy retained ahead of upstream')
+		assert.ok(excused({ ids: ['a', 'b', 'c'] }, { ids: ['b', 'c'] }), 'two copies merged, upstream kept the last')
+		assert.ok(!excused({ ids: ['first', 'last'] }, { ids: ['first'] }), 'upstream keeps the last copy, not the first')
+		assert.ok(!excused({ ids: ['a', 'b'] }, { ids: ['c'] }), 'a changed element is not a retention')
 		assert.ok(!excused({ ids: ['a'] }, { ids: ['a', 'a'] }), 'the bridge holding fewer elements is a loss')
 
 		// Merge semantics is the justification, so the payload has to actually carry
