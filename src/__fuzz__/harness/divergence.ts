@@ -927,7 +927,55 @@ const keptFieldsUpstreamDropped = (local: unknown, upstream: unknown, depth = 0)
  * generated input, is evidence the sweeps work — it is not new information, and
  * recording it as new would misrepresent what this suite found.
  */
+/**
+ * Whether a finding is about the renamed favicon field, whatever shape it took.
+ *
+ * Walked rather than serialized: a decoded message carries BigInt for its 64-bit
+ * fields, and `JSON.stringify` throws on one — inside `applyAllowlist`, which
+ * has no catch, so the run fails with an error about the predicate rather than
+ * about the finding.
+ */
+const mentionsFavicon = (value: unknown, depth = 0): boolean => {
+	if (depth > 6) return false
+	if (typeof value === 'string') return value.toLowerCase().includes('favicon')
+	if (Array.isArray(value)) return value.some(item => mentionsFavicon(item, depth + 1))
+	if (value === null || typeof value !== 'object') return false
+	for (const [key, item] of Object.entries(value)) {
+		if (key.toLowerCase().includes('favicon')) return true
+		if (mentionsFavicon(item, depth + 1)) return true
+	}
+	return false
+}
+
+/** The mutator that shaped the bytes, which is the last one of the chain. */
+const lastMutator = (input: unknown): string | undefined => {
+	const mutator = (input as { mutator?: unknown } | undefined)?.mutator
+	if (typeof mutator !== 'string') return undefined
+	const steps = mutator.split('→')
+	return steps[steps.length - 1]?.trim()
+}
+
 export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
+	{
+		id: 'proto-lying-length-salvage',
+		target: 'proto:mutation-agreement',
+		status: 'open',
+		reason:
+			'The `lying-length` mutator rewrites a length prefix so a submessage claims a different extent, and the result still frames as protobuf — so it lands here rather than under mutation-interpretation. Both decoders then salvage the overlapping bytes, and they salvage different things: the bridge reads fields out of the region the prefix now covers that protobufjs steps past, and each side replaces the invalid UTF-8 it meets with its own substitution. No wire this library sends produces those bytes, and neither reading is more correct than the other, since the sender never wrote either value. Open rather than intended because nobody has decided whether the bridge should refuse a submessage whose declared length disagrees with its content, which is the only answer that would make the two agree.',
+		review: '2026-11-12',
+		when: divergence => lastMutator(divergence.input) === 'lying-length'
+	},
+	{
+		id: 'favicon-mms-metadata-rename',
+		// Every proto sweep reaches it: the name differs, so the number is written
+		// by one side only, the bytes differ, and a decode reads a different key.
+		target: /^proto:/,
+		status: 'open',
+		reason:
+			"WhatsApp renamed `Message.ExtendedTextMessage#33` from `faviconMMSMetadata` to `faviconMmsMetadata` in schema 2.3000.1044659339, which bridge 0.10.0 regenerated against. Field 33 is unchanged, so the wire is identical; only the key differs, and baileys 7.0.0-rc13 still declares the old spelling. Nothing here can reconcile them: accepting the upstream spelling on encode means walking the message tree to find it, on every send, for a link-preview favicon — and the divergence disappears on its own when upstream regenerates its proto. Open rather than intended: the cost of carrying it is a caller who wrote `faviconMMSMetadata` against upstream's declaration and gets no bytes for it, which is worth revisiting if anyone reports it.",
+		review: '2026-11-12',
+		when: divergence => mentionsFavicon(divergence)
+	},
 	{
 		id: 'to-number-high-word',
 		target: 'pure:toNumber',
@@ -1486,10 +1534,12 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
 		review: '2027-02-01',
 		when: divergence =>
-			// The exact mutator, not a substring of the chain. `mutate` records
-			// `nesting-bomb → flip-bit`, so a substring test excused whatever the
-			// *second* mutator produced merely because a nesting bomb ran first.
-			(divergence.input as { mutator?: unknown } | undefined)?.mutator === 'nesting-bomb' &&
+			// The *last* mutator of the chain, not a substring of it. `mutate`
+			// records `nesting-bomb → flip-bit`, and a substring test would excuse
+			// whatever the second mutator produced merely because a nesting bomb ran
+			// first. Reading the tail keeps that out while still covering
+			// `truncate → nesting-bomb`, where the bomb is what shaped the bytes.
+			lastMutator(divergence.input) === 'nesting-bomb' &&
 			// Narrow to the direction the reason argues: the bridge decoded an empty
 			// message, upstream decoded a non-empty one. The reverse, and any
 			// disagreement over a field both sides read, is not this and must still

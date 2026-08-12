@@ -40,6 +40,7 @@ import type {
 import {
 	absoluteFromDuration,
 	asBoolOr,
+	asStringArray,
 	asDurationSeconds,
 	asInt64,
 	asJidAddressString,
@@ -351,6 +352,60 @@ const ADAPTERS = {
 		// `action.labeled === true` → label added to the chat, else removed.
 		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
 	},
+
+	/**
+	 * The per-message half of `labels.association`, which used to have no path.
+	 * Same canonical event as the chat one, told apart by carrying a message.
+	 */
+	message_label_association_update: data => {
+		const labelId = asString(data?.label_id)
+		const chatJid = asJidString(data?.chat_jid)
+		const messageId = asString(data?.message_id)
+		if (!labelId || !chatJid || !messageId) {
+			return { type: 'noop', bridgeType: 'message_label_association_update' }
+		}
+		return {
+			type: 'labelAssociation',
+			labelId,
+			chatJid,
+			messageId,
+			labeled: asBoolOr(extractAction(data)?.labeled, true)
+		}
+	},
+
+	/**
+	 * What a degraded app-state sync left behind. The engine announces the
+	 * connection anyway, so without this a consumer is told a session with no
+	 * push name is healthy and has nothing to read that says otherwise.
+	 */
+	app_state_sync_failed: data => ({
+		type: 'appStateSyncFailed',
+		fatal: asStringArray(data?.fatal),
+		retryable: asStringArray(data?.retryable),
+		skipped: asStringArray(data?.skipped),
+		connected: asBoolOr(data?.connected, false)
+	}),
+
+	/**
+	 * The QR refs ran out. Upstream ends the socket with `timedOut` when its own
+	 * QR timer gives up (`Socket/socket.ts`), which is the same end state, so
+	 * this becomes the same terminal close rather than a new signal to learn.
+	 */
+	pairing_qr_codes_exhausted: () => ({ type: 'qrCodesExhausted' }),
+
+	// Acknowledged with no Baileys equivalent: upstream has no channel for a
+	// contact deletion (`contacts.update` only upserts), for the account-wide
+	// link-preview setting, for quick replies, for a call placed on the phone,
+	// or for a pairing-code rejection that arrives after the code was shown.
+	contact_removed: () => ({ type: 'noop', bridgeType: 'contact_removed' }),
+	disable_link_previews_update: () => ({ type: 'noop', bridgeType: 'disable_link_previews_update' }),
+	quick_reply_update: () => ({ type: 'noop', bridgeType: 'quick_reply_update' }),
+	call_log_sync: () => ({ type: 'noop', bridgeType: 'call_log_sync' }),
+	pairing_code_error: data => ({
+		type: 'noop',
+		bridgeType: 'pairing_code_error',
+		detail: asString(data?.error) ?? 'unknown'
+	}),
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),

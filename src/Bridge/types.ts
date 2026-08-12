@@ -432,8 +432,38 @@ export interface CanonicalLabelAssociation {
 	type: 'labelAssociation'
 	labelId: string
 	chatJid: string
-	/** `true` = label added to the chat, `false` = removed. */
+	/**
+	 * The message the label is on, for a per-message association.
+	 *
+	 * Absent means the label is on the chat itself. The two arrive on separate
+	 * bridge events and upstream carries both on `labels.association`, keyed by
+	 * the association's own `type`.
+	 */
+	messageId?: string
+	/** `true` = label added, `false` = removed. */
 	labeled: boolean
+}
+
+/**
+ * A batched app-state sync that did not leave every collection synced.
+ *
+ * Collections are named as they appear on the wire. `fatal` is the one a
+ * consumer usually has to act on: the server refused it and asking again gets
+ * the same answer. `connected` says whether the session was announced anyway,
+ * which is the difference between "degraded but usable" and "still retrying" —
+ * the engine connects on a degraded sync rather than withholding the session,
+ * so this event is the only thing that says what is missing from it.
+ */
+export interface CanonicalQrCodesExhausted {
+	type: 'qrCodesExhausted'
+}
+
+export interface CanonicalAppStateSyncFailed {
+	type: 'appStateSyncFailed'
+	fatal: string[]
+	retryable: string[]
+	skipped: string[]
+	connected: boolean
 }
 
 // ── Calls ──
@@ -693,6 +723,8 @@ export type CanonicalEvent =
 	| CanonicalMarkChatAsReadUpdate
 	| CanonicalLabelEdit
 	| CanonicalLabelAssociation
+	| CanonicalAppStateSyncFailed
+	| CanonicalQrCodesExhausted
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate

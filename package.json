@@ -22,7 +22,7 @@
     "url": "https://github.com/oxidezap/baileyrs/issues"
   },
   "license": "MIT",
-  "author": "João Lucas <jlucaso@hotmail.com>",
+  "author": "Jo\u00e3o Lucas <jlucaso@hotmail.com>",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -82,7 +82,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^9.1.4",
-    "@oxidezap/whatsapp-rust-bridge": "0.8.1",
+    "@oxidezap/whatsapp-rust-bridge": "0.10.0",
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5"

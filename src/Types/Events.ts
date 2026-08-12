@@ -125,6 +125,19 @@ export type BaileysEventMap = {
 	'labels.edit': Label
 	'labels.association': { association: LabelAssociation; type: 'add' | 'remove' }
 
+	/**
+	 * A batched app-state sync left collections unsynced. Not an upstream event:
+	 * upstream never withholds a session on app state, so it has nothing to
+	 * report here.
+	 *
+	 * The engine does the opposite of withholding — it announces a connection
+	 * whose critical sync came back degraded, precisely so a session that works
+	 * is usable — and this is what says which collections are missing from it.
+	 * `connected` tells "degraded but usable" from a sync that ran before the
+	 * connection was ready; `fatal` is the half a retry cannot fix.
+	 */
+	'app-state-sync.failed': { fatal: string[]; retryable: string[]; skipped: string[]; connected: boolean }
+
 	/** Newsletter-related events */
 	'newsletter.reaction': {
 		id: string

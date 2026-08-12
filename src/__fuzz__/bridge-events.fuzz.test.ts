@@ -91,7 +91,11 @@ const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
 	clear_chat_update: 'chatClear',
 	delete_message_for_me_update: 'messageDelete',
 	// A changed contact number is how the runtime tells us about a LID mapping.
-	contact_number_changed: 'lidMappingUpdate'
+	contact_number_changed: 'lidMappingUpdate',
+	// The per-message half of the same canonical association as the chat one.
+	message_label_association_update: 'labelAssociation',
+	// Named after the state it reports rather than after the pairing signal.
+	pairing_qr_codes_exhausted: 'qrCodesExhausted'
 }
 
 /**
@@ -130,7 +134,16 @@ const UNCONDITIONALLY_INERT: ReadonlySet<string> = new Set([
 	'business_status_update',
 	'contact_sync_requested',
 	'user_about_update',
-	'user_status_mute_update'
+	'user_status_mute_update',
+	// Acknowledged with no Baileys equivalent. Upstream has no channel for a
+	// contact deletion, the account-wide link-preview setting, quick replies, a
+	// call placed on the phone, or a pairing-code rejection that lands after the
+	// code was displayed. See `Bridge/schema.ts` for the reason on each.
+	'contact_removed',
+	'disable_link_previews_update',
+	'quick_reply_update',
+	'call_log_sync',
+	'pairing_code_error'
 ])
 
 /**
@@ -157,6 +170,7 @@ const NOT_YET_REACHABLE: ReadonlySet<string> = new Set([
 	'disappearing_mode_changed',
 	'label_association_update',
 	'label_edit_update',
+	'message_label_association_update',
 	'newsletter_live_update'
 ])
 

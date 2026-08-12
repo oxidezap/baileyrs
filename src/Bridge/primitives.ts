@@ -213,3 +213,7 @@ export const absoluteFromDuration = (seconds: number | undefined): number | unde
 
 /** `Date` holds ±8.64e15 ms, which is this many whole seconds. */
 const MAX_DATE_SECONDS = 8_640_000_000_000
+
+/** Wire collection names and the like: anything that is not a string is not one. */
+export const asStringArray = (x: unknown): string[] =>
+	Array.isArray(x) ? x.filter((item): item is string => typeof item === 'string') : []
