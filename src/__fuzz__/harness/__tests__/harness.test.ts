@@ -614,12 +614,13 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-concatenated-message-merge')
 		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
 
-		const excused = (local: unknown, upstream: unknown): boolean =>
+		const excusedWith = (mutator: string, local: unknown, upstream: unknown): boolean =>
 			applyAllowlist(
-				[{ target: 'proto:mutation-agreement', input: { mutator: 'concatenate' }, local, upstream }],
+				[{ target: 'proto:mutation-agreement', input: { mutator }, local, upstream }],
 				new Date('2026-01-01'),
 				registry
 			).unexcused.length === 0
+		const excused = (local: unknown, upstream: unknown): boolean => excusedWith('concatenate', local, upstream)
 
 		// The documented shape: the merge kept a field the second copy did not carry.
 		assert.ok(excused({ muteAction: { muted: true }, statusPrivacy: { mode: '2' } }, { statusPrivacy: { mode: '2' } }))
@@ -640,6 +641,18 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(excused({ ids: ['a', 'a'] }, { ids: ['a'] }), 'an appended repeated element is the same rule')
 		assert.ok(!excused({ ids: ['b', 'a'] }, { ids: ['a'] }), 'a changed element is not an append')
 		assert.ok(!excused({ ids: ['a'] }, { ids: ['a', 'a'] }), 'the bridge holding fewer elements is a loss')
+
+		// Merge semantics is the justification, so the payload has to actually carry
+		// the message twice. The same retention shape from any other mutator is a
+		// field the bridge invented, which is a different thing entirely.
+		const retained = [{ kept: 1, shared: 2 }, { shared: 2 }] as const
+		assert.ok(!excusedWith('flip-bit', ...retained), 'a retention from another mutator is not merge')
+		assert.ok(!excusedWith('lying-length', ...retained), 'nor from a lying length')
+		// A chain counts wherever the concatenation sits: it is what put the message
+		// in twice, and a byte corrupted afterwards does not undo that.
+		assert.ok(excusedWith('flip-bit → concatenate', ...retained), 'concatenation last')
+		assert.ok(excusedWith('concatenate → flip-bit', ...retained), 'concatenation first')
+		assert.ok(excusedWith('concatenate → concatenate', ...retained), 'three copies')
 	})
 
 	it('keeps every shipped registry entry well-formed', async () => {

@@ -947,6 +947,12 @@ const mentionsFavicon = (value: unknown, depth = 0): boolean => {
 	return false
 }
 
+/** Every step of a mutation chain, which `mutate` records as `a → b`. */
+const mutatorChain = (input: unknown): readonly string[] => {
+	const mutator = (input as { mutator?: unknown } | undefined)?.mutator
+	return typeof mutator === 'string' ? mutator.split('\u2192').map(step => step.trim()) : []
+}
+
 /** The mutator that shaped the bytes, which is the last one of the chain. */
 const lastMutator = (input: unknown): string | undefined => {
 	const mutator = (input as { mutator?: unknown } | undefined)?.mutator
@@ -1436,12 +1442,26 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'Protobuf defines concatenation as merging: "for embedded message fields, the parser merges multiple instances of the same field, as if with the Message::MergeFrom method". From bridge 0.8.1 the codec does that — a singular message field read twice merges instead of the second read replacing the first — and protobufjs assigns, dropping everything the earlier instance carried. So on a payload carrying the same message field twice, the bridge returns the merged object and upstream returns only the last one. The same rule applies to repeated fields, which merging concatenates rather than replaces: on a payload carrying three copies of a Message.PollCreationMessage, contextInfo.mentionedJid holds both elements here and only the last one upstream. Measured across six mutated payloads after the 0.8.1 bump: SyncActionValue, MessageContextInfo, Message.ReactionMessage, Message.ExtendedTextMessage and Message.PollCreationMessage, retaining between one and nine fields. This is the one entry in the registry where the *reference* implementation is the non-conforming side, so it is intended rather than open: aligning would mean deliberately dropping fields the wire format says are there.',
 		review: '2027-02-01',
+		// The mutator as well as the shape. Merge semantics is the justification, and
+		// it only applies to a payload that actually carries the message twice —
+		// without this, any other mutator that made the bridge invent a field or an
+		// array element produced the same retention shape and was filed as the
+		// intended concatenation difference. Both reviewers caught it independently.
+		//
+		// *Contains* concatenate, not ends with it. Both reviewers proposed the last
+		// step, and that is too strict: concatenation is what put the message in
+		// twice, and a bit flipped afterwards does not undo it. Measured — scoping
+		// to the final step left `concatenate → flip-bit` and
+		// `concatenate → replace-byte` unexcused, both pure retentions.
+		//
 		// Retention only, and it has to be the whole difference. Upstream carrying a
 		// key the bridge lacks is the bridge losing data — the opposite defect —
 		// and any value that differs where both sides hold the key is a misread.
 		// Both still fail. Without the `> 0` this would also excuse two identical
 		// decodes, which is not a finding at all.
-		when: divergence => (keptFieldsUpstreamDropped(divergence.local, divergence.upstream) ?? 0) > 0
+		when: divergence =>
+			mutatorChain(divergence.input).includes('concatenate') &&
+			(keptFieldsUpstreamDropped(divergence.local, divergence.upstream) ?? 0) > 0
 	},
 	{
 		id: 'proto-decode-invalid-utf8',
