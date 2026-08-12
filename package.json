@@ -59,6 +59,7 @@
     "compat:audit:missing": "npm run build --silent && node scripts/compatibility/audit.ts --only-missing",
     "compat:audit:proto": "node scripts/compatibility/proto-runtime-audit.ts --details --strict",
     "compat:audit:wire": "node scripts/compatibility/wire-fidelity-audit.ts --details --strict",
+    "compat:audit:lifecycle": "node scripts/compatibility/lifecycle-contract-audit.ts --strict",
     "compat:audit:strict": "npm run build --silent && node scripts/compatibility/audit.ts --strict --only-missing",
     "compat:sync-waproto": "node scripts/compatibility/waproto-facade.ts --sync",
     "compat:check-waproto": "node scripts/compatibility/waproto-facade.ts --check",
@@ -77,7 +78,7 @@
     "fuzz:report": "node scripts/fuzz/report.ts",
     "test:compat-auditor": "node --test scripts/compatibility/__tests__/audit.test.ts",
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && tsc -p scripts/compatibility/tsconfig.json",
-    "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts"
+    "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts"
   },
   "dependencies": {
     "@hapi/boom": "^9.1.4",

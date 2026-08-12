@@ -38,11 +38,15 @@ import type {
 	CanonicalReceipt
 } from './types.ts'
 import {
+	absoluteFromDuration,
 	asBoolOr,
+	asDurationSeconds,
+	asInt64,
 	asJidAddressString,
 	asJidString,
 	asNumber,
 	asString,
+	asUnixSeconds,
 	isObject,
 	normalizeDiscriminator,
 	toUnixSeconds
@@ -114,7 +118,12 @@ const ADAPTERS = {
 	temporary_ban: data => ({
 		type: 'temporaryBan',
 		code: asNumber(data?.code),
-		expire: asNumber(data?.expire)
+		// The wire sends how long the ban lasts, and WA Web renders it that way
+		// ("you'll be able to use WhatsApp again in {duration}"). The canonical
+		// event promises the instant it lifts, which is what the socket formats
+		// and what a reconnect delay subtracts `Date.now()` from — so the
+		// conversion happens here, once, rather than in each of them.
+		expire: absoluteFromDuration(asDurationSeconds(data?.expire))
 	}),
 	qr_scanned_without_multidevice: () => ({ type: 'qrScannedWithoutMultidevice' }),
 	logged_out: data => ({
@@ -188,7 +197,7 @@ const ADAPTERS = {
 			id,
 			class: asString(data?.class),
 			from: asJidString(data?.from),
-			timestamp: asNumber(data?.timestamp),
+			timestamp: asUnixSeconds(data?.timestamp),
 			error: asString(data?.error)
 		}
 	},
@@ -255,7 +264,7 @@ const ADAPTERS = {
 			type: 'presence',
 			from,
 			unavailable: asBoolOr(data?.unavailable, false),
-			lastSeen: asNumber(data?.last_seen)
+			lastSeen: asUnixSeconds(data?.last_seen)
 		}
 	},
 
@@ -297,7 +306,7 @@ const ADAPTERS = {
 		return {
 			type: 'pinUpdate',
 			jid,
-			timestamp: asNumber(data?.timestamp),
+			timestamp: asUnixSeconds(data?.timestamp),
 			pinned: asBoolOr(extractAction(data)?.pinned, true)
 		}
 	},
@@ -308,9 +317,9 @@ const ADAPTERS = {
 		return {
 			type: 'muteUpdate',
 			jid,
-			timestamp: asNumber(data?.timestamp),
+			timestamp: asUnixSeconds(data?.timestamp),
 			muted: asBoolOr(action?.muted, true),
-			muteEndTimestamp: asNumber(action?.muteEndTimestamp) ?? asNumber(action?.mute_end_timestamp)
+			muteEndTimestamp: asInt64(action?.muteEndTimestamp) ?? asInt64(action?.mute_end_timestamp)
 		}
 	},
 	star_update: data => adaptStarUpdate(data),

@@ -342,10 +342,16 @@ describe('adapter: connect_failure', () => {
 })
 
 describe('adapter: temporary_ban', () => {
-	it('captures code and expire', () => {
-		const c = adapt({ type: 'temporary_ban', data: { code: 102, expire: 1730086400 } }, 'temporaryBan')
+	// The wire states how long the ban lasts; the canonical event promises the
+	// instant it lifts. The adapter converts, so a fixed input no longer has a
+	// fixed output — see `Bridge/__tests__/payload-shapes.test.ts` for the
+	// window this is checked against.
+	it('captures the code and reports the ban as a deadline', () => {
+		const before = Math.floor(Date.now() / 1000)
+		const c = adapt({ type: 'temporary_ban', data: { code: 102, expire: 3600 } }, 'temporaryBan')
+		const after = Math.floor(Date.now() / 1000)
 		expect(c.code).toBe(102)
-		expect(c.expire).toBe(1730086400)
+		expect(c.expire! >= before + 3600 && c.expire! <= after + 3600).toBe(true)
 	})
 })
 
@@ -1314,10 +1320,14 @@ describe('dispatch: connect_failure → DisconnectReason mapping', () => {
 
 describe('dispatch: temporary_ban', () => {
 	it('exposes code and expire on the Boom error data', () => {
-		const updates = collect({ type: 'temporary_ban', data: { code: 102, expire: 1730086400 } }, 'connection.update')
+		const before = Math.floor(Date.now() / 1000)
+		const updates = collect({ type: 'temporary_ban', data: { code: 102, expire: 3600 } }, 'connection.update')
+		const after = Math.floor(Date.now() / 1000)
 		const error = updates[0]?.lastDisconnect?.error as Boom & { data?: { code: number; expire: number } }
 		expect(error.data?.code).toBe(102)
-		expect(error.data?.expire).toBe(1730086400)
+		// A deadline, because that is what the socket formats and what a
+		// reconnect policy subtracts `Date.now()` from.
+		expect(error.data!.expire >= before + 3600 && error.data!.expire <= after + 3600).toBe(true)
 	})
 })
 
