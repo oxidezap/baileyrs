@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.1](https://github.com/oxidezap/baileyrs/compare/v0.2.0...v0.2.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **release:** recognise deps commits so a dependency bump reaches the changelog ([#65](https://github.com/oxidezap/baileyrs/issues/65)) ([0ebe705](https://github.com/oxidezap/baileyrs/commit/0ebe705c3fa4b81d35b344e1dbb3fb061b7b1c57))
+
+
+### Performance
+
+* **transport:** forward ArrayBuffer-backed frames instead of rebuilding them ([#62](https://github.com/oxidezap/baileyrs/issues/62)) ([c879042](https://github.com/oxidezap/baileyrs/commit/c879042b6305ab0ba85c4d2376352703b75d5135))
+
+
+### Dependencies
+
+* move to bridge 0.12.0 ([#64](https://github.com/oxidezap/baileyrs/issues/64)) ([0c049f8](https://github.com/oxidezap/baileyrs/commit/0c049f870be869edb3b70d52151899df87e60c99))
+
 ## [0.2.0](https://github.com/oxidezap/baileyrs/compare/v0.1.3...v0.2.0) (2026-08-12)
 
 
