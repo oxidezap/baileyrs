@@ -8,10 +8,31 @@ interface TransportConfig {
 	options?: RequestInit
 }
 
+/**
+ * `WebSocket.send()` takes a `BufferSource`, which is `ArrayBufferView<ArrayBuffer>
+ * | ArrayBuffer` — a `SharedArrayBuffer`-backed view is outside that contract.
+ * The bridge hands us the wider `Uint8Array<ArrayBufferLike>`, so the backing
+ * buffer has to be discriminated at runtime; this predicate is what carries that
+ * runtime check into the type system.
+ */
+const isArrayBufferBacked = (data: Uint8Array): data is Uint8Array<ArrayBuffer> => data.buffer instanceof ArrayBuffer
+
+/**
+ * Narrows an outgoing frame to what `WebSocket.send()` accepts.
+ *
+ * The `ArrayBuffer` case returns the caller's view as-is. Rebuilding it — the
+ * `new Uint8Array(data.buffer, data.byteOffset, data.byteLength)` this used to
+ * do — produced a view over the same buffer at the same offset and length: an
+ * allocation per outgoing frame that existed only to restate the type. It also
+ * did not detach the view from WASM memory growth, so returning the original
+ * gives the payload exactly the lifetime it had before; both are aliases of the
+ * same linear memory, consumed synchronously by the `ws.send()` on the next line.
+ *
+ * The `SharedArrayBuffer` case still copies: that one is not a type formality,
+ * the send API genuinely cannot take a view over shared memory.
+ */
 const asWebSocketPayload = (data: Uint8Array): Uint8Array<ArrayBuffer> =>
-	data.buffer instanceof ArrayBuffer
-		? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-		: new Uint8Array(data)
+	isArrayBufferBacked(data) ? data : new Uint8Array(data)
 
 export const makeTransport = (config: TransportConfig): JsTransportCallbacks => {
 	const { waWebSocketUrl, logger } = config
