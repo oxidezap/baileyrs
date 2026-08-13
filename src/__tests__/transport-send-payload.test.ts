@@ -18,7 +18,7 @@
  * that memory detaches the buffer under every view of it.
  */
 
-import { beforeEach, describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { makeTransport } from '../Socket/transport.ts'
 import type { ILogger } from '../Utils/logger.ts'
@@ -89,7 +89,16 @@ const connect = async () => {
 let sockets: FakeWebSocket[] = []
 const lastSocket = () => sockets[sockets.length - 1]!
 
+const platformWebSocket = globalThis.WebSocket
+
 describe('transport: outgoing frame payloads', () => {
+	// `node --test` gives each file its own process, so this suite cannot reach
+	// another one — but nothing about that is guaranteed by the file itself, and
+	// a stub for the platform WebSocket is not something to leave installed.
+	afterEach(() => {
+		globalThis.WebSocket = platformWebSocket
+	})
+
 	beforeEach(() => {
 		sockets = []
 		class Tracked extends FakeWebSocket {
