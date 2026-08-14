@@ -1,3 +1,4 @@
+import { sendReportingUpstreamFailure } from '../Compatibility/all-encryptions-failed.ts'
 import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { planMessageRelay } from '../Compatibility/message-relay.ts'
@@ -206,26 +207,36 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			)
 
 		if (plan.kind === 'status') {
-			return sendDroppingDerivedNodes(
-				plan.nodes,
-				nodes =>
-					client.sendStatusMessageBytesWithOptions(bytes, plan.recipients, plan.messageId, nodes, plan.refreshDevices),
-				drop
+			return sendReportingUpstreamFailure(() =>
+				sendDroppingDerivedNodes(
+					plan.nodes,
+					nodes =>
+						client.sendStatusMessageBytesWithOptions(
+							bytes,
+							plan.recipients,
+							plan.messageId,
+							nodes,
+							plan.refreshDevices
+						),
+					drop
+				)
 			)
 		}
 
-		return sendDroppingDerivedNodes(
-			plan.nodes,
-			nodes =>
-				client.relayMessageBytesWithOptions(
-					jid,
-					bytes,
-					plan.messageId,
-					nodes,
-					plan.refreshGroupMetadata,
-					plan.refreshDevices
-				),
-			drop
+		return sendReportingUpstreamFailure(() =>
+			sendDroppingDerivedNodes(
+				plan.nodes,
+				nodes =>
+					client.relayMessageBytesWithOptions(
+						jid,
+						bytes,
+						plan.messageId,
+						nodes,
+						plan.refreshGroupMetadata,
+						plan.refreshDevices
+					),
+				drop
+			)
 		)
 	},
 
