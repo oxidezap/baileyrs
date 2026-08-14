@@ -87,6 +87,14 @@ const relayRejecting = (rejection: unknown) => {
 		sendStatusMessageBytesWithOptions: async () => {
 			attempts.count++
 			throw rejection
+		},
+		sendMessageBytes: async () => {
+			attempts.count++
+			throw rejection
+		},
+		sendStatusMessageBytes: async () => {
+			attempts.count++
+			throw rejection
 		}
 	}
 	const ctx = {
@@ -99,7 +107,8 @@ const relayRejecting = (rejection: unknown) => {
 		getMe: () => ({ id: '15550000000@s.whatsapp.net' }),
 		getClient: async () => client
 	} as unknown as SocketContext
-	return { attempts, relay: makeMessageMethods(ctx).relayMessage }
+	const methods = makeMessageMethods(ctx)
+	return { attempts, relay: methods.relayMessage, send: methods.sendMessage }
 }
 
 describe('relayMessage against an engine that reports a send reaching nobody', () => {
@@ -122,6 +131,28 @@ describe('relayMessage against an engine that reports a send reaching nobody', (
 					messageId: '3EB0NOENC0002',
 					statusJidList: ['15550000002@s.whatsapp.net']
 				}),
+			(error: unknown) => isBoom(error) && error.output.statusCode === 500
+		)
+	})
+
+	// `sendMessage` is the call almost every Baileys program makes, and it does
+	// not go through `relayMessage` — it reaches the engine on its own path. A
+	// translation that covered only the relay would leave the common case
+	// raising the engine's raw rejection, which is the shape this PR exists to
+	// stop the caller from having to know.
+	it('rejects a sendMessage the same way', async () => {
+		const { attempts, send } = relayRejecting(noRecipientDevice(2))
+		await assert.rejects(
+			() => send('15550000001@s.whatsapp.net', { text: 'oi' }),
+			(error: unknown) => isBoom(error) && error.output.statusCode === 500
+		)
+		assert.equal(attempts.count, 1)
+	})
+
+	it('rejects a sendMessage to status the same way', async () => {
+		const { send } = relayRejecting(noRecipientDevice(1))
+		await assert.rejects(
+			() => send('status@broadcast', { text: 'oi' }, { statusJidList: ['15550000002@s.whatsapp.net'] }),
 			(error: unknown) => isBoom(error) && error.output.statusCode === 500
 		)
 	})

@@ -99,13 +99,12 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		let msgId: string
 		const msgBytes = encodeProtoCompat('Message', msg as Record<string, unknown>)
-		if (jid === 'status@broadcast' && options?.statusJidList?.length) {
-			msgId = await client.sendStatusMessageBytes(msgBytes, options.statusJidList)
-		} else {
-			msgId = await client.sendMessageBytes(jid, msgBytes)
-		}
+		const msgId = await sendReportingUpstreamFailure(() =>
+			jid === 'status@broadcast' && options?.statusJidList?.length
+				? client.sendStatusMessageBytes(msgBytes, options.statusJidList)
+				: client.sendMessageBytes(jid, msgBytes)
+		)
 
 		fullMsg.key.id = msgId || fullMsg.key.id
 
