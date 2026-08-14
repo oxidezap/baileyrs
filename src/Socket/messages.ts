@@ -1,3 +1,4 @@
+import { sendReportingUpstreamFailure } from '../Compatibility/all-encryptions-failed.ts'
 import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { planMessageRelay } from '../Compatibility/message-relay.ts'
@@ -98,13 +99,12 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			}
 		}
 
-		let msgId: string
 		const msgBytes = encodeProtoCompat('Message', msg as Record<string, unknown>)
-		if (jid === 'status@broadcast' && options?.statusJidList?.length) {
-			msgId = await client.sendStatusMessageBytes(msgBytes, options.statusJidList)
-		} else {
-			msgId = await client.sendMessageBytes(jid, msgBytes)
-		}
+		const msgId = await sendReportingUpstreamFailure(() =>
+			jid === 'status@broadcast' && options?.statusJidList?.length
+				? client.sendStatusMessageBytes(msgBytes, options.statusJidList)
+				: client.sendMessageBytes(jid, msgBytes)
+		)
 
 		fullMsg.key.id = msgId || fullMsg.key.id
 
@@ -206,26 +206,36 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 			)
 
 		if (plan.kind === 'status') {
-			return sendDroppingDerivedNodes(
-				plan.nodes,
-				nodes =>
-					client.sendStatusMessageBytesWithOptions(bytes, plan.recipients, plan.messageId, nodes, plan.refreshDevices),
-				drop
+			return sendReportingUpstreamFailure(() =>
+				sendDroppingDerivedNodes(
+					plan.nodes,
+					nodes =>
+						client.sendStatusMessageBytesWithOptions(
+							bytes,
+							plan.recipients,
+							plan.messageId,
+							nodes,
+							plan.refreshDevices
+						),
+					drop
+				)
 			)
 		}
 
-		return sendDroppingDerivedNodes(
-			plan.nodes,
-			nodes =>
-				client.relayMessageBytesWithOptions(
-					jid,
-					bytes,
-					plan.messageId,
-					nodes,
-					plan.refreshGroupMetadata,
-					plan.refreshDevices
-				),
-			drop
+		return sendReportingUpstreamFailure(() =>
+			sendDroppingDerivedNodes(
+				plan.nodes,
+				nodes =>
+					client.relayMessageBytesWithOptions(
+						jid,
+						bytes,
+						plan.messageId,
+						nodes,
+						plan.refreshGroupMetadata,
+						plan.refreshDevices
+					),
+				drop
+			)
 		)
 	},
 
