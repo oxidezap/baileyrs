@@ -211,12 +211,6 @@ export interface CanonicalReceipt {
 
 // ── Contacts ──
 
-export interface CanonicalPushNameUpdate {
-	type: 'pushNameUpdate'
-	jid: string
-	newPushName?: string
-}
-
 export interface CanonicalContactUpdate {
 	type: 'contactUpdate'
 	jid: string
@@ -742,7 +736,6 @@ export type CanonicalEvent =
 	| CanonicalQrScannedWithoutMultidevice
 	| CanonicalMessage
 	| CanonicalReceipt
-	| CanonicalPushNameUpdate
 	| CanonicalContactUpdate
 	| CanonicalPictureUpdate
 	| CanonicalPresence

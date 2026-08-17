@@ -242,10 +242,6 @@ const ADAPTERS = {
 	},
 
 	// ── Contacts ──
-	push_name_update: data => {
-		const jid = asJidString(data?.jid)
-		return jid ? { type: 'pushNameUpdate', jid, newPushName: asString(data?.new_push_name) } : null
-	},
 	contact_update: data => adaptContactUpdate(data),
 	contact_updated: data => adaptContactUpdate(data),
 
@@ -519,6 +515,7 @@ const ADAPTERS = {
 
 	// ── Acknowledged but no Baileys equivalent (noop) ──
 	self_push_name_updated: () => ({ type: 'noop', bridgeType: 'self_push_name_updated' }),
+	client_expiration_changed: () => ({ type: 'noop', bridgeType: 'client_expiration_changed' }),
 	offline_sync_completed: data => ({
 		type: 'offlineSyncCompleted',
 		count: asNumber(data?.count) ?? 0

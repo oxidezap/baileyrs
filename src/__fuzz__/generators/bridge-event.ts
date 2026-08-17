@@ -243,7 +243,6 @@ const SHAPED: Record<string, (random: Random) => Record<string, unknown>> = {
 		timestamp: generateNumber(random),
 		type: random.pick(['read', 'read-self', 'played', 'inactive', 'delivery', '', 'nonsense'])
 	}),
-	push_name_update: random => ({ jid: jidField(random), new_push_name: generateString(random) }),
 	contact_update: random => ({
 		jid: jidField(random),
 		action: { fullName: generateString(random), first_name: generateString(random), username: generateString(random) }

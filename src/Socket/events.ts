@@ -44,7 +44,7 @@ import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
 import { toNumber } from '../Utils/generics.ts'
 import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message.ts'
-import { isJidGroup } from '../WABinary/jid-utils.ts'
+import { isJidBroadcast, isJidGroup } from '../WABinary/jid-utils.ts'
 import {
 	buildGroupCreateStubMessage,
 	buildGroupJoinRequestEvents,
@@ -135,6 +135,22 @@ const messageUpsertMetadata = (message: CanonicalMessage): MessageUpsertMetadata
 
 const hasMessageSideEffects = (message: CanonicalMessage) =>
 	message.messageProto.reactionMessage != null || message.messageProto.protocolMessage != null
+
+// Mirror upstream `messages-recv.ts`: every inbound envelope that carries a
+// push name surfaces it as `contacts.update` with `notify`. This is also what
+// replaces the bridge's dedicated `push_name_update` event, gone in 0.14.0.
+const emitInboundPushName = (
+	ctx: SocketContext,
+	evt: { pushName?: string; isFromMe: boolean; senderJid?: string; chatJid: string }
+) => {
+	if (!evt.pushName || evt.isFromMe) return
+	const id = evt.senderJid ?? evt.chatJid
+	// A broadcast envelope resolves to the pseudo-contact (the canonical layer
+	// drops the participant for non-groups); naming `status@broadcast` after
+	// whoever posted last would corrupt it, so stay silent instead.
+	if (isJidBroadcast(id)) return
+	ctx.ev.emit('contacts.update', [{ id, notify: evt.pushName }])
+}
 
 const hasSameUpsertMetadata = (left: MessageUpsertMetadata, right: MessageUpsertMetadata) =>
 	left.type === right.type && left.requestId === right.requestId
@@ -446,6 +462,7 @@ const DISPATCHERS: DispatcherMap = {
 	// ── Messages ──
 	message: (evt, { ctx }) => {
 		if (ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) return
+		emitInboundPushName(ctx, evt)
 		// Note: `emitOwnEvents=false` is NOT applied here. Upstream Baileys
 		// uses that flag to suppress the local echo when `sendMessage()`
 		// succeeds, not to drop inbound `fromMe` messages from other linked
@@ -565,6 +582,12 @@ const DISPATCHERS: DispatcherMap = {
 			{ id: evt.id, chat: evt.chatJid, isUnavailable: evt.isUnavailable, fail: evt.decryptFailMode },
 			'undecryptable message received'
 		)
+		// The name is envelope metadata, independent of whether the failure
+		// may be surfaced, so it goes out even for `hide`. The stub below
+		// predates `shouldIgnoreJid` and stays unguarded; the push name
+		// emission is new, so it honors the predicate like the other two
+		// call sites do.
+		if (!ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) emitInboundPushName(ctx, evt)
 		// `decrypt_fail_mode === 'hide'` means the server told us to
 		// silently drop — match that by NOT emitting an upsert.
 		if (evt.decryptFailMode === 'hide') return
@@ -586,7 +609,6 @@ const DISPATCHERS: DispatcherMap = {
 	},
 
 	// ── Contacts ──
-	pushNameUpdate: (evt, { ctx }) => ctx.ev.emit('contacts.update', [{ id: evt.jid, notify: evt.newPushName }]),
 	contactUpdate: (evt, { ctx }) => {
 		// Promote ContactAction fields into upstream's `Partial<Contact>`
 		// shape so consumers (sidebar UIs, contact pickers) see real names
@@ -1038,6 +1060,11 @@ const dispatchCanonicalBatch = (
 		if (ctx.fullConfig.shouldIgnoreJid?.(canonical.chatJid)) continue
 
 		try {
+			// This branch bypasses the single-message dispatcher, so the push
+			// name has to be surfaced here too. Inside the try: a throwing
+			// consumer listener skips this message only, like the containment
+			// in dispatchCanonicalEvent.
+			emitInboundPushName(ctx, canonical)
 			const metadata = messageUpsertMetadata(canonical)
 			const message = canonicalMessageToWAMessage(canonical)
 			if (pending && hasSameUpsertMetadata(pending, metadata)) {

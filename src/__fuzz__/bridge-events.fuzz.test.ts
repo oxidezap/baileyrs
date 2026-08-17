@@ -134,6 +134,7 @@ const UNCONDITIONALLY_INERT: ReadonlySet<string> = new Set([
 	'pair_passkey_confirmation',
 	'pair_passkey_error',
 	'self_push_name_updated',
+	'client_expiration_changed',
 	'offline_sync_preview',
 	'device_list_update',
 	'identity_change',

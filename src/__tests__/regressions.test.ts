@@ -923,6 +923,156 @@ describe('dispatch: undecryptable_message', () => {
 		)
 		expect(upserts.length).toBe(0)
 	})
+
+	// Bridge 0.14.0 dedupes dispatched undecryptables by (chat, id, sender)
+	// instead of (chat, id): two group participants reusing an id are two
+	// messages, and both now reach the consumer.
+	it('emits one stub per sender when two participants reuse the same id', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		ev.on('messages.upsert', payload => upserts.push(payload))
+		const handler = makeEventHandler(ctx)
+		const fromSender = (user: string) => ({
+			type: 'undecryptable_message',
+			data: {
+				info: {
+					source: { chat: jid('123456', 'g.us'), sender: jid(user), is_group: true, is_from_me: false },
+					id: 'DUP-1',
+					timestamp: 1730000000,
+					push_name: ''
+				},
+				is_unavailable: false,
+				decrypt_fail_mode: 'show'
+			}
+		})
+		handler(fromSender('5511') as never)
+		handler(fromSender('5522') as never)
+		const keys = upserts.map(u => u.messages[0]?.key)
+		expect(keys.map(k => k?.id)).toEqual(['DUP-1', 'DUP-1'])
+		expect(keys.map(k => k?.participant)).toEqual(['5511@s.whatsapp.net', '5522@s.whatsapp.net'])
+	})
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher — push names from inbound envelopes
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Bridge 0.14.0 dropped the dedicated `push_name_update` event; the push name
+// now reaches consumers the way upstream surfaces it (`messages-recv.ts`): a
+// `contacts.update` with `notify` derived from each inbound envelope.
+describe('dispatch: inbound push name → contacts.update', () => {
+	const msgEvent = (info: Record<string, unknown>) => ({
+		type: 'message',
+		data: { info: { ...baseMessageInfo, ...info }, message: { conversation: 'hi' } }
+	})
+
+	it('notifies the DM sender push name', () => {
+		const updates = collect(msgEvent({}), 'contacts.update')
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	it('attributes a group message to the participant, not the group', () => {
+		const updates = collect(
+			msgEvent({ source: { chat: jid('123456', 'g.us'), sender: jid('5511'), is_group: true, is_from_me: false } }),
+			'contacts.update'
+		)
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	it('stays silent for own messages and for envelopes without a push name', () => {
+		const own = msgEvent({ source: { chat: jid('5511'), is_group: false, is_from_me: true } })
+		expect(collect(own, 'contacts.update').length).toBe(0)
+		expect(collect(msgEvent({ push_name: undefined }), 'contacts.update').length).toBe(0)
+	})
+
+	it('also notifies from an undecryptable envelope', () => {
+		const updates = collect(
+			{
+				type: 'undecryptable_message',
+				data: {
+					info: { ...baseMessageInfo, id: 'BAD-2' },
+					is_unavailable: false,
+					decrypt_fail_mode: 'show'
+				}
+			},
+			'contacts.update'
+		)
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	// The wire-batch aggregation branch never reaches the single-message
+	// dispatcher, so it has to emit the push name itself.
+	it('also notifies from wire-batched ordinary messages', () => {
+		const { ctx, ev } = makeCtx()
+		const updates: BaileysEventMap['contacts.update'][] = []
+		ev.on('contacts.update', payload => updates.push(payload))
+
+		makeEventHandlers(ctx).onMessageBatch?.(wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }]))
+
+		expect(updates.length).toBe(2)
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	// The engine's dedicated event used to fire for hidden ciphertexts too:
+	// the name is envelope metadata, independent of the suppressed stub.
+	it("still notifies when decrypt_fail_mode is 'hide'", () => {
+		const buckets = collectMany(
+			{
+				type: 'undecryptable_message',
+				data: { info: { ...baseMessageInfo, id: 'BAD-4' }, is_unavailable: false, decrypt_fail_mode: 'hide' }
+			},
+			'contacts.update',
+			'messages.upsert'
+		)
+		expect(buckets['contacts.update'][0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+		expect(buckets['messages.upsert'].length).toBe(0)
+	})
+
+	// A consumer listener that throws must not abort the rest of the batch;
+	// dispatchCanonicalEvent contains the single path the same way.
+	it('contains a throwing contacts.update listener inside a wire batch', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		let threw = false
+		ev.on('contacts.update', () => {
+			if (!threw) {
+				threw = true
+				throw new Error('consumer bug')
+			}
+		})
+		ev.on('messages.upsert', payload => upserts.push(payload))
+
+		makeEventHandlers(ctx).onMessageBatch?.(wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }]))
+
+		expect(threw).toBe(true)
+		expect(upserts.flatMap(u => u.messages.map(m => m.key.id))).toEqual(['BATCH-2'])
+	})
+
+	it('honors shouldIgnoreJid on the undecryptable path', () => {
+		const { ctx, ev } = makeCtx()
+		ctx.fullConfig = { shouldIgnoreJid: () => true } as never
+		const updates: BaileysEventMap['contacts.update'][] = []
+		ev.on('contacts.update', payload => updates.push(payload))
+		makeEventHandler(ctx)({
+			type: 'undecryptable_message',
+			data: { info: { ...baseMessageInfo, id: 'BAD-3' }, is_unavailable: false, decrypt_fail_mode: 'show' }
+		} as never)
+		expect(updates.length).toBe(0)
+	})
+
+	// A status post's canonical shape has the pseudo-contact as chatJid and no
+	// senderJid; attributing the poster's name to `status@broadcast` would let
+	// every poster overwrite one fake contact. Until the canonical layer
+	// carries the broadcast participant, staying silent is the correct shape.
+	it('never attributes a push name to a broadcast pseudo-contact', () => {
+		const updates = collect(
+			msgEvent({
+				source: { chat: jid('status', 'broadcast'), sender: jid('5511'), is_group: false, is_from_me: false }
+			}),
+			'contacts.update'
+		)
+		expect(updates.length).toBe(0)
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
