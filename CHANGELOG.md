@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.3](https://github.com/oxidezap/baileyrs/compare/v0.2.2...v0.2.3) (2026-08-17)
+
+
+### Bug Fixes
+
+* **errors:** give a bridge rejection a stack that names the caller ([#70](https://github.com/oxidezap/baileyrs/issues/70)) ([61e7b26](https://github.com/oxidezap/baileyrs/commit/61e7b26d71a717b5df7ef2ae13f5ab982aab74fa))
+
+
+### Dependencies
+
+* move to bridge 0.14.0 ([#68](https://github.com/oxidezap/baileyrs/issues/68)) ([1d4ae34](https://github.com/oxidezap/baileyrs/commit/1d4ae3485f7642f5125124dc6dc268eb697c754d))
+
 ## [0.2.2](https://github.com/oxidezap/baileyrs/compare/v0.2.1...v0.2.2) (2026-08-14)
 
 
