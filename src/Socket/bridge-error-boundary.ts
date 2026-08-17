@@ -29,9 +29,16 @@
 
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
-/** The bridge's rejection shape: a real `Error` with a string `kind`. */
+/**
+ * The bridge's rejection shape: a real `Error` the glue named `WhatsAppError`,
+ * carrying a string `kind`. The name check keeps consumer-owned errors that
+ * also discriminate on `kind` (a custom store or cache thrown through a
+ * bridge call) crossing by identity instead of being rebuilt.
+ */
 const isBridgeRejection = (error: unknown): error is Error & { kind: string } =>
-	error instanceof Error && typeof (error as { kind?: unknown }).kind === 'string'
+	error instanceof Error &&
+	error.name === 'WhatsAppError' &&
+	typeof (error as { kind?: unknown }).kind === 'string'
 
 /** Rebuild a bridge rejection here; return anything else untouched. */
 export const withCallerStack = (error: unknown): unknown => {

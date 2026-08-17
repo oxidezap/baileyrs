@@ -79,6 +79,16 @@ describe('withCallerStack: what passes through by identity', () => {
 		expect(withCallerStack(plain)).toBe(plain)
 	})
 
+	// A consumer store or cache can throw its own discriminated errors through
+	// a bridge call; a string kind alone must not claim them for translation.
+	it('an Error with a kind but not the bridge name', () => {
+		class CacheError extends Error {
+			kind = 'cache-miss'
+		}
+		const foreign = new CacheError('consumer-owned')
+		expect(withCallerStack(foreign)).toBe(foreign)
+	})
+
 	it('a string, null, and a non-Error object carrying kind', () => {
 		expect(withCallerStack('boom')).toBe('boom')
 		expect(withCallerStack(null)).toBe(null)
