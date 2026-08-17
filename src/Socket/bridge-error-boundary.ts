@@ -36,9 +36,7 @@ import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
  * bridge call) crossing by identity instead of being rebuilt.
  */
 const isBridgeRejection = (error: unknown): error is Error & { kind: string } =>
-	error instanceof Error &&
-	error.name === 'WhatsAppError' &&
-	typeof (error as { kind?: unknown }).kind === 'string'
+	error instanceof Error && error.name === 'WhatsAppError' && typeof (error as { kind?: unknown }).kind === 'string'
 
 /** Rebuild a bridge rejection here; return anything else untouched. */
 export const withCallerStack = (error: unknown): unknown => {
