@@ -585,7 +585,10 @@ const DISPATCHERS: DispatcherMap = {
 		// `decrypt_fail_mode === 'hide'` means the server told us to
 		// silently drop — match that by NOT emitting an upsert.
 		if (evt.decryptFailMode === 'hide') return
-		emitInboundPushName(ctx, evt)
+		// The stub below predates `shouldIgnoreJid` and stays unguarded; the
+		// push name emission is new, so it honors the predicate like the
+		// other two call sites do.
+		if (!ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) emitInboundPushName(ctx, evt)
 		const stubMsg = WAProto.WebMessageInfo.fromObject({
 			key: {
 				remoteJid: evt.chatJid,

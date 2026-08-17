@@ -1013,6 +1013,18 @@ describe('dispatch: inbound push name → contacts.update', () => {
 		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
 	})
 
+	it('honors shouldIgnoreJid on the undecryptable path', () => {
+		const { ctx, ev } = makeCtx()
+		ctx.fullConfig = { shouldIgnoreJid: () => true } as never
+		const updates: BaileysEventMap['contacts.update'][] = []
+		ev.on('contacts.update', payload => updates.push(payload))
+		makeEventHandler(ctx)({
+			type: 'undecryptable_message',
+			data: { info: { ...baseMessageInfo, id: 'BAD-3' }, is_unavailable: false, decrypt_fail_mode: 'show' }
+		} as never)
+		expect(updates.length).toBe(0)
+	})
+
 	// A status post's canonical shape has the pseudo-contact as chatJid and no
 	// senderJid; attributing the poster's name to `status@broadcast` would let
 	// every poster overwrite one fake contact. Until the canonical layer
