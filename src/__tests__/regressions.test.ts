@@ -1013,6 +1013,41 @@ describe('dispatch: inbound push name → contacts.update', () => {
 		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
 	})
 
+	// The engine's dedicated event used to fire for hidden ciphertexts too:
+	// the name is envelope metadata, independent of the suppressed stub.
+	it("still notifies when decrypt_fail_mode is 'hide'", () => {
+		const buckets = collectMany(
+			{
+				type: 'undecryptable_message',
+				data: { info: { ...baseMessageInfo, id: 'BAD-4' }, is_unavailable: false, decrypt_fail_mode: 'hide' }
+			},
+			'contacts.update',
+			'messages.upsert'
+		)
+		expect(buckets['contacts.update'][0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+		expect(buckets['messages.upsert'].length).toBe(0)
+	})
+
+	// A consumer listener that throws must not abort the rest of the batch;
+	// dispatchCanonicalEvent contains the single path the same way.
+	it('contains a throwing contacts.update listener inside a wire batch', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		let threw = false
+		ev.on('contacts.update', () => {
+			if (!threw) {
+				threw = true
+				throw new Error('consumer bug')
+			}
+		})
+		ev.on('messages.upsert', payload => upserts.push(payload))
+
+		makeEventHandlers(ctx).onMessageBatch?.(wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }]))
+
+		expect(threw).toBe(true)
+		expect(upserts.flatMap(u => u.messages.map(m => m.key.id))).toEqual(['BATCH-2'])
+	})
+
 	it('honors shouldIgnoreJid on the undecryptable path', () => {
 		const { ctx, ev } = makeCtx()
 		ctx.fullConfig = { shouldIgnoreJid: () => true } as never

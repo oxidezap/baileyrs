@@ -582,13 +582,15 @@ const DISPATCHERS: DispatcherMap = {
 			{ id: evt.id, chat: evt.chatJid, isUnavailable: evt.isUnavailable, fail: evt.decryptFailMode },
 			'undecryptable message received'
 		)
+		// The name is envelope metadata, independent of whether the failure
+		// may be surfaced, so it goes out even for `hide`. The stub below
+		// predates `shouldIgnoreJid` and stays unguarded; the push name
+		// emission is new, so it honors the predicate like the other two
+		// call sites do.
+		if (!ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) emitInboundPushName(ctx, evt)
 		// `decrypt_fail_mode === 'hide'` means the server told us to
 		// silently drop — match that by NOT emitting an upsert.
 		if (evt.decryptFailMode === 'hide') return
-		// The stub below predates `shouldIgnoreJid` and stays unguarded; the
-		// push name emission is new, so it honors the predicate like the
-		// other two call sites do.
-		if (!ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) emitInboundPushName(ctx, evt)
 		const stubMsg = WAProto.WebMessageInfo.fromObject({
 			key: {
 				remoteJid: evt.chatJid,
@@ -1057,11 +1059,12 @@ const dispatchCanonicalBatch = (
 
 		if (ctx.fullConfig.shouldIgnoreJid?.(canonical.chatJid)) continue
 
-		// This branch bypasses the single-message dispatcher, so the push name
-		// has to be surfaced here too.
-		emitInboundPushName(ctx, canonical)
-
 		try {
+			// This branch bypasses the single-message dispatcher, so the push
+			// name has to be surfaced here too. Inside the try: a throwing
+			// consumer listener skips this message only, like the containment
+			// in dispatchCanonicalEvent.
+			emitInboundPushName(ctx, canonical)
 			const metadata = messageUpsertMetadata(canonical)
 			const message = canonicalMessageToWAMessage(canonical)
 			if (pending && hasSameUpsertMetadata(pending, metadata)) {
