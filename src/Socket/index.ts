@@ -55,6 +55,7 @@ import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
 import { makeBridgeClientOwner } from './bridge-client-owner.ts'
+import { wrapBridgeClient } from './bridge-error-boundary.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
@@ -257,7 +258,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// Unregister before freeing: `free()` is swallowed, so ordering it
 			// last would leave the module-level pointer aimed at a client that is
 			// already gone if anything between them threw.
-			_unregisterActiveBridgeClient(client)
+			_unregisterActiveBridgeClient(wrapBridgeClient(client))
 			try {
 				client.free()
 			} catch {
@@ -333,7 +334,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// `initError` check when startup later fails.
 			if (initialized) {
 				const ready = owner.peek()
-				if (ready) return Promise.resolve(ready)
+				if (ready) return Promise.resolve(wrapBridgeClient(ready))
 			}
 
 			return initPromise.then(() => {
@@ -356,7 +357,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 				const built = owner.peek()
 				if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
-				return built
+				return wrapBridgeClient(built)
 			})
 		},
 		getClientSync: () => {
@@ -366,7 +367,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 			const built = owner.peek()
 			if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
-			return built
+			return wrapBridgeClient(built)
 		}
 	}
 	// The native repository delegates Signal state directly to the core and does
@@ -512,8 +513,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		if (!owner.adopt(created)) return owner.settled()
 
 		// Fallback for standalone helpers like `downloadContentFromMessage`
-		// that carry no socket reference.
-		_registerActiveBridgeClient(created, logger)
+		// that carry no socket reference. Registered wrapped so those helpers
+		// reject with a caller stack too; the memoized wrap keeps the
+		// unregister identity check working.
+		_registerActiveBridgeClient(wrapBridgeClient(created), logger)
 
 		// Replay a preference set before the client existed. `setAutoReconnect`
 		// forwards through `client?.`, so `makeWASocket(cfg).setAutoReconnect(false)`
@@ -826,7 +829,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			}
 		},
 		get waClient() {
-			return owner.peek()
+			const live = owner.peek()
+			return live && wrapBridgeClient(live)
 		},
 		get isConnected() {
 			return owner.peek()?.isConnected() ?? false
