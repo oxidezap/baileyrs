@@ -136,6 +136,17 @@ const messageUpsertMetadata = (message: CanonicalMessage): MessageUpsertMetadata
 const hasMessageSideEffects = (message: CanonicalMessage) =>
 	message.messageProto.reactionMessage != null || message.messageProto.protocolMessage != null
 
+// Mirror upstream `messages-recv.ts`: every inbound envelope that carries a
+// push name surfaces it as `contacts.update` with `notify`. This is also what
+// replaces the bridge's dedicated `push_name_update` event, gone in 0.14.0.
+const emitInboundPushName = (
+	ctx: SocketContext,
+	evt: { pushName?: string; isFromMe: boolean; senderJid?: string; chatJid: string }
+) => {
+	if (!evt.pushName || evt.isFromMe) return
+	ctx.ev.emit('contacts.update', [{ id: evt.senderJid ?? evt.chatJid, notify: evt.pushName }])
+}
+
 const hasSameUpsertMetadata = (left: MessageUpsertMetadata, right: MessageUpsertMetadata) =>
 	left.type === right.type && left.requestId === right.requestId
 
@@ -446,6 +457,7 @@ const DISPATCHERS: DispatcherMap = {
 	// ── Messages ──
 	message: (evt, { ctx }) => {
 		if (ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) return
+		emitInboundPushName(ctx, evt)
 		// Note: `emitOwnEvents=false` is NOT applied here. Upstream Baileys
 		// uses that flag to suppress the local echo when `sendMessage()`
 		// succeeds, not to drop inbound `fromMe` messages from other linked
@@ -568,6 +580,7 @@ const DISPATCHERS: DispatcherMap = {
 		// `decrypt_fail_mode === 'hide'` means the server told us to
 		// silently drop — match that by NOT emitting an upsert.
 		if (evt.decryptFailMode === 'hide') return
+		emitInboundPushName(ctx, evt)
 		const stubMsg = WAProto.WebMessageInfo.fromObject({
 			key: {
 				remoteJid: evt.chatJid,
@@ -586,7 +599,6 @@ const DISPATCHERS: DispatcherMap = {
 	},
 
 	// ── Contacts ──
-	pushNameUpdate: (evt, { ctx }) => ctx.ev.emit('contacts.update', [{ id: evt.jid, notify: evt.newPushName }]),
 	contactUpdate: (evt, { ctx }) => {
 		// Promote ContactAction fields into upstream's `Partial<Contact>`
 		// shape so consumers (sidebar UIs, contact pickers) see real names

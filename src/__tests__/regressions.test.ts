@@ -923,6 +923,82 @@ describe('dispatch: undecryptable_message', () => {
 		)
 		expect(upserts.length).toBe(0)
 	})
+
+	// Bridge 0.14.0 dedupes dispatched undecryptables by (chat, id, sender)
+	// instead of (chat, id): two group participants reusing an id are two
+	// messages, and both now reach the consumer.
+	it('emits one stub per sender when two participants reuse the same id', () => {
+		const { ctx, ev } = makeCtx()
+		const upserts: BaileysEventMap['messages.upsert'][] = []
+		ev.on('messages.upsert', payload => upserts.push(payload))
+		const handler = makeEventHandler(ctx)
+		const fromSender = (user: string) => ({
+			type: 'undecryptable_message',
+			data: {
+				info: {
+					source: { chat: jid('123456', 'g.us'), sender: jid(user), is_group: true, is_from_me: false },
+					id: 'DUP-1',
+					timestamp: 1730000000,
+					push_name: ''
+				},
+				is_unavailable: false,
+				decrypt_fail_mode: 'show'
+			}
+		})
+		handler(fromSender('5511') as never)
+		handler(fromSender('5522') as never)
+		const keys = upserts.map(u => u.messages[0]?.key)
+		expect(keys.map(k => k?.id)).toEqual(['DUP-1', 'DUP-1'])
+		expect(keys.map(k => k?.participant)).toEqual(['5511@s.whatsapp.net', '5522@s.whatsapp.net'])
+	})
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dispatcher — push names from inbound envelopes
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Bridge 0.14.0 dropped the dedicated `push_name_update` event; the push name
+// now reaches consumers the way upstream surfaces it (`messages-recv.ts`): a
+// `contacts.update` with `notify` derived from each inbound envelope.
+describe('dispatch: inbound push name → contacts.update', () => {
+	const msgEvent = (info: Record<string, unknown>) => ({
+		type: 'message',
+		data: { info: { ...baseMessageInfo, ...info }, message: { conversation: 'hi' } }
+	})
+
+	it('notifies the DM sender push name', () => {
+		const updates = collect(msgEvent({}), 'contacts.update')
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	it('attributes a group message to the participant, not the group', () => {
+		const updates = collect(
+			msgEvent({ source: { chat: jid('123456', 'g.us'), sender: jid('5511'), is_group: true, is_from_me: false } }),
+			'contacts.update'
+		)
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	it('stays silent for own messages and for envelopes without a push name', () => {
+		const own = msgEvent({ source: { chat: jid('5511'), is_group: false, is_from_me: true } })
+		expect(collect(own, 'contacts.update').length).toBe(0)
+		expect(collect(msgEvent({ push_name: undefined }), 'contacts.update').length).toBe(0)
+	})
+
+	it('also notifies from an undecryptable envelope', () => {
+		const updates = collect(
+			{
+				type: 'undecryptable_message',
+				data: {
+					info: { ...baseMessageInfo, id: 'BAD-2' },
+					is_unavailable: false,
+					decrypt_fail_mode: 'show'
+				}
+			},
+			'contacts.update'
+		)
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -114,7 +114,8 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		// mean the hazard moved. Add a signature only once a build emits it.
 		const WASM_MEMORY_FAULTS = [
 			'psize <= size + max_overhead', // dlmalloc's own check (bridge 0.6.5)
-			'memory access out of bounds' // the fault that beats it (bridge 0.7.0)
+			'memory access out of bounds', // the fault that beats it (bridge 0.7.0)
+			'finish: result should be None' // js-sys future panic that beats both (bridge 0.14.0)
 		]
 
 		// Documents the hazard rather than endorsing it. If a future bridge
