@@ -999,6 +999,33 @@ describe('dispatch: inbound push name → contacts.update', () => {
 		)
 		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
 	})
+
+	// The wire-batch aggregation branch never reaches the single-message
+	// dispatcher, so it has to emit the push name itself.
+	it('also notifies from wire-batched ordinary messages', () => {
+		const { ctx, ev } = makeCtx()
+		const updates: BaileysEventMap['contacts.update'][] = []
+		ev.on('contacts.update', payload => updates.push(payload))
+
+		makeEventHandlers(ctx).onMessageBatch?.(wireMessageBatch([{ id: 'BATCH-1' }, { id: 'BATCH-2' }]))
+
+		expect(updates.length).toBe(2)
+		expect(updates[0]?.[0]).toEqual({ id: '5511@s.whatsapp.net', notify: 'Foo' })
+	})
+
+	// A status post's canonical shape has the pseudo-contact as chatJid and no
+	// senderJid; attributing the poster's name to `status@broadcast` would let
+	// every poster overwrite one fake contact. Until the canonical layer
+	// carries the broadcast participant, staying silent is the correct shape.
+	it('never attributes a push name to a broadcast pseudo-contact', () => {
+		const updates = collect(
+			msgEvent({
+				source: { chat: jid('status', 'broadcast'), sender: jid('5511'), is_group: false, is_from_me: false }
+			}),
+			'contacts.update'
+		)
+		expect(updates.length).toBe(0)
+	})
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

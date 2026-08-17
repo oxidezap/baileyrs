@@ -44,7 +44,7 @@ import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
 import { toNumber } from '../Utils/generics.ts'
 import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message.ts'
-import { isJidGroup } from '../WABinary/jid-utils.ts'
+import { isJidBroadcast, isJidGroup } from '../WABinary/jid-utils.ts'
 import {
 	buildGroupCreateStubMessage,
 	buildGroupJoinRequestEvents,
@@ -144,7 +144,12 @@ const emitInboundPushName = (
 	evt: { pushName?: string; isFromMe: boolean; senderJid?: string; chatJid: string }
 ) => {
 	if (!evt.pushName || evt.isFromMe) return
-	ctx.ev.emit('contacts.update', [{ id: evt.senderJid ?? evt.chatJid, notify: evt.pushName }])
+	const id = evt.senderJid ?? evt.chatJid
+	// A broadcast envelope resolves to the pseudo-contact (the canonical layer
+	// drops the participant for non-groups); naming `status@broadcast` after
+	// whoever posted last would corrupt it, so stay silent instead.
+	if (isJidBroadcast(id)) return
+	ctx.ev.emit('contacts.update', [{ id, notify: evt.pushName }])
 }
 
 const hasSameUpsertMetadata = (left: MessageUpsertMetadata, right: MessageUpsertMetadata) =>
@@ -1048,6 +1053,10 @@ const dispatchCanonicalBatch = (
 		}
 
 		if (ctx.fullConfig.shouldIgnoreJid?.(canonical.chatJid)) continue
+
+		// This branch bypasses the single-message dispatcher, so the push name
+		// has to be surfaced here too.
+		emitInboundPushName(ctx, canonical)
 
 		try {
 			const metadata = messageUpsertMetadata(canonical)
