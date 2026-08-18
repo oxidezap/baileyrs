@@ -112,7 +112,17 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				}
 
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
-				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id, editBytes)
+				// `options.messageId` on an edit means "send this edit under that
+				// stanza id" — the edit-path counterpart of the same option on a
+				// plain send. Without forwarding it, the edit always goes out
+				// under the anchor's own id and the caller's request is silently
+				// dropped, which makes id-collision use cases impossible from JS.
+				const newMsgId = await client.editMessageBytes(
+					jid,
+					protoMsg.key.id,
+					editBytes,
+					options?.messageId ?? undefined
+				)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
 				return fullMsg
 			}
