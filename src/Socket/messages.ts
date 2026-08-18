@@ -1,7 +1,7 @@
 import { sendReportingUpstreamFailure } from '../Compatibility/all-encryptions-failed.ts'
 import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
-import { planMessageRelay } from '../Compatibility/message-relay.ts'
+import { EMPTY_RELAY_NODES, planMessageRelay, resolveMessageId } from '../Compatibility/message-relay.ts'
 import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
 import type {
 	AnyMessageContent,
@@ -77,6 +77,16 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		if (contentType === 'protocolMessage') {
 			const protoMsg = msg.protocolMessage
 			if (protoMsg?.type === WAProto.Message.ProtocolMessage.Type.REVOKE && protoMsg?.key?.id) {
+				if (options?.messageId) {
+					// The core has no revoke variant that takes a stanza id, so
+					// the option cannot be honoured here. Saying so beats the
+					// silent drop this option used to get on every path.
+					ctx.logger.warn(
+						{ jid, messageId: options.messageId },
+						'messageId option cannot be honoured for a revoke: the core assigns the stanza id itself'
+					)
+				}
+
 				// Group revokes need the original sender's participant JID —
 				// without it the server rejects the revoke. The bridge
 				// signature is `revokeMessage(jid, message_id, participant?)`.
@@ -92,6 +102,15 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				protoMsg?.key?.id &&
 				protoMsg?.editedMessage
 			) {
+				if (options?.messageId) {
+					// `editMessageBytes` returns the stanza id but does not yet
+					// accept one; honouring the option here waits on the bridge.
+					ctx.logger.warn(
+						{ jid, messageId: options.messageId },
+						'messageId option cannot be honoured for an edit: the installed bridge assigns the stanza id itself'
+					)
+				}
+
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
 				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id, editBytes)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
@@ -100,10 +119,14 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 		}
 
 		const msgBytes = encodeProtoCompat('Message', msg as Record<string, unknown>)
+		// The with-options sends are the same core send as the plain ones, with
+		// the stanza id supplied by the caller instead of drawn by the engine.
+		// The id resolves through the same place `relayMessage` resolves it.
+		const messageId = resolveMessageId(ctx.getUser(), options?.messageId)
 		const msgId = await sendReportingUpstreamFailure(() =>
 			jid === 'status@broadcast' && options?.statusJidList?.length
-				? client.sendStatusMessageBytes(msgBytes, options.statusJidList)
-				: client.sendMessageBytes(jid, msgBytes)
+				? client.sendStatusMessageBytesWithOptions(msgBytes, options.statusJidList, messageId, EMPTY_RELAY_NODES, false)
+				: client.relayMessageBytesWithOptions(jid, msgBytes, messageId, EMPTY_RELAY_NODES, false, false)
 		)
 
 		fullMsg.key.id = msgId || fullMsg.key.id
