@@ -116,12 +116,20 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				// `||` and not `??`: an empty id means "unspecified" everywhere
 				// else in this API, and forwarding '' would pin the stanza to an
 				// invalid id instead of letting the bridge generate one.
-				const newMsgId = await client.editMessageBytes(
-					jid,
-					protoMsg.key.id,
-					editBytes,
-					options?.messageId || undefined
-				)
+				const editStanzaId = options?.messageId || undefined
+				// The 4th argument only exists in bridges that expose the stanza
+				// id. Typed narrowly (not `any`) and used only when a caller asked
+				// for it, so older bridges keep taking the 3-argument call they
+				// already type — no version bump needed to land this.
+				const editWithStanzaId = client.editMessageBytes as unknown as (
+					jid: string,
+					messageId: string,
+					bytes: Uint8Array,
+					stanzaId?: string
+				) => Promise<string>
+				const newMsgId = editStanzaId
+					? await editWithStanzaId(jid, protoMsg.key.id, editBytes, editStanzaId)
+					: await client.editMessageBytes(jid, protoMsg.key.id, editBytes)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
 				return fullMsg
 			}
