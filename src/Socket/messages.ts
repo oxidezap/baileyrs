@@ -102,17 +102,15 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				protoMsg?.key?.id &&
 				protoMsg?.editedMessage
 			) {
-				if (options?.messageId) {
-					// `editMessageBytes` returns the stanza id but does not yet
-					// accept one; honouring the option here waits on the bridge.
-					ctx.logger.warn(
-						{ jid, messageId: options.messageId },
-						'messageId option cannot be honoured for an edit: the installed bridge assigns the stanza id itself'
-					)
-				}
-
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
-				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id, editBytes)
+				// Edit-path counterpart of `options.messageId` on a plain send, and
+				// deliberately not `resolveMessageId`: the engine treats any supplied
+				// stanza id as borrowed and binds no id-keyed state to it, so an edit
+				// nobody asked to pin would silently lose its retry-cache entry and
+				// outbound secret. Absent stays absent. `||` and not `??` because an
+				// empty id means unspecified everywhere else in this API.
+				const editStanzaId = options?.messageId || undefined
+				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id, editBytes, editStanzaId)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
 				return fullMsg
 			}
