@@ -102,34 +102,15 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				protoMsg?.key?.id &&
 				protoMsg?.editedMessage
 			) {
-				if (options?.messageId) {
-					// `editMessageBytes` returns the stanza id but does not yet
-					// accept one; honouring the option here waits on the bridge.
-					ctx.logger.warn(
-						{ jid, messageId: options.messageId },
-						'messageId option cannot be honoured for an edit: the installed bridge assigns the stanza id itself'
-					)
-				}
-
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
-				// Edit-path counterpart of `options.messageId` on a plain send.
-				// `||` and not `??`: an empty id means "unspecified" everywhere
-				// else in this API, and forwarding '' would pin the stanza to an
-				// invalid id instead of letting the bridge generate one.
+				// Edit-path counterpart of `options.messageId` on a plain send, and
+				// deliberately not `resolveMessageId`: the engine treats any supplied
+				// stanza id as borrowed and binds no id-keyed state to it, so an edit
+				// nobody asked to pin would silently lose its retry-cache entry and
+				// outbound secret. Absent stays absent. `||` and not `??` because an
+				// empty id means unspecified everywhere else in this API.
 				const editStanzaId = options?.messageId || undefined
-				// The 4th argument only exists in bridges that expose the stanza
-				// id. Typed narrowly (not `any`) and used only when a caller asked
-				// for it, so older bridges keep taking the 3-argument call they
-				// already type — no version bump needed to land this.
-				const editWithStanzaId = client.editMessageBytes as unknown as (
-					jid: string,
-					messageId: string,
-					bytes: Uint8Array,
-					stanzaId?: string
-				) => Promise<string>
-				const newMsgId = editStanzaId
-					? await editWithStanzaId(jid, protoMsg.key.id, editBytes, editStanzaId)
-					: await client.editMessageBytes(jid, protoMsg.key.id, editBytes)
+				const newMsgId = await client.editMessageBytes(jid, protoMsg.key.id, editBytes, editStanzaId)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
 				return fullMsg
 			}

@@ -28,7 +28,12 @@ type RecordedCall = {
 	targetId?: string
 	recipients?: string[]
 	nodes?: BinaryNode[]
+	/** Whether a stanza id was passed at all, which `undefined` alone cannot say. */
+	argCount?: number
 }
+
+/** 4 when the edit carried a stanza id, 3 when it did not. */
+const arguments_of = (stanzaId?: string) => (stanzaId === undefined ? 3 : 4)
 
 /**
  * A bridge double that echoes the id it was given, the way the engine does,
@@ -80,9 +85,9 @@ const sendRecording = () => {
 		revokeMessage: async (jid: string, targetId: string) => {
 			calls.push({ method: 'revokeMessage', jid, targetId })
 		},
-		editMessageBytes: async (jid: string, targetId: string) => {
-			calls.push({ method: 'editMessageBytes', jid, targetId })
-			return ENGINE_ID
+		editMessageBytes: async (jid: string, targetId: string, _bytes: Uint8Array, stanzaId?: string) => {
+			calls.push({ method: 'editMessageBytes', jid, targetId, messageId: stanzaId, argCount: arguments_of(stanzaId) })
+			return stanzaId || ENGINE_ID
 		}
 	}
 	const ctx = {
@@ -165,7 +170,7 @@ describe('one resolution for both send paths', () => {
 	})
 })
 
-describe('the paths that cannot carry a caller id today', () => {
+describe('revoke, which still cannot carry a caller id', () => {
 	const targetKey = { remoteJid: DM, fromMe: true, id: '3EB0TARGETMESSAGE0' }
 
 	it('revoke: warns instead of silently dropping the option, and still revokes the target', async () => {
@@ -183,21 +188,51 @@ describe('the paths that cannot carry a caller id today', () => {
 		await send(DM, { delete: targetKey })
 		assert.equal(warns.length, 0)
 	})
+})
 
-	it('edit: warns instead of silently dropping the option, and keeps the engine-assigned id', async () => {
-		const { calls, warns, send } = sendRecording()
+/**
+ * The edit counterpart, which the bridge could not carry until 0.15.0 exposed a
+ * fourth argument on `editMessageBytes`. Pinning an edit to an existing id is
+ * how a caller re-renders a slot the server refuses to revoke, so the id has to
+ * reach the bridge, and absent has to stay absent: the engine treats any
+ * supplied id as borrowed and binds no retry-cache entry or outbound secret to
+ * it, which is a cost an edit nobody asked to pin must not pay.
+ */
+describe('edit with a caller-provided messageId', () => {
+	const targetKey = { remoteJid: DM, fromMe: true, id: '3EB0TARGETMESSAGE0' }
+
+	it('forwards the caller id as the stanza id, leaving the edit target alone', async () => {
+		const { calls, send } = sendRecording()
 		const sent = await send(DM, { text: 'edited', edit: targetKey }, { messageId: CALLER_ID })
 
 		assert.equal(calls[0]?.method, 'editMessageBytes')
-		assert.equal(calls[0]?.targetId, targetKey.id, 'the target of the edit is untouched')
-		assert.equal(sent.key.id, ENGINE_ID, 'the returned key is still the id the engine used')
-		assert.equal(warns.length, 1)
-		assert.match(warns[0]!, /messageId/)
+		assert.equal(calls[0]?.targetId, targetKey.id, 'the third argument still names the message being edited')
+		assert.equal(calls[0]?.messageId, CALLER_ID, 'the fourth argument is the stanza the edit goes out under')
+		assert.equal(sent.key.id, CALLER_ID, 'the returned key is the id actually used')
 	})
 
-	it('edit: stays quiet when the option was not passed', async () => {
+	it('passes no stanza id when the caller asked for none', async () => {
+		const { calls, send } = sendRecording()
+		const sent = await send(DM, { text: 'edited', edit: targetKey })
+
+		assert.equal(calls[0]?.argCount, 3, 'an unasked edit must not borrow an id and lose its id-keyed state')
+		assert.equal(calls[0]?.messageId, undefined)
+		assert.equal(sent.key.id, ENGINE_ID, 'the engine still assigns it')
+	})
+
+	it('treats an empty messageId as unspecified', async () => {
+		// Every other id path in this API falls back on falsy, so '' must not
+		// reach the wire as a stanza id.
+		const { calls, send } = sendRecording()
+		await send(DM, { text: 'edited', edit: targetKey }, { messageId: '' })
+
+		assert.equal(calls[0]?.argCount, 3)
+		assert.equal(calls[0]?.messageId, undefined)
+	})
+
+	it('stays quiet: the option is honoured now, so there is nothing to warn about', async () => {
 		const { warns, send } = sendRecording()
-		await send(DM, { text: 'edited', edit: targetKey })
+		await send(DM, { text: 'edited', edit: targetKey }, { messageId: CALLER_ID })
 		assert.equal(warns.length, 0)
 	})
 })
