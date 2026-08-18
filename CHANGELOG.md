@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.4](https://github.com/oxidezap/baileyrs/compare/v0.2.3...v0.2.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **messages:** honour the caller's messageId on an edit ([#71](https://github.com/oxidezap/baileyrs/issues/71)) ([230a4bd](https://github.com/oxidezap/baileyrs/commit/230a4bdde700277c996e393b6416df72adceb05c))
+* **messages:** honour the caller's messageId on sendMessage ([#72](https://github.com/oxidezap/baileyrs/issues/72)) ([3d61fa0](https://github.com/oxidezap/baileyrs/commit/3d61fa09ea5fb32e3a6bda8749088782dcfc23f0))
+
+
+### Dependencies
+
+* move to bridge 0.15.0 ([#74](https://github.com/oxidezap/baileyrs/issues/74)) ([b38f2b6](https://github.com/oxidezap/baileyrs/commit/b38f2b63b8ae5ad78b4ae47cf7034422b6db57b8))
+
 ## [0.2.3](https://github.com/oxidezap/baileyrs/compare/v0.2.2...v0.2.3) (2026-08-17)
 
 
