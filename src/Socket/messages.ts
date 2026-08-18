@@ -93,16 +93,15 @@ export const makeMessageMethods = (ctx: SocketContext) => ({
 				protoMsg?.editedMessage
 			) {
 				const editBytes = WAProto.Message.encode(protoMsg.editedMessage).finish()
-				// `options.messageId` on an edit means "send this edit under that
-				// stanza id" — the edit-path counterpart of the same option on a
-				// plain send. Without forwarding it, the edit always goes out
-				// under the anchor's own id and the caller's request is silently
-				// dropped, which makes id-collision use cases impossible from JS.
+				// Edit-path counterpart of `options.messageId` on a plain send.
+				// `||` and not `??`: an empty id means "unspecified" everywhere
+				// else in this API, and forwarding '' would pin the stanza to an
+				// invalid id instead of letting the bridge generate one.
 				const newMsgId = await client.editMessageBytes(
 					jid,
 					protoMsg.key.id,
 					editBytes,
-					options?.messageId ?? undefined
+					options?.messageId || undefined
 				)
 				fullMsg.key.id = newMsgId || fullMsg.key.id
 				return fullMsg
