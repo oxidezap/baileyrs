@@ -4,9 +4,17 @@ import { Boom } from '../Utils/boom.ts'
 import { generateMessageIDV2 } from '../Utils/generics.ts'
 import { areJidsSameUser, isJidBroadcast, isJidGroup, isJidNewsletter } from '../WABinary/index.ts'
 
-const EMPTY_RELAY_NODES: BinaryNode[] = []
+export const EMPTY_RELAY_NODES: BinaryNode[] = []
 
-type OwnRelayIdentity = { id?: string; lid?: string } | undefined
+export type OwnRelayIdentity = { id?: string; lid?: string } | undefined
+
+/**
+ * The one place that decides between the caller's id and a generated one.
+ * Every send path resolves through here, so `messageId` means the same thing
+ * on `sendMessage` and on `relayMessage`.
+ */
+export const resolveMessageId = (own: OwnRelayIdentity, messageId?: string): string =>
+	messageId || generateMessageIDV2(own?.id)
 
 export type MessageRelayPlan =
 	| {
@@ -68,7 +76,7 @@ export const planMessageRelay = (
 		})
 	}
 
-	const id = messageId || generateMessageIDV2(own?.id)
+	const id = resolveMessageId(own, messageId)
 	const refreshGroupMetadata = useCachedGroupMetadata === false
 	if (participant) {
 		const requesterIsOwnDevice = isDirectConversation(jid) && isOwnDevice(participant.jid, own)

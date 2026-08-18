@@ -52,16 +52,13 @@ interface DecodedMessage {
 }
 
 const makeCapturingContext = () => {
+	// `sendMessage` and `relayMessage` both hand their bytes to the same
+	// with-options send, so one capture covers the two describes below.
 	const relayed: Uint8Array[] = []
-	const sent: Uint8Array[] = []
 	const client = {
 		relayMessageBytesWithOptions: async (_jid: string, bytes: Uint8Array, messageId: string) => {
 			relayed.push(bytes)
 			return messageId
-		},
-		sendMessageBytes: async (_jid: string, bytes: Uint8Array) => {
-			sent.push(bytes)
-			return '3EB0AAAAAAAAAAAAAAAA'
 		}
 	} as unknown as WasmWhatsAppClient
 	const ctx = {
@@ -74,7 +71,7 @@ const makeCapturingContext = () => {
 		getMe: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
 		getClient: async () => client
 	} as unknown as SocketContext
-	return { ctx, relayed, sent }
+	return { ctx, relayed }
 }
 
 const groupJid = '120363000000000000@g.us'
@@ -202,14 +199,14 @@ describe('relayMessage: album parent', () => {
 
 describe('sendMessage: messageContextInfo in the bytes handed to the bridge', () => {
 	it('keeps the pin duration generated for a pin', async () => {
-		const { ctx, sent } = makeCapturingContext()
+		const { ctx, relayed } = makeCapturingContext()
 		await makeMessageMethods(ctx).sendMessage(groupJid, {
 			pin: { remoteJid: groupJid, fromMe: false, id: 'AABBCCDD11223344' },
 			type: proto.PinInChat.Type.PIN_FOR_ALL,
 			time: 604800
 		})
-		expect(sent).toHaveLength(1)
-		const decoded = decodeProto('Message', sent[0]!) as DecodedMessage
+		expect(relayed).toHaveLength(1)
+		const decoded = decodeProto('Message', relayed[0]!) as DecodedMessage
 		expect(decoded.messageContextInfo?.messageAddOnDurationInSecs).toBe(604800)
 		expect(decoded.pinInChatMessage?.key?.id).toBe('AABBCCDD11223344')
 	})
