@@ -55,6 +55,7 @@ import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
 import { makeBridgeClientOwner } from './bridge-client-owner.ts'
+import { warnUnsupportedConfig } from './unsupported-config.ts'
 import { wrapBridgeClient } from './bridge-error-boundary.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { makeEventHandlers } from './events.ts'
@@ -105,6 +106,10 @@ const browserToPlatformType = (browser: string): DevicePlatformType => {
 const makeWASocket = (config: UserFacingSocketConfig) => {
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { logger } = fullConfig
+	// Against `config`, not `fullConfig`: only what this caller actually passed
+	// is worth naming. Merging the defaults first would report every unsupported
+	// option on every socket, including the ones nobody chose.
+	warnUnsupportedConfig(config, logger)
 	const auth = normalizeSocketAuthenticationState(fullConfig.auth)
 	const getExposedKeys = makeLazyTransactionKeyStore(auth.keys, logger, fullConfig.transactionOpts)
 
