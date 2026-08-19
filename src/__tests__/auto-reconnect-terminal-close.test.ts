@@ -186,10 +186,14 @@ const RETRYING: Array<{ label: string; event: BridgeEvent }> = [
 /** Events that must not touch `connection.update` at all. */
 const SILENT: Array<{ label: string; event: BridgeEvent }> = [
 	{
-		// Reaches JS only from the engine's catch-all `<stream:error>` branch —
-		// unknown code, `<ack/>`, `<xml-not-well-formed>` — every one of which
-		// keeps or deliberately recycles the connection. This used to report
+		// The engine's catch-all `<stream:error>` branch — unknown code,
+		// `<ack/>`, `<xml-not-well-formed>` — every one of which keeps or
+		// deliberately recycles the connection. This used to report
 		// `badSession`, the code bots use to wipe credentials and re-pair.
+		//
+		// Not every stream error is silent: `429` is a rejected session, not a
+		// preserved connection, and reports `connecting`. See
+		// `rate-limited-stream-error.test.ts`.
 		label: 'stream error (connection preserved)',
 		event: { type: 'stream_error', data: { code: 'unknown' } }
 	}
