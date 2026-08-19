@@ -142,6 +142,42 @@ describe('warnUnsupportedConfig', () => {
 		warnUnsupportedConfig({ getMessage: async () => undefined }, {} as never)
 	})
 
+	// The inspection reads `config[key]` to tell a passed option from a spread
+	// leftover, and reading fires getters — so a config that throws on access
+	// would take the socket down from outside the logging call. Exotic, but the
+	// guarantee above is unconditional, so the guard has to cover the reading
+	// as well as the writing.
+	it('survives a config whose getter throws', () => {
+		const hostile = {}
+		Object.defineProperty(hostile, 'getMessage', {
+			enumerable: true,
+			get() {
+				throw new Error('config accessor is hostile')
+			}
+		})
+
+		warnUnsupportedConfig(hostile, { warn() {} } as never)
+	})
+
+	it('survives a proxy config whose traps throw', () => {
+		const hostile = new Proxy(
+			{},
+			{
+				get() {
+					throw new Error('trap is hostile')
+				},
+				getOwnPropertyDescriptor() {
+					throw new Error('trap is hostile')
+				},
+				has() {
+					throw new Error('trap is hostile')
+				}
+			}
+		)
+
+		warnUnsupportedConfig(hostile, { warn() {} } as never)
+	})
+
 	it('survives a logger whose warn throws', () => {
 		const throwing = {
 			warn() {

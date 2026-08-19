@@ -149,13 +149,23 @@ export const unsupportedConfigKeys = (config: object): string[] =>
  *
  * `warn` and not `error`: nothing is broken.
  *
- * A socket must never fail to build over a diagnostic, which takes both guards
- * around the call. The optional chaining covers a logger that has no `warn` (a
- * minimal one in a test, say); the `try` covers one whose `warn` throws — a
- * synchronous transport failing there would otherwise take down `makeWASocket`
- * itself, and only for the consumers who passed an inert option: the one group
- * this warning exists to help. The failure is swallowed rather than reported,
- * because the only thing left to report it with is the logger that just threw.
+ * A socket must never fail to build over a diagnostic. That guarantee is
+ * unconditional, so the guard covers the whole of it — the reading as well as
+ * the writing:
+ *
+ *  - the optional chaining, for a logger with no `warn` (a minimal one in a
+ *    test, say);
+ *  - the `try` around the logging call, for a logger whose `warn` throws — a
+ *    synchronous transport failing there would take down `makeWASocket` itself;
+ *  - the same `try` around the inspection, because telling a passed option from
+ *    a spread leftover means reading `config[key]`, and reading fires getters. A
+ *    config with a throwing accessor, or a proxy with a throwing trap, would
+ *    otherwise fail construction from outside the logging call.
+ *
+ * All of it only ever bites consumers who passed an inert option, which is the
+ * one group this warning exists to help. The failure is swallowed rather than
+ * reported, because the only thing left to report it with is the logger that
+ * just threw.
  *
  * @param config the object handed to `makeWASocket`, before defaults are merged
  * @param logger the socket's logger
@@ -164,10 +174,10 @@ export const warnUnsupportedConfig = (
 	config: object,
 	logger: { warn?: (payload: object, message: string) => void }
 ) => {
-	const options = unsupportedConfigKeys(config)
-	if (!options.length) return
-
 	try {
+		const options = unsupportedConfigKeys(config)
+		if (!options.length) return
+
 		logger?.warn?.(
 			{ options },
 			'these options are accepted for upstream compatibility but nothing reads them here: the engine owns that behaviour'
