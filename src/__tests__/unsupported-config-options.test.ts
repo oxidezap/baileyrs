@@ -133,9 +133,23 @@ describe('warnUnsupportedConfig', () => {
 		expect(collect({ browser: ['x', 'y', 'z'] }).length).toBe(0)
 	})
 
-	// A socket must never fail to build over a diagnostic.
+	// A socket must never fail to build over a diagnostic — and that has to hold
+	// for a logger that throws, not just one that is missing. A synchronous
+	// transport failing inside `warn` would otherwise take down `makeWASocket`
+	// itself, and only for consumers who passed an inert option: the one group
+	// this warning exists to help.
 	it('survives a logger without warn', () => {
 		warnUnsupportedConfig({ getMessage: async () => undefined }, {} as never)
+	})
+
+	it('survives a logger whose warn throws', () => {
+		const throwing = {
+			warn() {
+				throw new Error('logging transport is down')
+			}
+		}
+
+		warnUnsupportedConfig({ getMessage: async () => undefined }, throwing as never)
 	})
 })
 

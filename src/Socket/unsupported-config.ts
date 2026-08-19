@@ -147,9 +147,15 @@ export const unsupportedConfigKeys = (config: object): string[] =>
  * close carries its own configuration decision, and `Socket/internals.ts`
  * already warns "once per socket rather than per call" for its own no-ops.
  *
- * `warn` and not `error`: nothing is broken, and a socket must never fail to
- * build over a diagnostic — hence the guard around the call, which also keeps a
- * minimal test logger from throwing.
+ * `warn` and not `error`: nothing is broken.
+ *
+ * A socket must never fail to build over a diagnostic, which takes both guards
+ * around the call. The optional chaining covers a logger that has no `warn` (a
+ * minimal one in a test, say); the `try` covers one whose `warn` throws — a
+ * synchronous transport failing there would otherwise take down `makeWASocket`
+ * itself, and only for the consumers who passed an inert option: the one group
+ * this warning exists to help. The failure is swallowed rather than reported,
+ * because the only thing left to report it with is the logger that just threw.
  *
  * @param config the object handed to `makeWASocket`, before defaults are merged
  * @param logger the socket's logger
@@ -161,8 +167,12 @@ export const warnUnsupportedConfig = (
 	const options = unsupportedConfigKeys(config)
 	if (!options.length) return
 
-	logger?.warn?.(
-		{ options },
-		'these options are accepted for upstream compatibility but nothing reads them here: the engine owns that behaviour'
-	)
+	try {
+		logger?.warn?.(
+			{ options },
+			'these options are accepted for upstream compatibility but nothing reads them here: the engine owns that behaviour'
+		)
+	} catch {
+		// See above: nothing here is worth failing a socket over.
+	}
 }
