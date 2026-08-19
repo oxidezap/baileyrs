@@ -277,6 +277,13 @@ const emitClose = (
  * state upstream itself uses while a connection is being (re)established, so
  * consumers read this as `open → connecting → open` and stay out of the way.
  */
+/**
+ * `<stream:error code="429">` — the server rate limiting this session. The one
+ * stream error the engine forwards that is not a preserved connection; see the
+ * `streamError` dispatcher.
+ */
+const RATE_LIMITED_STREAM_ERROR = '429'
+
 const emitRetrying = (ctx: SocketContext) =>
 	ctx.ev.emit('connection.update', {
 		connection: 'connecting',
@@ -430,15 +437,44 @@ const DISPATCHERS: DispatcherMap = {
 		const status = mapConnectFailureToDisconnect(evt.reason)
 		emitClose(dispatchCtx, evt.message ?? 'Connection failure', status)
 	},
-	// NOT a close. The engine dispatches `StreamError` only from its catch-all
-	// `<stream:error>` branch — an unknown code, an `<ack/>` it still owes the
-	// server, or `<xml-not-well-formed>` — and it keeps or deliberately recycles
-	// the connection in every one of those. This used to report
+	// NOT a close, in either branch below. This used to report
 	// `DisconnectReason.badSession`, the code bots use to wipe credentials and
-	// re-pair, so a routine stream recycle could destroy a working session. The
-	// coded stream errors (401/409/515/516) never arrive here; they dispatch
-	// `loggedOut` / `streamReplaced` of their own.
-	streamError: (evt, { ctx }) => ctx.logger.warn({ code: evt.code }, 'stream error; the connection is preserved'),
+	// re-pair, so a routine stream recycle could destroy a working session.
+	//
+	// Two kinds of event arrive here, and they are not interchangeable:
+	//
+	//  - the engine's catch-all `<stream:error>` branch — an unknown code, an
+	//    `<ack/>` it still owes the server, or `<xml-not-well-formed>` — where
+	//    it keeps or deliberately recycles the connection. Nothing to publish:
+	//    the recycle reaches the consumer as a `disconnected` of its own.
+	//
+	//  - `429`, which is a *rejected session*, not a preserved connection.
+	//    `client/node_io.rs` clears `is_logged_in`, adds five rungs to the
+	//    Fibonacci backoff and suppresses the reset that would undo them, then
+	//    dispatches this event so an embedder can act on it — the core's comment
+	//    says as much ("An embedder has none, so report the rate limit through
+	//    `StreamError`"). It falls through the handler's `should_disconnect`
+	//    block, so the transport is still up at this instant and the socket
+	//    would keep reporting `open` until the server ends the stream.
+	//
+	// `connecting` for 429 is not a new state: it is the one this library
+	// already defines for "the engine is restoring the connection", and the one
+	// the next server frame produces anyway. Publishing it here just moves it to
+	// the moment the engine already knows, instead of the round trip that
+	// confirms it. The coded errors that *are* terminal (401/409/515/516) never
+	// reach this dispatcher; they emit `loggedOut` / `streamReplaced` instead.
+	streamError: (evt, { ctx }) => {
+		if (evt.code === RATE_LIMITED_STREAM_ERROR) {
+			ctx.logger.warn(
+				{ code: evt.code },
+				'stream error: the server rate limited this session; the engine will retry with an extended backoff'
+			)
+			emitRetrying(ctx)
+			return
+		}
+
+		ctx.logger.warn({ code: evt.code }, 'stream error; the connection is preserved')
+	},
 	streamReplaced: (_, dispatchCtx) =>
 		emitClose(dispatchCtx, 'Connection replaced', DisconnectReason.connectionReplaced),
 	// Carries the wire code (405), not `DisconnectReason.badSession`. Upstream
