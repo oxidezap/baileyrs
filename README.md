@@ -230,15 +230,19 @@ A few behaviors that differ from upstream — almost always to your advantage:
   either hook: a `cachedGroupMetadata` carried over from upstream never runs,
   and neither does a `getMessage`. Passing them is harmless — the whole
   `SocketConfig` shape is accepted so a migration needs no edits — but they are
-  not overrides, so delete them rather than maintain them. The socket warns once
+  not overrides, so delete them rather than maintain them. Every socket warns once
   at construction naming any option in that group it received; that list is the
-  authority, and it currently also covers `keepAliveIntervalMs`,
+  authority — the type system requires each `SocketConfig` member to be
+  classified, so it cannot fall behind — and it also covers `keepAliveIntervalMs`,
   `markOnlineOnConnect`, `maxMsgRetryCount`, `msgRetryCounterCache`,
   `retryRequestDelayMs`, `fireInitQueries`, `syncFullHistory`,
   `shouldSyncHistoryMessage`, `generateHighQualityLinkPreview`,
   `linkPreviewImageThumbnailWidth`, `enableAutoSessionRecreation`,
   `enableRecentMessageCache`, `appStateMacVerification`,
-  `patchMessageBeforeSending`, `customUploadHosts` and `countryCode`.
+  `patchMessageBeforeSending`, `customUploadHosts`, `countryCode`,
+  `connectTimeoutMs`, `qrTimeout`, `printQRInTerminal`, `ignoreOfflineMessages`,
+  `downloadHistory`, `agent`, `fetchAgent`, `mobile`, `mediaCache`,
+  `userDevicesCache`, `callOfferCache` and `placeholderResendCache`.
 - **`Boom` ships in the box.** baileyrs exports its own
   `@hapi/boom`-compatible `Boom`, so the existing
   `(err as Boom).output.statusCode` pattern works unchanged. If your

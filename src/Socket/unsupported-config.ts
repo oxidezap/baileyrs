@@ -40,7 +40,7 @@ export const UNSUPPORTED_CONFIG_KEYS = [
 	'fireInitQueries',
 	// Presence is explicit here: call `sendPresenceUpdate` after `open`.
 	'markOnlineOnConnect',
-	// History sync is driven by the engine and shaped by `downloadHistory`.
+	// History sync is driven by the engine.
 	'syncFullHistory',
 	'shouldSyncHistoryMessage',
 	// Link previews are not generated on this side.
@@ -60,8 +60,69 @@ export const UNSUPPORTED_CONFIG_KEYS = [
 	// Upstream hooks with no counterpart on this side.
 	'patchMessageBeforeSending',
 	'customUploadHosts',
-	'countryCode'
+	'countryCode',
+	// Timeouts and transport knobs the engine owns. `connectTimeoutMs` is the
+	// one to point at: `Socket/internals.ts` already documented that it "reaches
+	// neither the transport nor the core", and it was still missing from the
+	// first version of this list. Proxy and TLS configuration goes through
+	// `options.dispatcher`, which is read — `agent` and `fetchAgent` are not.
+	'connectTimeoutMs',
+	'qrTimeout',
+	'agent',
+	'fetchAgent',
+	'mobile',
+	// The QR is published on `connection.update`; drawing it is the consumer's.
+	'printQRInTerminal',
+	// Offline delivery is the engine's, and history sync is driven by it too.
+	'ignoreOfflineMessages',
+	'downloadHistory',
+	// Caches the engine keeps natively, in Rust, keyed off its own stores.
+	'mediaCache',
+	'userDevicesCache',
+	'callOfferCache',
+	'placeholderResendCache'
 ] as const satisfies ReadonlyArray<keyof SocketConfig>
+
+/**
+ * The other half: options something on this side actually reads.
+ *
+ * Only here to make the classification total. Nothing consumes this list at
+ * runtime; its job is to let the assertion below fail the build when a new
+ * member of `SocketConfig` belongs to neither list — which is exactly how the
+ * first version of the catalog shipped twelve keys short.
+ */
+export const READ_CONFIG_KEYS = [
+	'waWebSocketUrl',
+	'options',
+	'logger',
+	'version',
+	'browser',
+	'pushName',
+	'auth',
+	'cache',
+	'deviceProps',
+	'wantedPreKeyCount',
+	'emitOwnEvents',
+	'shouldIgnoreJid',
+	'defaultQueryTimeoutMs',
+	'transactionOpts',
+	'makeSignalRepository'
+] as const satisfies ReadonlyArray<keyof SocketConfig>
+
+/**
+ * Every member of `SocketConfig` is classified.
+ *
+ * A compile error here means a new option was added without deciding whether
+ * this library reads it. Put it in whichever list is true and the error goes
+ * away; the README presents the unread one as authoritative, so leaving an
+ * option out of both is what makes that claim false.
+ */
+type UnclassifiedConfigKey = Exclude<
+	keyof SocketConfig,
+	(typeof UNSUPPORTED_CONFIG_KEYS)[number] | (typeof READ_CONFIG_KEYS)[number]
+>
+const _everyConfigKeyIsClassified: UnclassifiedConfigKey extends never ? true : never = true
+void _everyConfigKeyIsClassified
 
 /**
  * Which unsupported options this caller actually passed.
@@ -79,7 +140,12 @@ export const unsupportedConfigKeys = (config: object): string[] =>
 	)
 
 /**
- * Say once, at construction, which unsupported options this caller passed.
+ * Say once per socket, at construction, which unsupported options this caller
+ * passed.
+ *
+ * Per socket, not per process: a replacement socket built after a terminal
+ * close carries its own configuration decision, and `Socket/internals.ts`
+ * already warns "once per socket rather than per call" for its own no-ops.
  *
  * `warn` and not `error`: nothing is broken, and a socket must never fail to
  * build over a diagnostic — hence the guard around the call, which also keeps a

@@ -19,15 +19,22 @@
  * it. `enableRecentMessageCache: true` reads worse still: it names a cache the
  * consumer believes it turned on.
  *
- * The warning is one line at construction, listing only keys the caller passed
- * explicitly. A default-only config is silent, and so is every subsequent
- * socket built from the same options.
+ * The warning is one line per socket, at construction, listing only keys the
+ * caller passed explicitly; a default-only config is silent. Per socket and not
+ * per process on purpose — `Socket/internals.ts` uses the same rule for its own
+ * no-op notice, and a replacement socket after a terminal close is a new
+ * configuration decision, not a repeat of the old one.
  */
 
 import { describe, it } from 'node:test'
 
 import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index.ts'
-import { unsupportedConfigKeys, UNSUPPORTED_CONFIG_KEYS, warnUnsupportedConfig } from '../Socket/unsupported-config.ts'
+import {
+	unsupportedConfigKeys,
+	UNSUPPORTED_CONFIG_KEYS,
+	READ_CONFIG_KEYS,
+	warnUnsupportedConfig
+} from '../Socket/unsupported-config.ts'
 import { expect } from './expect.ts'
 
 describe('unsupportedConfigKeys', () => {
@@ -48,7 +55,7 @@ describe('unsupportedConfigKeys', () => {
 	})
 
 	it('stays quiet for a config of only supported options', () => {
-		expect(unsupportedConfigKeys({ browser: ['x', 'y', 'z'], printQRInTerminal: false })).toEqual([])
+		expect(unsupportedConfigKeys({ browser: ['x', 'y', 'z'], emitOwnEvents: false })).toEqual([])
 	})
 
 	it('stays quiet for an empty config', () => {
@@ -129,5 +136,53 @@ describe('warnUnsupportedConfig', () => {
 	// A socket must never fail to build over a diagnostic.
 	it('survives a logger without warn', () => {
 		warnUnsupportedConfig({ getMessage: async () => undefined }, {} as never)
+	})
+})
+
+/**
+ * Completeness, which is where the first version of this catalog went wrong.
+ *
+ * It shipped missing twelve keys — `connectTimeoutMs` among them, whose own
+ * doc comment in `Socket/internals.ts` says it "reaches neither the transport
+ * nor the core". A hand-maintained list that the README calls authoritative has
+ * to be provably complete, or it quietly grants the same false confidence it
+ * exists to remove.
+ *
+ * So every member of `SocketConfig` is classified as read or unread, and the
+ * type-level assertion in the module fails the build when a new option belongs
+ * to neither. These runtime checks cover the other half: no key claimed by both
+ * lists, and none by neither among the ones that carry a default.
+ */
+describe('the classification covers SocketConfig', () => {
+	it('never puts a key in both lists', () => {
+		const unread = new Set<string>(UNSUPPORTED_CONFIG_KEYS)
+		expect(READ_CONFIG_KEYS.filter(key => unread.has(key))).toEqual([])
+	})
+
+	it('classifies every option that carries a default', () => {
+		const classified = new Set<string>([...UNSUPPORTED_CONFIG_KEYS, ...READ_CONFIG_KEYS])
+		const unclassified = Object.keys(DEFAULT_CONNECTION_CONFIG).filter(key => !classified.has(key))
+
+		expect(unclassified).toEqual([])
+	})
+
+	// The specific misses that motivated this block, so a regression names itself.
+	it('catalogs the options the first version missed', () => {
+		for (const key of [
+			'connectTimeoutMs',
+			'qrTimeout',
+			'printQRInTerminal',
+			'ignoreOfflineMessages',
+			'downloadHistory',
+			'mediaCache',
+			'userDevicesCache',
+			'callOfferCache',
+			'placeholderResendCache',
+			'agent',
+			'fetchAgent',
+			'mobile'
+		]) {
+			expect(UNSUPPORTED_CONFIG_KEYS.includes(key as never)).toBe(true)
+		}
 	})
 })
