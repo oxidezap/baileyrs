@@ -226,8 +226,23 @@ A few behaviors that differ from upstream — almost always to your advantage:
   [When `connecting` lasts minutes](#when-connecting-lasts-minutes): a
   readiness timeout written for upstream's `connecting` misreads this one.
 - **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
-  side caches group metadata and message keys natively. You can still pass
-  them — they're respected as overrides — but they're optional.
+  side caches group metadata and message keys natively, and nothing here calls
+  either hook: a `cachedGroupMetadata` carried over from upstream never runs,
+  and neither does a `getMessage`. Passing them is harmless — the whole
+  `SocketConfig` shape is accepted so a migration needs no edits — but they are
+  not overrides, so delete them rather than maintain them. Every socket warns once
+  at construction naming any option in that group it received; that list is the
+  authority — the type system requires each `SocketConfig` member to be
+  classified, so it cannot fall behind — and it also covers `keepAliveIntervalMs`,
+  `markOnlineOnConnect`, `maxMsgRetryCount`, `msgRetryCounterCache`,
+  `retryRequestDelayMs`, `fireInitQueries`, `syncFullHistory`,
+  `shouldSyncHistoryMessage`, `generateHighQualityLinkPreview`,
+  `linkPreviewImageThumbnailWidth`, `enableAutoSessionRecreation`,
+  `enableRecentMessageCache`, `appStateMacVerification`,
+  `patchMessageBeforeSending`, `customUploadHosts`, `countryCode`,
+  `connectTimeoutMs`, `qrTimeout`, `printQRInTerminal`, `ignoreOfflineMessages`,
+  `downloadHistory`, `agent`, `fetchAgent`, `mobile`, `mediaCache`,
+  `userDevicesCache`, `callOfferCache` and `placeholderResendCache`.
 - **`Boom` ships in the box.** baileyrs exports its own
   `@hapi/boom`-compatible `Boom`, so the existing
   `(err as Boom).output.statusCode` pattern works unchanged. If your
