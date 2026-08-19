@@ -463,13 +463,21 @@ const DISPATCHERS: DispatcherMap = {
 	// the moment the engine already knows, instead of the round trip that
 	// confirms it. The coded errors that *are* terminal (401/409/515/516) never
 	// reach this dispatcher; they emit `loggedOut` / `streamReplaced` instead.
-	streamError: (evt, { ctx }) => {
+	streamError: (evt, { ctx, callbacks }) => {
 		if (evt.code === RATE_LIMITED_STREAM_ERROR) {
 			ctx.logger.warn(
 				{ code: evt.code },
 				'stream error: the server rate limited this session; the engine will retry with an extended backoff'
 			)
-			emitRetrying(ctx)
+			// `connecting` promises the engine is restoring this connection.
+			// Under `setAutoReconnect(false)` it will not — the run loop breaks
+			// on the pass after the disconnect that follows — so publishing it
+			// would leave a retrying state nobody resolves. Silence, not a
+			// close: the engine still dispatches `Disconnected` when the server
+			// ends the stream, and that dispatcher already turns it into a
+			// terminal close under this flag. Closing here too would publish two
+			// for one failure, the second after teardown had already run.
+			if (callbacks?.isAutoReconnectEnabled?.() !== false) emitRetrying(ctx)
 			return
 		}
 

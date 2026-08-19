@@ -81,7 +81,7 @@ const makeCtx = () => {
 	return { ctx, ev, warnings }
 }
 
-const dispatchStreamError = (code: string) => {
+const dispatchStreamError = (code: string, opts: { autoReconnect?: boolean } = {}) => {
 	const { ctx, ev, warnings } = makeCtx()
 	const updates: Partial<ConnectionState>[] = []
 	const terminalCloses: Error[] = []
@@ -92,7 +92,8 @@ const dispatchStreamError = (code: string) => {
 		onTerminalClose: (error, publish) => {
 			terminalCloses.push(error)
 			publish()
-		}
+		},
+		isAutoReconnectEnabled: () => opts.autoReconnect ?? true
 	}).onEvent?.({ type: 'stream_error', data: { code } } as never)
 
 	return { updates, warnings, terminalCloses }
@@ -144,4 +145,41 @@ describe('stream error: every other code is still silent', () => {
 			expect(warnings[0]?.message.includes('preserved')).toBe(true)
 		})
 	}
+})
+
+/**
+ * `setAutoReconnect(false)` and a 429 together.
+ *
+ * The promise `connecting` carries here is "the engine is restoring this
+ * connection". With auto-reconnect off it will not: the run loop breaks on the
+ * pass after the ensuing disconnect. Publishing `connecting` anyway would leave
+ * the consumer holding a retrying state nobody is going to resolve — the same
+ * trap `disconnected` and the retryable `connectFailure` codes already avoid by
+ * asking `isAutoReconnectEnabled` first.
+ *
+ * Staying silent, rather than closing here: the engine still dispatches
+ * `Disconnected` when the server ends the stream, and that dispatcher already
+ * turns it into a terminal close under this flag. Emitting one here too would
+ * publish two closes for one failure, and the second would arrive after
+ * teardown had already run.
+ */
+describe('stream error 429 with auto-reconnect disabled', () => {
+	it('does not claim the engine is retrying', () => {
+		const { updates } = dispatchStreamError('429', { autoReconnect: false })
+
+		expect(updates.length).toBe(0)
+	})
+
+	it('still tells the operator it was rate limited', () => {
+		const { warnings } = dispatchStreamError('429', { autoReconnect: false })
+
+		expect(warnings.length).toBe(1)
+		expect(warnings[0]?.message.includes('rate limited')).toBe(true)
+	})
+
+	it('leaves the terminal close to the disconnect that follows', () => {
+		const { terminalCloses } = dispatchStreamError('429', { autoReconnect: false })
+
+		expect(terminalCloses.length).toBe(0)
+	})
 })
