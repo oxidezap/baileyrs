@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.6](https://github.com/oxidezap/baileyrs/compare/v0.2.5...v0.2.6) (2026-08-19)
+
+
+### Features
+
+* **socket:** warn once about config options nothing here reads ([#78](https://github.com/oxidezap/baileyrs/issues/78)) ([6101010](https://github.com/oxidezap/baileyrs/commit/6101010260806b47d9c4dea57e7c669e2d08572a))
+
+
+### Bug Fixes
+
+* **events:** a 429 stream error is a rejected session, not a preserved connection ([#77](https://github.com/oxidezap/baileyrs/issues/77)) ([742edf4](https://github.com/oxidezap/baileyrs/commit/742edf46a760ca187cc875ab50298457cf7d0a68))
+
 ## [0.2.5](https://github.com/oxidezap/baileyrs/compare/v0.2.4...v0.2.5) (2026-08-19)
 
 
