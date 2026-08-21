@@ -295,6 +295,14 @@ What to do instead:
   tens of minutes rather than seconds, and have it alert a human instead of
   killing the process. A shorter one fires on a backoff that was about to
   succeed.
+- Know what your own calls do meanwhile. A call issued while the engine is
+  reconnecting no longer fails fast: it parks and goes out when the connection
+  lands, which on the ladder above can be tens of minutes. That is the point,
+  since the alternative was an error indistinguishable from a finished session,
+  but it means a call you issue during `connecting` is a call you are committing
+  to. Racing it against your own deadline bounds your waiting and not the work:
+  the call still goes out when the reconnect lands, so a retry after the
+  deadline sends it twice unless you pinned `messageId`.
 - Fix the cause on your side: send less. The engine restores the connection,
   but it does not pace your traffic, and the traffic is what earned the `429`.
   Queueing, throttling and deferral are yours to decide, the same as upstream.
