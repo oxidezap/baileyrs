@@ -374,6 +374,16 @@ baileyrs auto-wraps, including `useLegacyMultiFileAuthState`. It does not apply
 to `useMultiFileAuthState`, whose `keys` is a projection over the engine's own
 store; the `bridge-` namespaces never surface through it.
 
+The move back down is not symmetric either. From 0.2.8 on, a
+`bridge-native-session` records a skipped-message key as its seed alone, where
+an earlier release wrote the derived triple beside it. Forward is fine: a record
+written before this carries both, and the newer engine still prefers the triple
+when it finds one. Backward is not — an older engine rejects a key that carries
+no triple, so after a downgrade a late message claiming one of those buffered
+keys fails to decrypt. The session still loads and everything else in it still
+works; what is lost is that one message. Nothing else in the store changes
+shape.
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or in any way officially connected to

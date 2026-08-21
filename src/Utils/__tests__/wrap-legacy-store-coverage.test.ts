@@ -4,7 +4,7 @@
  *   2. PreKey cross-impl (proto bytes ↔ {public, private}).
  *   3. Identity cross-impl (32 bytes ↔ 33 bytes with 0x05 prefix + key rewrite).
  *   4. Idempotent round-trip (write→read→write produces identical disk bytes).
- *   5. Skipped-message seeds delegated to the core's canonical derivation.
+ *   5. Skipped-message seeds delegated to the core, and preserved as seeds.
  */
 
 import { Buffer } from 'node:buffer'
@@ -318,7 +318,7 @@ describe('wrap-legacy-store: identity edge cases', () => {
 // ── 8. Core-owned skipped-message derivation ───────────────────────────
 
 describe('wrap-legacy-store: core-owned skipped-message derivation', () => {
-	test('upstream messageKeys cache → bridge proto carries derived cipher/mac/iv', async () => {
+	test('upstream messageKeys cache → bridge proto carries the seed, not a derivation', async () => {
 		const { wrapped, keys } = await makeWrapped()
 		const baseKey = Buffer.from(fill(33, 0xa0))
 		const senderRatchet = Buffer.from(fill(33, 0xb0))
@@ -370,27 +370,37 @@ describe('wrap-legacy-store: core-owned skipped-message derivation', () => {
 		const decoded = bridgeProto.RecordStructure.decode(protoOut)
 		const recv = decoded.currentSession?.receiverChains?.[0]
 		const mks = recv!.messageKeys ?? []
-		expect(mks.length).toBe(2)
+		expect(mks.map(messageKey => messageKey.index)).toEqual([3, 5])
 
-		// Fixed vectors keep the test independent without duplicating the
-		// derivation algorithm in this package.
-		const expected = {
-			3: {
-				cipher: '0486a5424aa9f1827b06f6e0a9b4e89556812974395d7b4ada46163a74d66cc3',
-				mac: '21b9410a1c534cd9a8915ac18b40e522605360fc089eeeadaa8d50db605092e9',
-				iv: 'effbd4ca570762d5a015327999ff77a2'
-			},
-			5: {
-				cipher: '67cc072ba07fff4a99523e38324d5e1b97bdb5bd8c8cc7bfb627d44ab83c7179',
-				mac: 'c19028710da3ea81abd6ecd1ec0cf6fbf3c80e0c5ab0654d1bee7307a5b00b81',
-				iv: 'd0d01c002af2b5db9e7d549293d0623a'
-			}
-		} as const
-		const byIndex = Object.fromEntries(mks.map(m => [m.index, m]))
-		for (const index of [3, 5] as const) {
-			expect(Buffer.from(byIndex[index]!.cipherKey!).toString('hex')).toBe(expected[index].cipher)
-			expect(Buffer.from(byIndex[index]!.macKey!).toString('hex')).toBe(expected[index].mac)
-			expect(Buffer.from(byIndex[index]!.iv!).toString('hex')).toBe(expected[index].iv)
+		// The core buffers a skipped key as its seed alone: expanding it costs a
+		// derivation per skipped counter on a jump that may claim none of them,
+		// and the triple is three fields the record no longer has to carry. The
+		// WAProto-visible half of the entry is therefore just the index — the
+		// seed lives in the local field below, which is the only copy there is.
+		for (const messageKey of mks) {
+			expect(messageKey.cipherKey ?? null).toBe(null)
+			expect(messageKey.macKey ?? null).toBe(null)
+			expect(messageKey.iv ?? null).toBe(null)
 		}
+
+		// So what a caller actually has to be able to rely on is that the seed
+		// survives, and it is not in the schema this decoder knows. Reading the
+		// record back through the adapter is what proves it did: a dropped seed
+		// comes back as a chain that skipped nothing.
+		await wrapped.set('session', BRIDGE_SESSION_KEY_LID, protoOut)
+		const roundTripped = keys.raw['session']?.[UPSTREAM_SESSION_KEY_LID] as {
+			_sessions: Record<string, LegacySessionShape>
+		}
+		const chains = Object.values(roundTripped._sessions)[0]!._chains
+		const receiving = chains[peerRatchet.toString('base64')]!
+		expect(receiving.messageKeys).toEqual({
+			'3': skipSeed3.toString('base64'),
+			'5': skipSeed5.toString('base64')
+		})
 	})
 })
+
+/** Only the shape this file reads back out of the legacy record. */
+interface LegacySessionShape {
+	_chains: Record<string, { messageKeys: Record<string, string> }>
+}
