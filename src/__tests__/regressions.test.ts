@@ -661,7 +661,7 @@ describe('dispatch: receipt fan-out', () => {
 		expect(updates.map(u => u.key.id)).toEqual(['A', 'B', 'C'])
 	})
 
-	it('coalesces a packed receipt batch into one emission carrying every update', () => {
+	it('dispatches a packed receipt batch identically to single events', () => {
 		const { ctx, ev } = makeCtx()
 		const updates: BaileysEventMap['message-receipt.update'][] = []
 		ev.on('message-receipt.update', payload => updates.push(payload))
@@ -685,18 +685,39 @@ describe('dispatch: receipt fan-out', () => {
 			])
 		)
 
-		// One EventEmitter round trip for the batch, not one per receipt, with
-		// the per-receipt fan-out and timestamp slots preserved in wire order.
-		expect(updates.length).toBe(1)
-		expect(updates[0]?.map(u => u.key.id)).toEqual(['A', 'B', 'C'])
-		expect(updates[0]?.map(u => u.key.remoteJid)).toEqual([
-			'5511@s.whatsapp.net',
-			'5511@s.whatsapp.net',
-			'5522@s.whatsapp.net'
-		])
+		expect(updates.length).toBe(2)
+		expect(updates[0]?.map(u => u.key.id)).toEqual(['A', 'B'])
 		expect(updates[0]?.[0]?.receipt.readTimestamp).toBe(1730000000)
-		expect(updates[0]?.[1]?.receipt.readTimestamp).toBe(1730000000)
-		expect(updates[0]?.[2]?.receipt.playedTimestamp).toBe(1730000001)
+		expect(updates[1]?.[0]?.receipt.playedTimestamp).toBe(1730000001)
+	})
+
+	// A packed batch stays one emission per receipt on purpose. Merging it into a
+	// single emission would be fewer EventEmitter round trips, but `emit` stops
+	// at the first listener that throws, so one bad consumer handler would take
+	// the whole batch down with it instead of just the receipt it choked on.
+	it('keeps a throwing listener from discarding the rest of a packed batch', () => {
+		const { ctx, ev } = makeCtx()
+		ev.on('message-receipt.update', (payload: BaileysEventMap['message-receipt.update']) => {
+			if (payload.some(update => update.key.id === 'B')) throw new Error('consumer listener threw')
+		})
+		const seen: string[] = []
+		ev.on('message-receipt.update', (payload: BaileysEventMap['message-receipt.update']) => {
+			for (const update of payload) seen.push(String(update.key.id))
+		})
+
+		makeEventHandlers(ctx).onReceiptBatch?.(
+			encodeReceiptWireBatch(
+				['A', 'B', 'C'].map((id, index) => ({
+					source: { chat: jid(`551${index}`), sender: jid(`551${index}`), is_group: false, is_from_me: false },
+					message_ids: [id],
+					timestamp: 1730000000 + index,
+					type: 'Read',
+					offline: false
+				}))
+			)
+		)
+
+		expect(seen).toEqual(['A', 'C'])
 	})
 
 	it('routes type=read into receipt.readTimestamp', () => {
