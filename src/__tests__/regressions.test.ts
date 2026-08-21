@@ -1711,6 +1711,27 @@ describe('dispatch: emitCBEvents emits all upstream patterns', () => {
 		expect(fired).toContain('CB:iq,,pair-success')
 	})
 
+	// The attrs walk is `for..in`, which sees the prototype chain where the
+	// `Object.entries` it replaced did not. An attrs map that inherits an
+	// enumerable must not fire CB events for an attr the stanza never carried.
+	it('fires nothing for attrs inherited from the prototype chain', () => {
+		const { ctx, ws } = makeCtx()
+		const fired: string[] = []
+		const original = ws.emit.bind(ws)
+		ws.emit = (event, ...args) => {
+			if (typeof event === 'string') fired.push(event)
+			return original(event, ...args)
+		}
+		const attrs: BinaryNode['attrs'] = Object.create({ inherited: 'ghost' })
+		attrs.type = 'set'
+		makeEventHandler(ctx)({
+			type: 'raw_node',
+			data: { tag: 'iq', attrs, content: [] }
+		} as never)
+		expect(fired).toContain('CB:iq,type:set')
+		expect(fired.some(event => event.includes('inherited'))).toBe(false)
+	})
+
 	it('uses the raw node as the single lossless CB source for server ACKs', () => {
 		const { ctx, ev, ws } = makeCtx()
 		const rawAcks: BinaryNode[] = []
