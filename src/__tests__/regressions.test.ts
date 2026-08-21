@@ -691,6 +691,35 @@ describe('dispatch: receipt fan-out', () => {
 		expect(updates[1]?.[0]?.receipt.playedTimestamp).toBe(1730000001)
 	})
 
+	// A packed batch stays one emission per receipt on purpose. Merging it into a
+	// single emission would be fewer EventEmitter round trips, but `emit` stops
+	// at the first listener that throws, so one bad consumer handler would take
+	// the whole batch down with it instead of just the receipt it choked on.
+	it('keeps a throwing listener from discarding the rest of a packed batch', () => {
+		const { ctx, ev } = makeCtx()
+		ev.on('message-receipt.update', (payload: BaileysEventMap['message-receipt.update']) => {
+			if (payload.some(update => update.key.id === 'B')) throw new Error('consumer listener threw')
+		})
+		const seen: string[] = []
+		ev.on('message-receipt.update', (payload: BaileysEventMap['message-receipt.update']) => {
+			for (const update of payload) seen.push(String(update.key.id))
+		})
+
+		makeEventHandlers(ctx).onReceiptBatch?.(
+			encodeReceiptWireBatch(
+				['A', 'B', 'C'].map((id, index) => ({
+					source: { chat: jid(`551${index}`), sender: jid(`551${index}`), is_group: false, is_from_me: false },
+					message_ids: [id],
+					timestamp: 1730000000 + index,
+					type: 'Read',
+					offline: false
+				}))
+			)
+		)
+
+		expect(seen).toEqual(['A', 'C'])
+	})
+
 	it('routes type=read into receipt.readTimestamp', () => {
 		expect(run('read', ['A'])[0]?.receipt.readTimestamp).toBe(1730000000)
 	})
@@ -1701,6 +1730,27 @@ describe('dispatch: emitCBEvents emits all upstream patterns', () => {
 		expect(fired).toContain('CB:iq,type:set')
 		expect(fired).toContain('CB:iq,type')
 		expect(fired).toContain('CB:iq,,pair-success')
+	})
+
+	// The attrs walk is `for..in`, which sees the prototype chain where the
+	// `Object.entries` it replaced did not. An attrs map that inherits an
+	// enumerable must not fire CB events for an attr the stanza never carried.
+	it('fires nothing for attrs inherited from the prototype chain', () => {
+		const { ctx, ws } = makeCtx()
+		const fired: string[] = []
+		const original = ws.emit.bind(ws)
+		ws.emit = (event, ...args) => {
+			if (typeof event === 'string') fired.push(event)
+			return original(event, ...args)
+		}
+		const attrs: BinaryNode['attrs'] = Object.create({ inherited: 'ghost' })
+		attrs.type = 'set'
+		makeEventHandler(ctx)({
+			type: 'raw_node',
+			data: { tag: 'iq', attrs, content: [] }
+		} as never)
+		expect(fired).toContain('CB:iq,type:set')
+		expect(fired.some(event => event.includes('inherited'))).toBe(false)
 	})
 
 	it('uses the raw node as the single lossless CB source for server ACKs', () => {

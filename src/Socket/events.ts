@@ -72,7 +72,17 @@ const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
 	const id = l1.id
 	if (id) ws.emit(`${DEF_TAG_PREFIX}${id}`, node)
 
-	for (const [key, val] of Object.entries(l1)) {
+	// `for..in` over the attrs rather than `Object.entries`: this runs for every
+	// stanza the socket sees and the pair array it built was thrown away
+	// immediately. `Object.entries` was own-only by construction though, and
+	// `BinaryNode` is public, so the walk is guarded rather than trusting every
+	// caller to hand over an attrs map with a bare prototype. An inherited
+	// enumerable would otherwise fire CB events for an attr the stanza does not
+	// carry; the check costs nothing next to the emits below.
+	for (const key in l1) {
+		if (!Object.hasOwn(l1, key)) continue
+
+		const val = l1[key]
 		if (l2) ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${val},${l2}`, node)
 		ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${val}`, node)
 		// Bare-key pattern (no value): upstream `socket.ts:610` emits this

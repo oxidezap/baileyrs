@@ -88,9 +88,59 @@ export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 	}
 }
 
+const CHAR_DEVICE_SEP = 58 // ':'
+const CHAR_AGENT_SEP = 95 // '_'
+
+/**
+ * Index at which the user component ends, given the index of the '@'.
+ *
+ * `jidDecode` derives the user by splitting the pre-`@` half on ':' and then on
+ * '_', so the user always runs to whichever of ':' or '_' comes first, and to
+ * the '@' when neither is there. Locating that boundary answers both callers
+ * below without the intermediate arrays and result object `jidDecode` allocates.
+ */
+const userEndBefore = (jid: string, sepIdx: number): number => {
+	for (let i = 0; i < sepIdx; i++) {
+		const code = jid.charCodeAt(i)
+		if (code === CHAR_DEVICE_SEP || code === CHAR_AGENT_SEP) {
+			return i
+		}
+	}
+
+	return sepIdx
+}
+
+/** As above, or -1 when the JID has no server part: the case `jidDecode` reports as `undefined`. */
+const userEnd = (jid: string): number => {
+	const sepIdx = jid.indexOf('@')
+	return sepIdx < 0 ? -1 : userEndBefore(jid, sepIdx)
+}
+
 /** Compare the user component of two JIDs, matching upstream Baileys. */
-export const areJidsSameUser = (jid1: string | undefined, jid2: string | undefined) =>
-	jidDecode(jid1)?.user === jidDecode(jid2)?.user
+export const areJidsSameUser = (jid1: string | undefined, jid2: string | undefined) => {
+	// Same answer as comparing `jidDecode(...)?.user`, compared in place: this
+	// runs once per participant check on the message pipeline, and decoding both
+	// sides allocated four arrays and two objects only to throw them away.
+	const end = typeof jid1 === 'string' ? userEnd(jid1) : -1
+	if (end !== (typeof jid2 === 'string' ? userEnd(jid2) : -1)) {
+		return false
+	}
+
+	// Neither side decodes, so upstream compares `undefined === undefined`.
+	if (end < 0) {
+		return true
+	}
+
+	const left = jid1 as string
+	const right = jid2 as string
+	for (let i = 0; i < end; i++) {
+		if (left.charCodeAt(i) !== right.charCodeAt(i)) {
+			return false
+		}
+	}
+
+	return true
+}
 
 export const isJidMetaAI = (jid: string | undefined) => jid?.endsWith('@bot')
 export const isPnUser = (jid: string | undefined) => jid?.endsWith('@s.whatsapp.net')
@@ -107,13 +157,29 @@ const botRegexp = /^1313555\d{4}$|^131655500\d{2}$/
 export const isJidBot = (jid: string | undefined) => jid && botRegexp.test(jid.split('@')[0]!) && jid.endsWith('@c.us')
 
 export const jidNormalizedUser = (jid: string | undefined) => {
-	const result = jidDecode(jid)
-	if (!result) {
+	if (typeof jid !== 'string') {
 		return ''
 	}
 
-	const { user, server } = result
-	return jidEncode(user, server === 'c.us' ? 's.whatsapp.net' : (server as JidServer))
+	const sepIdx = jid.indexOf('@')
+	if (sepIdx < 0) {
+		return ''
+	}
+
+	// Everything between the user and the '@' is exactly what normalization
+	// drops, so the boundary is all this needs. `jidDecode` would split the same
+	// half twice and box the pieces in an object only for them to be re-joined.
+	const end = userEndBefore(jid, sepIdx)
+
+	// Fast path for the shape that dominates the pipeline: nothing to strip and a
+	// server `jidEncode` re-emits verbatim, so the JID already is its own normal
+	// form and no new string has to be built at all.
+	if (end === sepIdx && !jid.endsWith('@c.us')) {
+		return jid
+	}
+
+	const server = jid.slice(sepIdx + 1)
+	return jidEncode(jid.slice(0, end), server === 'c.us' ? 's.whatsapp.net' : (server as JidServer))
 }
 
 export const transferDevice = (fromJid: string, toJid: string): string => {

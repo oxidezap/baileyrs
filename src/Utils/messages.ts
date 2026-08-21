@@ -748,13 +748,58 @@ export const generateWAMessage = async (jid: string, content: AnyMessageContent,
 	return generateWAMessageFromContent(jid, await generateWAMessageContent(content, contentOptions), options)
 }
 
+/**
+ * The content keys that carry almost every message on a live socket, settled by
+ * identity before the structural predicate runs. Every name here already
+ * satisfies that predicate, so this only shortcuts the substring scan; it never
+ * changes which key wins.
+ */
+const isCommonContentKey = (key: string) => {
+	switch (key) {
+		case 'conversation':
+		case 'extendedTextMessage':
+		case 'imageMessage':
+		case 'videoMessage':
+		case 'audioMessage':
+		case 'stickerMessage':
+		case 'documentMessage':
+		case 'reactionMessage':
+		case 'protocolMessage':
+		case 'pollCreationMessage':
+			return true
+		default:
+			return false
+	}
+}
+
 /** Get the key to access the true type of content */
 export const getContentType = (content: proto.IMessage | undefined) => {
-	if (content) {
-		const keys = Object.keys(content)
-		const key = keys.find(k => (k === 'conversation' || k.includes('Message')) && k !== 'senderKeyDistributionMessage')
-		return key as keyof typeof content
+	if (!content) {
+		return undefined
 	}
+
+	// The answer stays positional (the first own key naming content wins), but
+	// the scan is an indexed loop with an early return instead of `Array.find`,
+	// so no closure is allocated and the common keys never reach `includes`.
+	//
+	// Deliberately still `Object.keys` and not `for..in`: a decoded
+	// `WAProto.Message` inherits a default for every field of the schema, so
+	// `for..in` would enumerate ~100 prototype keys per call (and would have to
+	// filter them back out with `hasOwn` to stay positional) where `Object.keys`
+	// yields only the handful that were actually set.
+	const keys = Object.keys(content)
+	for (let i = 0; i < keys.length; i++) {
+		const key = keys[i]!
+		if (isCommonContentKey(key)) {
+			return key as keyof typeof content
+		}
+
+		if (key.includes('Message') && key !== 'senderKeyDistributionMessage') {
+			return key as keyof typeof content
+		}
+	}
+
+	return undefined
 }
 
 const getFutureProofMessage = (message: WAMessageContent | null | undefined) =>
