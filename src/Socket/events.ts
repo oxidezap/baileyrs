@@ -25,7 +25,7 @@ import type {
 	WhatsAppEvent,
 	WhatsAppEventCallbacks
 } from '@oxidezap/whatsapp-rust-bridge'
-import type { CanonicalEvent, CanonicalMessage } from '../Bridge/index.ts'
+import type { CanonicalEvent, CanonicalMessage, CanonicalReceipt } from '../Bridge/index.ts'
 import { adaptBridgeEvent, adaptBridgeMessageWire } from '../Bridge/index.ts'
 import { decodeHistorySyncWireBatch } from '../Bridge/history-sync-wire.ts'
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
@@ -34,6 +34,7 @@ import type {
 	BaileysEventMap,
 	BinaryNode,
 	ConnectionState,
+	MessageUserReceiptUpdate,
 	WACallEvent,
 	WACallUpdateType,
 	WAMessage,
@@ -72,7 +73,12 @@ const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
 	const id = l1.id
 	if (id) ws.emit(`${DEF_TAG_PREFIX}${id}`, node)
 
-	for (const [key, val] of Object.entries(l1)) {
+	// `for..in` over the attrs rather than `Object.entries`: this runs for every
+	// stanza the socket sees and the pair array it built was thrown away
+	// immediately. `attrs` is a plain string map, so there is nothing on the
+	// prototype for the walk to pick up.
+	for (const key in l1) {
+		const val = l1[key]
 		if (l2) ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${val},${l2}`, node)
 		ws.emit(`${DEF_CALLBACK_PREFIX}${l0},${key}:${val}`, node)
 		// Bare-key pattern (no value): upstream `socket.ts:610` emits this
@@ -364,6 +370,48 @@ const describeTempBan = (code: number | undefined): string => {
 const emitConnectionUpdate = (ctx: SocketContext, update: Partial<ConnectionState>) =>
 	ctx.ev.emit('connection.update', update as Partial<ConnectionState>)
 
+/**
+ * Append one `MessageUserReceiptUpdate` per message id (upstream emits per-id),
+ * picking the timestamp slot from the receipt type so consumers branching on
+ * `receipt.readTimestamp` / `receipt.playedTimestamp` see the right field
+ * populated. Takes the sink so a packed batch can fill one array for the whole
+ * batch instead of one array (and one emission) per receipt.
+ */
+const collectReceiptUpdates = (evt: CanonicalReceipt, into: MessageUserReceiptUpdate[]) => {
+	const participant = evt.isGroup ? evt.senderJid : undefined
+	const receipt: { receiptTimestamp?: number; readTimestamp?: number; playedTimestamp?: number } = {}
+	if (evt.receiptType === 'read' || evt.receiptType === 'read-self') {
+		receipt.readTimestamp = evt.timestamp
+	} else if (evt.receiptType === 'played' || evt.receiptType === 'played-self') {
+		receipt.playedTimestamp = evt.timestamp
+	} else {
+		receipt.receiptTimestamp = evt.timestamp
+	}
+
+	for (const id of evt.messageIds) {
+		into.push({
+			key: { remoteJid: evt.chatJid, id, fromMe: evt.isFromMe, participant },
+			receipt
+		})
+	}
+
+	return into
+}
+
+/**
+ * Release a collected receipt batch on the event channel, under the same
+ * containment `dispatchCanonicalEvent` gave the per-receipt emission it
+ * replaces: a throwing consumer must not escape back into the bridge. Kept at
+ * module scope so a batch does not allocate a closure to flush itself.
+ */
+const emitReceiptUpdates = (ctx: SocketContext, updates: MessageUserReceiptUpdate[]) => {
+	try {
+		ctx.ev.emit('message-receipt.update', updates)
+	} catch (err) {
+		ctx.reportUnexpectedError(err, "dispatching a 'receipt' event")
+	}
+}
+
 const DISPATCHERS: DispatcherMap = {
 	// ── Connection lifecycle ──
 	connected: (_, { ctx }) => emitConnectionUpdate(ctx, { connection: 'open' }),
@@ -595,26 +643,7 @@ const DISPATCHERS: DispatcherMap = {
 	},
 
 	receipt: (evt, { ctx }) => {
-		// Fan out one MessageUserReceiptUpdate per id (upstream emits
-		// per-id) and pick the timestamp slot from the receipt type so
-		// consumers branching on `receipt.readTimestamp` /
-		// `receipt.playedTimestamp` see the right field populated.
-		const participant = evt.isGroup ? evt.senderJid : undefined
-		const receipt: { receiptTimestamp?: number; readTimestamp?: number; playedTimestamp?: number } = {}
-		if (evt.receiptType === 'read' || evt.receiptType === 'read-self') {
-			receipt.readTimestamp = evt.timestamp
-		} else if (evt.receiptType === 'played' || evt.receiptType === 'played-self') {
-			receipt.playedTimestamp = evt.timestamp
-		} else {
-			receipt.receiptTimestamp = evt.timestamp
-		}
-		ctx.ev.emit(
-			'message-receipt.update',
-			evt.messageIds.map(id => ({
-				key: { remoteJid: evt.chatJid, id, fromMe: evt.isFromMe, participant },
-				receipt
-			}))
-		)
+		ctx.ev.emit('message-receipt.update', collectReceiptUpdates(evt, []))
 	},
 
 	undecryptableMessage: (evt, { ctx }) => {
@@ -1197,9 +1226,39 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 			ctx.reportUnexpectedError(err, 'decoding the receipt wire batch')
 			return
 		}
-		// The decoded payload matches the single-event wire shape; the union's
-		// declared type is narrower than the adapter's tolerance.
-		for (const data of receipts) onEvent({ type: 'receipt', data } as unknown as WhatsAppEvent)
+		// One emission for the whole batch instead of one per receipt: every
+		// receipt in a packed batch lands on the same channel, so the updates are
+		// collected into a single array and handed to the EventEmitter once. The
+		// per-receipt error containment `dispatchCanonicalEvent` provides is kept:
+		// a receipt that throws while being built drops itself, not the batch.
+		let updates: MessageUserReceiptUpdate[] | undefined
+		for (const data of receipts) {
+			// The decoded payload matches the single-event wire shape; the union's
+			// declared type is narrower than the adapter's tolerance.
+			const canonical = adaptBridgeEvent({ type: 'receipt', data } as unknown as WhatsAppEvent, ctx.logger)
+			if (!canonical) continue
+
+			// The receipt adapter only ever yields a receipt, but the batch must
+			// not silently swallow anything else, and flushing first keeps the
+			// observable ordering of the two channels intact.
+			if (canonical.type !== 'receipt') {
+				if (updates) {
+					emitReceiptUpdates(ctx, updates)
+					updates = undefined
+				}
+
+				dispatchCanonicalEvent(canonical, dispatchCtx)
+				continue
+			}
+
+			try {
+				updates = collectReceiptUpdates(canonical, updates ?? [])
+			} catch (err) {
+				ctx.reportUnexpectedError(err, "dispatching a 'receipt' event")
+			}
+		}
+
+		if (updates) emitReceiptUpdates(ctx, updates)
 	}
 
 	const onServerAckBatch = (batch: ServerAckWireBatch) => {

@@ -661,7 +661,7 @@ describe('dispatch: receipt fan-out', () => {
 		expect(updates.map(u => u.key.id)).toEqual(['A', 'B', 'C'])
 	})
 
-	it('dispatches a packed receipt batch identically to single events', () => {
+	it('coalesces a packed receipt batch into one emission carrying every update', () => {
 		const { ctx, ev } = makeCtx()
 		const updates: BaileysEventMap['message-receipt.update'][] = []
 		ev.on('message-receipt.update', payload => updates.push(payload))
@@ -685,10 +685,18 @@ describe('dispatch: receipt fan-out', () => {
 			])
 		)
 
-		expect(updates.length).toBe(2)
-		expect(updates[0]?.map(u => u.key.id)).toEqual(['A', 'B'])
+		// One EventEmitter round trip for the batch, not one per receipt, with
+		// the per-receipt fan-out and timestamp slots preserved in wire order.
+		expect(updates.length).toBe(1)
+		expect(updates[0]?.map(u => u.key.id)).toEqual(['A', 'B', 'C'])
+		expect(updates[0]?.map(u => u.key.remoteJid)).toEqual([
+			'5511@s.whatsapp.net',
+			'5511@s.whatsapp.net',
+			'5522@s.whatsapp.net'
+		])
 		expect(updates[0]?.[0]?.receipt.readTimestamp).toBe(1730000000)
-		expect(updates[1]?.[0]?.receipt.playedTimestamp).toBe(1730000001)
+		expect(updates[0]?.[1]?.receipt.readTimestamp).toBe(1730000000)
+		expect(updates[0]?.[2]?.receipt.playedTimestamp).toBe(1730000001)
 	})
 
 	it('routes type=read into receipt.readTimestamp', () => {
