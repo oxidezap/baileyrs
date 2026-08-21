@@ -100,6 +100,17 @@ describe('getContentType — nothing to report', () => {
 	it('returns undefined when only senderKeyDistributionMessage is present', () => {
 		expect(getContentType(asContent({ senderKeyDistributionMessage: {}, messageContextInfo: {} }))).toBeUndefined()
 	})
+
+	// A decoded message inherits a default for every field of the schema, so a
+	// lookup that walked the prototype chain would report one of those instead of
+	// nothing. Only the fields actually set on the instance count.
+	it('ignores the schema defaults a decoded message inherits', () => {
+		const decoded = WAProto.Message.decode(
+			WAProto.Message.encode({ messageContextInfo: {} }).finish()
+		) as WAMessageContent
+		expect(Object.keys(decoded)).toEqual(['messageContextInfo'])
+		expect(getContentType(decoded)).toBeUndefined()
+	})
 })
 
 /**
