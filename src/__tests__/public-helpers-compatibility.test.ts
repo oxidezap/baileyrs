@@ -89,10 +89,12 @@ import {
 	S_WHATSAPP_NET,
 	WAJIDDomains,
 	getServerFromDomainType,
+	areJidsSameUser,
 	isJidBot,
 	isJidBroadcast,
 	isJidMetaAI,
 	isPnUser,
+	jidNormalizedUser,
 	transferDevice
 } from '../WABinary/jid-utils.ts'
 
@@ -414,6 +416,50 @@ describe('WABinary public helpers', () => {
 		assert.equal(isPnUser('123@c.us'), false)
 		assert.equal(isJidBot('13135551234@c.us'), true)
 		assert.equal(transferDevice('123:7@s.whatsapp.net', '456@s.whatsapp.net'), '456:7@s.whatsapp.net')
+	})
+
+	// Both helpers answer without decoding the JID, so the answers upstream gives
+	// for the awkward shapes are pinned here rather than left to the fuzz suite:
+	// device and agent suffixes, a missing server part on one or both sides, an
+	// empty user, and a JID carrying more than one '@'.
+	it('compares the user component the way a decode would', () => {
+		assert.equal(areJidsSameUser('5511999990000@s.whatsapp.net', '5511999990000@s.whatsapp.net'), true)
+		assert.equal(areJidsSameUser('5511999990000:12@s.whatsapp.net', '5511999990000@s.whatsapp.net'), true)
+		assert.equal(areJidsSameUser('5511999990000_1@s.whatsapp.net', '5511999990000@lid'), true)
+		assert.equal(areJidsSameUser('5511999990000_1:12@s.whatsapp.net', '5511999990000@c.us'), true)
+		assert.equal(areJidsSameUser('a@b@s.whatsapp.net', 'a@s.whatsapp.net'), true)
+		assert.equal(areJidsSameUser('@s.whatsapp.net', '@lid'), true)
+		assert.equal(areJidsSameUser('5511999990000@s.whatsapp.net', '5511999990001@s.whatsapp.net'), false)
+		assert.equal(areJidsSameUser('5511@s.whatsapp.net', '55110@s.whatsapp.net'), false)
+		// Two JIDs that both fail to decode compare their undefined users equal,
+		// while one that decodes never matches one that does not.
+		assert.equal(areJidsSameUser(undefined, undefined), true)
+		assert.equal(areJidsSameUser('nope', undefined), true)
+		assert.equal(areJidsSameUser('5511:1', '5511'), true)
+		assert.equal(areJidsSameUser(undefined, '5511@s.whatsapp.net'), false)
+		assert.equal(areJidsSameUser('', '@lid'), false)
+	})
+
+	it('normalizes the user JID without changing what a decode would produce', () => {
+		assert.equal(jidNormalizedUser('5511999990000@s.whatsapp.net'), '5511999990000@s.whatsapp.net')
+		assert.equal(jidNormalizedUser('5511999990000:12@s.whatsapp.net'), '5511999990000@s.whatsapp.net')
+		assert.equal(jidNormalizedUser('5511999990000_1:12@s.whatsapp.net'), '5511999990000@s.whatsapp.net')
+		assert.equal(jidNormalizedUser('5511999990000@c.us'), '5511999990000@s.whatsapp.net')
+		assert.equal(jidNormalizedUser('5511999990000:3@c.us'), '5511999990000@s.whatsapp.net')
+		assert.equal(jidNormalizedUser('123:4@lid'), '123@lid')
+		// Servers other than c.us are kept verbatim, including the ones the fast
+		// path does not name.
+		assert.equal(jidNormalizedUser('120363:2@g.us'), '120363@g.us')
+		assert.equal(jidNormalizedUser('status@broadcast'), 'status@broadcast')
+		assert.equal(jidNormalizedUser('123@hosted.lid'), '123@hosted.lid')
+		assert.equal(jidNormalizedUser('a@b@c.us'), 'a@b@c.us')
+		assert.equal(jidNormalizedUser('@c.us'), '@s.whatsapp.net')
+		assert.equal(jidNormalizedUser(':2@lid'), '@lid')
+		assert.equal(jidNormalizedUser('5511@'), '5511@')
+		// Anything without a server part has no user to normalize.
+		assert.equal(jidNormalizedUser(undefined), '')
+		assert.equal(jidNormalizedUser(''), '')
+		assert.equal(jidNormalizedUser('nope:1'), '')
 	})
 
 	it('reads child content and reduces stanza dictionaries', () => {
