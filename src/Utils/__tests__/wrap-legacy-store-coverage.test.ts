@@ -377,10 +377,16 @@ describe('wrap-legacy-store: core-owned skipped-message derivation', () => {
 		// and the triple is three fields the record no longer has to carry. The
 		// WAProto-visible half of the entry is therefore just the index — the
 		// seed lives in the local field below, which is the only copy there is.
-		for (const messageKey of mks) {
-			expect(messageKey.cipherKey ?? null).toBe(null)
-			expect(messageKey.macKey ?? null).toBe(null)
-			expect(messageKey.iv ?? null).toBe(null)
+		//
+		// Asked as "did the record frame this field", which is the claim, rather
+		// than as a nullish read: the decoder sets a field it saw as an own
+		// property, so absence is what distinguishes a seed-only entry, and a
+		// reader that later gave an unset `bytes` field an empty-buffer default
+		// would not quietly turn this into a check that passes on anything.
+		for (const field of ['cipherKey', 'macKey', 'iv'] as const) {
+			for (const messageKey of mks) {
+				expect(Object.hasOwn(messageKey, field)).toBe(false)
+			}
 		}
 
 		// So what a caller actually has to be able to rely on is that the seed
