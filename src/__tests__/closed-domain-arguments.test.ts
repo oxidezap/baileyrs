@@ -366,20 +366,33 @@ const statusCodeOf = (error: unknown): number | undefined =>
 	(error as { output?: { statusCode?: number } })?.output?.statusCode
 
 /** Settle a call, reporting a wait that never ends rather than hanging on it. */
+/**
+ * A domain rejection is synchronous by construction: `assertArgumentDomain`
+ * runs at the top of the method, before the first `await`, so it settles on the
+ * next microtask. Anything still pending after that is, by definition, not one
+ * — which makes "did it reject before yielding" the oracle this file wants.
+ *
+ * Waiting on the call itself is not an option and not needed. Since the engine
+ * holds a call through a reconnect, a valid argument on an offline socket parks
+ * with no bound; a timer would only pick a number, and the sentinel it resolved
+ * with used to satisfy `isDomainRejection(...) === false` on its own, so a
+ * parked call passed the assertion it was supposed to be exercising.
+ */
+const NEVER_REJECTED = Symbol('the call did not reject before yielding')
+
 const settle = async (run: () => Promise<unknown>): Promise<unknown> => {
-	let timer: NodeJS.Timeout | undefined
-	const pending = new Promise(resolve => {
-		timer = setTimeout(() => resolve(new Error('the call never settled')), 10_000)
-	})
-	const outcome = await Promise.race([
-		run().then(
-			() => undefined,
-			(error: unknown) => error
-		),
-		pending
+	const outcome = run().then(
+		() => undefined,
+		(error: unknown) => error
+	)
+	const tick = () => new Promise(resolve => setImmediate(resolve))
+	const raced = await Promise.race([
+		outcome,
+		tick()
+			.then(tick)
+			.then(() => NEVER_REJECTED)
 	])
-	clearTimeout(timer)
-	return outcome
+	return raced === NEVER_REJECTED ? undefined : raced
 }
 
 /** How the message renders a value it received, or one it accepts. */
