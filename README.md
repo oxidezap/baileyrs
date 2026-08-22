@@ -374,6 +374,29 @@ baileyrs auto-wraps, including `useLegacyMultiFileAuthState`. It does not apply
 to `useMultiFileAuthState`, whose `keys` is a projection over the engine's own
 store; the `bridge-` namespaces never surface through it.
 
+The move back down is not symmetric either. From 0.2.8 on, the core buffers a
+skipped-message key as its seed alone, where an earlier release wrote the
+derived cipher/mac/iv triple beside it. Forward is fine — a record written
+before this carries both, and the newer engine reads it unchanged. Backward is
+not: an older engine cannot parse a record whose skipped keys carry no triple,
+and it fails on **the whole record**, not on the one key.
+
+Where that bites depends on which bytes the engine is handed, and a wrapped
+store is not automatically on the safe side of it. It holds the Baileys
+projection, which has only ever held seeds — but it also mirrors the core's
+exact bytes under `bridge-native-session`, and a read prefers that mirror for as
+long as its fingerprint still matches the projection. A downgrade can therefore
+be handed the newer record with a perfectly readable projection sitting right
+beside it.
+
+Dropping a mirror row makes the next read rebuild it from the projection, which
+is the format both versions agree on — but only for a session that has one. A
+session that turned native-only lives in that row alone, so dropping *that* one
+loses the session outright, which is the case the warning above is about. A
+session with no skipped keys buffered at the time is unaffected either way: the
+difference only exists while a chain is holding keys for messages that arrived
+out of order.
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or in any way officially connected to
