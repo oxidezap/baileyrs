@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.8](https://github.com/oxidezap/baileyrs/compare/v0.2.7...v0.2.8) (2026-08-22)
+
+
+### Performance
+
+* **core:** optimize jid normalization, content type detection and the CB attr walk ([#82](https://github.com/oxidezap/baileyrs/issues/82)) ([3571cc1](https://github.com/oxidezap/baileyrs/commit/3571cc175fa5362ae6932a3928fee3d045601edb))
+
+
+### Dependencies
+
+* move to bridge 0.18.0 ([#84](https://github.com/oxidezap/baileyrs/issues/84)) ([b93d254](https://github.com/oxidezap/baileyrs/commit/b93d254c80686565fbe3f6f11545bd43a21476d3))
+
 ## [0.2.7](https://github.com/oxidezap/baileyrs/compare/v0.2.6...v0.2.7) (2026-08-21)
 
 
