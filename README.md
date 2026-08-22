@@ -381,12 +381,21 @@ before this carries both, and the newer engine reads it unchanged. Backward is
 not: an older engine cannot parse a record whose skipped keys carry no triple,
 and it fails on **the whole record**, not on the one key.
 
-Where that bites depends on which bytes you kept. A store this package wraps
-holds the Baileys projection, and v1 has only ever held seeds, so it downgrades
-cleanly. A `bridge-native-session` row holds the core's own bytes, and that is
-the one an older engine cannot read back. A session with no skipped keys
-buffered at the time is unaffected in either direction — the difference only
-exists while a chain is holding keys for messages that arrived out of order.
+Where that bites depends on which bytes the engine is handed, and a wrapped
+store is not automatically on the safe side of it. It holds the Baileys
+projection, which has only ever held seeds — but it also mirrors the core's
+exact bytes under `bridge-native-session`, and a read prefers that mirror for as
+long as its fingerprint still matches the projection. A downgrade can therefore
+be handed the newer record with a perfectly readable projection sitting right
+beside it.
+
+Dropping a mirror row makes the next read rebuild it from the projection, which
+is the format both versions agree on — but only for a session that has one. A
+session that turned native-only lives in that row alone, so dropping *that* one
+loses the session outright, which is the case the warning above is about. A
+session with no skipped keys buffered at the time is unaffected either way: the
+difference only exists while a chain is holding keys for messages that arrived
+out of order.
 
 ## Disclaimer
 
