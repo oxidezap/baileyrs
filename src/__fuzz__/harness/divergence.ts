@@ -1285,15 +1285,17 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
 		id: 'event-buffer-merge-precedence',
 		target: 'buffer:differential',
-		status: 'open',
+		status: 'intended',
 		// Confined to the fields inside a `contacts.upsert` or `groups.update`
 		// release, for the same ids. Everything else in the released sequence has to
 		// match, so a lost event, a changed id, or a difference on any other release
 		// still fails.
 		when: divergence => mergePrecedenceFieldsOnly(divergence.local, divergence.upstream),
 		reason:
-			"The two buffers consolidate `groups.update` and `contacts.upsert` differently, and on both kinds it is upstream that loses data rather than the two picking different winners. On groups, upstream stores only the *first* update for an id and discards every later one: `src/Utils/event-buffer.ts` merges with `Object.assign(data.groupUpdates[id] || {}, update)` where upstream guards the whole assignment with `if (!data.groupUpdates[id])`, which makes its own merge unreachable. Measured by buffering each pair and flushing: two updates for the same id with subjects 'first' then 'second' release 'second' here and 'first' upstream; and with *disjoint* fields — a subject then an announce — this releases both while upstream releases only the subject and drops the announce outright. On contacts, a `contacts.update` buffered before a `contacts.upsert` for the same id contributes the fields only *it* carried: measured with an update carrying `notify` and a later upsert carrying `name`, this releases both fields and upstream releases only `name`. The two agree on every field both carry — the upsert wins, because it arrived last — so this is an added-field difference and no longer a value one. baileyrs is the accumulating side on both, which is what the surrounding branches do for chats and messages and what 'consolidate' means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. `chats.update` twice, a `groups.update` whose second event carries nothing but the id, and the four message-level consolidation branches all agree, measured at the same time — the id-only case agreeing because there is no field to merge, which is why the `announce` case above does not. Found only once the buffer generator started drawing ids from a shared pool: before that no two buffered events ever referred to the same entity, so none of this ran.",
-		review: '2026-11-01'
+			'Upstream stores only the *first* `groups.update` for an id and discards every later one. Its own merge is unreachable: `lib/Utils/event-buffer.js` reads `const groupUpdate = data.groupUpdates[id] || {}` and then guards the assignment with `if (!data.groupUpdates[id])`, so `Object.assign(groupUpdate, update)` only ever runs with an empty base — the `|| {}` and the assign together only make sense without that guard. Measured by buffering and flushing: three updates for one id carrying a subject, an announce and a desc release all three here and the subject alone upstream. baileyrs accumulates, which is what the surrounding branches do for chats and messages and what "consolidate" means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. The contacts half this entry used to describe is gone — a `contacts.update` buffered before a `contacts.upsert` for the same id now releases the same fields on both sides, since #52 aligned the precedence. Re-measured: two upserts, two `chats.update`, an update-then-upsert and an upsert-then-update all agree, and only the repeated `groups.update` does not. There is no client evidence either way here — the event buffer is a Baileys abstraction with no WhatsApp Web counterpart — so this rests on upstream\'s own dead merge code rather than on the captured JS.',
+		// Was 'open'. The reason had already established which side loses data; what
+		// was missing was a re-measurement, and it shrank the claim by half.
+		review: '2027-02-01'
 	},
 	{
 		id: 'proto-decode-above-max-safe-integer',
@@ -1663,15 +1665,18 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
 		id: 'poll-vote-aggregation-order',
 		target: 'pure:getAggregateVotesInPollMessage',
-		status: 'open',
+		status: 'intended',
 		// Ordering only. Now that generated votes actually hash to the declared
 		// options, an unqualified entry would excuse a voter bucketed under the
 		// wrong option, a dropped voter or a renamed option — all of which change
 		// the multiset, and none of which this entry has ever claimed.
 		when: divergence => samePollAggregate(normalise(divergence.local), normalise(divergence.upstream)),
 		reason:
-			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order — and the ordering is a symptom, not the defect. Both build a map keyed by the option hash and return `Object.values`, but they key the *lookup* differently: this side decodes the selected option with `Buffer.from(optionHash).toString()`, upstream calls `option.toString()` on the value as it stands. For a Buffer those agree. For a plain `Uint8Array` they do not — the array renders as its comma-joined bytes, so `[0x5c]` keys as "92", which JavaScript treats as an array index and hoists to the front of the object. That is the whole of the ordering difference, and the fuzzer\'s minimised reproducer is exactly that byte. This is a divergence of input shape across runtimes, not a defect in upstream: protobufjs decodes a bytes field to a Node `Buffer`, measured, so upstream\'s key matches its own options in its own stack. The bridge decoder here returns a plain `Uint8Array`, also measured — so upstream\'s helper, handed what this runtime produces, matches no declared option at all: every vote lands in an "Unknown" bucket and every real option comes back with no voters. Decoding the bytes rather than stringifying the container is what makes the helper work on both shapes, which is why aligning the order with upstream would be the wrong move here. Pinned in public-helpers-compatibility.test.ts with the Uint8Array shape; restoring upstream\'s key fails it.',
-		review: '2026-11-01'
+			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order, and the ordering is a symptom rather than the defect. Both build a map keyed by the option hash and return `Object.values`, but they key the *lookup* differently: this side decodes the selected option with `Buffer.from(optionHash).toString()`, upstream calls `option.toString()` on the container as it stands. For a `Buffer` those agree. For a plain `Uint8Array` they do not — the array renders as its comma-joined bytes, so `[0x5c]` keys as "92", which JavaScript treats as an array index and hoists to the front of the object. Re-measured on a two-option poll with one vote: handed `Buffer`s both return the same buckets, and handed `Uint8Array`s upstream matches no declared option at all — every real option comes back with no voters and the vote lands in an "Unknown" bucket, while this side is unaffected. protobufjs decodes a bytes field to a Node `Buffer`, so upstream is correct in its own stack and its key works by accident of the runtime; the bridge decoder here returns a `Uint8Array`. Decoding the bytes rather than stringifying the container is what makes the helper work on both shapes, which is why aligning the order with upstream would be the wrong move. Pinned in public-helpers-compatibility.test.ts with the `Uint8Array` shape; restoring upstream\'s key fails it.',
+		// Was 'open'. Not a decision anyone still owes: the entry already argued that
+		// matching upstream would break the helper on the shape this runtime produces,
+		// and re-measuring confirms it — upstream buckets every vote as Unknown here.
+		review: '2027-02-01'
 	}
 ]
 
