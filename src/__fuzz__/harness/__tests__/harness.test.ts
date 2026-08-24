@@ -914,3 +914,63 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		)
 	})
 })
+
+describe('fuzz harness — the registry has no dangling references', () => {
+	/**
+	 * A divergence entry and the generator that reaches it are written together
+	 * and live in different files, so nothing ties them. `proto-empty-string-for-
+	 * numeric-field` was deleted while `generators/proto.ts` still seeded the
+	 * empty string into the 64-bit pools *for it by name* — the reproducer kept
+	 * firing with nothing left to excuse it, and 20 findings a night went
+	 * unexcused until someone read the comment that named the missing entry.
+	 *
+	 * Any id spelled out in the fuzz sources is a claim that the entry exists.
+	 * This checks the claim.
+	 */
+	it('every divergence id named in the fuzz sources is registered', async () => {
+		const { readdirSync, readFileSync, statSync } = await import('node:fs')
+		const { join } = await import('node:path')
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+
+		const root = join(import.meta.dirname, '../..')
+		const sources: string[] = []
+		const walk = (dir: string) => {
+			for (const name of readdirSync(dir)) {
+				const full = join(dir, name)
+				if (statSync(full).isDirectory()) walk(full)
+				else if (full.endsWith('.ts')) sources.push(full)
+			}
+		}
+		walk(root)
+
+		const registered = new Set(KNOWN_DIVERGENCES.map(entry => entry.id))
+		// Kebab-case, at least two segments, inside backticks — the shape every
+		// entry id has and the way the comments spell them. Loose enough to catch a
+		// rename, tight enough not to sweep up prose or file names.
+		const mention = /`([a-z0-9]+(?:-[a-z0-9]+){2,})`/gu
+		const dangling: string[] = []
+
+		// A target rendered as a corpus filename is spelled the same way an entry
+		// id is, and `corpus.ts` documents the transform by showing both. A slug
+		// printed beside the target it came from is a slug, not a reference.
+		const slugOfNeighbour = (line: string, id: string): boolean =>
+			[...line.matchAll(/`([a-z]+:[\w.]+)`/giu)].some(([, target]) => target !== undefined && corpusSlug(target) === id)
+
+		for (const file of sources) {
+			const text = readFileSync(file, 'utf8')
+			for (const line of text.split('\n')) {
+				for (const [, id] of line.matchAll(mention)) {
+					if (id === undefined || registered.has(id)) continue
+					// Only ids that look like registry entries: the registry is the
+					// authority on which kebab-case words are entry names, so a mention
+					// counts when some entry shares its leading segment.
+					if (![...registered].some(known => known.split('-')[0] === id.split('-')[0])) continue
+					if (slugOfNeighbour(line, id)) continue
+					dangling.push(`${file.slice(root.length + 1)} names \`${id}\`, which no registry entry defines`)
+				}
+			}
+		}
+
+		assert.deepEqual(dangling, [])
+	})
+})

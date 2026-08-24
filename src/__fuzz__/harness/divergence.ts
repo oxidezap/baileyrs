@@ -529,6 +529,41 @@ const carriesBeyondSafeInteger = (value: unknown, depth = 0): boolean => {
 	return Object.values(value as Record<string, unknown>).some(nested => carriesBeyondSafeInteger(nested, depth + 1))
 }
 
+/**
+ * True when the input really carries an empty string and the bridge still encoded.
+ *
+ * The entry documents one coercion, and keying on upstream's error text alone
+ * excused every local outcome — including the bridge dropping the field or
+ * writing something else entirely. This ties the excuse to an input that
+ * actually holds the empty string, and to the bridge having produced bytes
+ * rather than nothing.
+ *
+ * It stops short of proving the coerced field encoded as *zero*: the message
+ * carries other populated fields whose values are legitimately non-zero, so
+ * telling the coerced field from its neighbours needs the schema, which this
+ * registry has no access to. That is the remaining gap, and it is smaller than
+ * the one it replaces.
+ */
+const coercedAnEmptyString = (divergence: Divergence): boolean => {
+	const carriesEmptyString = (value: unknown, depth = 0): boolean => {
+		if (depth > 12) return false
+		if (value === '') return true
+		if (Array.isArray(value)) return value.some(item => carriesEmptyString(item, depth + 1))
+		if (typeof value !== 'object' || value === null) return false
+		return Object.values(value as Record<string, unknown>).some(nested => carriesEmptyString(nested, depth + 1))
+	}
+	if (!carriesEmptyString(divergence.input)) return false
+	// And the bridge really did coerce it to zero. The registry cannot tell the
+	// coerced field from its neighbours — that needs the schema — so the target
+	// answers instead: it re-encodes the same message with every empty string
+	// replaced by `'0'` and tags the finding with whether the bytes match.
+	// Measured on `Message.AudioMessage.fileLength`, `''` and `'0'` both encode to
+	// `0a017520002803` where `'5'` gives `0a017520052803`, so a regression that
+	// wrote a different value or dropped the field is tagged `not coerced` and
+	// stops being excused here.
+	return hasTag(divergence, 'empty string coerced to zero')
+}
+
 /** Removes one property wherever it appears, so a predicate can ask what is left. */
 const withoutKey = (value: unknown, name: string, depth = 0): unknown => {
 	if (depth > 12) return value
@@ -1695,6 +1730,21 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			'The bridge codec does not implement every message type the upstream protos declare (BotAvatarMetadata at the time of writing), and a field holding one is silently omitted rather than reported: MessageContextInfo{botMetadata:{avatarMetadata:{}}} encodes to 3a00 instead of 3a020a00. ALREADY TRACKED: BotAvatarMetadata is in KNOWN_UNSUPPORTED_CODECS and its fields in KNOWN_WIRE_GAPS in scripts/compatibility/proto-runtime-audit.ts. The unknown-type set here is probed at runtime rather than listed, so this entry stops matching by itself once the bridge implements them.',
 		review: '2026-10-01'
+	},
+	{
+		id: 'proto-empty-string-for-numeric-field',
+		target: /^proto:/u,
+		status: 'open',
+		reason:
+			"Given an empty string where the schema declares a 64-bit integer, the bridge coerces to 0 and protobufjs throws \"empty string\" — it routes 64-bit fields through Long.fromString, which rejects it. 32-bit fields are not affected: both sides coerce to 0 there, which is why the generator seeds the empty string into the 64-bit pools only. Same shape as the toNumber difference: baileyrs is the tolerant one, and deliberately so: `repairScalar` in src/Compatibility/proto-runtime.ts puts the coercion back for the 134 send-path failures that carried exactly `''`. Tolerant is defensible, but it means a caller's type error is silently encoded as a real value instead of surfacing.",
+		review: '2026-11-01',
+		// The upstream error *and* what the bridge actually wrote. Keyed on the
+		// message alone, a regression that encoded the empty string as a nonzero
+		// value, or dropped the field, stayed green under a "coerces to 0"
+		// exception. A zero-valued 64-bit field encodes as the tag followed by a
+		// single `00`, or is omitted entirely when the field has no explicit
+		// presence — so those are the two outputs this accepts.
+		when: divergence => text(divergence.upstream).includes('empty string') && coercedAnEmptyString(divergence)
 	},
 	{
 		id: 'poll-vote-aggregation-order',
