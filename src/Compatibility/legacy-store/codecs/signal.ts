@@ -247,7 +247,16 @@ function coreEntryToLegacy(session: CoreLegacySessionV1): LegacySessionEntry {
 			messageKeys: messageKeysToLegacy(chain.messageKeys)
 		}
 	}
-	return {
+	// Both optional parts are *added* rather than set to `undefined`, which is
+	// what upstream does (`session_record.js` guards `if (this.pendingPreKey)`,
+	// `session_builder.js` guards `if (device.preKey)`). The distinction is
+	// invisible once the value reaches a store — JSON drops an undefined-valued
+	// key — but it is visible to the mirror fingerprint, which is taken from
+	// the live object on write and from the reloaded one on read. Emitting the
+	// key made those two disagree for every session without a pending pre-key,
+	// so the mirror was rejected on the next read and the record rebuilt from
+	// the projection, discarding the counter lease the rebuild cannot express.
+	const entry: LegacySessionEntry = {
 		registrationId: session.registrationId,
 		currentRatchet: {
 			ephemeralKeyPair: {
@@ -266,15 +275,18 @@ function coreEntryToLegacy(session: CoreLegacySessionV1): LegacySessionEntry {
 			created: session.index.createdAtMs,
 			remoteIdentityKey: toBase64(session.index.remoteIdentityKey)
 		},
-		_chains: chains,
-		pendingPreKey: session.pendingPreKey
-			? {
-					preKeyId: session.pendingPreKey.preKeyId,
-					signedKeyId: session.pendingPreKey.signedPreKeyId,
-					baseKey: toBase64(session.pendingPreKey.baseKey)
-				}
-			: undefined
+		_chains: chains
 	}
+	if (session.pendingPreKey) {
+		entry.pendingPreKey = {
+			signedKeyId: session.pendingPreKey.signedPreKeyId,
+			baseKey: toBase64(session.pendingPreKey.baseKey)
+		}
+		if (session.pendingPreKey.preKeyId !== undefined) {
+			entry.pendingPreKey.preKeyId = session.pendingPreKey.preKeyId
+		}
+	}
+	return entry
 }
 
 function sessionToLegacy(nativeBytes: Uint8Array): LegacySessionJsonRecord | typeof NATIVE_ONLY_PROJECTION {

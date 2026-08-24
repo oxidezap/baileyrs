@@ -25,12 +25,27 @@ export const bytesToNumbers = (value: Uint8Array | Buffer): number[] => Array.fr
 type Canonical = null | boolean | number | string | Canonical[] | { [key: string]: Canonical }
 
 /**
+ * Marks a value JSON would not have kept, so the object and array branches can
+ * each drop it the way `JSON.stringify` does. A plain `undefined` return could
+ * not be told apart from a property that is genuinely absent.
+ */
+const ABSENT: unique symbol = Symbol('absent')
+
+/**
  * Stable, runtime-independent representation used only to notice legacy-side
  * ownership changes. Buffer and Uint8Array intentionally share one shape.
+ *
+ * `undefined` follows `JSON.stringify`, and that is deliberately asymmetric: an
+ * object property is dropped, an array element becomes `null`. The fingerprint
+ * is taken from the live projection when the mirror is written and from the
+ * reloaded one when it is read, so any distinction a store cannot carry makes
+ * the two disagree forever. Tagging `undefined` as its own value was such a
+ * distinction — no persisted store can express it, and the mirror it invalidated
+ * is the only copy of the record fields the projection has no room for.
  */
-function canonicalize(value: unknown, seen: Set<object>): Canonical {
+function canonicalize(value: unknown, seen: Set<object>): Canonical | typeof ABSENT {
 	if (value === null) return null
-	if (value === undefined) return { [CanonicalTag.UNDEFINED]: true }
+	if (value === undefined) return ABSENT
 	if (typeof value === 'string' || typeof value === 'boolean') return value
 	if (typeof value === 'number') {
 		if (Number.isNaN(value)) return { [CanonicalTag.NUMBER]: 'NaN' }
@@ -48,10 +63,16 @@ function canonicalize(value: unknown, seen: Set<object>): Canonical {
 	if (seen.has(value)) throw new TypeError('cannot fingerprint a cyclic legacy store value')
 	seen.add(value)
 	try {
-		if (Array.isArray(value)) return value.map(item => canonicalize(item, seen))
+		if (Array.isArray(value)) {
+			return value.map(item => {
+				const canonical = canonicalize(item, seen)
+				return canonical === ABSENT ? null : canonical
+			})
+		}
 		const out: Record<string, Canonical> = {}
 		for (const key of Object.keys(value).toSorted()) {
-			out[key] = canonicalize((value as Record<string, unknown>)[key], seen)
+			const canonical = canonicalize((value as Record<string, unknown>)[key], seen)
+			if (canonical !== ABSENT) out[key] = canonical
 		}
 		return out
 	} finally {
@@ -60,8 +81,13 @@ function canonicalize(value: unknown, seen: Set<object>): Canonical {
 }
 
 function fingerprintLegacy(value: unknown): Buffer {
-	const canonical = JSON.stringify(canonicalize(value, new Set()))
-	return createHash(MirrorEnvelope.HASH).update(canonical).digest()
+	// A top-level absent value hashes as `null`: a store reports a row it does
+	// not hold as either, and the two have to agree for the same reason the
+	// property case does.
+	const canonical = canonicalize(value, new Set())
+	return createHash(MirrorEnvelope.HASH)
+		.update(JSON.stringify(canonical === ABSENT ? null : canonical))
+		.digest()
 }
 
 export type NativeEnvelope = {
