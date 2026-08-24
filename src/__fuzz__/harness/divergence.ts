@@ -300,109 +300,6 @@ const namesUnknownCodecType = (input: unknown): boolean => {
 }
 
 /**
- * The two key fields `cleanMessage` re-encodes through `jidNormalizedUser`.
- *
- * Both, not just `remoteJid`: the same empty-user rewrite is observable on
- * `participant`, and an entry scoped to one field reported the other as an
- * unrelated finding. Measured — `{ key: { participant: '@hosted' } }` with an
- * empty meId leaves `@hosted` in baileyrs and becomes `@s.whatsapp.net`
- * upstream, exactly as `remoteJid` does.
- */
-const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
-
-/**
- * True when upstream is baileyrs plus JID keys that all hold the empty string.
- *
- * That is the whole of the `cleanMessage` difference: for a key with no
- * remoteJid or participant, upstream writes `jidNormalizedUser(undefined)` —
- * `''` — onto the caller's object where baileyrs leaves the property absent.
- * Anything else, including a changed value or a key upstream is missing, is a
- * different defect and still fails.
- *
- * "JID keys" is the part that has to be checked rather than assumed. Without it
- * the rule read "upstream has an extra key holding `''`", which is also true of
- * a dropped empty `conversation` or `reactionMessage.text` — measured, both were
- * excused as the known missing-JID difference. Only the two fields
- * `cleanMessage` actually normalises may appear this way.
- */
-const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boolean => {
-	if (depth > 12) return false
-	if (Array.isArray(local) || Array.isArray(upstream)) {
-		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
-		return local.every(
-			(item, index) => sameShape(item, upstream[index]) || addsOnlyEmptyStrings(item, upstream[index], depth + 1)
-		)
-	}
-	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) {
-		return sameShape(local, upstream)
-	}
-	const a = local as Record<string, unknown>
-	const b = upstream as Record<string, unknown>
-	// A key baileyrs has and upstream does not is the reverse of the claim.
-	for (const key of Object.keys(a)) if (!Object.hasOwn(b, key) && a[key] !== undefined) return false
-	for (const key of Object.keys(b)) {
-		if (!Object.hasOwn(a, key) || a[key] === undefined) {
-			if (b[key] !== '' || !CLEANED_JID_FIELDS.has(key)) return false
-			continue
-		}
-		if (!sameShape(a[key], b[key]) && !addsOnlyEmptyStrings(a[key], b[key], depth + 1)) return false
-	}
-	return true
-}
-
-/**
- * Replaces every normalised key JID with a sentinel, recursively.
- *
- * Lets a predicate say "apart from those JIDs, these agree" without
- * hand-walking the argument tuple the mutation target reports.
- */
-const maskKeyJids = (value: unknown, depth = 0): unknown => {
-	if (depth > 12 || typeof value !== 'object' || value === null) return value
-	if (Array.isArray(value)) return value.map(item => maskKeyJids(item, depth + 1))
-	const out: Record<string, unknown> = {}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		Object.defineProperty(out, key, {
-			// The empty string is left alone rather than masked. It is the *other*
-			// entry's subject — upstream materialising a missing JID as `''` — and
-			// masking it to the same sentinel as a real JID stopped
-			// `addsOnlyEmptyStrings` from recognising it, so a key that hit both
-			// differences at once matched neither entry.
-			value:
-				CLEANED_JID_FIELDS.has(key) && typeof nested === 'string' && nested !== ''
-					? '<jid>'
-					: maskKeyJids(nested, depth + 1),
-			enumerable: true,
-			writable: true,
-			configurable: true
-		})
-	}
-	return out
-}
-
-/**
- * Every non-empty normalised key JID a divergence side carries, by path.
- *
- * Keyed by path rather than collected into a list, because the two sides are
- * then compared field to field: a `remoteJid` on one side lining up with a
- * `participant` on the other is a different defect from the one this documents,
- * and must not be excused by it.
- */
-const keyJids = (value: unknown, prefix = '', found = new Map<string, string>(), depth = 0): Map<string, string> => {
-	if (depth > 12 || typeof value !== 'object' || value === null) return found
-	if (Array.isArray(value)) {
-		for (const [index, item] of value.entries()) keyJids(item, `${prefix}[${index}]`, found, depth + 1)
-		return found
-	}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		const path = `${prefix}.${key}`
-		if (CLEANED_JID_FIELDS.has(key) && typeof nested === 'string') {
-			if (nested !== '') found.set(path, nested)
-		} else keyJids(nested, path, found, depth + 1)
-	}
-	return found
-}
-
-/**
  * Substitutes U+FFFD for every unpaired surrogate in every string, recursively.
  *
  * Three of them per surrogate, not one: upstream copies content through
@@ -562,6 +459,48 @@ const coercedAnEmptyString = (divergence: Divergence): boolean => {
 	// wrote a different value or dropped the field is tagged `not coerced` and
 	// stops being excused here.
 	return hasTag(divergence, 'empty string coerced to zero')
+}
+
+const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
+
+/**
+ * True when upstream is baileyrs plus JID keys that all hold the empty string.
+ *
+ * That is the whole of the `cleanMessage` difference: for a key with no
+ * remoteJid or participant, upstream writes `jidNormalizedUser(undefined)` —
+ * `''` — onto the caller's object where baileyrs leaves the property absent.
+ * Anything else, including a changed value or a key upstream is missing, is a
+ * different defect and still fails.
+ *
+ * "JID keys" is the part that has to be checked rather than assumed. Without it
+ * the rule read "upstream has an extra key holding `''`", which is also true of
+ * a dropped empty `conversation` or `reactionMessage.text` — measured, both were
+ * excused as the known missing-JID difference. Only the two fields
+ * `cleanMessage` actually normalises may appear this way.
+ */
+const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (Array.isArray(local) || Array.isArray(upstream)) {
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
+		return local.every(
+			(item, index) => sameShape(item, upstream[index]) || addsOnlyEmptyStrings(item, upstream[index], depth + 1)
+		)
+	}
+	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) {
+		return sameShape(local, upstream)
+	}
+	const a = local as Record<string, unknown>
+	const b = upstream as Record<string, unknown>
+	// A key baileyrs has and upstream does not is the reverse of the claim.
+	for (const key of Object.keys(a)) if (!Object.hasOwn(b, key) && a[key] !== undefined) return false
+	for (const key of Object.keys(b)) {
+		if (!Object.hasOwn(a, key) || a[key] === undefined) {
+			if (b[key] !== '' || !CLEANED_JID_FIELDS.has(key)) return false
+			continue
+		}
+		if (!sameShape(a[key], b[key]) && !addsOnlyEmptyStrings(a[key], b[key], depth + 1)) return false
+	}
+	return true
 }
 
 /** Removes one property wherever it appears, so a predicate can ask what is left. */
@@ -1252,51 +1191,19 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		review: '2026-11-01'
 	},
 	{
-		id: 'clean-message-empty-jid-normalisation',
+		id: 'clean-message-empty-jid-key',
 		target: /^pure:cleanMessage/u,
-		status: 'open',
-		// One substitution, checked as such. Without a predicate the pattern excused
-		// every difference on every generated message, so altered content or a
-		// mis-normalised JID was absorbed — which is exactly what had been hiding
-		// the empty-user server difference below.
+		status: 'intended',
+		reason:
+			"For a key field with nothing to normalise, upstream writes the empty string and baileyrs leaves the property absent. WhatsApp Web is the absent side and this follows it: `WAWebMsgKey` assigns the participant only when it has one (`h !== void 0 && (this.participant = h)`) and builds the key's identity by joining the parts that are present, so an empty participant would change what the message serialises to. Upstream reaches `''` by routing every field through `jidNormalizedUser`, which answers that for a jid it was not given, and so materialises `participant: ''` on every direct-message key. Both are falsy and downstream behaviour matches, so this is a shape difference in the object handed back to the caller — but it is upstream's shape that is wrong, which is why the direction is not going to be reconciled.",
+		review: '2027-02-01',
+		// Only the two fields `cleanMessage` normalises, and only upstream having
+		// `''` where this side has nothing. A changed value, or a key upstream is
+		// missing, is a different defect and still fails.
 		when: divergence =>
 			!isThrow(divergence.local) &&
 			!isThrow(divergence.upstream) &&
-			addsOnlyEmptyStrings(normalise(divergence.local), normalise(divergence.upstream)),
-		reason:
-			'For a message key with no remoteJid/participant, upstream writes the empty string (via jidNormalizedUser(undefined)) while baileyrs writes undefined. Both are falsy and downstream behaviour matches, but the key objects differ for anything that inspects them. Only reachable with a malformed key.',
-		review: '2026-11-01'
-	},
-	{
-		id: 'clean-message-empty-user-jid-server',
-		target: /^pure:cleanMessage/u,
-		status: 'open',
-		// Found by narrowing the entry above, which had been excusing every
-		// difference on the target and so was covering this one too.
-		when: divergence => {
-			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
-			const mine = keyJids(normalise(divergence.local))
-			const theirs = keyJids(normalise(divergence.upstream))
-			// Same JID fields on both sides. A JID baileyrs writes where upstream
-			// writes nothing at all — or the reverse — is not this.
-			if (mine.size === 0 || mine.size !== theirs.size) return false
-			let rewritten = 0
-			for (const [path, jid] of mine) {
-				const other = theirs.get(path)
-				if (other === undefined) return false
-				if (other === jid) continue
-				// Differing: both must be the empty-user form this entry is about.
-				if (!jid.startsWith('@') || !other.startsWith('@')) return false
-				rewritten++
-			}
-			// At least one, or nothing here is the documented rewrite and whatever
-			// else differs is being excused for free.
-			if (rewritten === 0) return false
-			return addsOnlyEmptyStrings(maskKeyJids(normalise(divergence.local)), maskKeyJids(normalise(divergence.upstream)))
-		},
-		reason:
-			"For a message key whose remoteJid or participant normalises to an empty user, the two write different servers onto the caller's key. Measured directly: `_99:1@hosted` becomes `@hosted` in baileyrs and `@s.whatsapp.net` upstream; `_1@hosted.lid` becomes `@hosted.lid` in baileyrs and `@lid` upstream; `{ key: { participant: '@hosted' } }` shows the same rewrite on the participant field. `jidNormalizedUser` agrees on all of those in isolation, so the difference is in cleanMessage's own re-encoding, and baileyrs is the side that preserves what the server actually sent. A consumer keying chats by remoteJid therefore files these under different chats depending on the library. Only reachable with a JID whose user part is empty.",
-		review: '2026-11-01'
+			addsOnlyEmptyStrings(normalise(divergence.local), normalise(divergence.upstream))
 	},
 	{
 		id: 'forward-message-content-copy-shape',

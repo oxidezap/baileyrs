@@ -42,14 +42,31 @@ export const isRealMessage = (message: WAMessage): boolean => {
 export const shouldIncrementChatUnread = (message: WAMessage): boolean =>
 	!message.key.fromMe && !message.messageStubType
 
+/**
+ * WhatsApp Web's rules, which upstream Baileys does not always follow.
+ *
+ * **A field with nothing to normalise stays absent.** `WAWebMsgKey` only assigns
+ * the participant it was given — `h !== void 0 && (this.participant = h)` — and
+ * builds the message's identity by joining the parts that are present, so an
+ * empty string there would change what the key serialises to. Upstream runs
+ * every field through `jidNormalizedUser`, which answers `''` for a jid it was
+ * not given, and so writes `participant: ''` onto every direct-message key.
+ * Matching that would mean copying a bug into the key handed back to callers.
+ *
+ * **A hosted jid is re-encoded onto its plain server**, and the fallback that
+ * used to keep `@hosted` when the user part was empty is gone. WA Web accepts
+ * hosted only as `<digits>:99@hosted` (`WAWebWidValidator`), and every jid that
+ * reached the old fallback is one it rejects outright — so there is no
+ * behaviour to preserve there, and agreeing with upstream costs nothing. Valid
+ * hosted jids already agreed.
+ */
 const normalizeMessageJid = (jid: string | null | undefined): string | undefined => {
 	if (!jid) return undefined
 
 	const hostedPn = isHostedPnUser(jid)
 	if (!hostedPn && !isHostedLidUser(jid)) return jidNormalizedUser(jid)
 
-	const user = jidDecode(jid)?.user
-	return user ? jidEncode(user, hostedPn ? 's.whatsapp.net' : 'lid') : jidNormalizedUser(jid)
+	return jidEncode(jidDecode(jid)?.user ?? null, hostedPn ? 's.whatsapp.net' : 'lid')
 }
 
 /** Normalize device/hosted JIDs and nested reaction/poll keys in place. */
