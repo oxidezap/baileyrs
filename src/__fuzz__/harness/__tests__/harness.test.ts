@@ -952,16 +952,20 @@ describe('fuzz harness — the registry has no dangling references', () => {
 		 *
 		 * Listed, not pattern-matched. The first draft asked whether some *surviving*
 		 * entry shared the mention's leading segment, which reads as a heuristic and
-		 * behaves as a blind spot: four of the 26 ids are the only one with their
-		 * prefix, so deleting poll-vote-aggregation-order or
-		 * binary-node-messages-tolerates-bad-payload would have taken the check for
-		 * their own references with them. It also hid a live one: the comment in
+		 * behaves as a blind spot: four of the 26 ids are the only entry carrying
+		 * their prefix, so deleting one of those took the check for its own
+		 * references down with it. It also hid a live one — the comment in
 		 * generators/bridge-event.ts still claimed the registry carried an entry for
 		 * the adapter prototype-chain defect, which #47 removed along with the bug.
-		 * (Spelled without backticks on purpose — backticks are what the scan reads.)
 		 *
 		 * An unregistered id is a question somebody answers; a heuristic answers it
 		 * silently. Adding a name here is the answer, in writing.
+		 *
+		 * Backticks are the marker, so nothing here names an id in prose without
+		 * them — a reference this cannot see is worse than one it reports. The other
+		 * way an id is written is a comparison in code, and those carry their own
+		 * check at the point of use: every `entry.id === '…'` in this file is
+		 * followed by an assertion that the filter matched exactly one entry.
 		 */
 		const notAnEntryId = new Set([
 			'baileyrs-fuzz-v1', // the default FUZZ_SEED, documented in runner.ts
