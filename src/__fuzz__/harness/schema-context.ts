@@ -107,12 +107,14 @@ const fieldFactsByPath = new Map<string, FieldFacts>()
  * Every number a field is written under, asking both encoders rather than one.
  *
  * The two disagree on exactly one field out of 2421 —
- * `Message.pollResultSnapshotMessageV3` is 114 upstream and 115 in the bridge —
- * and the payloads these scans read are bridge-produced, so upstream's number
- * alone leaves the bridge's spelling of that submessage looking like opaque
- * bytes. Both are recorded because both are correct, each for the encoder that
- * wrote the payload; nothing else in `Message` claims either number, on either
- * side, so recording both cannot make a different field misframe.
+ * `Message.pollResultSnapshotMessageV3` is 114 upstream and 115 in the bridge,
+ * and 115 is the number WhatsApp Web itself uses — and the payloads these scans
+ * read are bridge-produced, so upstream's number alone leaves the bridge's
+ * spelling of that submessage looking like opaque bytes. Both are recorded
+ * anyway: each is the number its own encoder wrote, and a scan that refused
+ * upstream's would misframe upstream's payloads for as long as upstream keeps
+ * writing it. Nothing else in `Message` claims either number, on either side,
+ * so recording both cannot make a different field misframe.
  *
  * Measured rather than listed: a hardcoded exception would be exactly the
  * hand-kept list the field-number sweep exists to replace. A field only one

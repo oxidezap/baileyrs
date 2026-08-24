@@ -851,6 +851,23 @@ const sameShape = (left: unknown, right: unknown): boolean => {
 }
 
 /**
+ * True when deleting `pollResultSnapshotMessageV3` closes the gap completely.
+ *
+ * The renumbering shows up as the field being present on exactly one side, so
+ * the test is the shape rather than the name: remove the key wherever it
+ * appears, and the two decodes have to become identical *and* have differed
+ * before. A finding that carries a second changed value, or a second missing
+ * field, survives the deletion and is not this entry — which is what keeps a
+ * real decoder difference on a message that happens to hold this field from
+ * riding along with a renumbering that is already decided.
+ */
+const renumberingIsTheWholeDifference = (divergence: Divergence): boolean => {
+	const mine = withoutKey(normalise(divergence.local), 'pollResultSnapshotMessageV3')
+	const theirs = withoutKey(normalise(divergence.upstream), 'pollResultSnapshotMessageV3')
+	return sameShape(mine, theirs) && !sameShape(normalise(divergence.local), normalise(divergence.upstream))
+}
+
+/**
  * Renders either side of a divergence for a predicate to match against.
  *
  * `String(value)` yields "[object Object]" for the decoded objects these
@@ -1534,10 +1551,13 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// so a real regression on either would have been excused whenever the
 		// generated input happened to carry this field.
 		target: /^proto:|^wire:upstream-readable$/u,
-		status: 'open',
+		status: 'intended',
 		reason:
-			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2421 non-map fields. ALREADY TRACKED, and documented in exactly these terms: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
-		review: '2026-10-01',
+			'Message.pollResultSnapshotMessageV3 is field 115 in the bridge codec and field 114 upstream — the only such disagreement across all 2421 non-map fields. Decided against the client rather than between the two libraries: WhatsApp Web assigns 115 and leaves 114 unassigned. Its own field table, in module WAWebProtobufsE2E.pb of the WA Web bundle for WhatsApp 2.3000.1045368834, reads `newsletterFollowerInviteMessageV2:[113,...],pollResultSnapshotMessageV3:[115,...],newsletterAdminProfileMessage:[116,...]`, and the whatspec IR extracted from that bundle spells the same run at generated/proto/WAProto.proto:3459. So the bridge is conforming and upstream is not: baileys 7.0.0-rc13 declares the field at 114 (WAProto/WAProto.proto:2161) and its generated codec follows — encode writes tag 914 (WAProto/index.js:36333), decode reads case 114 (:36722) — which means a poll result snapshot it sends lands on a number WhatsApp does not read, and one WhatsApp sends is dropped. Minimal reproducer: proto.Message.encode({pollResultSnapshotMessageV3:{name:""}}).finish() is 9207020a00 where the bridge and the client both write 9a07020a00, and proto.Message.decode(Buffer.from("9a07020a00","hex")) reads nothing back. Nothing else in Message claims either number on either side, so neither spelling can misframe another field. ALREADY TRACKED as a difference: scripts/compatibility/__tests__/wire-fidelity.test.ts pins it as KNOWN_DIVERGENT and proto-runtime-audit.ts lists it in KNOWN_WIRE_GAPS; what is new is which side conforms. It closes when upstream regenerates its proto, not here. The proto:field-numbers sweep exists because it proves the question is answered exhaustively rather than by a hand-kept list — it found this one and nothing else, which is the useful result.',
+		// Was 'open' pending a decision on which number is correct. The client
+		// answers that, so there is nothing left to choose: matching upstream here
+		// would mean writing a field WhatsApp does not read.
+		review: '2027-02-01',
 		// The field numbers, not just the name. Any finding mentioning the field was
 		// accepted, so a rejection of it, a corrupted value, or a decode difference
 		// with another cause was absorbed by the entry that describes a renumbering.
@@ -1549,7 +1569,21 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// two decodes of the same bytes — so there the claim is that the bridge
 		// read nothing where upstream read the field.
 		when: divergence => {
-			if (!text(divergence.input).includes('pollResultSnapshotMessageV3')) return false
+			// The generative targets name the field in their input, and every branch
+			// below is written against one of those spellings. The byte-level ones
+			// cannot: `proto:mutation-agreement` hands both decoders raw mutated
+			// bytes, so a payload that happens to carry tag 115 shows the renumbering
+			// only in the decoded sides — the bridge reads the field, upstream skips
+			// an unknown number — and this gate rejected all of them before any
+			// branch could look. Measured on seed 32688945698: 14 of the 47 unexcused
+			// mutation-agreement findings name the field, 12 of them have it as their
+			// whole difference, and the shape test still rejects the other 2, which
+			// carry a second changed value beside it.
+			const namesField = (value: unknown): boolean => text(value).includes('pollResultSnapshotMessageV3')
+			if (!namesField(divergence.input)) {
+				if (!namesField(divergence.local) && !namesField(divergence.upstream)) return false
+				return renumberingIsTheWholeDifference(divergence)
+			}
 			if (divergence.target === 'proto:field-numbers') {
 				return text(divergence.local).includes('115') && text(divergence.upstream).includes('114')
 			}
@@ -1578,9 +1612,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 					(divergence.detail ?? '').includes('; renumbering only')
 				)
 			}
-			const mine = withoutKey(normalise(divergence.local), 'pollResultSnapshotMessageV3')
-			const theirs = withoutKey(normalise(divergence.upstream), 'pollResultSnapshotMessageV3')
-			return sameShape(mine, theirs) && !sameShape(normalise(divergence.local), normalise(divergence.upstream))
+			return renumberingIsTheWholeDifference(divergence)
 		}
 	},
 	{

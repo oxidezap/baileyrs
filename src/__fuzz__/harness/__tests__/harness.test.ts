@@ -486,6 +486,67 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(excused('proto:type-coverage', 'BotAvatarMetadata', 'a', 'b'), 'the sweeps still match by name alone')
 	})
 
+	// The one entry whose direction is settled by the client rather than by either
+	// library, so what it must *not* excuse is the interesting half.
+	it('excuses the field renumbering wherever it shows, and only when it is the whole difference', async () => {
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-field-number-mismatch')
+		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
+
+		const excused = (target: string, input: unknown, local: unknown, upstream: unknown): boolean =>
+			applyAllowlist([{ target, input, local, upstream }], new Date('2026-01-01'), registry).unexcused.length === 0
+
+		// `proto:mutation-agreement` hands both decoders raw bytes, so its input is
+		// a hex string that can never name a field. Before this, no branch of the
+		// entry could see the renumbering here at all, and every mutated payload
+		// that happened to carry tag 115 was reported as an unexplained decode
+		// difference.
+		const mutation = 'proto:mutation-agreement'
+		const bytes = { path: 'Message.ImageMessage', mutator: 'flip-bit', bytes: '9a07020a00' }
+		const snapshot = { pollResultSnapshotMessageV3: { pollType: '0' } }
+
+		assert.ok(
+			excused(
+				mutation,
+				bytes,
+				{ caption: 'a', contextInfo: { quotedMessage: snapshot } },
+				{ caption: 'a', contextInfo: { quotedMessage: {} } }
+			),
+			'the bridge reading field 115 where upstream skips it'
+		)
+		// The client assigns 115, so the reverse — upstream reading its 114 where
+		// the bridge does not — is the same renumbering seen from the other end.
+		assert.ok(
+			excused(mutation, bytes, { caption: 'a' }, { caption: 'a', ...snapshot }),
+			'upstream reading field 114 where the bridge skips it'
+		)
+		// The half that matters: a mutated payload routinely carries more than one
+		// difference, and the renumbering must not carry the rest in with it.
+		assert.ok(
+			!excused(mutation, bytes, { caption: 'a', ...snapshot }, { caption: 'b' }),
+			'a changed value beside the renumbering is still unexplained'
+		)
+		assert.ok(
+			!excused(mutation, bytes, { caption: 'a', ...snapshot }, { caption: 'a', mediaKeyDomain: '0' }),
+			'a second missing field beside the renumbering is still unexplained'
+		)
+		// Naming the field is never enough on its own, on any target.
+		assert.ok(
+			!excused(mutation, bytes, { ...snapshot }, { ...snapshot }),
+			'two sides that already agree are not a divergence to explain'
+		)
+		// And the branches that were already there still answer for themselves: the
+		// number sweep is pinned to the two numbers, not to the name.
+		assert.ok(
+			excused('proto:field-numbers', 'Message.pollResultSnapshotMessageV3', 'field 115', 'field 114'),
+			'the number sweep, with both numbers'
+		)
+		assert.ok(
+			!excused('proto:field-numbers', 'Message.pollResultSnapshotMessageV3', 'field 116', 'field 114'),
+			'a third number on the same field is a new defect'
+		)
+	})
+
 	it('composes the field rename with a field the bridge never writes, and nothing else', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-field-renamed-and-dropped')

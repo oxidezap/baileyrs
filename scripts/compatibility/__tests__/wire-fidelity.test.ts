@@ -18,6 +18,12 @@ const SEED = 20260808
  * `pollResultSnapshotMessageV3` sits at field 115 in the bridge proto and 114 in
  * baileys 7.0.0-rc13. Both codecs read their own bytes, so it is a schema gap
  * rather than a send-path one; pinned here so a second divergence fails.
+ *
+ * 115 is the conforming number: WhatsApp Web's own field table assigns it there
+ * and leaves 114 unassigned — see `proto-field-number-mismatch` in
+ * src/__fuzz__/harness/divergence.ts for the citation. The gap closes when
+ * upstream regenerates its proto, so this stays a divergence rather than
+ * something to match.
  */
 const KNOWN_DIVERGENT = ['pollResultSnapshotMessageV3']
 
