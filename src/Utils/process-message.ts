@@ -71,8 +71,24 @@ const normalizeMessageJid = (jid: string | null | undefined): string | undefined
 
 /** Normalize device/hosted JIDs and nested reaction/poll keys in place. */
 export const cleanMessage = (message: WAMessage, meId: string, meLid: string) => {
-	message.key.remoteJid = normalizeMessageJid(message.key.remoteJid)
-	message.key.participant = normalizeMessageJid(message.key.participant)
+	// Normalise the fields that are there; do not add the ones that are not.
+	//
+	// Writing the result unconditionally put the property on the key even when
+	// there was nothing to normalise, so a direct-message key — which carries no
+	// participant — still gained one holding `undefined`, and `Object.keys` and a
+	// spread saw it. `WAWebMsgKey` assigns the participant it was given and
+	// leaves the key without one otherwise, and that absence is load-bearing
+	// there: it joins the parts that are present into the id the message is
+	// stored under.
+	//
+	// A field the caller did provide is normalised even when it comes back with
+	// nothing, which is the empty string upstream writes — they provided it, so
+	// it is theirs to have normalised, and leaving a `null` in place would only
+	// swap one falsy spelling for another.
+	for (const field of ['remoteJid', 'participant'] as const) {
+		if (!Object.hasOwn(message.key, field) && message.key[field] == null) continue
+		message.key[field] = normalizeMessageJid(message.key[field]) ?? ''
+	}
 
 	const content = normalizeMessageContent(message.message)
 	if (content?.reactionMessage) normaliseKey(content.reactionMessage.key!)

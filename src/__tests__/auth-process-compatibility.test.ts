@@ -206,29 +206,38 @@ describe('received-message helper compatibility', () => {
 	 * **A hosted jid is re-encoded onto its plain server**, and here the two do
 	 * agree — checked against upstream, since agreement is the claim.
 	 */
-	it('leaves a key field absent when there is nothing to normalise', async () => {
-		const upstream = await import('baileys')
-		const keys: WAMessageKey[] = [
+	it('does not add a key field that was not there', () => {
+		// The assertion is on the property, not on its value. An earlier version
+		// asked whether the field held `''` and passed on a key that had gained it
+		// holding `undefined` — which is the same shape difference one step
+		// quieter, and exactly what this is meant to catch.
+		for (const key of [
 			{ remoteJid: '5511999999999@s.whatsapp.net', fromMe: false },
-			{ fromMe: false },
-			{ remoteJid: null, participant: null, fromMe: false }
-		]
-
-		for (const key of keys) {
+			{ remoteJid: '5511999999999:99@hosted', fromMe: false },
+			{ fromMe: false }
+		] as WAMessageKey[]) {
+			const before = Object.keys(key)
 			const local: WAMessage = { key: structuredClone(key), message: { conversation: 'hi' } }
 			cleanMessage(local, '5511999999999@s.whatsapp.net', '12345@lid')
-			assert.ok(
-				!Object.hasOwn(local.key, 'participant') || local.key.participant !== '',
-				`participant must not be materialised as an empty string for ${JSON.stringify(key)}`
+			assert.deepEqual(
+				Object.keys(local.key).toSorted(),
+				before.toSorted(),
+				`cleanMessage added a field to ${JSON.stringify(key)}`
 			)
-
-			// And upstream really does differ, so this is pinning a decision rather
-			// than a coincidence. The day upstream adopts WhatsApp Web's rule, this
-			// fails and the divergence entry beside it can go.
-			const remote: WAMessage = { key: structuredClone(key), message: { conversation: 'hi' } }
-			;(upstream.cleanMessage as unknown as typeof cleanMessage)(remote, '5511999999999@s.whatsapp.net', '12345@lid')
-			assert.equal(remote.key.participant, '', 'upstream still materialises an empty participant')
 		}
+	})
+
+	it('differs from upstream here, which materialises the field instead', async () => {
+		// So the entry beside this one is pinned to a live difference rather than a
+		// remembered one: the day upstream adopts WhatsApp Web's rule, this fails
+		// and `clean-message-empty-jid-key` can go.
+		const upstream = await import('baileys')
+		const remote: WAMessage = {
+			key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false },
+			message: { conversation: 'hi' }
+		}
+		;(upstream.cleanMessage as unknown as typeof cleanMessage)(remote, '5511999999999@s.whatsapp.net', '12345@lid')
+		assert.equal(remote.key.participant, '', 'upstream still materialises an empty participant')
 	})
 
 	it('re-encodes a hosted jid onto its plain server, as upstream does', async () => {
