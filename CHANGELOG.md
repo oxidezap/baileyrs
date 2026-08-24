@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.9](https://github.com/oxidezap/baileyrs/compare/v0.2.8...v0.2.9) (2026-08-24)
+
+
+### Bug Fixes
+
+* **legacy-store:** keep the native mirror valid across a store round trip ([#86](https://github.com/oxidezap/baileyrs/issues/86)) ([e966155](https://github.com/oxidezap/baileyrs/commit/e966155afd2a8d94a9ef246506cfe79844fa934b))
+* **messages:** give a poll and an event the message secret their sender needs ([#92](https://github.com/oxidezap/baileyrs/issues/92)) ([503c49b](https://github.com/oxidezap/baileyrs/commit/503c49bde342d0919d8a834380201429cec934be))
+* **messages:** re-encode a hosted jid the way upstream does, and keep the key shape WhatsApp Web uses ([#89](https://github.com/oxidezap/baileyrs/issues/89)) ([30e0a90](https://github.com/oxidezap/baileyrs/commit/30e0a90d7a4ece8aaa7b84b6cc077704e8a68991))
+
 ## [0.2.8](https://github.com/oxidezap/baileyrs/compare/v0.2.7...v0.2.8) (2026-08-22)
 
 
