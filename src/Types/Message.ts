@@ -167,6 +167,8 @@ export type PollMessageOptions = {
 	name: string
 	selectableCount?: number
 	values: string[]
+	/** 32 byte message secret to encrypt poll selections */
+	messageSecret?: Uint8Array
 	toAnnouncementGroup?: boolean
 }
 

@@ -31,6 +31,7 @@ import { proto } from '../WAProto/runtime.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
 import { assertArgumentDomain } from './argument-domain.ts'
 import { Boom } from './boom.ts'
+import { randomBytes } from 'node:crypto'
 import { sha256 } from './crypto.ts'
 import { getKeyAuthor, toNumber, unixTimestampSeconds } from './generics.ts'
 import type { ILogger } from './logger.ts'
@@ -548,6 +549,32 @@ export const generateWAMessageContent = async (
 		m.eventMessage.extraGuestsAllowed = message.event.extraGuestsAllowed
 		m.eventMessage.isScheduleCall = message.event.isScheduleCall ?? false
 		m.eventMessage.location = message.event.location
+
+		// The sender's copy of the key that encrypts responses to this event;
+		// `decryptEventResponse` takes it as `eventEncKey`. WhatsApp Web writes it
+		// on the sender at creation (`WAWebSendEventCreationMsgAction`) and refuses
+		// to build an event edit without it (`WAWebCreateEncryptedEventEditMsgData`
+		// throws `EventCreationValidationError`).
+		//
+		// The core settles `messageSecret` on relay for messages that reach it
+		// without one — see the comment in `Socket/messages.ts` — but it settles it
+		// on the wire, where the caller never sees it. That is right for the
+		// reporting token and wrong for a key the caller has to keep.
+		//
+		// Written after `m.eventMessage`, for the reason spelled out on the poll
+		// branch below: the blocks that attach `contextInfo` take `Object.keys(m)[0]`
+		// as the content key. `event` is not `Mentionable` or `Contextable` today,
+		// so this is ordering that stays correct rather than ordering that is
+		// currently load-bearing — but it costs nothing and the poll branch shows
+		// what getting it wrong looks like.
+		//
+		// Spread rather than upstream's wholesale assignment: nothing else writes
+		// `messageContextInfo` on this branch today, so the two cannot differ, and
+		// this cannot silently drop a field a later change puts there.
+		m.messageContextInfo = {
+			...m.messageContextInfo,
+			messageSecret: message.event.messageSecret || randomBytes(32)
+		}
 	} else if (hasNonNullishProperty(message, 'poll')) {
 		message.poll.selectableCount ||= 0
 		message.poll.toAnnouncementGroup ||= false
@@ -579,6 +606,30 @@ export const generateWAMessageContent = async (
 				// poll for multiple choice polls
 				m.pollCreationMessage = pollCreationMessage
 			}
+		}
+
+		// The key that encrypts the votes. `decryptPollVote` takes it as
+		// `pollEncKey`, and without it here the poll goes out fine but its own
+		// sender can never read the votes: the copy they store — the message
+		// `sendMessage` returns and emits as `messages.upsert` — is this object,
+		// and only `key.id` is patched from the relay result. WhatsApp Web writes it
+		// on the sender at creation too (`WAWebPollsSendPollCreationMsgAction`) and
+		// reuses the stored one for poll edits
+		// (`WAWebPollsGeneratePollEditMessageProto`).
+		//
+		// After the payload, not before, and that ordering is load-bearing: the
+		// `mentions` and `contextInfo` blocks below pick their target with
+		// `Object.keys(m)[0]`, so a `messageContextInfo` written first becomes the
+		// content key they attach to. `contextInfo` is not a field of
+		// `IMessageContextInfo`, so the encoder drops it and a poll sent with
+		// mentions loses them silently. `poll` is `Mentionable & Contextable`, so
+		// that is a combination callers can and do write. Upstream assigns it
+		// before the payload and has exactly that bug; measured on
+		// `{poll, mentions:['x@s.whatsapp.net']}`, its output carries no
+		// `mentionedJid` at all.
+		m.messageContextInfo = {
+			...m.messageContextInfo,
+			messageSecret: message.poll.messageSecret || randomBytes(32)
 		}
 	} else if (hasNonNullishProperty(message, 'sharePhoneNumber')) {
 		m.protocolMessage = {
