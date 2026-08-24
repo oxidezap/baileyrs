@@ -349,9 +349,14 @@ SHAPED.contact_updated = SHAPED.contact_update!
  * inherits `Object.prototype`: `SHAPED['constructor']` is `Object` and returns
  * the `Random` itself, `SHAPED['toString']` returns the string `'[object
  * Undefined]'`, and `SHAPED['__proto__']` is not callable at all. Those three
- * names are exactly what `generateUnknownBridgeEvent` emits as event types, and
- * the registry already carries `bridge-adapter-prototype-chain-lookup` for this
- * class of defect in the adapter — the generator must not reproduce it.
+ * names are exactly what `generateUnknownBridgeEvent` emits as event types.
+ *
+ * The adapter had this defect and no longer does: `adaptBridgeEvent` guards its
+ * table with `Object.hasOwn` (src/Bridge/schema.ts), pinned by "does not resolve
+ * an event type through the prototype chain" in src/Bridge/__tests__/adapt.test.ts.
+ * The registry entry that tracked it went with the fix in #47. The generator
+ * still must not reproduce the defect on its own side, which is what the
+ * `Object.hasOwn` above is for.
  */
 export const shapedBridgePayload = (random: Random, type: string): Record<string, unknown> =>
 	(Object.hasOwn(SHAPED, type) ? SHAPED[type]! : payload)(random)

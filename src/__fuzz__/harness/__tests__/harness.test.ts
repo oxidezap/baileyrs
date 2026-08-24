@@ -944,10 +944,29 @@ describe('fuzz harness — the registry has no dangling references', () => {
 		walk(root)
 
 		const registered = new Set(KNOWN_DIVERGENCES.map(entry => entry.id))
-		// Kebab-case, at least two segments, inside backticks — the shape every
-		// entry id has and the way the comments spell them. Loose enough to catch a
-		// rename, tight enough not to sweep up prose or file names.
+		// Kebab-case, at least three segments, inside backticks — the shape every
+		// entry id has and the way the comments spell them.
 		const mention = /`([a-z0-9]+(?:-[a-z0-9]+){2,})`/gu
+		/**
+		 * Names in these sources that are spelled like an entry id and are not one.
+		 *
+		 * Listed, not pattern-matched. The first draft asked whether some *surviving*
+		 * entry shared the mention's leading segment, which reads as a heuristic and
+		 * behaves as a blind spot: four of the 26 ids are the only one with their
+		 * prefix, so deleting poll-vote-aggregation-order or
+		 * binary-node-messages-tolerates-bad-payload would have taken the check for
+		 * their own references with them. It also hid a live one: the comment in
+		 * generators/bridge-event.ts still claimed the registry carried an entry for
+		 * the adapter prototype-chain defect, which #47 removed along with the bug.
+		 * (Spelled without backticks on purpose — backticks are what the scan reads.)
+		 *
+		 * An unregistered id is a question somebody answers; a heuristic answers it
+		 * silently. Adding a name here is the answer, in writing.
+		 */
+		const notAnEntryId = new Set([
+			'baileyrs-fuzz-v1', // the default FUZZ_SEED, documented in runner.ts
+			'check-layer-boundaries' // scripts/compatibility/check-layer-boundaries.ts
+		])
 		const dangling: string[] = []
 
 		// A target rendered as a corpus filename is spelled the same way an entry
@@ -960,11 +979,7 @@ describe('fuzz harness — the registry has no dangling references', () => {
 			const text = readFileSync(file, 'utf8')
 			for (const line of text.split('\n')) {
 				for (const [, id] of line.matchAll(mention)) {
-					if (id === undefined || registered.has(id)) continue
-					// Only ids that look like registry entries: the registry is the
-					// authority on which kebab-case words are entry names, so a mention
-					// counts when some entry shares its leading segment.
-					if (![...registered].some(known => known.split('-')[0] === id.split('-')[0])) continue
+					if (id === undefined || registered.has(id) || notAnEntryId.has(id)) continue
 					if (slugOfNeighbour(line, id)) continue
 					dangling.push(`${file.slice(root.length + 1)} names \`${id}\`, which no registry entry defines`)
 				}
