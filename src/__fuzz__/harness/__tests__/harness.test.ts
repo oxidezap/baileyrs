@@ -914,3 +914,148 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		)
 	})
 })
+
+describe('fuzz harness — the registry has no dangling references', () => {
+	/**
+	 * A divergence entry and the generator that reaches it are written together
+	 * and live in different files, so nothing ties them. `proto-empty-string-for-
+	 * numeric-field` was deleted while `generators/proto.ts` still seeded the
+	 * empty string into the 64-bit pools *for it by name* — the reproducer kept
+	 * firing with nothing left to excuse it, and 20 findings a night went
+	 * unexcused until someone read the comment that named the missing entry.
+	 *
+	 * Any id spelled out in the fuzz sources is a claim that the entry exists.
+	 * This checks the claim.
+	 */
+	it('every divergence id named in the fuzz sources is registered', async () => {
+		const { readdirSync, readFileSync, statSync } = await import('node:fs')
+		const { join } = await import('node:path')
+		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
+
+		const root = join(import.meta.dirname, '../..')
+		const sources: string[] = []
+		const walk = (dir: string) => {
+			for (const name of readdirSync(dir)) {
+				const full = join(dir, name)
+				if (statSync(full).isDirectory()) walk(full)
+				else if (full.endsWith('.ts')) sources.push(full)
+			}
+		}
+		walk(root)
+
+		const registered = new Set(KNOWN_DIVERGENCES.map(entry => entry.id))
+		// Kebab-case, at least three segments, inside backticks — the shape every
+		// entry id has and the way the comments spell them.
+		const mention = /`([a-z0-9]+(?:-[a-z0-9]+){2,})`/gu
+		/**
+		 * Names in these sources that are spelled like an entry id and are not one.
+		 *
+		 * Listed, not pattern-matched. The first draft asked whether some *surviving*
+		 * entry shared the mention's leading segment, which reads as a heuristic and
+		 * behaves as a blind spot: four of the 26 ids are the only entry carrying
+		 * their prefix, so deleting one of those took the check for its own
+		 * references down with it. It also hid a live one — the comment in
+		 * generators/bridge-event.ts still claimed the registry carried an entry for
+		 * the adapter prototype-chain defect, which #47 removed along with the bug.
+		 *
+		 * An unregistered id is a question somebody answers; a heuristic answers it
+		 * silently. Adding a name here is the answer, in writing.
+		 *
+		 * Backticks are the marker, so nothing here names an id in prose without
+		 * them — a reference this cannot see is worse than one it reports. The other
+		 * way an id is written is a comparison in code, and those carry their own
+		 * check at the point of use: every `entry.id === '…'` in this file is
+		 * followed by an assertion that the filter matched exactly one entry.
+		 */
+		const notAnEntryId = new Set([
+			'baileyrs-fuzz-v1', // the default FUZZ_SEED, documented in runner.ts
+			'check-layer-boundaries' // scripts/compatibility/check-layer-boundaries.ts
+		])
+		const dangling: string[] = []
+
+		// A target rendered as a corpus filename is spelled the same way an entry
+		// id is, and `corpus.ts` documents the transform by showing both. A slug
+		// printed beside the target it came from is a slug, not a reference.
+		const slugOfNeighbour = (line: string, id: string): boolean =>
+			[...line.matchAll(/`([a-z]+:[\w.]+)`/giu)].some(([, target]) => target !== undefined && corpusSlug(target) === id)
+
+		for (const file of sources) {
+			const text = readFileSync(file, 'utf8')
+			for (const line of text.split('\n')) {
+				for (const [, id] of line.matchAll(mention)) {
+					if (id === undefined || registered.has(id) || notAnEntryId.has(id)) continue
+					if (slugOfNeighbour(line, id)) continue
+					dangling.push(`${file.slice(root.length + 1)} names \`${id}\`, which no registry entry defines`)
+				}
+			}
+		}
+
+		assert.deepEqual(dangling, [])
+	})
+})
+
+describe('fuzz harness — minimising is for findings that will be reported', () => {
+	/**
+	 * Shrinking an already-excused finding cannot change the run's conclusion:
+	 * `preservesClass` carries the excused verdict, so every candidate it would
+	 * accept is excused too. It is not free, though. On `wire:upstream-readable`
+	 * 398 of 474 inputs produced an excused finding and each paid the shrink
+	 * floor, which is how that target reached 708 of the 6250 inputs it claims
+	 * and reported the prefix as a pass.
+	 *
+	 * `proto:mutation-interpretation` is excused outright by
+	 * `proto-malformed-interpretation` — status `intended`, no `when` — so a
+	 * finding on it is the cheapest way to ask whether the runner minimised
+	 * something it was never going to report.
+	 */
+	const alwaysFinds = (target: string) => {
+		let checks = 0
+		return {
+			count: () => checks,
+			check: () => {
+				checks += 1
+				return {
+					target,
+					input: { padding: 'x'.repeat(64) },
+					local: 'a',
+					upstream: 'b',
+					detail: 'always'
+				}
+			}
+		}
+	}
+
+	it('does not minimise a finding the registry already excuses', async () => {
+		const { fuzz } = await import('../runner.ts')
+		const probe = alwaysFinds('proto:mutation-interpretation')
+		const report = await fuzz<{ padding: string }>({
+			target: 'proto:mutation-interpretation',
+			runs: 5,
+			generate: () => ({ padding: 'x'.repeat(64) }),
+			check: probe.check
+		})
+
+		assert.equal(report.excused, 5)
+		assert.deepEqual(report.findings, [])
+		// One evaluation per input and nothing else. A shrink pass would add its
+		// candidates plus the re-check of the minimised input.
+		assert.equal(probe.count(), 5)
+	})
+
+	it('still minimises a finding that would be reported', async () => {
+		const { fuzz } = await import('../runner.ts')
+		const probe = alwaysFinds('probe:not-in-the-registry')
+		await assert.rejects(() =>
+			fuzz<{ padding: string }>({
+				target: 'probe:not-in-the-registry',
+				runs: 5,
+				generate: () => ({ padding: 'x'.repeat(64) }),
+				check: probe.check
+			})
+		)
+
+		// The shrinker explores candidates and the runner re-checks the minimised
+		// input, so an unexcused finding costs strictly more than one call per run.
+		assert.ok(probe.count() > 5, `expected shrinking to add evaluations, saw ${probe.count()}`)
+	})
+})
