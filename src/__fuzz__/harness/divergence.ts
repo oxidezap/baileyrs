@@ -1110,7 +1110,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// `efbfbd`), which is not valid UTF-8 — the difference the entry describes
 		// is unchanged, only its cause moved.
 		target: /^pure:(encodeNewsletterMessage|generateForwardMessageContent)$/u,
-		status: 'open',
+		status: 'intended',
 		// Scoped to the surrogate, not the whole helper. Without a predicate this
 		// excused every return-value difference from the encoder, so a regression
 		// that changed ordinary text or dropped a field would have been counted as
@@ -1161,8 +1161,12 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			return copyStrategyResidue(normalise(divergence.local), normalise(divergence.upstream))
 		},
 		reason:
-			'A string field holding an unpaired UTF-16 surrogate is handled differently on each side. Encoding: protobufjs emits the WTF-8 form (U+DFFF becomes ed bf bf, which is not valid UTF-8) where the Rust encoder substitutes U+FFFD (ef bf bd) — the Rust output is the well-formed one, but the wire bytes differ. Copying: `generateForwardMessageContent` shows the same thing from the other side, because upstream copies content through the protobuf codec and baileyrs does not, so `\ud800` survives in baileyrs and becomes U+FFFD upstream. Needs a maintainer call on whether to match upstream or keep sanitising.',
-		review: '2026-11-01'
+			"A string field holding an unpaired UTF-16 surrogate is handled differently on each side, and WhatsApp Web is on this one. Its UTF-8 writer — `q` in WABinary — pairs a high surrogate with a following low and writes the 4-byte form, and every other path through it writes `239, 191, 189`: a high surrogate followed by a non-low, a high surrogate as the final code unit, and a lone low surrogate. That is `ef bf bd`, U+FFFD, which is what the Rust encoder produces. Its size pass agrees, budgeting 3 bytes for the substitution. Upstream instead emits the WTF-8 form, `ed a0 80` for U+D800 and `ed bf bf` for U+DFFF, which is not valid UTF-8 and which WhatsApp Web never writes. Measured on all four shapes plus a valid pair and plain ASCII: baileyrs matches the client byte for byte, upstream diverges on every unpaired case. Copying shows the same thing from the other side — `generateForwardMessageContent` copies content through the protobuf codec upstream, so `\ud800` becomes U+FFFD in the returned object there and stays raw here — but the substitution belongs at serialisation, which is where WhatsApp Web does it, so the object holding the original string and the wire carrying U+FFFD is the client's own arrangement rather than a gap.",
+		// Was 'open' pending a decision on whether to match upstream or keep
+		// sanitising. The captured client answers it: sanitising is what it does.
+		// Kept as a divergence rather than deleted because upstream still differs,
+		// and a consumer comparing wire bytes across the two libraries will see it.
+		review: '2027-02-01'
 	},
 	{
 		id: 'binary-node-messages-tolerates-bad-payload',

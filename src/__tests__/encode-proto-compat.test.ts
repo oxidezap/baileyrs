@@ -30,6 +30,34 @@ describe('encodeProtoCompat — inputs the bridge codec stopped accepting', () =
 		expect(hex(encodeProtoCompat('Message', { conversation: '\udfff' }))).toBe('0a03efbfbd')
 	})
 
+	/**
+	 * Every shape WhatsApp Web's own writer replaces, not just the one above.
+	 *
+	 * `q` in WABinary pairs a high surrogate with a following low and writes the
+	 * four-byte form; every other path through it writes `239, 191, 189`. That is
+	 * a high surrogate met by a non-low, a high surrogate as the final code unit,
+	 * and a lone low surrogate. Its size pass budgets three bytes for each, so the
+	 * substitution is deliberate rather than a fallback.
+	 *
+	 * Upstream Baileys writes the WTF-8 form instead — `ed a0 80` for U+D800 —
+	 * which is not valid UTF-8 and which the client never emits. The bytes below
+	 * are written out by hand for the same reason as the rest of this file: the
+	 * claim is that they match the client, not that they match our codec.
+	 */
+	it('substitutes every unpaired-surrogate shape WhatsApp Web substitutes', () => {
+		const conversation = (bytes: string, length: string) => `0a${length}${bytes}`
+		const FFFD = 'efbfbd'
+
+		// A high surrogate as the final code unit.
+		expect(hex(encodeProtoCompat('Message', { conversation: '\ud800' }))).toBe(conversation(FFFD, '03'))
+		// A high surrogate met by something that is not a low one.
+		expect(hex(encodeProtoCompat('Message', { conversation: '\ud800b' }))).toBe(conversation(`${FFFD}62`, '04'))
+		// A lone low surrogate, mid-string.
+		expect(hex(encodeProtoCompat('Message', { conversation: 'a\udc00b' }))).toBe(conversation(`61${FFFD}62`, '05'))
+		// And the pair the client writes as four bytes rather than replacing.
+		expect(hex(encodeProtoCompat('Message', { conversation: '\ud83d\ude00' }))).toBe(conversation('f09f9880', '04'))
+	})
+
 	it('leaves a message the codec accepts exactly as it was', () => {
 		expect(hex(encodeProtoCompat('Message', { conversation: 'hi' }))).toBe('0a026869')
 	})
