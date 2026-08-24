@@ -1171,7 +1171,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
 		id: 'binary-node-messages-tolerates-bad-payload',
 		target: 'pure:getBinaryNodeMessages',
-		status: 'open',
+		status: 'intended',
 		// Exactly one side throwing, *and* a stanza that actually carries a payload
 		// the reference decoder cannot read back. One-sided-throw alone was not the
 		// whole claim: the generator builds `<message>` children carrying real,
@@ -1191,8 +1191,11 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		when: divergence =>
 			isThrow(divergence.local) !== isThrow(divergence.upstream) && hasTag(divergence, 'malformed payload'),
 		reason:
-			'The two decoders disagree about which malformed `<message>` payloads are readable, in both directions. Upstream throws "illegal buffer" where baileyrs returns an empty message object; and for a truncated length prefix (`2a 16` with no body) baileyrs throws RangeError "premature EOF" where upstream returns `[{ participant: "" }]`. Whichever way round, a corrupt stanza becomes an empty message on one side and an exception on the other, so a caller cannot write one handler that works against both. Needs a maintainer call on which contract the stanza handlers should rely on.',
-		review: '2026-11-01'
+			"The two decoders disagree about which malformed `<message>` payloads are readable, in both directions, and it is one defect rather than a contract to choose between: upstream reads a field whose wire type does not match the schema, using the schema's type anyway. Measured over 20000 random payloads, 390 diverge and 318 of those carry a wrong wire type on the very first tag; another 59 open on a field number the schema does not declare. `2c 00` is field 5 with wire type 4 — an END_GROUP with no group — and upstream reports an empty `participant`. `10 ea 75` is field 2 (`message`, a submessage) arriving as a varint, which upstream follows off the end of the buffer. `18 49 38 42 36 0d` reaches wire type 6, which protobuf does not define at all, and upstream reports `messageC2STimestamp: 13` — a value nobody sent, from a tag that is not protobuf. baileyrs rejects each of these, which is what the spec says: a wire type that does not match the declared one makes the field unknown. WhatsApp Web agrees on the truncation half — its reader throws `ReadError: tried to read beyond end of binary` rather than salvaging a prefix (WABinary). Same root cause as proto-wire-type-mismatch-ignored-upstream, seen through this helper.",
+		// Was 'open' pending a decision on which contract the stanza handlers should
+		// rely on. There is no contract to pick: one side is reading values the
+		// sender never wrote.
+		review: '2027-02-01'
 	},
 	{
 		id: 'clean-message-empty-jid-key',
