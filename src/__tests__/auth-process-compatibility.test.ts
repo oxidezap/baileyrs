@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { AuthenticationCreds, SignalDataSet, SignalKeyStore, WAMessage } from '../Types/index.ts'
+import type { AuthenticationCreds, SignalDataSet, SignalKeyStore, WAMessage, WAMessageKey } from '../Types/index.ts'
 import { WAMessageStubType } from '../Types/index.ts'
 import { proto } from '../WAProto/runtime.ts'
 import { addTransactionCapability, assertMeId, makeCacheableSignalKeyStore } from '../Utils/auth-utils.ts'
@@ -188,6 +188,86 @@ describe('received-message helper compatibility', () => {
 		cleanMessage(local, '5511999999999@s.whatsapp.net', '12345@lid')
 		;(upstream.cleanMessage as unknown as typeof cleanMessage)(remote, '5511999999999@s.whatsapp.net', '12345@lid')
 		assert.deepEqual(local, remote)
+	})
+
+	/**
+	 * Where the two libraries part company, and why this side is the one that
+	 * follows WhatsApp Web.
+	 *
+	 * **A field with nothing to normalise stays absent.** `WAWebMsgKey` assigns
+	 * the participant only when it has one — `h !== void 0 && (this.participant =
+	 * h)` — and serialises the key by joining the parts that are present, so an
+	 * empty participant would change the identity the message is stored under.
+	 * Upstream pushes every field through `jidNormalizedUser`, which answers `''`
+	 * for a jid it was not given, and writes `participant: ''` onto every direct
+	 * message. That is upstream's bug, so this is asserted against WhatsApp Web's
+	 * rule rather than against upstream's output.
+	 *
+	 * **A hosted jid is re-encoded onto its plain server**, and here the two do
+	 * agree — checked against upstream, since agreement is the claim.
+	 */
+	it('does not add a key field that was not there', () => {
+		// The assertion is on the property, not on its value. An earlier version
+		// asked whether the field held `''` and passed on a key that had gained it
+		// holding `undefined` — which is the same shape difference one step
+		// quieter, and exactly what this is meant to catch.
+		for (const key of [
+			{ remoteJid: '5511999999999@s.whatsapp.net', fromMe: false },
+			{ remoteJid: '5511999999999:99@hosted', fromMe: false },
+			{ fromMe: false }
+		] as WAMessageKey[]) {
+			const before = Object.keys(key)
+			const local: WAMessage = { key: structuredClone(key), message: { conversation: 'hi' } }
+			cleanMessage(local, '5511999999999@s.whatsapp.net', '12345@lid')
+			assert.deepEqual(
+				Object.keys(local.key).toSorted(),
+				before.toSorted(),
+				`cleanMessage added a field to ${JSON.stringify(key)}`
+			)
+		}
+	})
+
+	it('differs from upstream here, which materialises the field instead', async () => {
+		// So the entry beside this one is pinned to a live difference rather than a
+		// remembered one: the day upstream adopts WhatsApp Web's rule, this fails
+		// and `clean-message-empty-jid-key` can go.
+		const upstream = await import('baileys')
+		const remote: WAMessage = {
+			key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: false },
+			message: { conversation: 'hi' }
+		}
+		;(upstream.cleanMessage as unknown as typeof cleanMessage)(remote, '5511999999999@s.whatsapp.net', '12345@lid')
+		assert.equal(remote.key.participant, '', 'upstream still materialises an empty participant')
+	})
+
+	it('re-encodes a hosted jid onto its plain server, as upstream does', async () => {
+		const upstream = await import('baileys')
+		const keys: WAMessageKey[] = [
+			// What WhatsApp Web accepts: `<digits>:99@hosted`.
+			{ remoteJid: '5511999999999:99@hosted', fromMe: false },
+			{ remoteJid: '100000000000000:99@hosted.lid', fromMe: false },
+			// And what it rejects outright, where the two used to disagree over a
+			// server neither of them should have been asked about.
+			{ remoteJid: '_99:1@hosted', fromMe: false },
+			{ remoteJid: '_1@hosted.lid', fromMe: false },
+			{ participant: '@hosted', fromMe: false }
+		]
+
+		for (const key of keys) {
+			const local: WAMessage = { key: structuredClone(key), message: { conversation: 'hi' } }
+			const remote: WAMessage = { key: structuredClone(key), message: { conversation: 'hi' } }
+			cleanMessage(local, '5511999999999@s.whatsapp.net', '12345@lid')
+			;(upstream.cleanMessage as unknown as typeof cleanMessage)(remote, '5511999999999@s.whatsapp.net', '12345@lid')
+			// Only the field the case actually carries. The other one is where the
+			// two differ by design — upstream materialises `''` there — and that is
+			// the subject of the test above, not of this one.
+			if (key.remoteJid !== undefined) {
+				assert.equal(local.key.remoteJid, remote.key.remoteJid, `remoteJid for ${JSON.stringify(key)}`)
+			}
+			if (key.participant !== undefined) {
+				assert.equal(local.key.participant, remote.key.participant, `participant for ${JSON.stringify(key)}`)
+			}
+		}
 	})
 
 	it('matches real-message, unread and chat-id rules including failures', async () => {

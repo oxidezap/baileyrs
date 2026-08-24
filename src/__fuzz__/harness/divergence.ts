@@ -300,109 +300,6 @@ const namesUnknownCodecType = (input: unknown): boolean => {
 }
 
 /**
- * The two key fields `cleanMessage` re-encodes through `jidNormalizedUser`.
- *
- * Both, not just `remoteJid`: the same empty-user rewrite is observable on
- * `participant`, and an entry scoped to one field reported the other as an
- * unrelated finding. Measured — `{ key: { participant: '@hosted' } }` with an
- * empty meId leaves `@hosted` in baileyrs and becomes `@s.whatsapp.net`
- * upstream, exactly as `remoteJid` does.
- */
-const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
-
-/**
- * True when upstream is baileyrs plus JID keys that all hold the empty string.
- *
- * That is the whole of the `cleanMessage` difference: for a key with no
- * remoteJid or participant, upstream writes `jidNormalizedUser(undefined)` —
- * `''` — onto the caller's object where baileyrs leaves the property absent.
- * Anything else, including a changed value or a key upstream is missing, is a
- * different defect and still fails.
- *
- * "JID keys" is the part that has to be checked rather than assumed. Without it
- * the rule read "upstream has an extra key holding `''`", which is also true of
- * a dropped empty `conversation` or `reactionMessage.text` — measured, both were
- * excused as the known missing-JID difference. Only the two fields
- * `cleanMessage` actually normalises may appear this way.
- */
-const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boolean => {
-	if (depth > 12) return false
-	if (Array.isArray(local) || Array.isArray(upstream)) {
-		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
-		return local.every(
-			(item, index) => sameShape(item, upstream[index]) || addsOnlyEmptyStrings(item, upstream[index], depth + 1)
-		)
-	}
-	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) {
-		return sameShape(local, upstream)
-	}
-	const a = local as Record<string, unknown>
-	const b = upstream as Record<string, unknown>
-	// A key baileyrs has and upstream does not is the reverse of the claim.
-	for (const key of Object.keys(a)) if (!Object.hasOwn(b, key) && a[key] !== undefined) return false
-	for (const key of Object.keys(b)) {
-		if (!Object.hasOwn(a, key) || a[key] === undefined) {
-			if (b[key] !== '' || !CLEANED_JID_FIELDS.has(key)) return false
-			continue
-		}
-		if (!sameShape(a[key], b[key]) && !addsOnlyEmptyStrings(a[key], b[key], depth + 1)) return false
-	}
-	return true
-}
-
-/**
- * Replaces every normalised key JID with a sentinel, recursively.
- *
- * Lets a predicate say "apart from those JIDs, these agree" without
- * hand-walking the argument tuple the mutation target reports.
- */
-const maskKeyJids = (value: unknown, depth = 0): unknown => {
-	if (depth > 12 || typeof value !== 'object' || value === null) return value
-	if (Array.isArray(value)) return value.map(item => maskKeyJids(item, depth + 1))
-	const out: Record<string, unknown> = {}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		Object.defineProperty(out, key, {
-			// The empty string is left alone rather than masked. It is the *other*
-			// entry's subject — upstream materialising a missing JID as `''` — and
-			// masking it to the same sentinel as a real JID stopped
-			// `addsOnlyEmptyStrings` from recognising it, so a key that hit both
-			// differences at once matched neither entry.
-			value:
-				CLEANED_JID_FIELDS.has(key) && typeof nested === 'string' && nested !== ''
-					? '<jid>'
-					: maskKeyJids(nested, depth + 1),
-			enumerable: true,
-			writable: true,
-			configurable: true
-		})
-	}
-	return out
-}
-
-/**
- * Every non-empty normalised key JID a divergence side carries, by path.
- *
- * Keyed by path rather than collected into a list, because the two sides are
- * then compared field to field: a `remoteJid` on one side lining up with a
- * `participant` on the other is a different defect from the one this documents,
- * and must not be excused by it.
- */
-const keyJids = (value: unknown, prefix = '', found = new Map<string, string>(), depth = 0): Map<string, string> => {
-	if (depth > 12 || typeof value !== 'object' || value === null) return found
-	if (Array.isArray(value)) {
-		for (const [index, item] of value.entries()) keyJids(item, `${prefix}[${index}]`, found, depth + 1)
-		return found
-	}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		const path = `${prefix}.${key}`
-		if (CLEANED_JID_FIELDS.has(key) && typeof nested === 'string') {
-			if (nested !== '') found.set(path, nested)
-		} else keyJids(nested, path, found, depth + 1)
-	}
-	return found
-}
-
-/**
  * Substitutes U+FFFD for every unpaired surrogate in every string, recursively.
  *
  * Three of them per surrogate, not one: upstream copies content through
@@ -562,6 +459,48 @@ const coercedAnEmptyString = (divergence: Divergence): boolean => {
 	// wrote a different value or dropped the field is tagged `not coerced` and
 	// stops being excused here.
 	return hasTag(divergence, 'empty string coerced to zero')
+}
+
+const CLEANED_JID_FIELDS = new Set(['remoteJid', 'participant'])
+
+/**
+ * True when upstream is baileyrs plus JID keys that all hold the empty string.
+ *
+ * That is the whole of the `cleanMessage` difference: for a key with no
+ * remoteJid or participant, upstream writes `jidNormalizedUser(undefined)` —
+ * `''` — onto the caller's object where baileyrs leaves the property absent.
+ * Anything else, including a changed value or a key upstream is missing, is a
+ * different defect and still fails.
+ *
+ * "JID keys" is the part that has to be checked rather than assumed. Without it
+ * the rule read "upstream has an extra key holding `''`", which is also true of
+ * a dropped empty `conversation` or `reactionMessage.text` — measured, both were
+ * excused as the known missing-JID difference. Only the two fields
+ * `cleanMessage` actually normalises may appear this way.
+ */
+const addsOnlyEmptyStrings = (local: unknown, upstream: unknown, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (Array.isArray(local) || Array.isArray(upstream)) {
+		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
+		return local.every(
+			(item, index) => sameShape(item, upstream[index]) || addsOnlyEmptyStrings(item, upstream[index], depth + 1)
+		)
+	}
+	if (typeof local !== 'object' || typeof upstream !== 'object' || local === null || upstream === null) {
+		return sameShape(local, upstream)
+	}
+	const a = local as Record<string, unknown>
+	const b = upstream as Record<string, unknown>
+	// A key baileyrs has and upstream does not is the reverse of the claim.
+	for (const key of Object.keys(a)) if (!Object.hasOwn(b, key) && a[key] !== undefined) return false
+	for (const key of Object.keys(b)) {
+		if (!Object.hasOwn(a, key) || a[key] === undefined) {
+			if (b[key] !== '' || !CLEANED_JID_FIELDS.has(key)) return false
+			continue
+		}
+		if (!sameShape(a[key], b[key]) && !addsOnlyEmptyStrings(a[key], b[key], depth + 1)) return false
+	}
+	return true
 }
 
 /** Removes one property wherever it appears, so a predicate can ask what is left. */
@@ -1171,7 +1110,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		// `efbfbd`), which is not valid UTF-8 — the difference the entry describes
 		// is unchanged, only its cause moved.
 		target: /^pure:(encodeNewsletterMessage|generateForwardMessageContent)$/u,
-		status: 'open',
+		status: 'intended',
 		// Scoped to the surrogate, not the whole helper. Without a predicate this
 		// excused every return-value difference from the encoder, so a regression
 		// that changed ordinary text or dropped a field would have been counted as
@@ -1222,13 +1161,17 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			return copyStrategyResidue(normalise(divergence.local), normalise(divergence.upstream))
 		},
 		reason:
-			'A string field holding an unpaired UTF-16 surrogate is handled differently on each side. Encoding: protobufjs emits the WTF-8 form (U+DFFF becomes ed bf bf, which is not valid UTF-8) where the Rust encoder substitutes U+FFFD (ef bf bd) — the Rust output is the well-formed one, but the wire bytes differ. Copying: `generateForwardMessageContent` shows the same thing from the other side, because upstream copies content through the protobuf codec and baileyrs does not, so `\ud800` survives in baileyrs and becomes U+FFFD upstream. Needs a maintainer call on whether to match upstream or keep sanitising.',
-		review: '2026-11-01'
+			"A string field holding an unpaired UTF-16 surrogate is handled differently on each side, and WhatsApp Web is on this one. Its UTF-8 writer — `q` in WABinary — pairs a high surrogate with a following low and writes the 4-byte form, and every other path through it writes `239, 191, 189`: a high surrogate followed by a non-low, a high surrogate as the final code unit, and a lone low surrogate. That is `ef bf bd`, U+FFFD, which is what the Rust encoder produces. Its size pass agrees, budgeting 3 bytes for the substitution. Upstream instead emits the WTF-8 form, `ed a0 80` for U+D800 and `ed bf bf` for U+DFFF, which is not valid UTF-8 and which WhatsApp Web never writes. Measured on all four shapes plus a valid pair and plain ASCII: baileyrs matches the client byte for byte, upstream diverges on every unpaired case. Copying shows the same thing from the other side — `generateForwardMessageContent` copies content through the protobuf codec upstream, so `\ud800` becomes U+FFFD in the returned object there and stays raw here — but the substitution belongs at serialisation, which is where WhatsApp Web does it, so the object holding the original string and the wire carrying U+FFFD is the client's own arrangement rather than a gap.",
+		// Was 'open' pending a decision on whether to match upstream or keep
+		// sanitising. The captured client answers it: sanitising is what it does.
+		// Kept as a divergence rather than deleted because upstream still differs,
+		// and a consumer comparing wire bytes across the two libraries will see it.
+		review: '2027-02-01'
 	},
 	{
 		id: 'binary-node-messages-tolerates-bad-payload',
 		target: 'pure:getBinaryNodeMessages',
-		status: 'open',
+		status: 'intended',
 		// Exactly one side throwing, *and* a stanza that actually carries a payload
 		// the reference decoder cannot read back. One-sided-throw alone was not the
 		// whole claim: the generator builds `<message>` children carrying real,
@@ -1248,55 +1191,26 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		when: divergence =>
 			isThrow(divergence.local) !== isThrow(divergence.upstream) && hasTag(divergence, 'malformed payload'),
 		reason:
-			'The two decoders disagree about which malformed `<message>` payloads are readable, in both directions. Upstream throws "illegal buffer" where baileyrs returns an empty message object; and for a truncated length prefix (`2a 16` with no body) baileyrs throws RangeError "premature EOF" where upstream returns `[{ participant: "" }]`. Whichever way round, a corrupt stanza becomes an empty message on one side and an exception on the other, so a caller cannot write one handler that works against both. Needs a maintainer call on which contract the stanza handlers should rely on.',
-		review: '2026-11-01'
+			"The two decoders disagree about which malformed `<message>` payloads are readable, in both directions, and it is one defect rather than a contract to choose between: upstream reads a field whose wire type does not match the schema, using the schema's type anyway. Measured over 20000 random payloads, 390 diverge and 318 of those carry a wrong wire type on the very first tag; another 59 open on a field number the schema does not declare. `2c 00` is field 5 with wire type 4 — an END_GROUP with no group — and upstream reports an empty `participant`. `10 ea 75` is field 2 (`message`, a submessage) arriving as a varint, which upstream follows off the end of the buffer. `18 49 38 42 36 0d` reaches wire type 6, which protobuf does not define at all, and upstream reports `messageC2STimestamp: 13` — a value nobody sent, from a tag that is not protobuf. baileyrs rejects each of these, which is what the spec says: a wire type that does not match the declared one makes the field unknown. WhatsApp Web agrees on the truncation half — its reader throws `ReadError: tried to read beyond end of binary` rather than salvaging a prefix (WABinary). Same root cause as proto-wire-type-mismatch-ignored-upstream, seen through this helper.",
+		// Was 'open' pending a decision on which contract the stanza handlers should
+		// rely on. There is no contract to pick: one side is reading values the
+		// sender never wrote.
+		review: '2027-02-01'
 	},
 	{
-		id: 'clean-message-empty-jid-normalisation',
+		id: 'clean-message-empty-jid-key',
 		target: /^pure:cleanMessage/u,
-		status: 'open',
-		// One substitution, checked as such. Without a predicate the pattern excused
-		// every difference on every generated message, so altered content or a
-		// mis-normalised JID was absorbed — which is exactly what had been hiding
-		// the empty-user server difference below.
+		status: 'intended',
+		reason:
+			"For a key field with nothing to normalise, upstream writes the empty string and baileyrs leaves the property absent. WhatsApp Web is the absent side and this follows it: `WAWebMsgKey` assigns the participant only when it has one (`h !== void 0 && (this.participant = h)`) and builds the key's identity by joining the parts that are present, so an empty participant would change what the message serialises to. Upstream reaches `''` by routing every field through `jidNormalizedUser`, which answers that for a jid it was not given, and so materialises `participant: ''` on every direct-message key. Both are falsy and downstream behaviour matches, so this is a shape difference in the object handed back to the caller — but it is upstream's shape that is wrong, which is why the direction is not going to be reconciled.",
+		review: '2027-02-01',
+		// Only the two fields `cleanMessage` normalises, and only upstream having
+		// `''` where this side has nothing. A changed value, or a key upstream is
+		// missing, is a different defect and still fails.
 		when: divergence =>
 			!isThrow(divergence.local) &&
 			!isThrow(divergence.upstream) &&
-			addsOnlyEmptyStrings(normalise(divergence.local), normalise(divergence.upstream)),
-		reason:
-			'For a message key with no remoteJid/participant, upstream writes the empty string (via jidNormalizedUser(undefined)) while baileyrs writes undefined. Both are falsy and downstream behaviour matches, but the key objects differ for anything that inspects them. Only reachable with a malformed key.',
-		review: '2026-11-01'
-	},
-	{
-		id: 'clean-message-empty-user-jid-server',
-		target: /^pure:cleanMessage/u,
-		status: 'open',
-		// Found by narrowing the entry above, which had been excusing every
-		// difference on the target and so was covering this one too.
-		when: divergence => {
-			if (isThrow(divergence.local) || isThrow(divergence.upstream)) return false
-			const mine = keyJids(normalise(divergence.local))
-			const theirs = keyJids(normalise(divergence.upstream))
-			// Same JID fields on both sides. A JID baileyrs writes where upstream
-			// writes nothing at all — or the reverse — is not this.
-			if (mine.size === 0 || mine.size !== theirs.size) return false
-			let rewritten = 0
-			for (const [path, jid] of mine) {
-				const other = theirs.get(path)
-				if (other === undefined) return false
-				if (other === jid) continue
-				// Differing: both must be the empty-user form this entry is about.
-				if (!jid.startsWith('@') || !other.startsWith('@')) return false
-				rewritten++
-			}
-			// At least one, or nothing here is the documented rewrite and whatever
-			// else differs is being excused for free.
-			if (rewritten === 0) return false
-			return addsOnlyEmptyStrings(maskKeyJids(normalise(divergence.local)), maskKeyJids(normalise(divergence.upstream)))
-		},
-		reason:
-			"For a message key whose remoteJid or participant normalises to an empty user, the two write different servers onto the caller's key. Measured directly: `_99:1@hosted` becomes `@hosted` in baileyrs and `@s.whatsapp.net` upstream; `_1@hosted.lid` becomes `@hosted.lid` in baileyrs and `@lid` upstream; `{ key: { participant: '@hosted' } }` shows the same rewrite on the participant field. `jidNormalizedUser` agrees on all of those in isolation, so the difference is in cleanMessage's own re-encoding, and baileyrs is the side that preserves what the server actually sent. A consumer keying chats by remoteJid therefore files these under different chats depending on the library. Only reachable with a JID whose user part is empty.",
-		review: '2026-11-01'
+			addsOnlyEmptyStrings(normalise(divergence.local), normalise(divergence.upstream))
 	},
 	{
 		id: 'forward-message-content-copy-shape',
@@ -1371,15 +1285,17 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
 		id: 'event-buffer-merge-precedence',
 		target: 'buffer:differential',
-		status: 'open',
+		status: 'intended',
 		// Confined to the fields inside a `contacts.upsert` or `groups.update`
 		// release, for the same ids. Everything else in the released sequence has to
 		// match, so a lost event, a changed id, or a difference on any other release
 		// still fails.
 		when: divergence => mergePrecedenceFieldsOnly(divergence.local, divergence.upstream),
 		reason:
-			"The two buffers consolidate `groups.update` and `contacts.upsert` differently, and on both kinds it is upstream that loses data rather than the two picking different winners. On groups, upstream stores only the *first* update for an id and discards every later one: `src/Utils/event-buffer.ts` merges with `Object.assign(data.groupUpdates[id] || {}, update)` where upstream guards the whole assignment with `if (!data.groupUpdates[id])`, which makes its own merge unreachable. Measured by buffering each pair and flushing: two updates for the same id with subjects 'first' then 'second' release 'second' here and 'first' upstream; and with *disjoint* fields — a subject then an announce — this releases both while upstream releases only the subject and drops the announce outright. On contacts, a `contacts.update` buffered before a `contacts.upsert` for the same id contributes the fields only *it* carried: measured with an update carrying `notify` and a later upsert carrying `name`, this releases both fields and upstream releases only `name`. The two agree on every field both carry — the upsert wins, because it arrived last — so this is an added-field difference and no longer a value one. baileyrs is the accumulating side on both, which is what the surrounding branches do for chats and messages and what 'consolidate' means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. `chats.update` twice, a `groups.update` whose second event carries nothing but the id, and the four message-level consolidation branches all agree, measured at the same time — the id-only case agreeing because there is no field to merge, which is why the `announce` case above does not. Found only once the buffer generator started drawing ids from a shared pool: before that no two buffered events ever referred to the same entity, so none of this ran.",
-		review: '2026-11-01'
+			'Upstream stores only the *first* `groups.update` for an id and discards every later one. Its own merge is unreachable: `lib/Utils/event-buffer.js` reads `const groupUpdate = data.groupUpdates[id] || {}` and then guards the assignment with `if (!data.groupUpdates[id])`, so `Object.assign(groupUpdate, update)` only ever runs with an empty base — the `|| {}` and the assign together only make sense without that guard. Measured by buffering and flushing: three updates for one id carrying a subject, an announce and a desc release all three here and the subject alone upstream. baileyrs accumulates, which is what the surrounding branches do for chats and messages and what "consolidate" means for a buffer; matching upstream would mean deliberately dropping updates a consumer sent. The contacts half this entry used to describe is gone — a `contacts.update` buffered before a `contacts.upsert` for the same id now releases the same fields on both sides, since #52 aligned the precedence. Re-measured: two upserts, two `chats.update`, an update-then-upsert and an upsert-then-update all agree, and only the repeated `groups.update` does not. There is no client evidence either way here — the event buffer is a Baileys abstraction with no WhatsApp Web counterpart — so this rests on upstream\'s own dead merge code rather than on the captured JS.',
+		// Was 'open'. The reason had already established which side loses data; what
+		// was missing was a re-measurement, and it shrank the claim by half.
+		review: '2027-02-01'
 	},
 	{
 		id: 'proto-decode-above-max-safe-integer',
@@ -1749,15 +1665,18 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	{
 		id: 'poll-vote-aggregation-order',
 		target: 'pure:getAggregateVotesInPollMessage',
-		status: 'open',
+		status: 'intended',
 		// Ordering only. Now that generated votes actually hash to the declared
 		// options, an unqualified entry would excuse a voter bucketed under the
 		// wrong option, a dropped voter or a renamed option — all of which change
 		// the multiset, and none of which this entry has ever claimed.
 		when: divergence => samePollAggregate(normalise(divergence.local), normalise(divergence.upstream)),
 		reason:
-			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order — and the ordering is a symptom, not the defect. Both build a map keyed by the option hash and return `Object.values`, but they key the *lookup* differently: this side decodes the selected option with `Buffer.from(optionHash).toString()`, upstream calls `option.toString()` on the value as it stands. For a Buffer those agree. For a plain `Uint8Array` they do not — the array renders as its comma-joined bytes, so `[0x5c]` keys as "92", which JavaScript treats as an array index and hoists to the front of the object. That is the whole of the ordering difference, and the fuzzer\'s minimised reproducer is exactly that byte. This is a divergence of input shape across runtimes, not a defect in upstream: protobufjs decodes a bytes field to a Node `Buffer`, measured, so upstream\'s key matches its own options in its own stack. The bridge decoder here returns a plain `Uint8Array`, also measured — so upstream\'s helper, handed what this runtime produces, matches no declared option at all: every vote lands in an "Unknown" bucket and every real option comes back with no voters. Decoding the bytes rather than stringifying the container is what makes the helper work on both shapes, which is why aligning the order with upstream would be the wrong move here. Pinned in public-helpers-compatibility.test.ts with the Uint8Array shape; restoring upstream\'s key fails it.',
-		review: '2026-11-01'
+			'The two aggregate the same votes into the same buckets but emit the option/voter entries in a different order, and the ordering is a symptom rather than the defect. Both build a map keyed by the option hash and return `Object.values`, but they key the *lookup* differently: this side decodes the selected option with `Buffer.from(optionHash).toString()`, upstream calls `option.toString()` on the container as it stands. For a `Buffer` those agree. For a plain `Uint8Array` they do not — the array renders as its comma-joined bytes, so `[0x5c]` keys as "92", which JavaScript treats as an array index and hoists to the front of the object. Re-measured on a two-option poll with one vote: handed `Buffer`s both return the same buckets, and handed `Uint8Array`s upstream matches no declared option at all — every real option comes back with no voters and the vote lands in an "Unknown" bucket, while this side is unaffected. protobufjs decodes a bytes field to a Node `Buffer`, so upstream is correct in its own stack and its key works by accident of the runtime; the bridge decoder here returns a `Uint8Array`. Decoding the bytes rather than stringifying the container is what makes the helper work on both shapes, which is why aligning the order with upstream would be the wrong move. Pinned in public-helpers-compatibility.test.ts with the `Uint8Array` shape; restoring upstream\'s key fails it.',
+		// Was 'open'. Not a decision anyone still owes: the entry already argued that
+		// matching upstream would break the helper on the shape this runtime produces,
+		// and re-measuring confirms it — upstream buckets every vote as Unknown here.
+		review: '2027-02-01'
 	}
 ]
 

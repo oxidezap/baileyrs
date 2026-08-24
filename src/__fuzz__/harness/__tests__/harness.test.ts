@@ -456,61 +456,6 @@ describe('fuzz harness — known-divergence allowlist', () => {
 		assert.ok(!excused([7], 8, 7), 'a finite number must not differ at all')
 	})
 
-	it('excuses the cleanMessage JID rewrite only in the shape it documents', async () => {
-		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
-		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'clean-message-empty-user-jid-server')
-		assert.equal(registry.length, 1, 'the entry under test is still in the registry')
-
-		const excused = (local: unknown, upstream: unknown): boolean =>
-			applyAllowlist(
-				[{ target: 'pure:cleanMessage#mutation', input: 'in', local, upstream }],
-				new Date('2026-01-01'),
-				registry
-			).unexcused.length === 0
-
-		// The documented shape, on each field, including the extra `remoteJid: ''`
-		// upstream materialises alongside it.
-		assert.ok(
-			excused(
-				[{ key: { participant: '@hosted' } }, '', ''],
-				[{ key: { participant: '@s.whatsapp.net', remoteJid: '' } }, '', '']
-			),
-			'the measured participant rewrite is the entry’s subject'
-		)
-		assert.ok(
-			excused([{ key: { remoteJid: '@hosted.lid' } }], [{ key: { remoteJid: '@lid' } }]),
-			'so is the remoteJid rewrite it was originally written for'
-		)
-
-		// Near-misses. Each one differs from the shape above by a single property.
-		assert.ok(
-			!excused([{ key: { participant: 'a@x' } }], [{ key: { participant: 'b@x' } }]),
-			'a rewrite between two non-empty users is a different defect'
-		)
-		assert.ok(
-			!excused(
-				[{ key: { participant: '@hosted' }, message: { conversation: 'hi' } }],
-				[{ key: { participant: '@s.whatsapp.net' }, message: { conversation: 'HI' } }]
-			),
-			'a changed message body must not ride along with the rewrite'
-		)
-		assert.ok(
-			!excused([{ key: { participant: '@hosted' } }], [{ key: { remoteJid: '@s.whatsapp.net' } }]),
-			'the JID has to move in the same field on both sides'
-		)
-		assert.ok(
-			!excused([{ key: { participant: '@hosted', remoteJid: '@hosted' } }], [{ key: { participant: '@hosted' } }]),
-			'a JID baileyrs writes and upstream does not is not this entry'
-		)
-		assert.ok(
-			!excused([{ key: { participant: '@hosted' } }], [{ key: { participant: '@hosted' }, extra: 1 }]),
-			'without a rewrite there is nothing for this entry to excuse'
-		)
-	})
-
-	// Two entries reach the generative decode target now, and both had to be
-	// pinned there rather than widened: the sweeps report one classified shape,
-	// `decode-parity` reports every kind of disagreement there is.
 	it('excuses an unimplemented codec on decode parity only when the bridge refused the bytes', async () => {
 		const { KNOWN_DIVERGENCES } = await import('../divergence.ts')
 		const registry = KNOWN_DIVERGENCES.filter(entry => entry.id === 'proto-unknown-type-dropped')
