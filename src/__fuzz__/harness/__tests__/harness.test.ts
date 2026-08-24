@@ -974,3 +974,69 @@ describe('fuzz harness — the registry has no dangling references', () => {
 		assert.deepEqual(dangling, [])
 	})
 })
+
+describe('fuzz harness — minimising is for findings that will be reported', () => {
+	/**
+	 * Shrinking an already-excused finding cannot change the run's conclusion:
+	 * `preservesClass` carries the excused verdict, so every candidate it would
+	 * accept is excused too. It is not free, though. On `wire:upstream-readable`
+	 * 398 of 474 inputs produced an excused finding and each paid the shrink
+	 * floor, which is how that target reached 708 of the 6250 inputs it claims
+	 * and reported the prefix as a pass.
+	 *
+	 * `proto:mutation-interpretation` is excused outright by
+	 * `proto-malformed-interpretation` — status `intended`, no `when` — so a
+	 * finding on it is the cheapest way to ask whether the runner minimised
+	 * something it was never going to report.
+	 */
+	const alwaysFinds = (target: string) => {
+		let checks = 0
+		return {
+			count: () => checks,
+			check: () => {
+				checks += 1
+				return {
+					target,
+					input: { padding: 'x'.repeat(64) },
+					local: 'a',
+					upstream: 'b',
+					detail: 'always'
+				}
+			}
+		}
+	}
+
+	it('does not minimise a finding the registry already excuses', async () => {
+		const { fuzz } = await import('../runner.ts')
+		const probe = alwaysFinds('proto:mutation-interpretation')
+		const report = await fuzz<{ padding: string }>({
+			target: 'proto:mutation-interpretation',
+			runs: 5,
+			generate: () => ({ padding: 'x'.repeat(64) }),
+			check: probe.check
+		})
+
+		assert.equal(report.excused, 5)
+		assert.deepEqual(report.findings, [])
+		// One evaluation per input and nothing else. A shrink pass would add its
+		// candidates plus the re-check of the minimised input.
+		assert.equal(probe.count(), 5)
+	})
+
+	it('still minimises a finding that would be reported', async () => {
+		const { fuzz } = await import('../runner.ts')
+		const probe = alwaysFinds('probe:not-in-the-registry')
+		await assert.rejects(() =>
+			fuzz<{ padding: string }>({
+				target: 'probe:not-in-the-registry',
+				runs: 5,
+				generate: () => ({ padding: 'x'.repeat(64) }),
+				check: probe.check
+			})
+		)
+
+		// The shrinker explores candidates and the runner re-checks the minimised
+		// input, so an unexcused finding costs strictly more than one call per run.
+		assert.ok(probe.count() > 5, `expected shrinking to add evaluations, saw ${probe.count()}`)
+	})
+})

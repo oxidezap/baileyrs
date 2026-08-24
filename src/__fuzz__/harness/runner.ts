@@ -493,7 +493,23 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 			// minimised; it just does not deserve unbounded time.
 			const shrinkFloorMs = FUZZ_MODE === 'deep' ? 15_000 : 5_000
 			const shrinkDeadline = performance.now() + Math.max(deadline - performance.now(), shrinkFloorMs)
-			const minimised = shrinkFailures
+			// A finding the registry already excuses is not going to be reported, so
+			// minimising it buys nothing the run can use. It is not a rare case: on
+			// `wire:upstream-readable` 398 of 474 inputs produced one, each paying up
+			// to the floor above, which is why that target reached 708 of 6250 inputs
+			// in the nightly's 180s and reported partial coverage as a pass.
+			//
+			// `preservesClass` carries the excused verdict, so shrinking could only
+			// ever have ended somewhere still excused — skipping it changes which
+			// input the run holds, never what it concludes.
+			//
+			// Except while recording. `FUZZ_RECORD` freezes the minimised input into
+			// the corpus, and an excused finding's corpus entry is what keeps its
+			// registry entry from looking stale, so that path still minimises. The
+			// nightly does not set it.
+			const allExcused = applyAllowlist(produced, new Date()).unexcused.length === 0
+			const worthMinimising = shrinkFailures && (recording || !allExcused)
+			const minimised = worthMinimising
 				? await shrink(input, async candidate => preservesClass(await runOne(candidate, 'shrink', false)), {
 						maxEvaluations: FUZZ_MODE === 'deep' ? 1_200 : 300,
 						deadline: shrinkDeadline,
@@ -501,7 +517,10 @@ export const fuzz = async <T>(options: FuzzOptions<T>): Promise<FuzzReport> => {
 					})
 				: input
 
-			const rerun = await runOne(minimised, 'minimised', false)
+			// Re-checking the input we just decided not to minimise would ask the
+			// same question of the same bytes: `produced` is already that answer, and
+			// on an excused-heavy target the second pass costs as much as the first.
+			const rerun = worthMinimising ? await runOne(minimised, 'minimised', false) : produced
 			const minimisedFindings = rerun.filter(finding => originalCounts.has(classOf(finding)))
 			// Keep the original when minimisation did not hold the class. Reporting a
 			// smaller input that no longer shows the defect is worse than a large one
