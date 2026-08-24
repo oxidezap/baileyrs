@@ -77,6 +77,41 @@ describe('poll and event carry a sender-side messageSecret', () => {
 		expect([...(event.messageContextInfo?.messageSecret ?? [])]).toEqual([...mine])
 	})
 
+	it('writes the secret after the content key, so mentions and contextInfo survive', async () => {
+		// `poll` is `Mentionable & Contextable`, and the blocks that attach those
+		// pick their target with `Object.keys(m)[0]`. A `messageContextInfo` written
+		// *before* the poll payload becomes that key, and since `contextInfo` is not
+		// a field of `IMessageContextInfo` the encoder drops it — the poll sends
+		// with its mentions silently gone. Upstream assigns it before the payload
+		// and has exactly that bug.
+		const mentioned = await generateWAMessageContent(
+			{ poll: { name: 'q', values: ['a', 'b'], selectableCount: 1 }, mentions: ['x@s.whatsapp.net'] },
+			options()
+		)
+		expect(Object.keys(mentioned)[0]).toBe('pollCreationMessageV3')
+		expect(mentioned.pollCreationMessageV3?.contextInfo?.mentionedJid).toEqual(['x@s.whatsapp.net'])
+		// and the secret is still there — the ordering fix must not undo the fix.
+		expect(mentioned.messageContextInfo?.messageSecret?.length).toEqual(32)
+
+		const contextual = await generateWAMessageContent(
+			{
+				poll: { name: 'q', values: ['a', 'b'], selectableCount: 1 },
+				contextInfo: { forwardingScore: 3, isForwarded: true }
+			},
+			options()
+		)
+		expect(contextual.pollCreationMessageV3?.contextInfo?.forwardingScore).toEqual(3)
+		expect(contextual.messageContextInfo?.messageSecret?.length).toEqual(32)
+
+		// The event branch keeps its content key first for the same reason, even
+		// though `event` is not mentionable today.
+		const event = await generateWAMessageContent(
+			{ event: { name: 'e', startDate: new Date(1_700_000_000_000) } },
+			options()
+		)
+		expect(Object.keys(event)[0]).toBe('eventMessage')
+	})
+
 	it('draws a fresh secret per message when the caller supplies none', async () => {
 		// Reusing one key across two polls would let a voter on the first decrypt
 		// votes on the second, so "has a secret" is not enough on its own.
