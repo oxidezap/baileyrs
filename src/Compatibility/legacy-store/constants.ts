@@ -115,7 +115,6 @@ export const CanonicalTag = Object.freeze({
 	BYTES: '$bytes',
 	DATE: '$date',
 	NUMBER: '$number',
-	UNDEFINED: '$undefined',
 	UNSUPPORTED: '$unsupported'
 } as const)
 

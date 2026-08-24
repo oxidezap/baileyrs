@@ -134,11 +134,17 @@ function tcTokenCodec(): LegacyCodec {
 				token_timestamp?: number
 				sender_timestamp?: number | null
 			}
-			return {
+			// Added rather than set to `undefined`, matching upstream, which
+			// only carries the field when it has a value. An undefined-valued
+			// key survives in memory but not through a store, and the mirror
+			// fingerprint is taken on both sides of that boundary — see the
+			// note in `canonicalize`.
+			const legacy: { token: Buffer; timestamp: string; senderTimestamp?: string } = {
 				token: Buffer.from(requireByteArray(native.token, 'native TC token')),
-				timestamp: (native.token_timestamp ?? TimeValue.UNKNOWN_SECONDS).toString(),
-				senderTimestamp: native.sender_timestamp == null ? undefined : native.sender_timestamp.toString()
+				timestamp: (native.token_timestamp ?? TimeValue.UNKNOWN_SECONDS).toString()
 			}
+			if (native.sender_timestamp != null) legacy.senderTimestamp = native.sender_timestamp.toString()
+			return legacy
 		}
 	}
 }
