@@ -31,6 +31,7 @@ import { proto } from '../WAProto/runtime.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
 import { assertArgumentDomain } from './argument-domain.ts'
 import { Boom } from './boom.ts'
+import { randomBytes } from 'node:crypto'
 import { sha256 } from './crypto.ts'
 import { getKeyAuthor, toNumber, unixTimestampSeconds } from './generics.ts'
 import type { ILogger } from './logger.ts'
@@ -540,6 +541,30 @@ export const generateWAMessageContent = async (
 			m.eventMessage.joinLink = (message.event.call === 'audio' ? CALL_AUDIO_PREFIX : CALL_VIDEO_PREFIX) + token
 		}
 
+		// The sender's copy of the key that encrypts responses to this event.
+		// `decryptEventResponse` takes it as `eventEncKey`, and the only place a
+		// caller can get it is the event message they sent — so an event created
+		// without one can never have its own responses read back. WhatsApp Web
+		// generates it here too, on the sender, at creation
+		// (`WAWebSendEventCreationMsgAction`:
+		// `messageSecret: self.crypto.getRandomValues(new Uint8Array(32))`), and
+		// refuses to build an event edit when it is missing
+		// (`WAWebCreateEncryptedEventEditMsgData` throws
+		// `EventCreationValidationError`).
+		//
+		// The core settles `messageSecret` on relay for messages that reach it
+		// without one — see the comment in `Socket/messages.ts` — but it settles it
+		// on the *wire*, where the caller never sees it. That is right for the
+		// reporting token and wrong for a key the caller has to keep.
+		//
+		// Spread rather than upstream's wholesale assignment: nothing else writes
+		// `messageContextInfo` on this branch today, so the two cannot differ, and
+		// this cannot silently drop a field a later change puts there.
+		m.messageContextInfo = {
+			...m.messageContextInfo,
+			messageSecret: message.event.messageSecret || randomBytes(32)
+		}
+
 		m.eventMessage.name = message.event.name
 		m.eventMessage.description = message.event.description
 		m.eventMessage.startTime = startTime
@@ -560,6 +585,21 @@ export const generateWAMessageContent = async (
 			throw new Boom(`poll.selectableCount in poll should be >= 0 and <= ${message.poll.values.length}`, {
 				statusCode: 400
 			})
+		}
+
+		// Same as the event branch above: this is the key that encrypts votes, and
+		// `decryptPollVote` takes it as `pollEncKey`. Without it here the poll goes
+		// out fine but its own sender can never read the votes, because the copy
+		// they store — the message `sendMessage` returns and emits as
+		// `messages.upsert` — is this object, and only `key.id` is patched from the
+		// relay result. WhatsApp Web generates it on the sender at creation as well
+		// (`WAWebPollsSendPollCreationMsgAction`:
+		// `messageSecret: ... self.crypto.getRandomValues(new Uint8Array(32))`) and
+		// reuses the stored one for poll edits
+		// (`WAWebPollsGeneratePollEditMessageProto`).
+		m.messageContextInfo = {
+			...m.messageContextInfo,
+			messageSecret: message.poll.messageSecret || randomBytes(32)
 		}
 
 		const pollCreationMessage = {
