@@ -850,6 +850,21 @@ const sameShape = (left: unknown, right: unknown): boolean => {
 	return keys.every(key => Object.hasOwn(b, key) && sameShape(a[key], b[key]))
 }
 
+/** True when both sides carry `name` at the same path, where its value could differ unseen. */
+const sharesKey = (left: unknown, right: unknown, name: string, depth = 0): boolean => {
+	if (depth > 12) return false
+	if (Array.isArray(left) || Array.isArray(right)) {
+		if (!Array.isArray(left) || !Array.isArray(right)) return false
+		return left.some((item, index) => sharesKey(item, right[index], name, depth + 1))
+	}
+	if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null) return false
+	const a = left as Record<string, unknown>
+	const b = right as Record<string, unknown>
+	return Object.keys(a).some(
+		key => Object.hasOwn(b, key) && (key === name || sharesKey(a[key], b[key], name, depth + 1))
+	)
+}
+
 /**
  * True when deleting `pollResultSnapshotMessageV3` closes the gap completely.
  *
@@ -860,11 +875,25 @@ const sameShape = (left: unknown, right: unknown): boolean => {
  * field, survives the deletion and is not this entry — which is what keeps a
  * real decoder difference on a message that happens to hold this field from
  * riding along with a renumbering that is already decided.
+ *
+ * One side only, and that is the reason for `sharesKey`. Nothing stops a
+ * payload from carrying tag 114 *and* tag 115, and then both decoders report
+ * the field — each reading its own number. Deleting it from both sides compares
+ * equal however far apart the two values are, so a corrupted read of the
+ * renumbered field would leave on the renumbering's ticket. Not reached by any
+ * finding measured so far (0 of the 23 that name the field, across
+ * mutation-agreement, decode-parity, round-trip and encode-bytes on seed
+ * 32688945698), which is exactly why it has to be written down rather than
+ * relied on.
  */
 const renumberingIsTheWholeDifference = (divergence: Divergence): boolean => {
-	const mine = withoutKey(normalise(divergence.local), 'pollResultSnapshotMessageV3')
-	const theirs = withoutKey(normalise(divergence.upstream), 'pollResultSnapshotMessageV3')
-	return sameShape(mine, theirs) && !sameShape(normalise(divergence.local), normalise(divergence.upstream))
+	const mine = normalise(divergence.local)
+	const theirs = normalise(divergence.upstream)
+	if (sharesKey(mine, theirs, 'pollResultSnapshotMessageV3')) return false
+	return (
+		sameShape(withoutKey(mine, 'pollResultSnapshotMessageV3'), withoutKey(theirs, 'pollResultSnapshotMessageV3')) &&
+		!sameShape(mine, theirs)
+	)
 }
 
 /**
@@ -1581,6 +1610,15 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// carry a second changed value beside it.
 			const namesField = (value: unknown): boolean => text(value).includes('pollResultSnapshotMessageV3')
 			if (!namesField(divergence.input)) {
+				// And only where the two codecs are the two sides.
+				// `proto:mutation-stability` also takes raw bytes and also matches this
+				// entry's target pattern, but it puts the bridge on *both* sides —
+				// `first.value` against `second.value` across decode → encode → decode
+				// — so a fixed point it fails to reach on this field is the bridge
+				// disagreeing with itself, which no renumbering explains. Named rather
+				// than excluded, so a new cross-codec byte-level target has to be
+				// added here deliberately instead of inheriting the excuse.
+				if (divergence.target !== 'proto:mutation-agreement') return false
 				if (!namesField(divergence.local) && !namesField(divergence.upstream)) return false
 				return renumberingIsTheWholeDifference(divergence)
 			}

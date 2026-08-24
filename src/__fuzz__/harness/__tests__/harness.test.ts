@@ -535,6 +535,37 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			!excused(mutation, bytes, { ...snapshot }, { ...snapshot }),
 			'two sides that already agree are not a divergence to explain'
 		)
+		// A payload can carry tag 114 *and* tag 115, and then both decoders report
+		// the field from their own number. Deleting it from both sides compares
+		// equal however far apart the two values are, so the field has to be on one
+		// side only for the renumbering to be the explanation.
+		assert.ok(
+			!excused(
+				mutation,
+				bytes,
+				{ pollResultSnapshotMessageV3: { name: 'a' } },
+				{ pollResultSnapshotMessageV3: { name: 'b' } }
+			),
+			'conflicting values under both tags are not explained by the renumbering'
+		)
+		// The same, one level down, where the shallow check would not see it.
+		assert.ok(
+			!excused(
+				mutation,
+				bytes,
+				{ contextInfo: { quotedMessage: { pollResultSnapshotMessageV3: { name: 'a' } } } },
+				{ contextInfo: { quotedMessage: { pollResultSnapshotMessageV3: { name: 'b' } } } }
+			),
+			'conflicting values nested under both tags are not explained either'
+		)
+		// The raw-output fallback is for the targets that put the two codecs on the
+		// two sides. `proto:mutation-stability` takes raw bytes too and matches this
+		// entry's target pattern, but both of its sides are the bridge — a fixed
+		// point it fails to reach is the bridge disagreeing with itself.
+		assert.ok(
+			!excused('proto:mutation-stability', bytes, { caption: 'a' }, { caption: 'a', ...snapshot }),
+			'a bridge self-inconsistency is never an upstream renumbering'
+		)
 		// And the branches that were already there still answer for themselves: the
 		// number sweep is pinned to the two numbers, not to the name.
 		assert.ok(
