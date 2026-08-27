@@ -203,6 +203,8 @@ jobs:
     needs: [release-please, verify-tag]
     if: ${{ !cancelled() && needs.verify-tag.result == 'success' }}
     uses: ./.github/workflows/ci.yml
+    with:
+      full: true
     secrets: inherit
 
   publish:
