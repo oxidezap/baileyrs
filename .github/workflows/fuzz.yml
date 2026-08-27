@@ -62,8 +62,10 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
+      # --ignore-scripts skips `prepare`: the fuzz suites run out of `src`, and
+      # the build they were installing is one nothing here opens.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run the fuzz suite
         id: fuzz
