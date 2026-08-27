@@ -26,12 +26,14 @@ on:
 # code: give the token nothing.
 permissions: {}
 
-# One preview per ref. A superseded commit's tarball interests nobody, and the
-# comment pkg.pr.new keeps up to date on the pull request should name the newest
-# push rather than whichever run happened to finish last.
+# One preview per ref, but cancelling only on pull requests: a superseded push
+# there has a newer commit behind it, and the comment should name that one rather
+# than whichever run happened to finish last. On main every commit is a point
+# someone may later want to install by sha, and a cancelled run is a `@<sha>` URL
+# that does not exist — so those queue instead.
 concurrency:
   group: preview-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   preview:
@@ -40,10 +42,13 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      # Pinned by sha rather than by major tag, like the release workflow. This job
+      # produces a tarball people install, so what ran to build it should be the
+      # code that was reviewed and not whatever the tag points at that week.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           cache: 'npm'
