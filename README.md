@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@oxidezap/baileyrs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@oxidezap/baileyrs)
 [![npm downloads](https://img.shields.io/npm/dm/@oxidezap/baileyrs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@oxidezap/baileyrs)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/oxidezap/baileyrs)
+[![pkg.pr.new](https://pkg.pr.new/badge/oxidezap/baileyrs)](https://pkg.pr.new/~/oxidezap/baileyrs)
 
 A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API.
 
@@ -86,6 +87,41 @@ That writes the alias to your `package.json` (with the latest version at install
 
 Every `import { makeWASocket } from '@whiskeysockets/baileys'` in your codebase
 now resolves to baileyrs.
+
+### Preview builds
+
+Every commit on `main` and every pull request publishes an installable build
+through [pkg.pr.new](https://github.com/stackblitz-labs/pkg.pr.new). Nothing is
+published to npm — the tarball is served from a URL, so a fix can be tried
+before it reaches a release:
+
+```sh
+# the head of a pull request, following it as new commits land
+npm install https://pkg.pr.new/@oxidezap/baileyrs@94
+
+# one specific commit
+npm install https://pkg.pr.new/@oxidezap/baileyrs@f59ae6f
+```
+
+Projects using the Baileys alias point it at the same URL:
+
+```jsonc
+{
+  "dependencies": {
+    "@whiskeysockets/baileys": "https://pkg.pr.new/@oxidezap/baileyrs@94"
+  }
+}
+```
+
+Every open pull request comments the URL for its own head, and
+[pkg.pr.new/~/oxidezap/baileyrs](https://pkg.pr.new/~/oxidezap/baileyrs) lists
+what is available.
+
+Preview builds carry the version `0.0.0-preview-<sha>`, which no range written
+for a real release can match — an install is a deliberate pin, and it stays on
+that commit until you change it. They are for trying a change, not for running
+one: they are unreleased code, and the URL is not a substitute for a published
+version in anything that has to keep resolving.
 
 ## Quick Start
 
