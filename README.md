@@ -243,6 +243,15 @@ A few behaviors that differ from upstream — almost always to your advantage:
   `connectTimeoutMs`, `qrTimeout`, `printQRInTerminal`, `ignoreOfflineMessages`,
   `downloadHistory`, `agent`, `fetchAgent`, `mobile`, `mediaCache`,
   `userDevicesCache`, `callOfferCache` and `placeholderResendCache`.
+- **A sender's resend reaches you once, not once per delivery.** When a
+  sender's network is bad, their client re-runs its own outbox and sends the
+  same message again — same `key.id`, re-encrypted. Upstream Baileys emits a
+  `messages.upsert` for each of those deliveries, so an auto-reply bot answers
+  the same message two or three times; the engine now recognises the repeat and
+  emits one. It is a short-lived, in-memory window (five minutes), so the one
+  case still open is a sender whose retry spans a restart of your process. If
+  your handler has side effects, keying them on `key.id` remains the thing that
+  makes it safe — that was true before this and is still true for the gap.
 - **`Boom` ships in the box.** baileyrs exports its own
   `@hapi/boom`-compatible `Boom`, so the existing
   `(err as Boom).output.statusCode` pattern works unchanged. If your
