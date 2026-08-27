@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/oxidezap/baileyrs/compare/v0.2.9...v0.2.10) (2026-08-27)
+
+
+### Dependencies
+
+* move to bridge 0.19.0 ([#93](https://github.com/oxidezap/baileyrs/issues/93)) ([f59ae6f](https://github.com/oxidezap/baileyrs/commit/f59ae6f8abc755cbaf582f5019c32cf0143b4c0d))
+
 ## [0.2.9](https://github.com/oxidezap/baileyrs/compare/v0.2.8...v0.2.9) (2026-08-24)
 
 
