@@ -6,11 +6,8 @@ name: Preview Release
 # release cycle to reach them — and a reviewer can check a change against a real
 # install rather than a diff.
 #
-# Nothing reaches npm here, and no secret is involved. The pkg.pr.new GitHub App
-# (https://github.com/apps/pkg-pr-new) has to be installed on the repository; it
-# authorises the upload from the workflow run itself, which is why this job asks
-# for no permissions at all. Without the App installed the publish step fails and
-# nothing else about the repository changes.
+# Nothing reaches npm here, and no secret is involved: the upload is authorised
+# from the workflow run itself, which is why this job asks for no permissions.
 #
 # Fork pull requests publish too, and that is the point of the feature — the
 # preview URL names the commit it was built from, and the tarball is exactly the
@@ -22,8 +19,8 @@ on:
       - main
   pull_request:
 
-# The App is the only authority the publish needs, and the job runs pull request
-# code: give the token nothing.
+# Nothing here reads or writes through the token, and the job runs pull request
+# code: give it nothing.
 permissions: {}
 
 # One preview per ref, but cancelling only on pull requests: a superseded push
