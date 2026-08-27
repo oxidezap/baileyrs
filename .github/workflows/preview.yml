@@ -1,0 +1,72 @@
+name: Preview Release
+
+# Continuous releases through pkg.pr.new: every commit on main and every pull
+# request gets an installable, npm-compatible tarball. Someone hitting a bug can
+# try the fix from the pull request that carries it, instead of waiting for the
+# release cycle to reach them — and a reviewer can check a change against a real
+# install rather than a diff.
+#
+# Nothing reaches npm here, and no secret is involved. The pkg.pr.new GitHub App
+# (https://github.com/apps/pkg-pr-new) has to be installed on the repository; it
+# authorises the upload from the workflow run itself, which is why this job asks
+# for no permissions at all. Without the App installed the publish step fails and
+# nothing else about the repository changes.
+#
+# Fork pull requests publish too, and that is the point of the feature — the
+# preview URL names the commit it was built from, and the tarball is exactly the
+# code already running in the build, test and lint workflows on the same event.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# The App is the only authority the publish needs, and the job runs pull request
+# code: give the token nothing.
+permissions: {}
+
+# One preview per ref. A superseded commit's tarball interests nobody, and the
+# comment pkg.pr.new keeps up to date on the pull request should name the newest
+# push rather than whichever run happened to finish last.
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Publish preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # --ignore-scripts skips `prepare`, so this does not build. The build below
+      # is not missing: pkg-pr-new packs with `npm pack`, which runs `prepack` —
+      # the same build and the same pack guard a real `npm publish` goes through.
+      # Building here as well would only do it twice, and a preview that skipped
+      # the guard would not be the tarball people are about to install.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # From the lockfile rather than npx: the version that publishes previews is
+      # the one the repository reviewed and pinned.
+      #
+      # --previewVersion stamps the tarball as 0.0.0-preview-<sha> instead of
+      # leaving it on the released version it was branched from. A preview that
+      # calls itself 0.2.10 can stay pinned in a consumer's lockfile as the answer
+      # to `^0.2.10` long after the real 0.2.10 exists; a 0.0.0- prefix cannot
+      # satisfy that range at all.
+      #
+      # --no-template drops the StackBlitz template. It is a browser sandbox, and
+      # this package needs a WebSocket to WhatsApp and a Node runtime for the WASM
+      # bridge, so the template would only lengthen the comment.
+      - name: Publish preview packages
+        run: npm exec -- pkg-pr-new publish --previewVersion --no-template
