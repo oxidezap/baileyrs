@@ -1,0 +1,331 @@
+name: CI
+
+# Everything a change has to pass, in one workflow: lint, tests, the build and
+# the end-to-end suite. They used to be four files that differed only in the
+# command at the bottom, which cost more than tidiness.
+#
+# Two things that were wrong and are fixed here:
+#
+#   * Every one of them installed with a plain `npm ci`, and `prepare` builds
+#     this package — so a pull request ran the build four times and used it
+#     once. Only the `build` job needs it, and it is the only job that runs it.
+#     Verified rather than assumed: `npm run lint` and `npm test` both pass with
+#     no `lib/` present at all.
+#
+#   * A release pull request merging to main ran all four again on a diff that
+#     is a version string and a changelog entry, and then `release.yml` ran lint
+#     and the tests a third time on the same commit. The `changes` job below
+#     decides that from the diff, and `release.yml` now calls this workflow
+#     instead of re-implementing a subset of it.
+#
+# `workflow_call` is what makes the second one work: the release runs this exact
+# file, so the bar a tag faces is the bar a pull request faces — including the
+# e2e suite, which the release used to skip entirely.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_call:
+    inputs:
+      full:
+        description: 'Run every job whatever the diff touches (the release path)'
+        type: boolean
+        default: false
+    secrets:
+      BARTENDER_GHCR_TOKEN:
+        description: 'Pull credentials for the private mock-server image'
+        required: false
+
+permissions:
+  contents: read
+
+# `github.workflow` is the *caller's* name inside a called workflow, so a
+# release's run of this file lands in its own group rather than sharing one with
+# pushes to main — which would let a later push cancel the run a publish is
+# waiting on. Cancelling is for pull requests, where a newer commit is already
+# behind the run being dropped.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  # release-please keeps its release pull request rebased on main, so every
+  # merge re-runs the whole suite on a diff that cannot fail: nothing any job
+  # reads has changed. This decides that from the changed files rather than from
+  # the commit message or its author — a message is a claim anyone can make.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      # No checkout: the compare API answers this in one request, and it gives
+      # the same answer for a pull request and for the push that merges it —
+      # which is what stops a change from being skipped on one and taken on the
+      # other.
+      - id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FULL: ${{ inputs.full }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          decide() {
+            echo "run=$1" >>"$GITHUB_OUTPUT"
+            echo "changes: run=$1 — $2"
+            echo "**\`run=$1\`** — $2" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+
+          # The release path asks for everything. The commit it publishes is the
+          # version bump this job exists to skip, so the skip has to be off for
+          # the one run where these checks are the only opinion on that commit.
+          if [ "$FULL" = true ]; then
+            decide true "called by the release workflow"
+          fi
+
+          # A branch's first push has no `before`, and a new branch has nothing
+          # to be compared against.
+          case "$BASE" in
+            "" | 0000000000000000000000000000000000000000)
+              decide true "no base commit to compare against" ;;
+          esac
+
+          compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
+          count=$(jq '.files | length' <<<"$compare")
+
+          # The compare API stops listing files at 300, and an empty list means
+          # this is reading something other than a normal push. Neither is a
+          # basis for skipping anything.
+          if [ "$count" -eq 0 ] || [ "$count" -ge 300 ]; then
+            decide true "$count files listed by the compare API"
+          fi
+
+          jq -r '.files[] | "changes:   \(.status)  \(.filename)"' <<<"$compare"
+
+          skippable=$(jq '
+            # Two files nothing here reads. release-please writes both; nothing
+            # else does.
+            def inert:
+              .filename == "CHANGELOG.md"
+              or .filename == ".release-please-manifest.json";
+
+            # The +/- lines of the patch itself, minus the ---/+++ headers.
+            def patch_lines:
+              [ (.patch // "") | split("\n")[]
+                | select(test("^[+-]") and (test("^(\\+\\+\\+|---)") | not)) ];
+
+            # `additions` and `deletions` are counted by GitHub over the whole
+            # diff; `patch` is a rendering of it the API may shorten or omit. If
+            # the two disagree, this is looking at part of a change and has no
+            # business classifying it.
+            def patch_is_whole:
+              ([ patch_lines[] | select(startswith("+")) ] | length) == (.additions // -1)
+              and ([ patch_lines[] | select(startswith("-")) ] | length) == (.deletions // -1);
+
+            # These two do feed the jobs below — scripts, dependencies, the
+            # `files` list — so they cannot be waved through by name. A release
+            # bump rewrites the "version" string in them and nothing else, and
+            # that string is read by npm at publish, never by anything CI runs.
+            #
+            # Every changed line must be a whole version property. Anchoring
+            # only the start would read `"version": "0.2.10", "scripts": {…}` as
+            # a version bump, and JSON is free to put both on one line.
+            def version_bump_only:
+              (.filename == "package.json" or .filename == "package-lock.json")
+              and patch_is_whole
+              and (patch_lines
+                   | length > 0
+                     and all(test("^[+-][ \t]*\"version\": \"[^\"]*\",?[ \t]*$")));
+
+            [ .files[]
+              | (.status == "modified" or .status == "added")
+                and (inert or version_bump_only)
+            ] | all
+          ' <<<"$compare")
+
+          if [ "$skippable" = true ]; then
+            decide false "every changed file is a release version bump"
+          fi
+          decide true "the change reaches the checks"
+
+  lint:
+    name: Lint & format
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # --ignore-scripts skips `prepare`, and `tsc && oxlint` reads `src`, never
+      # `lib`. This job used to spend a build on output it never opened.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run lint
+
+      - run: npm run format:check
+
+  test:
+    name: Tests
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # Same reasoning as lint: `node --test` runs the suites out of `src`.
+      - run: npm ci --ignore-scripts
+
+      - run: npm test
+
+  build:
+    name: Build
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # The one job that wants a build, so the one job that runs one — rather
+      # than letting `prepare` build during install and then building again.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run build
+
+      # The publish guard, run on every pull request rather than for the first
+      # time at `prepack` on a release. A tarball that ships sourcemaps or
+      # duplicated files is a defect of the diff that introduced it, and this is
+      # where that diff can still be changed.
+      - run: node scripts/check-pack.ts
+
+      # Only the release path takes the build away with it: `publish` ships
+      # these exact bytes instead of building its own copy next to the npm
+      # token. Nothing consumes it on a pull request, so nothing is uploaded.
+      - name: Record the tree publish must ship
+        if: ${{ inputs.full }}
+        run: |
+          set -euo pipefail
+          (cd lib && find . -type f -print0 | sort -z | xargs -0r sha256sum) > lib.sha256
+          echo "build: $(wc -l < lib.sha256) files recorded"
+
+      - name: Hand the verified build to publish
+        if: ${{ inputs.full }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: npm-build
+          path: |
+            lib
+            lib.sha256
+          if-no-files-found: error
+          # Long enough to survive an `npm-publish` approval that waits
+          # overnight, short enough that a build nobody published expires.
+          retention-days: 7
+
+  e2e:
+    name: E2E tests
+    needs: changes
+    # Fork PRs get no secrets, so they can't pull the private mock-server image.
+    if: >-
+      needs.changes.outputs.run == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender:latest
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports:
+          - 8080:8080
+        env:
+          CHATSTATE_TTL_SECS: "3"
+          ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        options: --log-driver none
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci --ignore-scripts
+
+      - name: Wait for mock server
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sk https://localhost:8080/ > /dev/null 2>&1; then
+              echo "Mock server is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Mock server failed to become ready"
+          exit 1
+
+      - name: Run E2E tests
+        env:
+          SOCKET_URL: "wss://127.0.0.1:8080/ws/chat"
+          ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        run: npm run test:e2e
+
+  # The one check worth requiring on the branch. It has to report on every run,
+  # including the ones where everything above was skipped, or a required check
+  # that never appears would block the release pull request forever — so
+  # `always()` here, and the verdict is read off the results rather than off
+  # `success()`.
+  success:
+    name: All checks passed
+    if: always()
+    needs: [changes, lint, test, build, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job passed or was deliberately skipped
+        env:
+          # `skipped` is a pass: it is the answer `changes` gives for a diff that
+          # reaches nothing, and the answer the e2e job gives on a fork pull
+          # request that has no credentials for the mock server. `cancelled` is
+          # not — that is a run that never finished having an opinion.
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) echo "::error::a required job ended in '$result'"; exit 1 ;;
+            esac
+          done
+          echo "All checks passed!"

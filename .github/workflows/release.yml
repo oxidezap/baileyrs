@@ -85,11 +85,11 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Split from publish on purpose: this is where dependency lifecycle scripts,
-  # the build and the test suite run, and none of it should be able to reach an
-  # OIDC token. The job below holds the publish rights and runs as little code
-  # as it can get away with.
-  verify:
+  # Cheap, and first: a dispatch that names something other than a release tag
+  # should be refused before a runner spends ten minutes proving the code is
+  # fine. Nothing here builds or installs — it reads the tag, the release and
+  # the registry.
+  verify-tag:
     name: Verify the tag
     needs: release-please
     # `!cancelled()` rather than `always()`: the dispatch path needs this to run
@@ -100,7 +100,7 @@ jobs:
       (needs.release-please.outputs.release_created == 'true' ||
        (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'))
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -186,25 +186,31 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-
-      - run: npm ci
-
-      # Whether or not the release PR got its checks approved, the tag faces the
-      # same bar as a normal pull request before anything reaches npm.
-      - run: npm run lint
-
-      - run: npm run format:check
-
-      - run: npm test
+  # The whole bar, not a copy of part of it. This job used to be four steps
+  # here — lint, format, tests — which meant a release skipped the e2e suite and
+  # the build entirely, and drifted from CI every time CI gained a check.
+  #
+  # `full: true` turns off the version-bump skip in ci.yml. That skip is what
+  # keeps the release pull request's merge from re-running everything; the
+  # commit being published is exactly the diff it skips, so this run is the only
+  # opinion on it and has to be the complete one.
+  #
+  # Runs at this event's sha. On the push path `verify-tag` has already refused
+  # anything where that is not the tagged commit, and on the dispatch path the
+  # ref is the tag.
+  ci:
+    name: Verify the release commit
+    needs: [release-please, verify-tag]
+    if: ${{ !cancelled() && needs.verify-tag.result == 'success' }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      full: true
+    secrets: inherit
 
   publish:
     name: Publish to npm
-    needs: [release-please, verify]
-    if: ${{ !cancelled() && needs.verify.result == 'success' }}
+    needs: [release-please, verify-tag, ci]
+    if: ${{ !cancelled() && needs.ci.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Gate for the publish step: add required reviewers here to make releases
@@ -218,14 +224,28 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Same immutable commit verify checked out and vouched for. Pinned by
-          # sha so retargeting the tag while this job waits on the environment
+          # Same immutable commit verify-tag checked out and vouched for. Pinned
+          # by sha so retargeting the tag while this job waits on the environment
           # approval cannot change what gets published.
           ref: ${{ needs.release-please.outputs.sha || github.sha }}
           # Nothing here talks to the remote after checkout, and the steps below
-          # run third-party install and build scripts in a job holding OIDC
-          # publish rights. Don't leave the token in .git/config for them.
+          # run install and pack in a job holding OIDC publish rights. Don't
+          # leave the token in .git/config for them.
           persist-credentials: false
+
+      # This job used to run its own `npm run build`, which put the whole
+      # toolchain — and every dependency lifecycle script `prepare` reaches —
+      # next to the OIDC token, and shipped bytes nothing had checked. It now
+      # takes the tree CI built and measured in this same run.
+      #
+      # Provenance is unaffected: npm attests the workflow, repository, ref and
+      # commit of the run that published, and the build happened in a job of
+      # this run at this commit.
+      - name: Take the build CI vouched for
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: npm-build
+          path: .
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -239,14 +259,26 @@ jobs:
       - name: Ensure npm supports trusted publishing
         run: npm install -g npm@11.19.0
 
+      # An artifact round trip is a zip and an unzip, and neither is something to
+      # take on trust when the output is a published version. Same digests, same
+      # file set, or nothing is published.
+      - name: Fail unless the tree is byte-for-byte the one CI built
+        run: |
+          set -euo pipefail
+          (cd lib && find . -type f -print0 | sort -z | xargs -0r sha256sum) > lib.actual
+          diff -u lib.sha256 lib.actual
+          echo "publish: $(wc -l < lib.actual) files match the digests CI recorded"
+
       # `--ignore-scripts` keeps dependency install hooks away from the token:
       # anything they ran here could mint one and publish under this package's
-      # identity. It also skips `prepare`, so the build is invoked explicitly
-      # below, and `prepack` is skipped for the same reason at publish time.
+      # identity. It also skips `prepare`, which is the point — the build is the
+      # artifact above, not a second one made here.
       - run: npm ci --ignore-scripts
 
-      - run: npm run build
-
+      # `npm publish --ignore-scripts` skips `prepack`, and `prepack` is where
+      # the tarball guard lives. Run it directly, on the tree about to be packed,
+      # so a build that leaks sourcemaps or duplicate files still fails before
+      # anything is published.
       - run: node scripts/check-pack.ts
 
       # No NODE_AUTH_TOKEN and no --provenance: trusted publishing authenticates
