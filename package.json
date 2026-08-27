@@ -1,7 +1,7 @@
 {
   "name": "@oxidezap/baileyrs",
   "type": "module",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API",
   "keywords": [
     "whatsapp",
