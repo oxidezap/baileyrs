@@ -72,8 +72,7 @@ const INSTANCE_SCHEMA = Symbol('proto compatibility schema')
 const EMPTY_ARRAY = Object.freeze([]) as readonly unknown[]
 const EMPTY_OBJECT = Object.freeze({}) as Readonly<Record<string, never>>
 const JSON_OPTIONS = Object.freeze({ longs: String, enums: String, bytes: String, json: true })
-const WORD_BITS = 32
-const WORD_BASE = 1n << BigInt(WORD_BITS)
+const WORD_BASE = 1n << 32n
 // protobufjs resolves the CommonJS Long constructor internally. Loading that
 // same export keeps `instanceof` and prototype identity aligned without
 // loading protobufjs itself or adding a second wire runtime.
@@ -150,11 +149,25 @@ const repairScalar = (kind: number, item: unknown): unknown => {
 const longFromWords = (low: number, high: number, unsigned: boolean): Long => LongRuntime.fromBits(low, high, unsigned)
 
 /**
+ * Split a decoded 64-bit value into the low/high words `longFromWords` takes.
+ * Shifts and masks are exact on BigInt at any magnitude, and `BigInt(string)`
+ * parses exactly, so the `string` leg the reader's types allow costs precision
+ * nothing — only the one intermediate allocation.
+ */
+const wordsFromInt64 = (value: bigint | string): [number, number] => {
+	const v = typeof value === 'bigint' ? value : BigInt(value)
+	return [Number(v & 0xffffffffn), Number((v >> 32n) & 0xffffffffn)]
+}
+
+/**
  * The neutral codec returns a JS number while a 64-bit value is exact as a
  * double and a plain `{ low, high, unsigned }` past that. The compatibility
  * facade supplies this reader so the same generated decoder materializes every
  * 64-bit word as a long.js Long instead — uniformly, whatever the magnitude —
- * without a second decode or an intermediate string/BigInt allocation.
+ * through one decode. `@bufbuild/protobuf` 2.14 privatized the word-level
+ * varint reader the overrides used to share, so each 64-bit varint now passes
+ * through one BigInt intermediate; uniformity is what remains, and precision
+ * is unchanged.
  *
  * Uniformity is the point: upstream's types declare `Long` for these fields,
  * so a consumer calling `.toNumber()` must not have that work only for values
@@ -163,20 +176,17 @@ const longFromWords = (low: number, high: number, unsigned: boolean): Long => Lo
  */
 class LongBinaryReader extends BinaryReader {
 	override uint64Value(): Int64 {
-		const [low, high] = this.varint64()
+		const [low, high] = wordsFromInt64(this.uint64())
 		return longFromWords(low, high, true)
 	}
 
 	override int64Value(): Int64 {
-		const [low, high] = this.varint64()
+		const [low, high] = wordsFromInt64(this.int64())
 		return longFromWords(low, high, false)
 	}
 
 	override sint64Value(): Int64 {
-		let [low, high] = this.varint64()
-		const sign = -(low & 1)
-		low = ((low >>> 1) | ((high & 1) << (WORD_BITS - 1))) ^ sign
-		high = (high >>> 1) ^ sign
+		const [low, high] = wordsFromInt64(this.sint64())
 		return longFromWords(low, high, false)
 	}
 
