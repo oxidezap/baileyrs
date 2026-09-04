@@ -90,7 +90,7 @@
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
     "@types/node": "^26.1.1",
-    "baileys": "7.0.0-rc13",
+    "baileys": "7.0.0-rc14",
     "jimp": "^1.6.0",
     "link-preview-js": "^5.0.0",
     "music-metadata": "^11.14.0",
