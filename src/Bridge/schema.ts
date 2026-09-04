@@ -521,6 +521,11 @@ const ADAPTERS = {
 		count: asNumber(data?.count) ?? 0
 	}),
 	offline_sync_preview: () => ({ type: 'noop', bridgeType: 'offline_sync_preview' }),
+	// Counterpart of `offline_sync_completed`, not a variant: the drain ended
+	// without its end marker, so the client is *not* caught up and the backlog
+	// is redelivered on the next connection. Emitting `receivedPendingNotifications`
+	// here would be a lie, so this stays a noop until the next preview/completion.
+	offline_sync_interrupted: () => ({ type: 'noop', bridgeType: 'offline_sync_interrupted' }),
 	dirty_state: data => {
 		const dirtyType = asString(data?.dirty_type)
 		if (!dirtyType) return null

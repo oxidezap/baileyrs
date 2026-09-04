@@ -136,6 +136,7 @@ const UNCONDITIONALLY_INERT: ReadonlySet<string> = new Set([
 	'self_push_name_updated',
 	'client_expiration_changed',
 	'offline_sync_preview',
+	'offline_sync_interrupted',
 	'device_list_update',
 	'identity_change',
 	'business_status_update',
