@@ -716,6 +716,15 @@ describe('adaptBridgeEvent — anti-corruption layer', () => {
 			})
 		})
 
+		it('offline_sync_interrupted stays a noop (an interrupted drain is not completion)', () => {
+			// Pinned exactly: the fuzz sweep tolerates `noop` for every inert
+			// type, so a future change surfacing this as a public event would
+			// pass there. This is the test that must fail then.
+			expect(
+				adaptBridgeEvent({ type: 'offline_sync_interrupted', data: { total: 10, delivered: 4 } } as never)
+			).toEqual({ type: 'noop', bridgeType: 'offline_sync_interrupted' })
+		})
+
 		it('server_ack preserves the typed fields needed by the internal ACK handler', () => {
 			expect(
 				adaptBridgeEvent({
