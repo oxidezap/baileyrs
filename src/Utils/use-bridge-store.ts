@@ -90,14 +90,23 @@ export const isUnsupportedDirSync = (e: unknown, platform: NodeJS.Platform = pro
 // File-creation steps behind one durable write plus the directory barrier.
 // Scoped per store via the `options` parameter of `useBridgeStore` — never
 // a shared global — so tests can hold, fail, or observe a single store's
-// I/O without affecting any other store instance. Only the default
-// implementation below provides the durability contract documented on
-// `useBridgeStore`; a custom implementation is a test/fault-injection seam
-// and carries no durability guarantees of its own.
+// I/O without affecting any other store instance. Every member is optional
+// and falls back to its default below, so a test can replace one low-level
+// step (e.g. temp-file creation) while exercising the real default
+// implementation of the rest. Only the defaults provide the durability
+// contract documented on `useBridgeStore`; a custom implementation is a
+// test/fault-injection seam and carries no durability guarantees of its own.
+type BridgeStoreFileHandle = {
+	writeFile(value: Uint8Array): Promise<void>
+	sync(): Promise<void>
+	close(): Promise<void>
+}
+
 type BridgeStoreFileIO = {
-	writeTmp(tmpPath: string, value: Uint8Array): Promise<void>
-	publishTmp(tmpPath: string, finalPath: string): Promise<void>
-	syncDir(dir: string): Promise<void>
+	writeTmp?(tmpPath: string, value: Uint8Array): Promise<void>
+	publishTmp?(tmpPath: string, finalPath: string): Promise<void>
+	syncDir?(dir: string): Promise<void>
+	openTmp?(tmpPath: string): Promise<BridgeStoreFileHandle>
 }
 
 type BridgeStoreOptions = {
@@ -137,29 +146,39 @@ const defaultSyncDir = async (dir: string): Promise<void> => {
 	}
 }
 
-const defaultFileIO: BridgeStoreFileIO = {
-	async writeTmp(tmpPath: string, value: Uint8Array): Promise<void> {
-		// Exclusive create: never truncate a temp file this operation did
-		// not create. Temp names are unique per attempt (see durableWrite),
-		// so EEXIST is not expected — but if it ever happens the caller
-		// retries with a fresh name instead of touching foreign bytes.
-		const handle = await open(tmpPath, 'wx')
-		try {
-			await handle.writeFile(value)
-			await handle.sync()
-		} catch (e) {
-			// Owned (we just created it exclusively): remove our own
-			// partial temp, never anyone else's.
-			await handle.close().catch(() => {})
-			await unlink(tmpPath).catch(() => {})
-			throw e
-		}
+// Exclusive temp creation with a restrictive mode for sensitive auth
+// bytes. `0o600` regardless of umask: replacement renames this inode over
+// the target, so an existing `0600` file can never be widened (a previously
+// wider file narrows to `0600`, the safe direction for session secrets;
+// POSIX only — Windows ignores mode bits).
+const realOpenTmp = async (tmpPath: string): Promise<BridgeStoreFileHandle> => open(tmpPath, 'wx', 0o600)
+
+const defaultWriteTmp = async (
+	tmpPath: string,
+	value: Uint8Array,
+	openTmp: (tmpPath: string) => Promise<BridgeStoreFileHandle>
+): Promise<void> => {
+	// Exclusive create: never truncate a temp file this operation did
+	// not create. Temp names are unique per attempt (see durableWrite),
+	// so EEXIST is not expected — but if it ever happens the caller
+	// retries with a fresh name instead of touching foreign bytes.
+	const handle = await openTmp(tmpPath)
+	try {
+		await handle.writeFile(value)
+		await handle.sync()
 		await handle.close()
-	},
-	async publishTmp(tmpPath: string, finalPath: string): Promise<void> {
-		await rename(tmpPath, finalPath)
-	},
-	syncDir: defaultSyncDir
+	} catch (e) {
+		// Owned (we just created it exclusively): close best-effort and
+		// remove our own temp, never anyone else's. Cleanup failures
+		// cannot mask the original error — it always propagates.
+		await handle.close().catch(() => {})
+		await unlink(tmpPath).catch(() => {})
+		throw e
+	}
+}
+
+const defaultPublishTmp = async (tmpPath: string, finalPath: string): Promise<void> => {
+	await rename(tmpPath, finalPath)
 }
 
 let tmpSeq = 0
@@ -214,13 +233,21 @@ export async function useBridgeStore(
 ): Promise<NonNullable<AuthenticationState['store']>> {
 	await mkdir(folder, { recursive: true })
 
-	const io = options?.io ?? defaultFileIO
+	const openTmp = options?.io?.openTmp ?? realOpenTmp
+	const io = {
+		writeTmp: options?.io?.writeTmp ?? ((tmpPath, value) => defaultWriteTmp(tmpPath, value, openTmp)),
+		publishTmp: options?.io?.publishTmp ?? defaultPublishTmp,
+		syncDir: options?.io?.syncDir ?? defaultSyncDir
+	}
 
 	/**
-	 * Durable file replacement: write + fsync an exclusively-created,
-	 * uniquely-named temp file in the same directory, then atomically
-	 * rename it over the target and sync the directory. The previous file
-	 * (or its absence) is untouched until the rename succeeds, so a crash
+	 * Durable file replacement: write + fsync an exclusively-created temp
+	 * file in the same directory, then atomically rename it over the
+	 * target and sync the directory. The temp uses a short fixed-shape
+	 * basename (independent of key length, so long-but-valid final names
+	 * still fit NAME_MAX) created with mode `0600` (POSIX; Windows ignores
+	 * mode bits), so replacing a hardened auth file never widens its
+	 * permissions. The previous file (or its absence) is untouched until the rename succeeds, so a crash
 	 * or a failed write can never leave a torn target behind — readers
 	 * always see the old intact file or the new intact file. Cleanup only
 	 * ever removes a temp this operation created; a temp that already
@@ -241,7 +268,14 @@ export async function useBridgeStore(
 	const durableWrite = async (finalPath: string, value: Uint8Array): Promise<void> => {
 		const MAX_TMP_ATTEMPTS = 5
 		for (let attempt = 0; attempt < MAX_TMP_ATTEMPTS; attempt++) {
-			const tmpPath = `${finalPath}.${process.pid}.${tmpSeq++}.${randomBytes(4).toString('hex')}.tmp`
+			// Short fixed-shape basename in the same directory (rename stays
+			// atomic): independent of the target key length so keys whose
+			// valid final names approach NAME_MAX still fit. Uniqueness from
+			// pid + sequence + randomness; the final stored name is untouched.
+			const tmpPath = join(
+				dirname(finalPath),
+				`.bstore-${process.pid.toString(36)}-${(tmpSeq++).toString(36)}-${randomBytes(4).toString('hex')}.tmp`
+			)
 			try {
 				await io.writeTmp(tmpPath, value)
 			} catch (e) {
@@ -559,6 +593,19 @@ export async function useBridgeStore(
 			pendingWrites.delete(cacheKey)
 			durable.delete(cacheKey)
 
+			// Reinstate the state captured above after any delete failure
+			// that leaves the key's fate undecided, so an acknowledged
+			// value stays readable and flushable. Not used when absence is
+			// certified (the delete won) or when the unlink itself succeeded
+			// (the file is genuinely gone; only the barrier is uncertain).
+			const restoreDeleteState = () => {
+				if (prevDurable) rememberDurable(cacheKey, prevDurable)
+				if (prevPending) {
+					armTimer(cacheKey, prevPending)
+					pendingWrites.set(cacheKey, prevPending)
+				}
+			}
+
 			try {
 				await unlink(filePath(store, key))
 			} catch (e) {
@@ -567,15 +614,16 @@ export async function useBridgeStore(
 					// Absent on disk, but a prior barrier was never
 					// certified: certify the absence now instead of
 					// swallowing the uncertainty.
-					await io.syncDir(folder)
+					try {
+						await io.syncDir(folder)
+					} catch (syncError) {
+						restoreDeleteState()
+						throw syncError
+					}
 					uncertain.delete(cacheKey)
 					return
 				}
-				if (prevDurable) rememberDurable(cacheKey, prevDurable)
-				if (prevPending) {
-					armTimer(cacheKey, prevPending)
-					pendingWrites.set(cacheKey, prevPending)
-				}
+				restoreDeleteState()
 				throw e
 			}
 			try {

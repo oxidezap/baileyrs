@@ -21,7 +21,7 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { access, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -153,11 +153,13 @@ describe('useBridgeStore — durability', () => {
 		const dir = await mkdtemp(join(tmpdir(), 'dur-besteffort-'))
 		try {
 			const failBad = {
-				writeTmp: async (tmpPath: string, value: Uint8Array) => {
-					if (tmpPath.includes(`${CRITICAL}-bad`)) throw codedError('injected write failure', 'EIO')
-					return realWriteTmp(tmpPath, value)
+				writeTmp: realWriteTmp,
+				// Temp basenames are decoupled from keys by design, so the
+				// fault targets the final path (which carries the key).
+				publishTmp: async (tmpPath: string, finalPath: string) => {
+					if (finalPath.includes(`${CRITICAL}-bad`)) throw codedError('injected write failure', 'EIO')
+					return realPublishTmp(tmpPath, finalPath)
 				},
-				publishTmp: realPublishTmp,
 				syncDir: realSyncDir
 			}
 			const store = await useBridgeStore(dir, { io: failBad })
@@ -938,5 +940,145 @@ describe('useBridgeStore — durability', () => {
 		// Default platform binding works without an explicit argument.
 		assert.equal(isUnsupportedDirSync(codedError('x', 'ENOSYS')), true)
 		assert.equal(isUnsupportedDirSync(codedError('x', 'EIO')), false)
+	})
+
+	it('uncertain delete retry with failing barrier preserves admitted pending data (Greptile 3939491652)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-delpending-'))
+		try {
+			let failSync = false
+			const store = await useBridgeStore(dir, {
+				io: {
+					writeTmp: realWriteTmp,
+					publishTmp: realPublishTmp,
+					syncDir: async (d: string) => {
+						if (failSync) throw codedError('injected barrier failure', 'EIO')
+						return realSyncDir(d)
+					}
+				}
+			})
+
+			await store.set(NON_CRITICAL, 'k', enc('v1'))
+			await store.flush!()
+			failSync = true
+			// Unlink succeeds, barrier fails: uncertainty with an absent file.
+			await assert.rejects(() => store.delete(NON_CRITICAL, 'k'), /barrier failure/)
+
+			// Admit a debounced value on the uncertain absent key.
+			await store.set(NON_CRITICAL, 'k', enc('v2'))
+			assert.equal(dec(await store.get(NON_CRITICAL, 'k')), 'v2')
+
+			// Retry delete: unlink hits ENOENT while uncertain, barrier fails
+			// again — the admitted pending value must survive the failure.
+			await assert.rejects(() => store.delete(NON_CRITICAL, 'k'), /barrier failure/)
+			assert.equal(dec(await store.get(NON_CRITICAL, 'k')), 'v2')
+			// Uncertainty is kept, not resolved: a further retry still fails.
+			await assert.rejects(() => store.delete(NON_CRITICAL, 'k'), /barrier failure/)
+			// And the pending work is still flushable, not silently dropped.
+			await assert.rejects(() => store.flush!(), /barrier failure/)
+
+			failSync = false
+			await store.flush!()
+			const reopened = await useBridgeStore(dir)
+			assert.equal(dec(await reopened.get(NON_CRITICAL, 'k')), 'v2')
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('writes a key whose encoded filename is long but valid (Greptile 3939501789)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-longname-'))
+		try {
+			const store = await useBridgeStore(dir)
+			// `session-` (8) + 228 + `.bin` (4) = 240 bytes: valid under the
+			// 255-byte component limit, but any temp name derived by
+			// extending it exceeds the limit.
+			const key = 'a'.repeat(228)
+			assert.ok(Buffer.byteLength(`${CRITICAL}-${key}.bin`) < 255)
+			await store.set(CRITICAL, key, enc('long'))
+			assert.equal(dec(await store.get(CRITICAL, key)), 'long')
+			assert.deepEqual(await store.listKeys!(CRITICAL), [key])
+			const reopened = await useBridgeStore(dir)
+			assert.equal(dec(await reopened.get(CRITICAL, key)), 'long')
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('creates and replaces auth files with restrictive modes under a typical umask (Greptile 3939501791)', async () => {
+		// POSIX mode semantics only; on Windows modes are largely ignored,
+		// so only the round-trip is asserted there.
+		const posix = process.platform !== 'win32'
+		const dir = await mkdtemp(join(tmpdir(), 'dur-modes-'))
+		const prevUmask = process.umask(0o022)
+		try {
+			const store = await useBridgeStore(dir)
+			await store.set(CRITICAL, 'k', enc('v'))
+			if (posix) {
+				assert.equal((await stat(join(dir, `${CRITICAL}-k.bin`))).mode & 0o777, 0o600)
+			}
+			assert.equal(dec(await store.get(CRITICAL, 'k')), 'v')
+
+			// A hardened pre-existing file must never be widened by replace.
+			const hardened = join(dir, `${CRITICAL}-h.bin`)
+			await writeFile(hardened, enc('seed'), { mode: 0o600 })
+			await store.set(CRITICAL, 'h', enc('new'))
+			if (posix) {
+				assert.equal((await stat(hardened)).mode & 0o777, 0o600)
+			}
+			assert.equal(dec(await store.get(CRITICAL, 'h')), 'new')
+		} finally {
+			process.umask(prevUmask)
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('default-writer close failure cleans its owned temp and surfaces the original error (Greptile 3939501793)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-closefail-'))
+		try {
+			let failClose = true
+			let removeBeforeThrow = false
+			const store = await useBridgeStore(dir, {
+				// Only the temp-creation step is replaced; write, sync,
+				// close-cleanup and publish run the real default code.
+				io: {
+					openTmp: async (tmpPath: string) => {
+						const handle = await open(tmpPath, 'wx')
+						let closed = false
+						return {
+							writeFile: (value: Uint8Array) => handle.writeFile(value),
+							sync: () => handle.sync(),
+							close: async () => {
+								if (closed) return
+								closed = true
+								if (failClose) {
+									if (removeBeforeThrow) await rm(tmpPath, { force: true })
+									throw codedError('injected close failure', 'EIO')
+								}
+								await handle.close()
+							}
+						}
+					}
+				}
+			})
+
+			await assert.rejects(() => store.set(CRITICAL, 'k', enc('v')), /injected close failure/)
+			// Owned temp cleaned: no secret-carrying leftovers remain.
+			assert.deepEqual(
+				(await readdir(dir)).filter(f => f.endsWith('.tmp')),
+				[]
+			)
+
+			// A cleanup racing a vanished temp still reports the original.
+			removeBeforeThrow = true
+			await assert.rejects(() => store.set(CRITICAL, 'k', enc('v')), /injected close failure/)
+
+			// Retries accumulate nothing: exactly the target file remains.
+			failClose = false
+			await store.set(CRITICAL, 'k', enc('v'))
+			assert.deepEqual(await readdir(dir), [`${CRITICAL}-k.bin`])
+			assert.equal(dec(await store.get(CRITICAL, 'k')), 'v')
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
 	})
 })
