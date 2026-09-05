@@ -83,7 +83,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@oxidezap/whatsapp-rust-bridge": "https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@01a5e5f19465de487020a96f927319b863a968cf",
+    "@oxidezap/whatsapp-rust-bridge": "0.21.0",
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5"
