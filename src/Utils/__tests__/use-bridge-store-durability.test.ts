@@ -25,7 +25,7 @@ import { access, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
-import { useBridgeStore } from '../use-bridge-store.ts'
+import { useBridgeStore, isUnsupportedDirSync } from '../use-bridge-store.ts'
 
 const enc = (s: string) => new TextEncoder().encode(s)
 const dec = (u: Uint8Array | null) => (u ? new TextDecoder().decode(u) : null)
@@ -65,6 +65,17 @@ const realWriteTmp = async (tmpPath: string, value: Uint8Array): Promise<void> =
 
 const realPublishTmp = async (tmpPath: string, finalPath: string): Promise<void> => {
 	await rename(tmpPath, finalPath)
+}
+
+// Production-faithful directory barrier for delegating stubs (Linux path:
+// open + sync; platform fallback lives in the module under test).
+const realSyncDir = async (dir: string): Promise<void> => {
+	const handle = await open(dir, 'r')
+	try {
+		await handle.sync()
+	} finally {
+		await handle.close().catch(() => {})
+	}
 }
 
 // A gate: `hold()` blocks until `release()` is called. `hits` counts
@@ -146,7 +157,8 @@ describe('useBridgeStore — durability', () => {
 					if (tmpPath.includes(`${CRITICAL}-bad`)) throw codedError('injected write failure', 'EIO')
 					return realWriteTmp(tmpPath, value)
 				},
-				publishTmp: realPublishTmp
+				publishTmp: realPublishTmp,
+				syncDir: realSyncDir
 			}
 			const store = await useBridgeStore(dir, { io: failBad })
 
@@ -181,7 +193,8 @@ describe('useBridgeStore — durability', () => {
 						await gate.gate
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -216,7 +229,8 @@ describe('useBridgeStore — durability', () => {
 						await gate.gate
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -247,7 +261,8 @@ describe('useBridgeStore — durability', () => {
 						await gate.gate
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -284,7 +299,8 @@ describe('useBridgeStore — durability', () => {
 						await gate.gate
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -456,7 +472,8 @@ describe('useBridgeStore — durability', () => {
 						await gate.gate
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -507,7 +524,8 @@ describe('useBridgeStore — durability', () => {
 						await gate.gate
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -584,7 +602,8 @@ describe('useBridgeStore — durability', () => {
 							throw codedError('injected rename failure', 'EIO')
 						}
 						return realPublishTmp(tmpPath, finalPath)
-					}
+					},
+					syncDir: realSyncDir
 				}
 			})
 			await assert.rejects(() => store.set(CRITICAL, 'k', enc('new')), /injected rename failure/)
@@ -614,7 +633,8 @@ describe('useBridgeStore — durability', () => {
 						}
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -646,7 +666,8 @@ describe('useBridgeStore — durability', () => {
 							throw codedError('injected publish failure', 'EIO')
 						}
 						return realPublishTmp(tmpPath, finalPath)
-					}
+					},
+					syncDir: realSyncDir
 				}
 			})
 
@@ -698,7 +719,8 @@ describe('useBridgeStore — durability', () => {
 						void store.set(NON_CRITICAL, `churn-${i}`, enc('x'))
 						return realWriteTmp(tmpPath, value)
 					},
-					publishTmp: realPublishTmp
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
 				}
 			})
 
@@ -707,5 +729,214 @@ describe('useBridgeStore — durability', () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true })
 		}
+	})
+
+	it('flush propagates a barrier-observed critical-write failure; later flushes are clean', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-barrier-err-'))
+		try {
+			const gate = makeGate()
+			let failWrite = true
+			const store = await useBridgeStore(dir, {
+				io: {
+					writeTmp: async (tmpPath, value) => {
+						gate.hit()
+						await gate.gate
+						if (failWrite) throw codedError('injected gated failure', 'EIO')
+						return realWriteTmp(tmpPath, value)
+					},
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
+				}
+			})
+
+			let setSettled = false
+			let setError: unknown
+			const pending = store.set(CRITICAL, 'k', enc('v')).then(
+				() => {
+					setSettled = true
+				},
+				e => {
+					setSettled = true
+					setError = e
+				}
+			)
+			await waitFor(() => gate.hits >= 1, 'write to reach the gate')
+
+			let flushSettled = false
+			let flushError: unknown
+			const flushing = store.flush!().then(
+				() => {
+					flushSettled = true
+				},
+				e => {
+					flushSettled = true
+					flushError = e
+				}
+			)
+			await new Promise(resolve => setTimeout(resolve, 100))
+			// The admitted write is blocked: neither call may settle yet.
+			assert.equal(setSettled, false)
+			assert.equal(flushSettled, false)
+
+			gate.release()
+			await pending
+			await flushing
+			assert.match(String(setError), /injected gated failure/)
+			// The barrier observed the failure: flush rejects instead of
+			// resolving successfully.
+			assert.match(String(flushError), /injected gated failure/)
+
+			// Settled history never poisons later flushes.
+			failWrite = false
+			await store.flush!()
+
+			// A healthy retry certifies the key.
+			const healthy = await useBridgeStore(dir)
+			await healthy.set(CRITICAL, 'k', enc('v'))
+			await healthy.flush!()
+			assert.deepEqual(await readFile(join(dir, `${CRITICAL}-k.bin`)), Buffer.from(enc('v')))
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('post-rename barrier failure invalidates certification; identical sets re-attempt', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-uncertain-'))
+		try {
+			let failBarrier = false
+			const store = await useBridgeStore(dir, {
+				io: {
+					writeTmp: realWriteTmp,
+					// Real rename-then-error boundary: the bytes reach the
+					// target, but the barrier never certifies them.
+					publishTmp: async (tmpPath, finalPath) => {
+						await rename(tmpPath, finalPath)
+						if (failBarrier) throw codedError('injected post-rename barrier failure', 'EIO')
+					},
+					syncDir: realSyncDir
+				}
+			})
+
+			await store.set(CRITICAL, 'k', enc('A'))
+			failBarrier = true
+			await assert.rejects(() => store.set(CRITICAL, 'k', enc('B')), /post-rename barrier failure/)
+			// The rename really happened: disk holds B while the cache must
+			// no longer claim A for the key.
+			assert.deepEqual(await readFile(join(dir, `${CRITICAL}-k.bin`)), Buffer.from(enc('B')))
+
+			// Reads serve best-available B without re-certifying it: retry B
+			// still runs its still-required barrier.
+			assert.equal(dec(await store.get(CRITICAL, 'k')), 'B')
+			await assert.rejects(() => store.set(CRITICAL, 'k', enc('B')), /post-rename barrier failure/)
+			// Identical set of A must re-attempt, not skip on stale cache.
+			// Its rename lands A on disk before the barrier fails again.
+			await assert.rejects(() => store.set(CRITICAL, 'k', enc('A')), /post-rename barrier failure/)
+			assert.deepEqual(await readFile(join(dir, `${CRITICAL}-k.bin`)), Buffer.from(enc('A')))
+			assert.equal(dec(await store.get(CRITICAL, 'k')), 'A')
+
+			failBarrier = false
+			await store.set(CRITICAL, 'k', enc('B'))
+			assert.equal(dec(await store.get(CRITICAL, 'k')), 'B')
+			await store.set(CRITICAL, 'k', enc('A'))
+			assert.deepEqual(await readFile(join(dir, `${CRITICAL}-k.bin`)), Buffer.from(enc('A')))
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('failed post-unlink barrier is retried, not swallowed as idempotent absence', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-delbarrier-'))
+		try {
+			let failSync = false
+			const store = await useBridgeStore(dir, {
+				io: {
+					writeTmp: realWriteTmp,
+					publishTmp: realPublishTmp,
+					syncDir: async (d: string) => {
+						if (failSync) throw codedError('injected post-unlink barrier failure', 'EIO')
+						return realSyncDir(d)
+					}
+				}
+			})
+
+			await store.set(CRITICAL, 'k', enc('v'))
+			failSync = true
+			await assert.rejects(() => store.delete(CRITICAL, 'k'), /post-unlink barrier failure/)
+			// The unlink really happened.
+			await assert.rejects(() => access(join(dir, `${CRITICAL}-k.bin`)), /ENOENT/)
+			assert.equal(await store.get(CRITICAL, 'k'), null)
+			// Retry while still failing rejects again — never swallowed.
+			await assert.rejects(() => store.delete(CRITICAL, 'k'), /post-unlink barrier failure/)
+
+			failSync = false
+			// ENOENT on disk, but the prior barrier was uncertified: the
+			// retry re-runs the barrier and then resolves.
+			await store.delete(CRITICAL, 'k')
+			assert.equal(await store.get(CRITICAL, 'k'), null)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('uncertain delete with the directory removed externally surfaces ENOENT', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-delgone-'))
+		try {
+			let failSync = false
+			const store = await useBridgeStore(dir, {
+				io: {
+					writeTmp: realWriteTmp,
+					publishTmp: realPublishTmp,
+					syncDir: async (d: string) => {
+						if (failSync) throw codedError('injected post-unlink barrier failure', 'EIO')
+						return realSyncDir(d)
+					}
+				}
+			})
+
+			await store.set(CRITICAL, 'k', enc('v'))
+			failSync = true
+			await assert.rejects(() => store.delete(CRITICAL, 'k'), /post-unlink barrier failure/)
+
+			// Explicit scoped policy: an externally removed directory is not
+			// silently treated as certified absence while uncertain.
+			failSync = false
+			await rm(dir, { recursive: true, force: true })
+			await assert.rejects(() => store.delete(CRITICAL, 'k'), /ENOENT/)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('isUnsupportedDirSync classifies directory-barrier errors per platform', () => {
+		const cases: [code: string, platform: NodeJS.Platform, expected: boolean][] = [
+			['ENOSYS', 'linux', true],
+			['ENOSYS', 'win32', true],
+			['ENOSYS', 'darwin', true],
+			['ENOTSUP', 'linux', true],
+			['ENOTSUP', 'win32', true],
+			['EINVAL', 'win32', true],
+			['EINVAL', 'linux', false],
+			['EINVAL', 'darwin', false],
+			['EPERM', 'win32', true],
+			['EPERM', 'linux', false],
+			['EISDIR', 'win32', true],
+			['EISDIR', 'linux', false],
+			['EIO', 'linux', false],
+			['EIO', 'win32', false],
+			['ENOSPC', 'linux', false],
+			['ENOSPC', 'win32', false],
+			['EACCES', 'linux', false],
+			['EACCES', 'win32', false],
+			['ENOENT', 'linux', false],
+			['ENOENT', 'win32', false],
+			['EBADF', 'linux', false],
+			['EBADF', 'win32', false]
+		]
+		for (const [code, platform, expected] of cases) {
+			assert.equal(isUnsupportedDirSync(codedError('x', code), platform), expected, `${code}/${platform}`)
+		}
+		// Default platform binding works without an explicit argument.
+		assert.equal(isUnsupportedDirSync(codedError('x', 'ENOSYS')), true)
+		assert.equal(isUnsupportedDirSync(codedError('x', 'EIO')), false)
 	})
 })

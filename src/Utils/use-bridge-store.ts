@@ -61,39 +61,73 @@ const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.len
 // a valid snapshot for caller-owned buffers.
 const copyBytes = (value: Uint8Array): Uint8Array => Uint8Array.from(value)
 
-// File-creation steps behind one durable write. Scoped per store via the
-// `options` parameter of `useBridgeStore` — never a shared global — so
-// tests can hold, fail, or observe a single store's I/O without affecting
-// any other store instance. When omitted, the production implementation
-// below is used.
+/**
+ * Pure classifier for directory-barrier failures: does this error mean
+ * "this platform cannot sync directory handles" (degrade to process-crash
+ * atomicity) or "the durability barrier did not hold" (propagate)?
+ *
+ * - `ENOSYS` / `ENOTSUP` on any platform: the operation is not
+ *   implemented — genuinely unsupported, safe to degrade.
+ * - `EINVAL` / `EPERM` / `EISDIR` on `win32` only: Windows directory
+ *   handles reject open-for-read and FlushFileBuffers with these codes,
+ *   so they are the documented platform fallback there. On Linux/macOS
+ *   the same codes from a freshly opened directory handle mean something
+ *   is genuinely wrong and they propagate.
+ * - Everything else propagates everywhere: `EIO`, `ENOSPC`, `EROFS`,
+ *   `EACCES`, `ENOENT`, and notably `EBADF` (a bad handle is a real bug,
+ *   never evidence of an unsupported platform).
+ *
+ * `platform` defaults to the running platform; tests pass explicit values
+ * to cover the matrix deterministically on any OS.
+ */
+export const isUnsupportedDirSync = (e: unknown, platform: NodeJS.Platform = process.platform): boolean => {
+	const code = errnoOf(e)
+	if (code === 'ENOSYS' || code === 'ENOTSUP') return true
+	if (platform === 'win32' && (code === 'EINVAL' || code === 'EPERM' || code === 'EISDIR')) return true
+	return false
+}
+
+// File-creation steps behind one durable write plus the directory barrier.
+// Scoped per store via the `options` parameter of `useBridgeStore` — never
+// a shared global — so tests can hold, fail, or observe a single store's
+// I/O without affecting any other store instance. Only the default
+// implementation below provides the durability contract documented on
+// `useBridgeStore`; a custom implementation is a test/fault-injection seam
+// and carries no durability guarantees of its own.
 type BridgeStoreFileIO = {
 	writeTmp(tmpPath: string, value: Uint8Array): Promise<void>
 	publishTmp(tmpPath: string, finalPath: string): Promise<void>
+	syncDir(dir: string): Promise<void>
 }
 
 type BridgeStoreOptions = {
 	io?: BridgeStoreFileIO
 }
 
-/**
- * Directory fsync failures that mean "this platform cannot sync directory
- * handles" rather than "your data is at risk". ENOSYS/ENOTSUP: the syscall
- * is not implemented. EINVAL/EBADF: the handle kind does not support
- * syncing (e.g. directory handles on some platforms). EPERM: the sandbox
- * forbids handle sync even though the data path succeeded. Everything
- * else — EIO, ENOSPC, EROFS, EACCES on open — is a real I/O failure and
- * propagates so the caller learns the durability barrier did not hold.
- */
-const isUnsupportedDirSync = (e: unknown): boolean => {
-	const code = errnoOf(e)
-	return code === 'ENOSYS' || code === 'ENOTSUP' || code === 'EINVAL' || code === 'EBADF' || code === 'EPERM'
+// Thrown by `durableWrite` when the temp file was published (rename
+// attempted) but the post-rename barrier did not certify. At that point
+// the target may or may not hold the new bytes, so prior durable
+// knowledge for the key is invalid. Carries the original failure.
+class BarrierUncertainty extends Error {
+	readonly detail: unknown
+	constructor(detail: unknown) {
+		super('use-bridge-store: post-rename barrier uncertified; prior durable knowledge invalidated')
+		this.name = 'BarrierUncertainty'
+		this.detail = detail
+	}
 }
 
-// Persist a directory entry update (rename/unlink) toward power-loss
-// durability. `open` failures propagate untouched; only the narrow
-// "unsupported" class of `sync` failures is swallowed, documented above.
-const syncDir = async (dir: string): Promise<void> => {
-	const handle = await open(dir, 'r')
+const defaultSyncDir = async (dir: string): Promise<void> => {
+	let handle: Awaited<ReturnType<typeof open>> | undefined
+	try {
+		handle = await open(dir, 'r')
+	} catch (e) {
+		// A store folder that cannot even be opened is not a platform
+		// quirk, except where the platform cannot open directory handles
+		// at all (classified above).
+		if (!isUnsupportedDirSync(e)) throw e
+		return
+	}
 	try {
 		await handle.sync()
 	} catch (e) {
@@ -124,8 +158,8 @@ const defaultFileIO: BridgeStoreFileIO = {
 	},
 	async publishTmp(tmpPath: string, finalPath: string): Promise<void> {
 		await rename(tmpPath, finalPath)
-		await syncDir(dirname(finalPath))
-	}
+	},
+	syncDir: defaultSyncDir
 }
 
 let tmpSeq = 0
@@ -140,26 +174,39 @@ let tmpSeq = 0
  *   copy before queueing), so mutating a buffer after the call — even
  *   before awaiting it — can never change what gets persisted.
  * - Critical stores write through `durableWrite` before `set`/`setMany`
- *   resolve. The in-memory map only records bytes AFTER they are on disk,
- *   so an identical retry following a failure is never skipped and always
+ *   resolve. The in-memory map only records bytes AFTER the full barrier
+ *   (write + fsync + atomic rename + directory sync) succeeds, so an
+ *   identical retry following a failure is never skipped and always
  *   re-attempts the write.
+ * - If the post-rename barrier fails, the key is marked uncertain: prior
+ *   durable knowledge is discarded, reads serve best-available bytes
+ *   without re-certifying them, and no identical set is skipped until a
+ *   later operation completes the full barrier for that key.
  * - Non-critical stores are debounced (50ms coalescing) and readable
  *   immediately (read-your-write), but such reads are NOT durable until
  *   `flush()` succeeds. A failed flush keeps the pending entry and throws,
  *   so the next `flush()` retries the same bytes.
- * - `flush()` first waits for every operation admitted before it (barrier),
- *   then drains the pending writes those operations produced. It never
+ * - `flush()` first waits for every operation admitted before it
+ *   (barrier), then drains the pending writes those operations produced.
+ *   Failures observed by the barrier propagate — a failed admitted write
+ *   fails the flush — but only operations outstanding during that flush
+ *   are reported, so history never poisons later flushes. `flush()` never
  *   reports quiescence while prior admitted work is still running.
  * - All operations on one key (set, delete, flush, concurrent batches) run
  *   through a per-key chain, so a stale failure can never erase newer
  *   state and an in-flight write can never resurrect a deleted key.
  * - A failed delete restores the preceding pending/durable state, so an
  *   acknowledged value stays readable and flushable; only a successful
- *   delete clears it, at its linearization point under the key lock.
+ *   delete (unlink + directory barrier) clears it. A delete retried while
+ *   the key is uncertain re-runs the directory barrier instead of
+ *   swallowing the uncertainty as idempotent absence — except that a
+ *   directory removed externally surfaces ENOENT rather than success.
  * - Every byte array handed back to callers is a copy.
  *
  * @param folder Directory to store bridge state files
- * @param options Optional per-store file-I/O steps (scoped test seam)
+ * @param options Optional per-store file-I/O steps. Test/fault-injection
+ *   seam only: the default implementation is the sole provider of the
+ *   durability contract above.
  */
 export async function useBridgeStore(
 	folder: string,
@@ -172,11 +219,12 @@ export async function useBridgeStore(
 	/**
 	 * Durable file replacement: write + fsync an exclusively-created,
 	 * uniquely-named temp file in the same directory, then atomically
-	 * rename it over the target. The previous file (or its absence) is
-	 * untouched until the rename succeeds, so a crash or a failed write can
-	 * never leave a torn target behind — readers always see the old intact
-	 * file or the new intact file. Cleanup only ever removes a temp this
-	 * operation created; a temp that already existed is left alone.
+	 * rename it over the target and sync the directory. The previous file
+	 * (or its absence) is untouched until the rename succeeds, so a crash
+	 * or a failed write can never leave a torn target behind — readers
+	 * always see the old intact file or the new intact file. Cleanup only
+	 * ever removes a temp this operation created; a temp that already
+	 * existed is left alone.
 	 *
 	 * Guarantees are scoped honestly: the rename is atomic against a dead
 	 * process, and the file + directory syncs raise the bar toward
@@ -187,7 +235,8 @@ export async function useBridgeStore(
 	 *
 	 * Every error propagates, including ENOENT: resolving a write whose
 	 * bytes never reached disk would let the caller believe state is
-	 * durable.
+	 * durable. A failure at or after the rename throws BarrierUncertainty
+	 * so the caller invalidates prior durable knowledge for the key.
 	 */
 	const durableWrite = async (finalPath: string, value: Uint8Array): Promise<void> => {
 		const MAX_TMP_ATTEMPTS = 5
@@ -198,30 +247,32 @@ export async function useBridgeStore(
 			} catch (e) {
 				// EEXIST means a foreign temp owns this name (we create
 				// exclusively and never overwrite): retry with a fresh name
-				// instead of deleting or reusing it. Any other failure is
-				// ours to report; `writeTmp` already cleaned up its own temp.
+				// instead of deleting or reusing it. Any earlier failure
+				// left the target untouched; `writeTmp` already cleaned up
+				// its own temp.
 				if (errnoOf(e) === 'EEXIST') continue
 				throw e
 			}
 			try {
 				await io.publishTmp(tmpPath, finalPath)
+				await io.syncDir(dirname(finalPath))
 			} catch (e) {
-				// Publish of our own temp failed before (or atomically
-				// without) replacing the target: remove only our temp. If
-				// the rename itself succeeded, the temp is already gone and
-				// this unlink is a tolerated no-op.
+				// Our own temp failed to publish or certify: remove only our
+				// temp. If the rename itself succeeded, the temp is already
+				// gone and this unlink is a tolerated no-op — but the
+				// barrier is uncertified either way.
 				await unlink(tmpPath).catch(() => {})
-				throw e
+				throw new BarrierUncertainty(e)
 			}
 			return
 		}
 		throw new Error(`use-bridge-store durableWrite could not claim a unique temp name for ${finalPath}`)
 	}
 
-	// Last bytes known to be durable per key (written, flushed, or read
-	// from disk). Private copies only — never a caller-owned reference.
-	// Bounded by LRU eviction; eviction only drops knowledge, disk stays
-	// canonical.
+	// Last bytes known to have passed the FULL barrier per key (written,
+	// flushed, or read from disk outside uncertainty). Private copies only
+	// — never a caller-owned reference. Bounded by LRU eviction; eviction
+	// only drops knowledge, disk stays canonical.
 	const MAX_CACHE_ENTRIES = 5000
 	const durable = new Map<string, Uint8Array>()
 	const rememberDurable = (key: string, value: Uint8Array) => {
@@ -233,6 +284,13 @@ export async function useBridgeStore(
 			durable.delete(first)
 		}
 	}
+
+	// Keys whose last mutation never completed the full barrier (post-rename
+	// or post-unlink failure). Durable knowledge is discarded; reads serve
+	// best-available bytes without re-certifying them; identical sets are
+	// never skipped. Cleared only by a later operation that completes the
+	// full barrier for the key (write, flush, or certified delete).
+	const uncertain = new Set<string>()
 
 	const filePath = (store: string, key: string) => join(folder, `${store}-${encodeURIComponent(key)}.bin`)
 
@@ -284,6 +342,24 @@ export async function useBridgeStore(
 		entry.timer.unref() // Don't keep the process alive for debounced writes
 	}
 
+	// Full-barrier write shared by critical `set` and the flush drain.
+	// Certifies the key on success; on post-rename failure discards durable
+	// knowledge, marks uncertainty, and rethrows the original error.
+	const certifyWrite = async (cacheKey: string, path: string, value: Uint8Array): Promise<void> => {
+		try {
+			await durableWrite(path, value)
+		} catch (e) {
+			if (e instanceof BarrierUncertainty) {
+				durable.delete(cacheKey)
+				uncertain.add(cacheKey)
+				throw e.detail
+			}
+			throw e
+		}
+		uncertain.delete(cacheKey)
+		rememberDurable(cacheKey, copyBytes(value))
+	}
+
 	// Flush one pending key. Runs under the key lock (not tracked in
 	// `admitted`: the drain loop drives it, so tracking it would make
 	// `flush()` wait on itself). On failure the entry is RETAINED (timer
@@ -297,9 +373,8 @@ export async function useBridgeStore(
 				clearTimeout(pending.timer)
 				pending.timer = undefined
 			}
-			await durableWrite(pending.path, pending.value)
+			await certifyWrite(cacheKey, pending.path, pending.value)
 			if (pendingWrites.get(cacheKey) === pending) pendingWrites.delete(cacheKey)
-			rememberDurable(cacheKey, copyBytes(pending.value))
 		})
 
 	// Same as `withKeyLock` but invisible to the flush admission barrier.
@@ -328,6 +403,9 @@ export async function useBridgeStore(
 		// already-running critical write completes before quiescence is
 		// declared. `flushOne` internals are not admitted, so the barrier
 		// never waits on the drain loop itself (no self-deadlock).
+		// Failures observed by the barrier propagate: a failed admitted
+		// write fails the flush. Only operations outstanding during this
+		// flush are reported — settled history never poisons later flushes.
 		// A pass with zero successes and nothing newly admitted cannot make
 		// progress by immediate retry (persistent failure), so stop and
 		// report the first error with the entries still pending for the
@@ -337,7 +415,12 @@ export async function useBridgeStore(
 		const errors: unknown[] = []
 		for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
 			const outstanding = [...admitted]
-			if (outstanding.length > 0) await Promise.allSettled(outstanding)
+			if (outstanding.length > 0) {
+				const settled = await Promise.allSettled(outstanding)
+				for (const result of settled) {
+					if (result.status === 'rejected') errors.push(result.reason)
+				}
+			}
 			if (pendingWrites.size === 0) {
 				if (admitted.size === 0) break
 				continue
@@ -370,10 +453,10 @@ export async function useBridgeStore(
 	// private admission-time copy. Must run under the key lock — callers
 	// wrap it via `withKeyLock`.
 	const doSetLocked = async (store: string, key: string, cacheKey: string, incoming: Uint8Array): Promise<void> => {
-		// Skip only when the identical bytes are already durable or already
-		// queued. A failed write never reaches `durable`/`pendingWrites`,
-		// so an identical retry always re-attempts instead of resolving
-		// without persisting.
+		// Skip only when the identical bytes are already barrier-certified
+		// or already queued. Uncertainty discards certification, so a
+		// retry after an uncertified barrier always re-attempts instead of
+		// resolving without persisting.
 		const pending = pendingWrites.get(cacheKey)
 		if (pending) {
 			if (bytesEqual(pending.value, incoming)) return
@@ -390,8 +473,7 @@ export async function useBridgeStore(
 
 			// Propagate every failure (ENOSPC/EACCES/EIO/ENOTDIR/ENOENT) —
 			// losing a critical Signal write silently corrupts next decrypt.
-			await durableWrite(filePath(store, key), incoming)
-			rememberDurable(cacheKey, copyBytes(incoming))
+			await certifyWrite(cacheKey, filePath(store, key), incoming)
 			return
 		}
 
@@ -423,13 +505,18 @@ export async function useBridgeStore(
 	// Returns a copy — callers can never mutate the cache or in-flight data.
 	// A pending (debounced, not yet durable) value satisfies read-your-write
 	// immediately; it is exposed as pending, and `flush()` is the call that
-	// makes it durable.
+	// makes it durable. Under uncertainty, disk bytes are served
+	// best-available WITHOUT re-certifying them: caching them as durable
+	// would let a later identical set skip its still-required barrier.
 	const doGetLocked = async (store: string, key: string, cacheKey: string): Promise<Uint8Array | null> => {
 		const pending = pendingWrites.get(cacheKey)
 		if (pending) return copyBytes(pending.value)
 
-		const known = durable.get(cacheKey)
-		if (known) return copyBytes(known)
+		const keyUncertain = uncertain.has(cacheKey)
+		if (!keyUncertain) {
+			const known = durable.get(cacheKey)
+			if (known) return copyBytes(known)
+		}
 
 		let data: Awaited<ReturnType<typeof readFile>>
 		try {
@@ -442,7 +529,7 @@ export async function useBridgeStore(
 			throw e
 		}
 		const arr = copyBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
-		rememberDurable(cacheKey, copyBytes(arr))
+		if (!keyUncertain) rememberDurable(cacheKey, copyBytes(arr))
 		return arr
 	}
 
@@ -453,17 +540,21 @@ export async function useBridgeStore(
 
 	// Delete path shared by `delete`, `deleteMany` and `deletePrefix`.
 	// Runs under the key lock. The preceding pending/durable state is only
-	// cleared once the unlink succeeds (its linearization point); if the
-	// unlink fails with a real error, that state is restored — timer
-	// re-armed — so an acknowledged value stays readable and flushable, and
-	// the error propagates. Only ENOENT (already absent) is tolerated. A
-	// successful unlink is followed by a directory sync with the same
-	// scoped fallback as the write path, so the deletion itself is durable.
+	// cleared once the unlink succeeds; if the unlink fails with a real
+	// error, that state is restored (timer re-armed) so an acknowledged
+	// value stays readable and flushable, and the error propagates. A
+	// successful unlink completes the directory barrier; if that barrier
+	// fails, the key is marked uncertain. A delete retried while uncertain
+	// re-runs the directory barrier instead of mistaking ENOENT for
+	// certified absence — but a directory removed externally still surfaces
+	// ENOENT rather than success, by explicit policy. Certain absence stays
+	// idempotent.
 	const doDeleteOne = (store: string, key: string): Promise<void> => {
 		const cacheKey = `${store}\0${key}`
 		return withKeyLock(cacheKey, async () => {
 			const prevPending = pendingWrites.get(cacheKey)
 			const prevDurable = durable.get(cacheKey)
+			const wasUncertain = uncertain.has(cacheKey)
 			if (prevPending?.timer) clearTimeout(prevPending.timer)
 			pendingWrites.delete(cacheKey)
 			durable.delete(cacheKey)
@@ -471,7 +562,15 @@ export async function useBridgeStore(
 			try {
 				await unlink(filePath(store, key))
 			} catch (e) {
-				if (isEnoent(e)) return
+				if (isEnoent(e) && !wasUncertain) return
+				if (isEnoent(e)) {
+					// Absent on disk, but a prior barrier was never
+					// certified: certify the absence now instead of
+					// swallowing the uncertainty.
+					await io.syncDir(folder)
+					uncertain.delete(cacheKey)
+					return
+				}
 				if (prevDurable) rememberDurable(cacheKey, prevDurable)
 				if (prevPending) {
 					armTimer(cacheKey, prevPending)
@@ -479,7 +578,13 @@ export async function useBridgeStore(
 				}
 				throw e
 			}
-			await syncDir(folder)
+			try {
+				await io.syncDir(folder)
+			} catch (e) {
+				uncertain.add(cacheKey)
+				throw e
+			}
+			uncertain.delete(cacheKey)
 		})
 	}
 
