@@ -1,6 +1,13 @@
 /**
- * Reports the terminal `connection.update { close }` — exactly once, after
- * teardown, and never silently not at all.
+ * Reports the terminal `connection.update { close }` — exactly once, and
+ * never silently not at all.
+ *
+ * The accepted claim publishes after its teardown settles, so a consumer that
+ * answers the close with a replacement socket does not overlap the old one's
+ * release. The watchdog is the deliberate exception: past the timeout the
+ * close goes out with teardown still running (and logged), because losing the
+ * event entirely is the worse failure. Nothing here promises that every close
+ * lands after every resource is released — only that at most one close lands.
  *
  * That sentence is the whole contract this branch sells, and getting it wrong
  * has two opposite failure modes, both bad:
@@ -8,9 +15,8 @@
  *  - **Not reported.** The consumer's handler never runs, so it never builds a
  *    replacement socket. A bot offline with nothing in its logs — the original
  *    bug this branch exists to fix.
- *  - **Reported early, or twice.** The replacement socket overlaps the old
- *    one's auth-store flush and `free()`, or every listener sees two terminal
- *    notifications for one socket and a handler that cleans up on close loops.
+ *  - **Reported twice.** Every listener sees two terminal notifications for
+ *    one socket and a handler that cleans up on close loops.
  *
  * Keeping both away used to be inline logic split across the dispatcher hook
  * and `logout()`, sharing a counter and a promise. Nine separate bugs came out
@@ -44,12 +50,17 @@ export interface TerminalCloseReporter {
 	 *
 	 * Never rejects and never leaves `publish` uncalled: teardown failures are
 	 * logged, a throwing listener is contained, and a teardown that hangs is
-	 * cut short by the watchdog.
+	 * reported past by the watchdog.
 	 *
-	 * Idempotent per socket: the first claim wins and every later call is a
-	 * no-op. A socket never gets a second generation — a terminal close means
-	 * "build a new socket" — so a second terminal event (a logout racing a
-	 * dispatcher close, a late duplicate dispatch) must not publish again.
+	 * Idempotent per socket: the first claim wins and every later call is
+	 * ignored entirely — neither its teardown nor its publish is invoked. A
+	 * socket never gets a second generation — a terminal close means "build a
+	 * new socket" — so a second terminal event (a logout racing a dispatcher
+	 * close, a late duplicate dispatch) must not publish again.
+	 *
+	 * The watchdog bounds how long `published()` waits, not the teardown
+	 * itself: it neither cancels nor settles the underlying teardown, and a
+	 * teardown that finishes late publishes nothing further.
 	 */
 	reportAfter: (teardown: () => Promise<void>, publish: () => void) => void
 	/**
@@ -101,12 +112,13 @@ export const makeTerminalCloseReporter = (opts: {
 	let claimed = 0
 	let publishedPromise: Promise<void> | undefined
 
-	/** True once the single terminal generation has been claimed. */
+	/**
+	 * True once the single terminal generation has been claimed. Deliberately
+	 * log-free: a duplicate arrives on a path whose logger is
+	 * consumer-replaceable, and an ignored signal must never throw.
+	 */
 	const claim = (): boolean => {
-		if (claimed > 0) {
-			logger.debug('terminal close already claimed; ignoring a duplicate terminal signal')
-			return false
-		}
+		if (claimed > 0) return false
 		claimed++
 		return true
 	}
