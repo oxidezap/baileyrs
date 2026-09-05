@@ -50,8 +50,7 @@ import {
 	asString,
 	asUnixSeconds,
 	isObject,
-	normalizeDiscriminator,
-	toUnixSeconds
+	normalizeDiscriminator
 } from './primitives.ts'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,12 +222,14 @@ const ADAPTERS = {
 		const isFromMe = asBoolOr(src.is_from_me, false)
 		const senderAlt = asJidString(src.sender_alt)
 		const recipientAlt = asJidString(src.recipient_alt)
+		const timestamp = asUnixSeconds(info.timestamp)
+		if (timestamp === undefined) return null
 		return {
 			type: 'undecryptableMessage',
 			chatJid: chat,
 			senderJid: isGroup ? asJidString(src.sender) : undefined,
 			id,
-			timestamp: toUnixSeconds(info.timestamp),
+			timestamp,
 			isFromMe,
 			isGroup,
 			pushName: asString(info.push_name),
@@ -450,26 +451,36 @@ const ADAPTERS = {
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
-	missed_call: data => {
+	missed_call: (data, logger) => {
 		const from = asJidString(data?.from)
 		const callId = asString(data?.call_id)
 		if (!from || !callId) return null
+		const timestamp = asUnixSeconds(data?.timestamp)
+		if (timestamp === undefined) {
+			logger?.debug({ data }, 'missed_call adapter: missing or invalid timestamp')
+			return null
+		}
 		return {
 			type: 'incomingCall',
 			from,
-			timestamp: toUnixSeconds(data?.timestamp),
+			timestamp,
 			offline: data?.reason === 'offline',
 			action: { type: 'timeout', callId }
 		}
 	},
-	call_ended_elsewhere: data => {
+	call_ended_elsewhere: (data, logger) => {
 		const from = asJidString(data?.from)
 		const callId = asString(data?.call_id)
 		if (!from || !callId) return null
+		const timestamp = asUnixSeconds(data?.timestamp)
+		if (timestamp === undefined) {
+			logger?.debug({ data }, 'call_ended_elsewhere adapter: missing or invalid timestamp')
+			return null
+		}
 		return {
 			type: 'incomingCall',
 			from,
-			timestamp: toUnixSeconds(data?.timestamp),
+			timestamp,
 			offline: false,
 			action: { type: data?.outcome === 'accepted' ? 'accept' : 'reject', callId }
 		}
@@ -737,6 +748,15 @@ export const adaptBridgeMessageWire = (
 	const isFromMe = asBoolOr(info.isFromMe, false)
 	const senderAlt = asString(info.senderAlt)
 	const recipientAlt = asString(info.recipientAlt)
+	// The packed envelope carries the timestamp as a numeric record, so the
+	// only invalid shapes here are a missing or non-finite value. Like the
+	// object route below, those drop the message rather than dating it at
+	// the epoch.
+	const timestamp = asNumber(info.timestamp)
+	if (timestamp === undefined) {
+		logger?.debug({ info }, 'message wire adapter: missing or invalid timestamp')
+		return null
+	}
 	return {
 		type: 'message',
 		chatJid: chat,
@@ -744,7 +764,7 @@ export const adaptBridgeMessageWire = (
 		isGroup,
 		isFromMe,
 		id,
-		timestamp: asNumber(info.timestamp) ?? 0,
+		timestamp,
 		pushName: asString(info.pushName),
 		participantAlt: resolveParticipantAlt(senderAlt, isGroup),
 		remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
@@ -775,6 +795,11 @@ const adaptMessageParts = (
 	const senderJid = isGroup ? asJidString(senderRaw) : undefined
 	const senderAlt = asJidString(src.sender_alt)
 	const recipientAlt = asJidString(src.recipient_alt)
+	const timestamp = asUnixSeconds(info.timestamp)
+	if (timestamp === undefined) {
+		logger?.debug({ info }, 'message adapter: missing or invalid timestamp')
+		return null
+	}
 	return {
 		type: 'message',
 		chatJid: chat,
@@ -782,7 +807,7 @@ const adaptMessageParts = (
 		isGroup,
 		isFromMe,
 		id,
-		timestamp: toUnixSeconds(info.timestamp),
+		timestamp,
 		pushName: asString(info.push_name),
 		participantAlt: resolveParticipantAlt(senderAlt, isGroup),
 		remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
@@ -805,6 +830,16 @@ const adaptReceipt = (data: BridgeData<'receipt'>, logger?: ILogger): CanonicalE
 		return null
 	}
 	const isGroup = resolveIsGroup(src.is_group, chat)
+	// A receipt without a trustworthy timestamp cannot be placed on any
+	// timeline slot (`readTimestamp` / `playedTimestamp` /
+	// `receiptTimestamp`), so the event is dropped rather than dated at the
+	// epoch. Optional timestamps elsewhere stay absent via `asUnixSeconds`.
+	const timestamp = asUnixSeconds(data.timestamp)
+	if (timestamp === undefined) {
+		logger?.debug({ data }, 'receipt adapter: missing or invalid timestamp')
+		return null
+	}
+	const { receiptType, raw: receiptTypeRaw } = parseReceiptType(data.type)
 	return {
 		type: 'receipt',
 		chatJid: chat,
@@ -812,8 +847,9 @@ const adaptReceipt = (data: BridgeData<'receipt'>, logger?: ILogger): CanonicalE
 		isGroup,
 		isFromMe: asBoolOr(src.is_from_me, false),
 		messageIds: ids,
-		timestamp: toUnixSeconds(data.timestamp),
-		receiptType: parseReceiptType(data.type)
+		timestamp,
+		receiptType,
+		...(receiptTypeRaw !== undefined ? { receiptTypeRaw } : {})
 	}
 }
 
@@ -834,7 +870,8 @@ const adaptContactUpdate = (data: unknown): CanonicalEvent | null => {
 }
 
 /**
- * Bridge wire `ReceiptType` → canonical kebab-cased variant.
+ * Bridge wire `ReceiptType` → canonical kebab-cased variant, preserving the
+ * original value when it matches nothing known.
  *
  * The bridge's generated `.d.ts` advertises `ReceiptType` as
  * `{type: "delivered"} | …`, but `#[serde(from = "String")]` on the rust
@@ -842,6 +879,11 @@ const adaptContactUpdate = (data: unknown): CanonicalEvent | null => {
  * bare PascalCase variant name (`"Delivered"`, `"Read"`, `"PeerMsg"`).
  * Keep both spellings here so a future bridge bump that re-introduces
  * the snake_case wire form keeps working.
+ *
+ * Unrecognized wire values arrive wrapped as `{ Other: value }` (the packed
+ * `ReceiptWireData.type` contract) or, defensively, as a future bare
+ * string. Those map to `'other'` with the original value in `raw`; a known
+ * value wrapped in `{ Other }` normalizes to its category with no residue.
  */
 const RECEIPT_TYPE_MAP: Record<string, NonNullable<CanonicalReceipt['receiptType']>> = {
 	Delivered: 'delivered',
@@ -872,10 +914,18 @@ const RECEIPT_TYPE_MAP: Record<string, NonNullable<CanonicalReceipt['receiptType
 	server_error: 'server-error'
 }
 
-const parseReceiptType = (raw: unknown): CanonicalReceipt['receiptType'] => {
-	const norm = typeof raw === 'string' ? raw : isObject(raw) && typeof raw.type === 'string' ? raw.type : undefined
-	if (norm == null) return undefined
-	return RECEIPT_TYPE_MAP[norm] ?? 'other'
+const parseReceiptType = (raw: unknown): { receiptType: CanonicalReceipt['receiptType']; raw?: string } => {
+	const norm =
+		typeof raw === 'string'
+			? raw
+			: isObject(raw) && typeof raw.type === 'string'
+				? raw.type
+				: isObject(raw) && typeof raw.Other === 'string'
+					? raw.Other
+					: undefined
+	if (norm == null) return { receiptType: undefined }
+	const mapped = RECEIPT_TYPE_MAP[norm]
+	return mapped ? { receiptType: mapped } : { receiptType: 'other', raw: norm }
 }
 
 const adaptStarUpdate = (data: BridgeData<'star_update'>): CanonicalEvent | null => {
@@ -917,6 +967,14 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 		return null
 	}
 
+	// The call offer is timeline-ordered by its timestamp downstream; an
+	// unparseable one drops the event rather than dating it at the epoch.
+	const timestamp = asUnixSeconds(data.timestamp)
+	if (timestamp === undefined) {
+		logger?.debug({ data }, 'incoming_call adapter: missing or invalid timestamp')
+		return null
+	}
+
 	const canonicalAction: CanonicalCallAction = {
 		type: actionType,
 		callId,
@@ -939,7 +997,7 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	return {
 		type: 'incomingCall',
 		from: asJidAddressString(data.from) ?? from,
-		timestamp: toUnixSeconds(data.timestamp),
+		timestamp,
 		offline: asBoolOr(data.offline, false),
 		stanzaId: asString(data.stanza_id),
 		notify: asString(data.notify),
@@ -1164,6 +1222,11 @@ const adaptGroupUpdate = (data: BridgeData<'group_update'>, logger?: ILogger): C
 		logger?.warn({ data }, 'group_update adapter: action shape rejected')
 		return null
 	}
+	const timestamp = asUnixSeconds(data.timestamp)
+	if (timestamp === undefined) {
+		logger?.debug({ data }, 'group_update adapter: missing or invalid timestamp')
+		return null
+	}
 	return {
 		type: 'groupUpdate',
 		groupJid,
@@ -1173,7 +1236,7 @@ const adaptGroupUpdate = (data: BridgeData<'group_update'>, logger?: ILogger): C
 		authorPn: asJidString(data.participant_pn),
 		authorUsername: asString(data.participant_username),
 		authorCountryCode: asString(data.participant_country_code),
-		timestamp: toUnixSeconds(data.timestamp),
+		timestamp,
 		isLidAddressingMode: asBoolOr(data.is_lid_addressing_mode, false),
 		action
 	}

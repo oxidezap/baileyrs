@@ -15,9 +15,9 @@ export {
 	asJidString,
 	asNumber,
 	asString,
+	asUnixSeconds,
 	bridgeJidToString,
 	isBridgeJid,
 	isObject,
-	normalizeDiscriminator,
-	toUnixSeconds
+	normalizeDiscriminator
 } from './primitives.ts'
