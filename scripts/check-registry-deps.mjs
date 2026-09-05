@@ -9,45 +9,50 @@
  * publishes with `--ignore-scripts`, so no npm hook would fire there) plus
  * through `prepublishOnly` for ad-hoc local publishes. `npm pack` runs
  * neither, so `prepack` and the pkg.pr.new preview CI stay green.
+ *
+ * Plain JavaScript on purpose: `prepublishOnly` must run on every Node.js the
+ * package `engines` allow (currently >=22.0.0), and direct `.ts` execution
+ * needs type stripping that only became default in 22.18.0.
  */
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const repoRoot = resolve(fileURLToPath(import.meta.url), '..', '..')
-
 export const PREVIEW_SPEC_MARK = 'pkg.pr.new'
 
-export interface PreviewDependency {
-	name: string
-	spec: string
-}
+/**
+ * @typedef {{ name: string, spec: string }} PreviewDependency
+ */
 
-/** Runtime dependency specs that point at the preview service. */
-export const findPreviewDependencies = (pkg: {
-	dependencies?: Record<string, string> | undefined
-}): PreviewDependency[] =>
+/**
+ * Runtime dependency specs that point at the preview service.
+ * @param {{ dependencies?: Record<string, string> | undefined }} pkg
+ * @returns {PreviewDependency[]}
+ */
+export const findPreviewDependencies = (pkg) =>
 	Object.entries(pkg.dependencies ?? {})
-		.filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].includes(PREVIEW_SPEC_MARK))
+		.filter((entry) => typeof entry[1] === 'string' && entry[1].includes(PREVIEW_SPEC_MARK))
 		.map(([name, spec]) => ({ name, spec }))
 
-export const checkPackageDir = (dir: string): PreviewDependency[] => {
-	const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
-		dependencies?: Record<string, string> | undefined
-	}
+/**
+ * @param {string} dir directory holding the package.json to check
+ * @returns {PreviewDependency[]}
+ */
+export const checkPackageDir = (dir) => {
+	const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
 	return findPreviewDependencies(pkg)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	const dir = process.argv[2] ? resolve(process.argv[2]) : repoRoot
+const invokedDirectly = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (invokedDirectly) {
+	const dir = process.argv[2] !== undefined ? resolve(process.argv[2]) : resolve(fileURLToPath(import.meta.url), '..', '..')
 	const bad = checkPackageDir(dir)
 	if (bad.length > 0) {
 		for (const { name, spec } of bad) {
 			console.error(`check-registry-deps: ${name} still pins a preview build (${spec})`)
 		}
-		console.error(
-			'check-registry-deps: refusing to publish; switch the dependency to the matching registry release first'
-		)
+		console.error('check-registry-deps: refusing to publish; switch the dependency to the matching registry release first')
 		process.exit(1)
 	}
 	console.log('check-registry-deps: no preview URLs in runtime dependencies')

@@ -12,9 +12,9 @@ import { join, resolve } from 'node:path'
 import { describe, it } from 'node:test'
 
 import { expect } from '../../src/__tests__/expect.ts'
-import { findPreviewDependencies } from '../check-registry-deps.ts'
+import { findPreviewDependencies } from '../check-registry-deps.mjs'
 
-const guard = resolve(import.meta.dirname, '..', 'check-registry-deps.ts')
+const guard = resolve(import.meta.dirname, '..', 'check-registry-deps.mjs')
 
 const runGuard = (dir: string): Promise<{ code: number | null; stdout: string; stderr: string }> =>
 	new Promise(resolvePromise => {

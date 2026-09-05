@@ -285,7 +285,7 @@ jobs:
       # so a preview-pinned runtime dependency would otherwise reach the
       # registry. Fails the release until the dependency selects the matching
       # registry release.
-      - run: node scripts/check-registry-deps.ts
+      - run: node scripts/check-registry-deps.mjs
 
       # No NODE_AUTH_TOKEN and no --provenance: trusted publishing authenticates
       # over OIDC and attaches provenance on its own. Published from the package
