@@ -97,14 +97,20 @@ const parseRfc3339Seconds = (raw: string): number | undefined => {
 	// below, and asking the engine for capture groups costs more than the whole
 	// rest of this function.
 	if (!RFC_3339.test(raw)) return undefined
-	// `Date.parse` refuses month 13, hour 25 and second 61, but rolls a day
-	// past the end of its month forward instead: `2023-02-30` comes back as
-	// March 2. That is the one component worth checking here.
+	// Every civil component is bounded here, so `Date.parse` below only
+	// converts an already-valid timestamp to epoch: it can no longer
+	// normalize an impossible date (Feb 30 rolling into March) or time
+	// into a wrong-but-plausible instant. Day overflow and hour 24 were
+	// guarded before; month/day-zero and minute/second overflow used to
+	// fall through to the engine's own rejection, which this makes
+	// engine-independent. Fixed-width offsets: the date is always at 0-9
+	// and the time at 11-18 whatever separator, fraction, or zone follows.
 	const year = digits2(raw, 0) * 100 + digits2(raw, 2)
-	if (digits2(raw, 8) > daysInMonth(year, digits2(raw, 5))) return undefined
-	// The other one it rolls forward rather than refusing: RFC 3339 stops the
-	// hour at 23, while `2023-11-14T24:00:00Z` parses as midnight the next day.
-	if (digits2(raw, 11) > 23) return undefined
+	const month = digits2(raw, 5)
+	const day = digits2(raw, 8)
+	if (month < 1 || month > 12) return undefined
+	if (day < 1 || day > daysInMonth(year, month)) return undefined
+	if (digits2(raw, 11) > 23 || digits2(raw, 14) > 59 || digits2(raw, 17) > 59) return undefined
 	const ms = Date.parse(raw)
 	return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
 }
