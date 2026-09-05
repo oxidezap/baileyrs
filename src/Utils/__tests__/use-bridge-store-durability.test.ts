@@ -1032,6 +1032,41 @@ describe('useBridgeStore — durability', () => {
 		}
 	})
 
+	it('failed drain pass stops and leaves work for the next flush (Greptile 3939542163)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'dur-staleerr-'))
+		try {
+			let failWrites = 1
+			const store = await useBridgeStore(dir, {
+				io: {
+					writeTmp: async (tmpPath: string, value: Uint8Array) => {
+						if (failWrites > 0) {
+							failWrites--
+							throw codedError('injected transient failure', 'EIO')
+						}
+						return realWriteTmp(tmpPath, value)
+					},
+					publishTmp: realPublishTmp,
+					syncDir: realSyncDir
+				}
+			})
+
+			await store.set(NON_CRITICAL, 'a', enc('A'))
+			await store.set(NON_CRITICAL, 'b', enc('B'))
+			await assert.rejects(() => store.flush!(), /injected transient failure/)
+			// `b` succeeded in the same pass; `a` must still be pending —
+			// not silently retried inside the failed call.
+			assert.deepEqual(await readFile(join(dir, `${NON_CRITICAL}-b.bin`)), Buffer.from(enc('B')))
+			await assert.rejects(() => access(join(dir, `${NON_CRITICAL}-a.bin`)), /ENOENT/)
+			assert.equal(dec(await store.get(NON_CRITICAL, 'a')), 'A')
+
+			// A subsequent explicit flush recovers the failed key.
+			await store.flush!()
+			assert.deepEqual(await readFile(join(dir, `${NON_CRITICAL}-a.bin`)), Buffer.from(enc('A')))
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
 	it('default-writer close failure cleans its owned temp and surfaces the original error (Greptile 3939501793)', async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'dur-closefail-'))
 		try {
@@ -1052,6 +1087,10 @@ describe('useBridgeStore — durability', () => {
 								closed = true
 								if (failClose) {
 									if (removeBeforeThrow) await rm(tmpPath, { force: true })
+									// Release the real fd so the harness does not
+									// flag a GC leak; the injected error is what
+									// the implementation under test observes.
+									await handle.close().catch(() => {})
 									throw codedError('injected close failure', 'EIO')
 								}
 								await handle.close()

@@ -209,8 +209,10 @@ let tmpSeq = 0
  *   (barrier), then drains the pending writes those operations produced.
  *   Failures observed by the barrier propagate — a failed admitted write
  *   fails the flush — but only operations outstanding during that flush
- *   are reported, so history never poisons later flushes. `flush()` never
- *   reports quiescence while prior admitted work is still running.
+ *   are reported, so history never poisons later flushes. A drain pass
+ *   with any failure stops at that pass and leaves the failed entries
+ *   for the next explicit flush. `flush()` never reports quiescence
+ *   while prior admitted work is still running.
  * - All operations on one key (set, delete, flush, concurrent batches) run
  *   through a per-key chain, so a stale failure can never erase newer
  *   state and an in-flight write can never resurrect a deleted key.
@@ -440,12 +442,13 @@ export async function useBridgeStore(
 		// Failures observed by the barrier propagate: a failed admitted
 		// write fails the flush. Only operations outstanding during this
 		// flush are reported — settled history never poisons later flushes.
-		// A pass with zero successes and nothing newly admitted cannot make
-		// progress by immediate retry (persistent failure), so stop and
-		// report the first error with the entries still pending for the
-		// next flush. The pass cap only guards a caller emitting writes in
-		// a tight loop — `Socket/index.ts.end()` waits on this and must
-		// return.
+		// After a drain pass with any failure, stop and leave the failed
+		// entries for a subsequent explicit flush: retrying them inside the
+		// same call would resolve-or-reject on a stale error while hiding
+		// whether the retry itself persisted. A fully successful pass loops,
+		// since new work may have landed during the drain. The pass cap only
+		// guards a caller emitting writes in a tight loop —
+		// `Socket/index.ts.end()` waits on this and must return.
 		const errors: unknown[] = []
 		for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
 			const outstanding = [...admitted]
@@ -460,20 +463,19 @@ export async function useBridgeStore(
 				continue
 			}
 			const keys = [...pendingWrites.keys()]
-			let progressed = false
+			let failed = false
 			await Promise.all(
 				keys.map(key =>
 					flushOne(key).then(
-						() => {
-							progressed = true
-						},
+						() => {},
 						e => {
+							failed = true
 							errors.push(e)
 						}
 					)
 				)
 			)
-			if (!progressed && admitted.size === 0) break
+			if (failed) break
 		}
 		if (errors.length > 0) throw errors[0]
 		if (pendingWrites.size > 0 || admitted.size > 0) {
