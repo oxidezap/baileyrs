@@ -1,9 +1,11 @@
 /**
- * Error-propagation contract for the file store (Codex review fixes):
- *  - A critical-store write that fails for a REAL reason (not the folder being
- *    gone) MUST reject — swallowing it silently loses Signal session state.
- *  - The folder genuinely being gone (ENOENT, shutdown race) is tolerated.
+ * Error-propagation contract for the file store:
+ *  - A critical-store write that fails for ANY reason (ENOTDIR, ENOENT,
+ *    ENOSPC, EACCES, EIO) MUST reject — resolving without durable bytes
+ *    would silently lose Signal session state while the caller believes
+ *    the write succeeded.
  *  - listKeys must not turn a real readdir failure into an empty namespace.
+ *    Only ENOENT on readdir (folder genuinely gone) reads as empty.
  *
  * We force deterministic, portable failures by replacing the store folder with
  * a regular FILE: then any path under it fails with ENOTDIR (≠ ENOENT), and
@@ -11,13 +13,14 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 import { useBridgeStore } from '../use-bridge-store.ts'
 
 const enc = (s: string) => new TextEncoder().encode(s)
+const dec = (u: Uint8Array | null) => (u ? new TextDecoder().decode(u) : null)
 
 // `session` is a CRITICAL store (immediate write); `msg_secret` is not.
 const CRITICAL = 'session'
@@ -51,13 +54,31 @@ describe('useBridgeStore — error propagation', () => {
 		await rm(dir, { force: true })
 	})
 
-	it('critical set TOLERATES the folder being gone (ENOENT, shutdown race)', async () => {
+	it('critical set REJECTS when the folder is gone (ENOENT): no bytes, no success claim', async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'err-enoent-'))
 		const store = await useBridgeStore(dir)
 		await rm(dir, { recursive: true, force: true })
 
-		// Folder removed entirely → ENOENT → must resolve, not throw.
-		await store.set(CRITICAL, 'addr', enc('x'))
+		// Folder removed entirely → ENOENT → must reject, not resolve.
+		// Resolving here would tell the core a Signal ratchet step is
+		// durable when nothing reached disk.
+		await assert.rejects(() => store.set(CRITICAL, 'addr', enc('x')), /ENOENT/)
+		await rm(dir, { recursive: true, force: true })
+	})
+
+	it('critical set retry after ENOENT persists once the folder exists again', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'err-enoent-retry-'))
+		const store = await useBridgeStore(dir)
+		await rm(dir, { recursive: true, force: true })
+
+		const value = enc('x')
+		await assert.rejects(() => store.set(CRITICAL, 'addr', value), /ENOENT/)
+		// Identical retry must NOT be skipped: the failure never reached
+		// the durable map, so the retry re-attempts and persists.
+		await mkdir(dir, { recursive: true })
+		await store.set(CRITICAL, 'addr', value)
+		assert.equal(dec(await store.get(CRITICAL, 'addr')), 'x')
+		await rm(dir, { recursive: true, force: true })
 	})
 
 	it('listKeys PROPAGATES a real readdir failure (ENOTDIR), not empty', async () => {
