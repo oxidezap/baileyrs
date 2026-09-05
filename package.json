@@ -70,6 +70,7 @@
     "lint": "tsc && oxlint",
     "lint:fix": "oxlint --fix && oxfmt src Example",
     "prepack": "npm run build && node scripts/check-pack.ts",
+    "prepublishOnly": "node scripts/check-registry-deps.ts",
     "prepare": "npm run build",
     "test": "node --test",
     "fuzz": "node --test --test-timeout=600000 ./src/__fuzz__/**/*.test.ts",
