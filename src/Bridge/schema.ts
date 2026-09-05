@@ -952,7 +952,10 @@ const parseReceiptType = (raw: unknown): { receiptType: CanonicalReceipt['receip
 	if (isObject(raw) && typeof raw.Other === 'string') return { receiptType: 'other', raw: raw.Other }
 	const norm = typeof raw === 'string' ? raw : isObject(raw) && typeof raw.type === 'string' ? raw.type : undefined
 	if (norm == null) return { receiptType: undefined }
-	const mapped = RECEIPT_TYPE_MAP[norm]
+	// Own-property lookup: the table is an ordinary object, so indexing an
+	// unknown bare name like 'constructor' or '__proto__' would otherwise
+	// return an inherited value instead of falling through to 'other'.
+	const mapped = Object.hasOwn(RECEIPT_TYPE_MAP, norm) ? RECEIPT_TYPE_MAP[norm] : undefined
 	return mapped ? { receiptType: mapped } : { receiptType: 'other', raw: norm }
 }
 

@@ -89,6 +89,19 @@ describe('wire-event fidelity — receipt type across object and packed routes',
 		}
 	})
 
+	it('reads prototype-chain names as unknown wire values, not inherited members', () => {
+		// The lookup table is an ordinary object: without an own-property
+		// guard, 'constructor' would resolve to `Object` (truthy) and poison
+		// the canonical event instead of mapping to 'other'.
+		for (const name of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+			for (const shape of [name, { type: name }, { Other: name }]) {
+				const receipt = adaptReceipt(shape)
+				expect(receipt?.receiptType).toBe('other')
+				expect(receipt?.receiptTypeRaw).toBe(name)
+			}
+		}
+	})
+
 	it('decodes an { Other } receipt through the packed batch without losing the value', () => {
 		const mk = (type: string | { Other: string }) => ({
 			source: { chat: jid('5511'), sender: jid('5511'), is_group: false, is_from_me: false },
