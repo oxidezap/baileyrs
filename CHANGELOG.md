@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.12](https://github.com/oxidezap/baileyrs/compare/v0.2.11...v0.2.12) (2026-09-05)
+
+
+### Bug Fixes
+
+* **bridge:** receipt and timestamp fidelity on both wire routes ([#104](https://github.com/oxidezap/baileyrs/issues/104)) ([956fc4d](https://github.com/oxidezap/baileyrs/commit/956fc4de1d33966b18cc8223f57a399b7dc206ea))
+* **socket:** terminal close publishes exactly once per socket ([#106](https://github.com/oxidezap/baileyrs/issues/106)) ([cda60f6](https://github.com/oxidezap/baileyrs/commit/cda60f6bfaed50d591db43c4766742cb29fa8c64))
+* **store:** durable, serialized and error-honest bridge file store ([#107](https://github.com/oxidezap/baileyrs/issues/107)) ([90160b6](https://github.com/oxidezap/baileyrs/commit/90160b6f741c29e33567a1caa52512194c23e4a5))
+
 ## [0.2.11](https://github.com/oxidezap/baileyrs/compare/v0.2.10...v0.2.11) (2026-09-04)
 
 
