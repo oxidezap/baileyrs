@@ -45,12 +45,20 @@ export interface TerminalCloseReporter {
 	 * Never rejects and never leaves `publish` uncalled: teardown failures are
 	 * logged, a throwing listener is contained, and a teardown that hangs is
 	 * cut short by the watchdog.
+	 *
+	 * Idempotent per socket: the first claim wins and every later call is a
+	 * no-op. A socket never gets a second generation — a terminal close means
+	 * "build a new socket" — so a second terminal event (a logout racing a
+	 * dispatcher close, a late duplicate dispatch) must not publish again.
 	 */
 	reportAfter: (teardown: () => Promise<void>, publish: () => void) => void
 	/**
 	 * Publish immediately, for a close nothing else will announce — a `logout()`
 	 * with no live client, or one whose `logout()` threw before the bridge
 	 * dispatched anything.
+	 *
+	 * Part of the same single claim as `reportAfter`: a no-op when a close
+	 * was already claimed.
 	 */
 	reportNow: (publish: () => void) => void
 	/**
@@ -66,11 +74,13 @@ export interface TerminalCloseReporter {
 	 */
 	hasReported: () => boolean
 	/**
-	 * Settles once the most recent report has been published — the moment the
+	 * Settles once the single report has been published — the moment the
 	 * consumer sees it, not the moment teardown finishes, so a waiter is not
 	 * left hanging when the watchdog is what released the event.
 	 *
-	 * Resolves immediately when nothing has been reported.
+	 * Resolves immediately when nothing has been reported. Every waiter
+	 * observes the same promise, so concurrent `logout()` and dispatcher
+	 * paths cannot split across generations.
 	 */
 	published: () => Promise<void>
 }
@@ -83,9 +93,23 @@ export const makeTerminalCloseReporter = (opts: {
 	const { logger } = opts
 	const publishTimeoutMs = opts.publishTimeoutMs ?? TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS
 
-	/** Claims, not deliveries — see `hasReported`. */
+	/**
+	 * Claims, not deliveries — see `hasReported`. At most one: a socket has a
+	 * single terminal generation, so the first claim wins and later ones are
+	 * ignored rather than published.
+	 */
 	let claimed = 0
 	let publishedPromise: Promise<void> | undefined
+
+	/** True once the single terminal generation has been claimed. */
+	const claim = (): boolean => {
+		if (claimed > 0) {
+			logger.debug('terminal close already claimed; ignoring a duplicate terminal signal')
+			return false
+		}
+		claimed++
+		return true
+	}
 
 	/** One publish per claim, whatever gets there first, and never throwing. */
 	const makeOnce = (publish: () => void, settle: () => void) => {
@@ -107,7 +131,7 @@ export const makeTerminalCloseReporter = (opts: {
 
 	return {
 		reportAfter: (teardown, publish) => {
-			claimed++
+			if (!claim()) return
 			let settle!: () => void
 			publishedPromise = new Promise<void>(resolve => {
 				settle = resolve
@@ -143,7 +167,7 @@ export const makeTerminalCloseReporter = (opts: {
 		},
 
 		reportNow: publish => {
-			claimed++
+			if (!claim()) return
 			let settle!: () => void
 			publishedPromise = new Promise<void>(resolve => {
 				settle = resolve
