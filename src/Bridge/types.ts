@@ -207,6 +207,17 @@ export interface CanonicalReceipt {
 		| 'history-sync'
 		| 'server-error'
 		| 'other'
+	/**
+	 * Original wire value when `receiptType` is `'other'` — the bridge sends
+	 * unrecognized variants as `{ Other: value }` (or a future bare string),
+	 * and the category alone would lose which one it was. Always set for an
+	 * `Other`-wrapped payload, even when its spelling collides with a known
+	 * variant name: the wrapper means the producer did not recognize it.
+	 * Absent whenever the value matched a known variant through a bare
+	 * string or `{ type }` shape, and whenever `receiptType` itself is
+	 * absent.
+	 */
+	receiptTypeRaw?: string
 }
 
 // ── Contacts ──

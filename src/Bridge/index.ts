@@ -15,6 +15,7 @@ export {
 	asJidString,
 	asNumber,
 	asString,
+	asUnixSeconds,
 	bridgeJidToString,
 	isBridgeJid,
 	isObject,

@@ -114,24 +114,39 @@ const parseRfc3339Seconds = (raw: string): number | undefined => {
  * strings — the bridge serializes `DateTime<Utc>` as a string unless the field
  * names one of chrono's `ts_*` modules, so being lenient about which of the two
  * arrives insulates us from drift.
- */
-export const toUnixSeconds = (raw: unknown): number => {
-	if (typeof raw === 'number' && Number.isFinite(raw)) return raw
-	if (typeof raw === 'string') return parseRfc3339Seconds(raw) ?? 0
-	return 0
-}
-
-/**
- * Same as `toUnixSeconds`, but absence stays absent.
  *
- * The optional timestamps — `last_seen`, a server ack's `t`, an app-state
- * mutation's own time — mean "the server did not say" when missing, which is
- * not the same claim as the epoch.
+ * Absence and unparseable input stay absent (`undefined`): a missing,
+ * malformed, or non-finite timestamp must never become the epoch, which
+ * would place the event at 1970 and corrupt timeline ordering. Callers
+ * apply the per-field policy explicitly — required timestamps (message,
+ * receipt, call, group action) drop the event, optional ones (presence
+ * `last_seen`, server-ack time, pin/mute time) omit the field.
  */
 export const asUnixSeconds = (raw: unknown): number | undefined => {
 	if (typeof raw === 'number' && Number.isFinite(raw)) return raw
 	if (typeof raw === 'string') return parseRfc3339Seconds(raw)
 	return undefined
+}
+
+/**
+ * Validated coercion to unix seconds for external consumers that need a
+ * plain number (no `undefined` branch).
+ *
+ * Accepts the same inputs as `asUnixSeconds` — a finite number or an RFC
+ * 3339 string — and rejects everything else by throwing `RangeError`
+ * instead of fabricating the epoch: a missing, malformed, or non-finite
+ * timestamp must never become 1970-01-01 and corrupt timeline ordering.
+ * Internal adapters do not use this; they take `asUnixSeconds` with an
+ * explicit per-field policy (required timestamps drop the event, optional
+ * ones omit the field).
+ */
+export const toUnixSeconds = (raw: unknown): number => {
+	const parsed = asUnixSeconds(raw)
+	if (parsed === undefined) {
+		const preview = typeof raw === 'string' ? `: ${raw.slice(0, 80)}` : ''
+		throw new RangeError(`toUnixSeconds: cannot coerce ${typeof raw}${preview} to unix seconds`)
+	}
+	return parsed
 }
 
 /**

@@ -449,10 +449,12 @@ describe('bridge event adaptation', () => {
 					}
 				}
 				// Dropping a payload is allowed only where the adapter says it is.
-				// `adaptBridgeMessageWire` returns null on exactly two conditions — a
-				// non-object message, or a `chat`/`id` that is not a non-empty string —
-				// and the generator produces plenty of those on purpose. Anything else
-				// is a *valid* message being dropped.
+				// `adaptBridgeMessageWire` returns null on exactly three conditions — a
+				// non-object message, a `chat`/`id` that is not a non-empty string, or a
+				// missing/non-finite timestamp (a message that cannot be placed on any
+				// timeline is dropped rather than dated at the epoch) — and the
+				// generator produces plenty of those on purpose. Anything else is a
+				// *valid* message being dropped.
 				//
 				// Skipping every null was too generous by a whole category. The
 				// `accepted > 0` floor below only catches total collapse, so an adapter
@@ -472,7 +474,9 @@ describe('bridge event adaptation', () => {
 					typeof info?.chat === 'string' &&
 					info.chat.length > 0 &&
 					typeof info.id === 'string' &&
-					info.id.length > 0
+					info.id.length > 0 &&
+					typeof info.timestamp === 'number' &&
+					Number.isFinite(info.timestamp)
 				if (canonical === null) {
 					if (!wellFormed) return []
 					return {
