@@ -348,6 +348,30 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('end() followed by logout() reports exactly one close through the real socket', async () => {
+		// A plain `end()` is not terminal and claims no close, so the logout
+		// fallback that follows is the first claim — and it must stay the
+		// only one. Full path: real owner, real reporter, real `logout()`.
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const sock = makeWASocket({ auth: state, logger: silentLogger, waWebSocketUrl: counter.url })
+
+			let closes = 0
+			sock.ev.on('connection.update', update => {
+				if (update.connection === 'close') closes++
+			})
+
+			await sock.end(undefined)
+			expect(closes).toBe(0)
+
+			await sock.logout().catch(() => {})
+			expect(closes).toBe(1)
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('refuses socket operations once teardown owns the client', async () => {
 		// `peek()` keeps returning the client through `closing` so teardown can
 		// still close the transport with it — but handing it to an ordinary

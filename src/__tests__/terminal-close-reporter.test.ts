@@ -187,7 +187,10 @@ describe('terminal close: published', () => {
 		expect(published).toBe(true)
 	})
 
-	it('tracks the most recent report', async () => {
+	it('ignores a second claim: one socket has a single terminal generation', async () => {
+		// A terminal close means "build a new socket", so the same reporter
+		// must never publish twice — a logout racing a dispatcher close, or
+		// a late duplicate dispatch, is one generation, not two.
 		const reporter = makeReporter()
 		const seen: string[] = []
 
@@ -202,6 +205,73 @@ describe('terminal close: published', () => {
 		)
 		await reporter.published()
 
-		expect(seen).toEqual(['first', 'second'])
+		expect(seen).toEqual(['first'])
+	})
+
+	it('ignores a late duplicate after the first publish settled', async () => {
+		const reporter = makeReporter()
+		let publishes = 0
+
+		reporter.reportAfter(
+			async () => {},
+			() => {
+				publishes++
+			}
+		)
+		await reporter.published()
+
+		reporter.reportNow(() => {
+			publishes++
+		})
+		reporter.reportAfter(
+			async () => {},
+			() => {
+				publishes++
+			}
+		)
+		await reporter.published()
+		await wait(20)
+
+		expect(publishes).toBe(1)
+	})
+
+	it('a duplicate reportAfter never runs its teardown', async () => {
+		// The first teardown owns the release; a second terminal signal
+		// joining it would only re-enter work the owner already dedupes.
+		const reporter = makeReporter()
+		let teardowns = 0
+
+		reporter.reportAfter(
+			async () => {
+				teardowns++
+			},
+			() => {}
+		)
+		reporter.reportAfter(
+			async () => {
+				teardowns++
+			},
+			() => {}
+		)
+		await reporter.published()
+
+		expect(teardowns).toBe(1)
+	})
+
+	it('releases every waiter of published() on the single publish', async () => {
+		const reporter = makeReporter()
+		let publishes = 0
+
+		reporter.reportAfter(
+			async () => {
+				await wait(30)
+			},
+			() => {
+				publishes++
+			}
+		)
+		await Promise.all([reporter.published(), reporter.published(), reporter.published()])
+
+		expect(publishes).toBe(1)
 	})
 })
