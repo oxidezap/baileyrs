@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import { decodeReceiptWireBatch, encodeReceiptWireBatch } from '@oxidezap/whatsapp-rust-bridge'
 import type { WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import { adaptBridgeEvent } from '../adapt.ts'
+import { toUnixSeconds } from '../index.ts'
 import type { CanonicalReceipt } from '../types.ts'
 import { expect } from '../../__tests__/expect.ts'
 
@@ -48,10 +49,25 @@ describe('wire-event fidelity — receipt type across object and packed routes',
 		expect(receipt?.receiptTypeRaw).toBe('FutureType')
 	})
 
-	it('normalizes a known value wrapped in { Other } without a raw residue', () => {
-		const receipt = adaptReceipt({ Other: 'Read' })
-		expect(receipt?.receiptType).toBe('read')
-		expect(receipt?.receiptTypeRaw).toBeUndefined()
+	it('treats the Other wrapper as authoritative on spelling collisions', () => {
+		// The packed codec round-trips `{ Other: value }` verbatim and never
+		// synthesizes it for a known variant, so a wrapped payload is an
+		// unrecognized wire value even when its spelling matches one.
+		for (const [payload, raw] of [
+			[{ Other: 'Read' }, 'Read'],
+			[{ Other: 'read' }, 'read'],
+			[{ Other: '' }, ''],
+			[{ Other: 'FutureType' }, 'FutureType']
+		] as const) {
+			const receipt = adaptReceipt(payload)
+			expect(receipt?.receiptType).toBe('other')
+			expect(receipt?.receiptTypeRaw).toBe(raw)
+		}
+		// Unwrapped spellings still normalize through the known-variant table.
+		expect(adaptReceipt('Read')?.receiptType).toBe('read')
+		expect(adaptReceipt('read')?.receiptType).toBe('read')
+		expect(adaptReceipt({ type: 'Read' })?.receiptType).toBe('read')
+		expect(adaptReceipt('Read')?.receiptTypeRaw).toBeUndefined()
 	})
 
 	it('maps an unknown bare string to other and preserves the original value', () => {
@@ -74,25 +90,26 @@ describe('wire-event fidelity — receipt type across object and packed routes',
 	})
 
 	it('decodes an { Other } receipt through the packed batch without losing the value', () => {
+		const mk = (type: string | { Other: string }) => ({
+			source: { chat: jid('5511'), sender: jid('5511'), is_group: false, is_from_me: false },
+			message_ids: ['M1'],
+			timestamp: 1_734_000_000,
+			type,
+			offline: false
+		})
 		const decoded = decodeReceiptWireBatch(
-			encodeReceiptWireBatch([
-				{
-					source: { chat: jid('5511'), sender: jid('5511'), is_group: false, is_from_me: false },
-					message_ids: ['M1'],
-					timestamp: 1_734_000_000,
-					type: { Other: 'FutureType' },
-					offline: false
-				}
-			])
+			encodeReceiptWireBatch([mk({ Other: 'FutureType' }), mk({ Other: 'Read' }), mk('Read')])
 		)
-		expect(decoded.length).toBe(1)
-		const first = decoded[0]
-		if (!first) throw new Error('expected one decoded receipt')
-		expect(first.type).toEqual({ Other: 'FutureType' })
+		expect(decoded.length).toBe(3)
+		expect(decoded[0]?.type).toEqual({ Other: 'FutureType' })
+		// A colliding spelling crosses the codec still wrapped: the wrapper,
+		// not the spelling, tells known from unknown.
+		expect(decoded[1]?.type).toEqual({ Other: 'Read' })
+		expect(decoded[2]?.type).toBe('Read')
 	})
 
 	it('adapts the same logical receipt identically on the object and packed routes', () => {
-		for (const type of ['Read', { Other: 'FutureType' }, 'FutureType'] as const) {
+		for (const type of ['Read', { Other: 'FutureType' }, { Other: 'Read' }, 'FutureType'] as const) {
 			const viaObject = adaptReceipt(type)
 			const [packed] = decodeReceiptWireBatch(
 				encodeReceiptWireBatch([
@@ -193,5 +210,19 @@ describe('wire-event fidelity — optional timestamps stay absent when invalid',
 		} as unknown as WhatsAppEvent)
 		if (result?.type !== 'serverAck') throw new Error('expected canonical serverAck')
 		expect(result.timestamp).toBeUndefined()
+	})
+})
+
+describe('wire-event fidelity — retained toUnixSeconds export', () => {
+	it('coerces valid numbers, zero, and RFC3339 strings', () => {
+		expect(toUnixSeconds(1_734_000_000)).toBe(1_734_000_000)
+		expect(toUnixSeconds(0)).toBe(0)
+		expect(toUnixSeconds('2026-04-18T05:00:00Z')).toBe(Math.floor(Date.parse('2026-04-18T05:00:00Z') / 1000))
+	})
+
+	it('rejects invalid input by throwing instead of fabricating the epoch', () => {
+		for (const invalid of ['not-a-date', '', undefined, null, Number.NaN, Number.POSITIVE_INFINITY, {}, 0n]) {
+			expect(() => toUnixSeconds(invalid)).toThrow(RangeError)
+		}
 	})
 })

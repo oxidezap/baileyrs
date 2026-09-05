@@ -129,6 +129,27 @@ export const asUnixSeconds = (raw: unknown): number | undefined => {
 }
 
 /**
+ * Validated coercion to unix seconds for external consumers that need a
+ * plain number (no `undefined` branch).
+ *
+ * Accepts the same inputs as `asUnixSeconds` — a finite number or an RFC
+ * 3339 string — and rejects everything else by throwing `RangeError`
+ * instead of fabricating the epoch: a missing, malformed, or non-finite
+ * timestamp must never become 1970-01-01 and corrupt timeline ordering.
+ * Internal adapters do not use this; they take `asUnixSeconds` with an
+ * explicit per-field policy (required timestamps drop the event, optional
+ * ones omit the field).
+ */
+export const toUnixSeconds = (raw: unknown): number => {
+	const parsed = asUnixSeconds(raw)
+	if (parsed === undefined) {
+		const preview = typeof raw === 'string' ? `: ${raw.slice(0, 80)}` : ''
+		throw new RangeError(`toUnixSeconds: cannot coerce ${typeof raw}${preview} to unix seconds`)
+	}
+	return parsed
+}
+
+/**
  * A 64-bit proto field, however the bridge chose to carry it.
  *
  * A protobuf `int64` reaches JavaScript as a protobufjs `Long`

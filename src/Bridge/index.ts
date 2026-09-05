@@ -19,5 +19,6 @@ export {
 	bridgeJidToString,
 	isBridgeJid,
 	isObject,
-	normalizeDiscriminator
+	normalizeDiscriminator,
+	toUnixSeconds
 } from './primitives.ts'

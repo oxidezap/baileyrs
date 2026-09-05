@@ -96,6 +96,18 @@ const resolveRemoteJidAlt = (
 	isFromMe: boolean
 ): string | undefined => (isGroup ? undefined : isFromMe ? recipientAlt : senderAlt)
 
+/**
+ * Rejection diagnostic for a required timestamp that is missing or
+ * unparseable. Metadata only — never the payload: these objects can carry
+ * message bodies and JIDs.
+ */
+const invalidTimestampDetail = (event: string, raw: unknown): Record<string, unknown> => ({
+	event,
+	field: 'timestamp',
+	reason: raw === undefined || raw === null ? 'missing' : 'invalid',
+	receivedType: typeof raw
+})
+
 const parseEditAttribute = (value: unknown): CanonicalMessage['editAttribute'] => {
 	switch (value) {
 		case '1':
@@ -205,7 +217,7 @@ const ADAPTERS = {
 			error: asString(data?.error)
 		}
 	},
-	undecryptable_message: data => {
+	undecryptable_message: (data, logger) => {
 		// Bridge ships `{ info: MessageInfo, is_unavailable, unavailable_type,
 		// decrypt_fail_mode }` — same MessageInfo shape as the regular
 		// `message` event. Extract the chat / sender / id so the dispatcher
@@ -223,7 +235,13 @@ const ADAPTERS = {
 		const senderAlt = asJidString(src.sender_alt)
 		const recipientAlt = asJidString(src.recipient_alt)
 		const timestamp = asUnixSeconds(info.timestamp)
-		if (timestamp === undefined) return null
+		if (timestamp === undefined) {
+			logger?.debug(
+				invalidTimestampDetail('undecryptable_message', info.timestamp),
+				'undecryptable_message adapter: missing or invalid timestamp'
+			)
+			return null
+		}
 		return {
 			type: 'undecryptableMessage',
 			chatJid: chat,
@@ -457,7 +475,10 @@ const ADAPTERS = {
 		if (!from || !callId) return null
 		const timestamp = asUnixSeconds(data?.timestamp)
 		if (timestamp === undefined) {
-			logger?.debug({ data }, 'missed_call adapter: missing or invalid timestamp')
+			logger?.debug(
+				invalidTimestampDetail('missed_call', data?.timestamp),
+				'missed_call adapter: missing or invalid timestamp'
+			)
 			return null
 		}
 		return {
@@ -474,7 +495,10 @@ const ADAPTERS = {
 		if (!from || !callId) return null
 		const timestamp = asUnixSeconds(data?.timestamp)
 		if (timestamp === undefined) {
-			logger?.debug({ data }, 'call_ended_elsewhere adapter: missing or invalid timestamp')
+			logger?.debug(
+				invalidTimestampDetail('call_ended_elsewhere', data?.timestamp),
+				'call_ended_elsewhere adapter: missing or invalid timestamp'
+			)
 			return null
 		}
 		return {
@@ -754,7 +778,10 @@ export const adaptBridgeMessageWire = (
 	// the epoch.
 	const timestamp = asNumber(info.timestamp)
 	if (timestamp === undefined) {
-		logger?.debug({ info }, 'message wire adapter: missing or invalid timestamp')
+		logger?.debug(
+			invalidTimestampDetail('message_wire', info.timestamp),
+			'message wire adapter: missing or invalid timestamp'
+		)
 		return null
 	}
 	return {
@@ -797,7 +824,7 @@ const adaptMessageParts = (
 	const recipientAlt = asJidString(src.recipient_alt)
 	const timestamp = asUnixSeconds(info.timestamp)
 	if (timestamp === undefined) {
-		logger?.debug({ info }, 'message adapter: missing or invalid timestamp')
+		logger?.debug(invalidTimestampDetail('message', info.timestamp), 'message adapter: missing or invalid timestamp')
 		return null
 	}
 	return {
@@ -836,7 +863,7 @@ const adaptReceipt = (data: BridgeData<'receipt'>, logger?: ILogger): CanonicalE
 	// epoch. Optional timestamps elsewhere stay absent via `asUnixSeconds`.
 	const timestamp = asUnixSeconds(data.timestamp)
 	if (timestamp === undefined) {
-		logger?.debug({ data }, 'receipt adapter: missing or invalid timestamp')
+		logger?.debug(invalidTimestampDetail('receipt', data.timestamp), 'receipt adapter: missing or invalid timestamp')
 		return null
 	}
 	const { receiptType, raw: receiptTypeRaw } = parseReceiptType(data.type)
@@ -882,8 +909,9 @@ const adaptContactUpdate = (data: unknown): CanonicalEvent | null => {
  *
  * Unrecognized wire values arrive wrapped as `{ Other: value }` (the packed
  * `ReceiptWireData.type` contract) or, defensively, as a future bare
- * string. Those map to `'other'` with the original value in `raw`; a known
- * value wrapped in `{ Other }` normalizes to its category with no residue.
+ * string. Those map to `'other'` with the original value in `raw`. The
+ * wrapper is trusted over spelling: `{ Other: 'Read' }` is `other`, not
+ * `read` (see `parseReceiptType`).
  */
 const RECEIPT_TYPE_MAP: Record<string, NonNullable<CanonicalReceipt['receiptType']>> = {
 	Delivered: 'delivered',
@@ -915,14 +943,14 @@ const RECEIPT_TYPE_MAP: Record<string, NonNullable<CanonicalReceipt['receiptType
 }
 
 const parseReceiptType = (raw: unknown): { receiptType: CanonicalReceipt['receiptType']; raw?: string } => {
-	const norm =
-		typeof raw === 'string'
-			? raw
-			: isObject(raw) && typeof raw.type === 'string'
-				? raw.type
-				: isObject(raw) && typeof raw.Other === 'string'
-					? raw.Other
-					: undefined
+	// The `Other` wrapper is authoritative: the packed codec round-trips
+	// `{ Other: value }` verbatim and never synthesizes it for a known
+	// variant, so even a payload whose spelling collides with a known
+	// variant name (e.g. `{ Other: 'Read' }`) stays category `other` with
+	// its exact payload preserved. Only bare strings and `{ type }` go
+	// through the known-variant lookup.
+	if (isObject(raw) && typeof raw.Other === 'string') return { receiptType: 'other', raw: raw.Other }
+	const norm = typeof raw === 'string' ? raw : isObject(raw) && typeof raw.type === 'string' ? raw.type : undefined
 	if (norm == null) return { receiptType: undefined }
 	const mapped = RECEIPT_TYPE_MAP[norm]
 	return mapped ? { receiptType: mapped } : { receiptType: 'other', raw: norm }
@@ -971,7 +999,10 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	// unparseable one drops the event rather than dating it at the epoch.
 	const timestamp = asUnixSeconds(data.timestamp)
 	if (timestamp === undefined) {
-		logger?.debug({ data }, 'incoming_call adapter: missing or invalid timestamp')
+		logger?.debug(
+			invalidTimestampDetail('incoming_call', data.timestamp),
+			'incoming_call adapter: missing or invalid timestamp'
+		)
 		return null
 	}
 
@@ -1224,7 +1255,10 @@ const adaptGroupUpdate = (data: BridgeData<'group_update'>, logger?: ILogger): C
 	}
 	const timestamp = asUnixSeconds(data.timestamp)
 	if (timestamp === undefined) {
-		logger?.debug({ data }, 'group_update adapter: missing or invalid timestamp')
+		logger?.debug(
+			invalidTimestampDetail('group_update', data.timestamp),
+			'group_update adapter: missing or invalid timestamp'
+		)
 		return null
 	}
 	return {
