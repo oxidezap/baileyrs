@@ -102,6 +102,7 @@ export const READ_CONFIG_KEYS = [
 	'cache',
 	'deviceProps',
 	'wantedPreKeyCount',
+	'dangerSkipCertChainVerify',
 	'emitOwnEvents',
 	'shouldIgnoreJid',
 	'defaultQueryTimeoutMs',

@@ -162,6 +162,9 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 		// companion slot instead of deriving one from random Noise key bytes.
 		pushName: basename(folder),
 		waWebSocketUrl: socketUrl,
+		// Test-only: the mock server's cert is self-signed and strict
+		// verification (the default) rejects it. Production code must never set this.
+		dangerSkipCertChainVerify: true,
 		logger: logger.child({ user: label, impl: 'bridge' })
 	})
 

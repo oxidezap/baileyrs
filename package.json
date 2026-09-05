@@ -70,6 +70,7 @@
     "lint": "tsc && oxlint",
     "lint:fix": "oxlint --fix && oxfmt src Example",
     "prepack": "npm run build && node scripts/check-pack.ts",
+    "prepublishOnly": "node scripts/check-registry-deps.mjs",
     "prepare": "npm run build",
     "test": "node --test",
     "fuzz": "node --test --test-timeout=600000 ./src/__fuzz__/**/*.test.ts",
@@ -82,7 +83,7 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@oxidezap/whatsapp-rust-bridge": "0.20.0",
+    "@oxidezap/whatsapp-rust-bridge": "0.21.0",
     "long": "^5.3.2",
     "pino": "^10.3.1",
     "protobufjs": "^7.6.5"

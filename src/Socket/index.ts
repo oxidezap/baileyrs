@@ -506,7 +506,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			bridgeStore,
 			fullConfig.cache ?? null,
 			fullConfig.version,
-			fullConfig.wantedPreKeyCount ?? null
+			fullConfig.wantedPreKeyCount ?? null,
+			// Passed through exactly as configured, never normalized by truthiness:
+			// the bridge only honours a literal `true` here and rejects any
+			// other truthy value at construction, so a `!!`/ternary-style
+			// coercion could promote a malformed opt-out into an opt-in.
+			// Absent stays strict.
+			fullConfig.dangerSkipCertChainVerify
 		)
 		// `end()` can land while the client is still being built — a `sock.end()`
 		// or `await using` right after `makeWASocket()` does exactly that. When
