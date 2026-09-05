@@ -101,6 +101,15 @@ export type SocketConfig = {
 	 */
 	wantedPreKeyCount?: number
 
+	/**
+	 * Testing-only bypass for the Noise server-cert chain check, for mock
+	 * servers that cannot sign a chain rooted in WhatsApp's issuer. Strict by
+	 * default: absent, null and false all verify, and only a literal `true`
+	 * opts in — the bridge rejects any other truthy value at construction
+	 * rather than treating it as opt-in. Never set this outside tests.
+	 */
+	dangerSkipCertChainVerify?: boolean
+
 	// ─────────────────────────────────────────────────────────────────────
 	// Compatibility options are either translated by the socket or owned by
 	// the native runtime. Keep their public declarations exact.

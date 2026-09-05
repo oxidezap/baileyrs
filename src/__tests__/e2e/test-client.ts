@@ -70,6 +70,9 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 		auth: state,
 		pushName: basename(folder),
 		waWebSocketUrl: url,
+		// Test-only: the mock server's cert is self-signed and strict
+		// verification (the default) rejects it. Production code must never set this.
+		dangerSkipCertChainVerify: true,
 		logger: defaultLogger.child({ user: opts.label })
 	})
 
