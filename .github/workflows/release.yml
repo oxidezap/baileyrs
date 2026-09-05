@@ -281,6 +281,12 @@ jobs:
       # anything is published.
       - run: node scripts/check-pack.ts
 
+      # Same reason as above, for the dependency guard: hooks never fire here,
+      # so a preview-pinned runtime dependency would otherwise reach the
+      # registry. Fails the release until the dependency selects the matching
+      # registry release.
+      - run: node scripts/check-registry-deps.mjs
+
       # No NODE_AUTH_TOKEN and no --provenance: trusted publishing authenticates
       # over OIDC and attaches provenance on its own. Published from the package
       # directory rather than a prebuilt tarball, which is the shape npm
