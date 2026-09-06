@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.13](https://github.com/oxidezap/baileyrs/compare/v0.2.12...v0.2.13) (2026-09-06)
+
+
+### Features
+
+* **socket:** observe bridge run completion ([#111](https://github.com/oxidezap/baileyrs/issues/111)) ([b0500e3](https://github.com/oxidezap/baileyrs/commit/b0500e3c4b287aa20554f1d3b9cd19485148a987))
+
+
+### Bug Fixes
+
+* **proto:** resolve enum names the bridge codec refuses ([#116](https://github.com/oxidezap/baileyrs/issues/116)) ([1c7e522](https://github.com/oxidezap/baileyrs/commit/1c7e5224f70980b37167390af3f3db3880faf1c0))
+* **socket:** accept bare join success in groupAcceptInviteV4 ([#115](https://github.com/oxidezap/baileyrs/issues/115)) ([0dbb0f4](https://github.com/oxidezap/baileyrs/commit/0dbb0f4941d39b3c919ba3017ee412d0f38986ec))
+
 ## [0.2.12](https://github.com/oxidezap/baileyrs/compare/v0.2.11...v0.2.12) (2026-09-05)
 
 
