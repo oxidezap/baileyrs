@@ -55,7 +55,7 @@ import {
 import { emitMessageUpsert, type MessageUpsertMetadata } from '../Compatibility/message-upsert.ts'
 import { extractMessageCappingPayload } from './message-capping.ts'
 import { mapReachoutTimelock } from './reachout.ts'
-import { isReconnectableConnectFailure } from './terminal-close.ts'
+import { isReconnectableConnectFailure, mapConnectFailureToDisconnect } from './terminal-close.ts'
 import type { SocketContext } from './types.ts'
 
 const CANONICAL_MESSAGE_EVENT = 'message'
@@ -310,42 +310,6 @@ const emitRetrying = (ctx: SocketContext) =>
  * dispatcher for why `badSession` was the wrong home.
  */
 const CLIENT_OUTDATED_STATUS = 405
-
-/**
- * Map bridge `ConnectFailureReason` wire codes (per the bridge's
- * `.d.ts` annotation) onto upstream Baileys' `DisconnectReason`.
- * Unknown codes fall through to `connectionClosed` so existing
- * reconnect heuristics keep working.
- *
- * Several cases here are belt-and-braces: the engine dispatches its own event
- * for `is_logged_out()` reasons (401/403/406) and for 405, so those never
- * reach `connectFailure` in practice. Kept because they cost nothing and the
- * engine's routing is not ours to depend on.
- */
-const mapConnectFailureToDisconnect = (reason: number | undefined): number => {
-	switch (reason) {
-		case 401: // LoggedOut
-		case 403: // MainDeviceGone
-		case 406: // UnknownLogout
-			return DisconnectReason.loggedOut
-		case 402: // TempBanned
-			return DisconnectReason.forbidden
-		case 405: // ClientOutdated
-			return CLIENT_OUTDATED_STATUS
-		case 411: // MultideviceMismatch (legacy alias)
-			return DisconnectReason.multideviceMismatch
-		case 503: // ServiceUnavailable
-		case 501: // Experimental
-			return DisconnectReason.unavailableService
-		case 408: // Timed out
-			return DisconnectReason.timedOut
-		case 515: // RestartRequired
-			return DisconnectReason.restartRequired
-		// 400, 409, 413, 414, 415, 418, 500, undefined → generic close
-		default:
-			return DisconnectReason.connectionClosed
-	}
-}
 
 const describeTempBan = (code: number | undefined): string => {
 	switch (code) {
