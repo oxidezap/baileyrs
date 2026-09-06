@@ -123,7 +123,7 @@ const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBF
 /**
  * Puts back what the codec used to do with an input it now refuses.
  *
- * Two cases, both measured against upstream Baileys, which still encodes both:
+ * Three cases, all measured against upstream Baileys, which still encodes them:
  *
  * - An empty string where the schema declares a 64-bit integer. Every one of the
  *   134 send-path failures this addresses carried exactly `''`; a string that is
@@ -132,6 +132,13 @@ const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBF
  * - An unpaired surrogate in a text field, replaced with U+FFFD. That is the
  *   substitution `TextEncoder` used to make, so the bytes are unchanged from what
  *   this library sent before.
+ * - An enum name where the schema declares an enum (issue #109: `"NONE"` where
+ *   an int32 goes on the wire). Upstream's `fromObject` resolves names to numbers
+ *   and its direct `encode` coerces any string with `| 0`, so a caller passing a
+ *   name never sees a throw. The bridge codec accepts only numbers (numeric
+ *   strings aside) and throws `invalid int32: "NONE"`. An unknown name is left to
+ *   throw rather than silenced to `0`: upstream's direct encode would write `0`
+ *   for it, but that puts a value on the wire nobody sent.
  *
  * Returns `item` itself when it has nothing to do, so the caller can tell a
  * repair from a failure it does not understand.
@@ -144,6 +151,34 @@ const repairScalar = (kind: number, item: unknown): unknown => {
 	if (kind !== PROTO_FIELD_KIND.string) return item
 	const replaced = item.replace(UNPAIRED_SURROGATE, '\uFFFD')
 	return replaced === item ? item : replaced
+}
+
+/**
+ * Enum name to wire number, built per enum on the first repair that needs it.
+ *
+ * Only the repair path reads this, and only for a field that actually holds a
+ * string — a message the codec accepts never reaches here, and a numeric enum
+ * never touches a map. Each table is built once from the generated entries and
+ * then reused; an importer that never sends a refused value allocates nothing.
+ * A `Map` (not a plain object) so names like `__proto__` are keys, not hazards.
+ */
+let enumTablesById: Array<Map<string, number> | undefined> | undefined
+const enumValueFor = (enumId: number, name: string): number | undefined => {
+	if (enumId < 0 || enumId >= PROTO_ENUM_SCHEMAS.length) return undefined
+	enumTablesById ??= []
+	let byName = enumTablesById[enumId]
+	if (byName === undefined) {
+		const entries = PROTO_ENUM_SCHEMAS[enumId]?.[1]
+		if (!entries) return undefined
+		byName = new Map<string, number>()
+		for (let index = 0; index < entries.length; index += 2) {
+			const entryName = entries[index]
+			const entryValue = entries[index + 1]
+			if (typeof entryName === 'string' && typeof entryValue === 'number') byName.set(entryName, entryValue)
+		}
+		enumTablesById[enumId] = byName
+	}
+	return byName.get(name)
 }
 
 const longFromWords = (low: number, high: number, unsigned: boolean): Long => LongRuntime.fromBits(low, high, unsigned)
@@ -343,12 +378,13 @@ const schemaIdFor = (path: string): number | undefined => {
 }
 
 /**
- * Coerces the two inputs the bridge codec stopped accepting back to what it
- * used to write, and returns `value` itself when there was nothing to coerce.
+ * Coerces the three inputs the bridge codec refuses back to what upstream
+ * Baileys writes, and returns `value` itself when there was nothing to coerce.
  *
  * Reference equality is the signal: the caller only reaches here after an
  * encode threw, and an unchanged result means the failure was something else
- * — a genuinely invalid number, a missing codec — which must keep propagating.
+ * — a genuinely invalid number, an unknown enum name, a missing codec — which
+ * must keep propagating.
  *
  * Copy-on-write throughout, like `projectForEncode`: a branch with nothing to
  * fix is shared, not rebuilt.
@@ -370,8 +406,14 @@ const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>
 		if (!hasOwn(value, field[0])) continue
 		const current = value[field[0]]
 		if (current === null || current === undefined) continue
-		const repair = (item: unknown): unknown =>
-			field[1] === PROTO_FIELD_KIND.message ? repairMessage(field[2], item, seen) : repairScalar(field[1], item)
+		const repair = (item: unknown): unknown => {
+			if (field[1] === PROTO_FIELD_KIND.message) return repairMessage(field[2], item, seen)
+			// `?? item`, not `|| item`: 0 is a valid wire value (e.g. `"NONE"`).
+			// Unknown names stay strings, so the retry still throws and the
+			// original failure keeps propagating instead of becoming a silent 0.
+			if (field[1] === PROTO_FIELD_KIND.enum && typeof item === 'string') return enumValueFor(field[2], item) ?? item
+			return repairScalar(field[1], item)
+		}
 		let converted: unknown = current
 		if (field[3] & PROTO_FIELD_FLAG.repeated) {
 			if (Array.isArray(current)) {
@@ -562,8 +604,8 @@ class ProtoCompatibilityRuntime {
 			if (!sourceCodec) throw new Error(`protobuf codec unavailable for ${path}`)
 			const projected = this.projectForEncode(schemaId, message)
 			const encoded = sourceCodec.encode(projected)
-			// The bridge refuses two inputs it used to accept silently, and upstream
-			// Baileys still encodes both. Repairing on failure rather than checking
+			// The bridge refuses three inputs it used to accept silently, and upstream
+			// Baileys still encodes all three. Repairing on failure rather than checking
 			// every field on the way in is what keeps the ordinary encode free: a
 			// message the codec accepts never reaches the repair, and one that does
 			// not was already going to throw.

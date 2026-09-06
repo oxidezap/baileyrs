@@ -95,6 +95,53 @@ describe('encodeProtoCompat — inputs the bridge codec stopped accepting', () =
 		}) as { sections: { title: string }[] }
 		expect(repaired.sections.map(section => section.title)).toEqual(['�', 'ok', '�'])
 	})
+
+	/**
+	 * Issue #109: `relayMessage` threw `invalid int32: "NONE"`. The bridge codec
+	 * accepts only numbers for enums while upstream Baileys resolves names in
+	 * `fromObject` and coerces them in direct `encode`, so a caller passing a
+	 * name never saw a throw there. The bytes below match upstream exactly: like
+	 * upstream, `"NONE"` writes `0` (`5000`).
+	 */
+	it('resolves an enum name where the schema declares an enum', () => {
+		// Message.extendedTextMessage = field 6 (32), length 6: text = field 1
+		// (0a02 `hi`), previewType = field 10 (50) holding 0.
+		expect(hex(encodeProtoCompat('Message', { extendedTextMessage: { text: 'hi', previewType: 'NONE' } }))).toBe(
+			'32060a0268695000'
+		)
+	})
+
+	it('resolves a non-zero enum name to its number, not to zero', () => {
+		// Upstream's direct `encode` coerces every string with `| 0` and would
+		// write `5000` here; `fromObject` resolves `VIDEO` to 1 (`5001`), which
+		// is what the caller meant. Deliberately the latter.
+		expect(hex(encodeProtoCompat('Message', { extendedTextMessage: { text: 'hi', previewType: 'VIDEO' } }))).toBe(
+			'32060a0268695001'
+		)
+	})
+
+	it('resolves an enum name nested several messages deep', () => {
+		const bytes = encodeProtoCompat('Message', {
+			extendedTextMessage: { text: 'hi', contextInfo: { externalAdReply: { title: 't', mediaType: 'NONE' } } }
+		})
+		const decoded = proto.Message.decode(bytes)
+		expect(decoded.extendedTextMessage?.contextInfo?.externalAdReply?.title).toBe('t')
+		expect(decoded.extendedTextMessage?.contextInfo?.externalAdReply?.mediaType).toBe(0)
+	})
+
+	it('still refuses an enum name the schema does not define', () => {
+		// Upstream's direct encode would silently write 0 for this; writing a
+		// value nobody sent is the worse answer, so the throw propagates.
+		expect(() => encodeProtoCompat('Message', { extendedTextMessage: { text: 'hi', previewType: 'BOGUS' } })).toThrow()
+	})
+
+	it('does not mutate the caller’s message when resolving an enum name', () => {
+		const message = { extendedTextMessage: { text: 'hi', previewType: 'NONE' } }
+		const repaired = repairProtoMessage('Message', message) as typeof message
+		expect(message.extendedTextMessage.previewType).toBe('NONE')
+		expect(repaired.extendedTextMessage).toEqual({ text: 'hi', previewType: 0 })
+		expect(repaired).not.toBe(message)
+	})
 })
 
 describe('repairProtoMessage — copy-on-write contract', () => {
@@ -142,5 +189,12 @@ describe('proto.X.encode — the same repair through the facade', () => {
 
 	it('leaves an acceptable message untouched through the facade', () => {
 		expect(hex(proto.Message.encode({ conversation: 'hi' }).finish())).toBe('0a026869')
+	})
+
+	it('resolves an enum name through the facade too', () => {
+		// `as never`: the test deliberately passes a name where the types
+		// declare a number — that boundary crossing is the compat scenario.
+		const writer = proto.Message.encode({ extendedTextMessage: { text: 'hi', previewType: 'NONE' as never } })
+		expect(hex(writer.finish())).toBe('32060a0268695000')
 	})
 })
