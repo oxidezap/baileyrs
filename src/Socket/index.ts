@@ -104,6 +104,30 @@ const browserToPlatformType = (browser: string): DevicePlatformType => {
 	}
 }
 
+const COMPLETION_FAILURE_CODES = new Map<string, number>([
+	['Generic', 400],
+	['LoggedOut', 401],
+	['TempBanned', 402],
+	['AccountLocked', 403],
+	['UnknownLogout', 406],
+	['ClientOutdated', 405],
+	['BadUserAgent', 409],
+	['CatExpired', 413],
+	['CatInvalid', 414],
+	['NotFound', 415],
+	['ClientUnknown', 418],
+	['InternalServerError', 500],
+	['Experimental', 501],
+	['ServiceUnavailable', 503]
+])
+
+const completionFailureCode = (reason: string): number | undefined => {
+	const named = COMPLETION_FAILURE_CODES.get(reason)
+	if (named !== undefined) return named
+	const unknown = /^Unknown\((-?\d+)\)$/.exec(reason)?.[1]
+	return unknown === undefined ? undefined : Number(unknown)
+}
+
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
 const makeWASocket = (config: UserFacingSocketConfig) => {
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
@@ -298,28 +322,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	let autoReconnectEnabled = true
 	/** Owns reporting the terminal close: once, after teardown, never not at all. */
 	const terminalClose = makeTerminalCloseReporter({ logger })
-	const completionFailureCode = (reason: string): number | undefined => {
-		const known: Record<string, number> = {
-			Generic: 400,
-			LoggedOut: 401,
-			TempBanned: 402,
-			AccountLocked: 403,
-			UnknownLogout: 406,
-			ClientOutdated: 405,
-			BadUserAgent: 409,
-			CatExpired: 413,
-			CatInvalid: 414,
-			NotFound: 415,
-			ClientUnknown: 418,
-			InternalServerError: 500,
-			Experimental: 501,
-			ServiceUnavailable: 503
-		}
-		const named = known[reason]
-		if (named !== undefined) return named
-		const unknown = /^Unknown\((-?\d+)\)$/.exec(reason)?.[1]
-		return unknown === undefined ? undefined : Number(unknown)
-	}
 	const runCompletionError = (completion: RunCompletionResult): Boom => {
 		let statusCode = DisconnectReason.connectionClosed
 		let message = 'Connection closed'
@@ -659,7 +661,6 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				},
 				error => {
 					if (owner.isClosing() || owner.peek() !== observedClient) return
-					logger.error({ err: error }, 'bridge run completion observation failed')
 					const closeError = new Boom('Connection run ended without a completion result', {
 						statusCode: DisconnectReason.connectionClosed
 					})
@@ -669,6 +670,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 							lastDisconnect: { error: closeError, date: new Date() }
 						} as Partial<ConnectionState>)
 					)
+					try {
+						logger.error({ err: error }, 'bridge run completion observation failed')
+					} catch {
+						// A consumer logger cannot prevent the terminal cleanup above.
+					}
 				}
 			)
 			.catch(() => {
