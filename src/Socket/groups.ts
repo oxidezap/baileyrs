@@ -48,6 +48,26 @@ export type JoinApprovalMode = (typeof JOIN_APPROVAL_MODES)[number]
 // forms, and reconstructs the high word instead of dropping it.
 const inviteExpirationNumber = (value: proto.Message.IGroupInviteMessage['inviteExpiration']): number => toNumber(value)
 
+// The core's V4 join parser only accepts a `<group>`, `<community>` or
+// `<membership_approval_request>` child, but the server also answers a
+// successful join with a bare `<iq type="result">` (WA Web's own
+// `AcceptGroupAddResponseSuccess` variant requires no child at all — only the
+// result envelope whose `from` echoes the request's `to`). The core reports
+// that shape as an `IqError::ParseError`, which the bridge surfaces as
+// `kind: 'internal'`. Error stanzas never reach the parser (they become
+// `kind: 'server'` one layer below), so this substring can only mean the join
+// was accepted and the JID carrier is missing — never a rejection.
+const BARE_JOIN_SUCCESS_FRAGMENT = 'expected <group>, <community>, or <membership_approval_request> in join response'
+
+// A bare `<iq type="result">` join success, as described above. Anything else
+// (server rejections, timeouts, transport loss) must keep propagating.
+const isBareJoinSuccess = (error: unknown): boolean => {
+	if (!(error instanceof Error) || error.name !== 'WhatsAppError') return false
+	const kind = (error as { kind?: unknown }).kind
+	if (kind !== 'internal' && kind !== 'protocol-violation') return false
+	return typeof error.message === 'string' && error.message.includes(BARE_JOIN_SUCCESS_FRAGMENT)
+}
+
 export const makeGroupMethods = (ctx: SocketContext) => {
 	const groupMetadata = async (jid: string): Promise<GroupMetadata> => {
 		const metadata = await (await ctx.getClient()).getGroupMetadata(jid)
@@ -67,18 +87,28 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 			// oxlint-disable-next-line typescript/no-explicit-any -- the established public contract returns Promise<any>.
 		): Promise<any> => {
 			const messageKey = typeof key === 'string' ? { remoteJid: key } : key
-			if (!inviteMessage.groupJid || !inviteMessage.inviteCode || !messageKey.remoteJid) {
+			const groupJid = inviteMessage.groupJid
+			if (!groupJid || !inviteMessage.inviteCode || !messageKey.remoteJid) {
 				throw new TypeError('groupAcceptInviteV4 requires groupJid, inviteCode and inviter JID')
 			}
 
-			const joinedJid = await (
-				await ctx.getClient()
-			).groupAcceptInviteV4(
-				inviteMessage.groupJid,
-				inviteMessage.inviteCode,
-				inviteExpirationNumber(inviteMessage.inviteExpiration),
-				messageKey.remoteJid
-			)
+			let joinedJid: string
+			try {
+				joinedJid = await (
+					await ctx.getClient()
+				).groupAcceptInviteV4(
+					groupJid,
+					inviteMessage.inviteCode,
+					inviteExpirationNumber(inviteMessage.inviteExpiration),
+					messageKey.remoteJid
+				)
+			} catch (error) {
+				// The join was accepted but the response carried no JID node.
+				// Baileys returns the envelope's `from` here, which echoes the
+				// request's `to` — the group JID we already hold.
+				if (!isBareJoinSuccess(error)) throw error
+				joinedJid = groupJid
+			}
 
 			if (messageKey.id) {
 				const expiredInvite = proto.Message.GroupInviteMessage.fromObject(inviteMessage)
