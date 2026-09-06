@@ -132,7 +132,6 @@ describe('cert chain verification bypass plumbing', { timeout: 60_000 }, () => {
 					...(flag === undefined ? {} : { dangerSkipCertChainVerify: flag })
 				})
 				try {
-					sock.setAutoReconnect(false)
 					for (let i = 0; i < 100 && !sock.waClient; i++) await delay(50)
 					expect(Boolean(sock.waClient)).toBe(true)
 				} finally {

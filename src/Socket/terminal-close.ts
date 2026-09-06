@@ -1,3 +1,5 @@
+import { DisconnectReason } from '../Types/index.ts'
+
 /**
  * Which bridge disconnects end the socket for good.
  *
@@ -6,11 +8,10 @@
  * on exactly these, and retries everything else on the WA Web Fibonacci backoff
  * (`client/lifecycle.rs`).
  *
- * The socket layer needs the answer because `WasmWhatsAppClient.run()` returns
- * `void` — it spawns the loop as a background task, so the loop's exit is not
- * observable from JS (`whatsapp_rust_bridge.d.ts`, `run(): void`). Until the
- * bridge exposes loop completion, this table is how the socket knows a client
- * has become dead weight that only `free()` can reclaim.
+ * The socket layer needs the answer for bridge events that classify a terminal
+ * close before the supervised run completion is observed. Bridge 0.21.0 also
+ * exposes `waitForRunCompletion()` for exits with no terminal event; that
+ * observer uses the same terminal-close reporter and owner as this table.
  *
  * The upstream Baileys contract this buys us: `connection.update { close }`
  * means "this socket is finished, build a new one" — which is what every
@@ -51,3 +52,28 @@ const RECONNECTABLE_CONNECT_FAILURE_REASONS: ReadonlySet<number> = new Set([
 /** True when the engine will keep retrying after this `<failure>`. */
 export const isReconnectableConnectFailure = (reason: number | undefined): boolean =>
 	reason !== undefined && RECONNECTABLE_CONNECT_FAILURE_REASONS.has(reason)
+
+/** Map a typed bridge connect-failure code to Baileys' close status. */
+export const mapConnectFailureToDisconnect = (reason: number | undefined): number => {
+	switch (reason) {
+		case 401:
+		case 403:
+		case 406:
+			return DisconnectReason.loggedOut
+		case 402:
+			return DisconnectReason.forbidden
+		case 405:
+			return 405
+		case 411:
+			return DisconnectReason.multideviceMismatch
+		case 503:
+		case 501:
+			return DisconnectReason.unavailableService
+		case 408:
+			return DisconnectReason.timedOut
+		case 515:
+			return DisconnectReason.restartRequired
+		default:
+			return DisconnectReason.connectionClosed
+	}
+}

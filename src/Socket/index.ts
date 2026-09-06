@@ -4,6 +4,7 @@ import {
 	createWhatsAppClient,
 	type DevicePlatformType,
 	initWasmEngine,
+	type RunCompletionResult,
 	type UploadMediaResult
 } from '@oxidezap/whatsapp-rust-bridge'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
@@ -58,6 +59,7 @@ import { makeBridgeClientOwner } from './bridge-client-owner.ts'
 import { warnUnsupportedConfig } from './unsupported-config.ts'
 import { wrapBridgeClient } from './bridge-error-boundary.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
+import { mapConnectFailureToDisconnect } from './terminal-close.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
 import { makeInternalMethods, makeUnexpectedErrorReporter } from './internals.ts'
@@ -100,6 +102,30 @@ const browserToPlatformType = (browser: string): DevicePlatformType => {
 		default:
 			return 'CHROME'
 	}
+}
+
+const COMPLETION_FAILURE_CODES = new Map<string, number>([
+	['Generic', 400],
+	['LoggedOut', 401],
+	['TempBanned', 402],
+	['AccountLocked', 403],
+	['UnknownLogout', 406],
+	['ClientOutdated', 405],
+	['BadUserAgent', 409],
+	['CatExpired', 413],
+	['CatInvalid', 414],
+	['NotFound', 415],
+	['ClientUnknown', 418],
+	['InternalServerError', 500],
+	['Experimental', 501],
+	['ServiceUnavailable', 503]
+])
+
+const completionFailureCode = (reason: string): number | undefined => {
+	const named = COMPLETION_FAILURE_CODES.get(reason)
+	if (named !== undefined) return named
+	const unknown = /^Unknown\((-?\d+)\)$/.exec(reason)?.[1]
+	return unknown === undefined ? undefined : Number(unknown)
 }
 
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
@@ -296,6 +322,32 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	let autoReconnectEnabled = true
 	/** Owns reporting the terminal close: once, after teardown, never not at all. */
 	const terminalClose = makeTerminalCloseReporter({ logger })
+	const runCompletionError = (completion: RunCompletionResult): Boom => {
+		let statusCode = DisconnectReason.connectionClosed
+		let message = 'Connection closed'
+		if (completion.reason === 'unknown') {
+			message = `Connection run ended: ${completion.detail}`
+		} else if (completion.reason === 'stopped') {
+			message = 'Connection run stopped'
+		} else if (completion.reason === 'already-running') {
+			message = 'Connection run was already running'
+		} else if (completion.reason === 'auto-reconnect-disabled') {
+			const protocol = completion.protocolError
+			if (protocol?.kind === 'conflict') {
+				statusCode = DisconnectReason.connectionReplaced
+				message = 'Connection replaced'
+			} else if (protocol?.kind === 'stream-error') {
+				statusCode = mapConnectFailureToDisconnect(protocol.code)
+			} else if (protocol?.kind === 'connect-failure') {
+				statusCode = mapConnectFailureToDisconnect(completionFailureCode(protocol.reason))
+			} else if (completion.connection?.kind === 'server-close') {
+				message = completion.connection.reason
+			}
+		}
+		return new Boom(message, { statusCode, data: { runCompletion: completion } })
+	}
+	const reportTerminalClose = (error: Error, publish: () => void) =>
+		terminalClose.reportAfter(() => owner.close(error).finally(() => initPromise), publish)
 	/**
 	 * Held in a reporter rather than captured, because `sock.onUnexpectedError`
 	 * is an assignable property: a consumer that replaces it has to be the one
@@ -437,7 +489,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// is still owned. This waits for the real teardown, and cannot
 			// deadlock because `reportAfter` runs it detached; nothing in the
 			// teardown is waiting on this.
-			terminalClose.reportAfter(() => owner.close(error).finally(() => initPromise), publish)
+			reportTerminalClose(error, publish)
 		},
 		isAutoReconnectEnabled: () => autoReconnectEnabled,
 		// Timers the dispatcher armed outlive the events that armed them, and
@@ -585,23 +637,50 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// starting the read loop now would run against a handle about to go.
 		if (owner.isClosing()) return
 
-		// `run()` spawns the connect/handshake/read/reconnect loop as a
-		// background task and returns `void` — it deliberately is not `async`,
-		// so that it does not hold a wasm-bindgen borrow on `self` that would
-		// block `disconnect()`.
-		//
-		// Consequence: the loop's exit is not observable from here. The engine
-		// clears `enable_auto_reconnect` and breaks out on every terminal
-		// disconnect (conflict/401/409/516, and any `<failure>` whose reason is
-		// not 500/503), and when it does, the `WasmWhatsAppClient` is dead
-		// weight that only `sock.end()` can free — nothing else can, because
-		// the bridge holds the JS event callbacks as wasm-bindgen externrefs,
-		// those close over `ctx`, and `ctx` closes over `client`, so the cycle
-		// crosses the JS/wasm boundary and no `FinalizationRegistry` fires.
-		// Freeing that automatically needs the bridge to expose loop completion
-		// (a terminal callback or an awaitable handle); until it does, the
-		// consumer has to call `sock.end()` on a terminal close.
+		// `run()` deliberately returns immediately so callers can use the
+		// client while supervision owns its background task. Registering the
+		// completion observer after it is started is safe: bridge 0.21.0 admits
+		// late observers against the stored result for this run generation.
 		created.run()
+		const observedClient = created
+		void created
+			.waitForRunCompletion()
+			.then(
+				completion => {
+					// The owner identity is the socket generation fence. A completion
+					// from a client that teardown already released must never close a
+					// later socket using the same auth state.
+					if (owner.isClosing() || owner.peek() !== observedClient) return
+					const error = runCompletionError(completion)
+					reportTerminalClose(error, () =>
+						ev.emit('connection.update', {
+							connection: 'close',
+							lastDisconnect: { error, date: new Date() }
+						} as Partial<ConnectionState>)
+					)
+				},
+				error => {
+					if (owner.isClosing() || owner.peek() !== observedClient) return
+					const closeError = new Boom('Connection run ended without a completion result', {
+						statusCode: DisconnectReason.connectionClosed
+					})
+					reportTerminalClose(closeError, () =>
+						ev.emit('connection.update', {
+							connection: 'close',
+							lastDisconnect: { error: closeError, date: new Date() }
+						} as Partial<ConnectionState>)
+					)
+					try {
+						logger.error({ err: error }, 'bridge run completion observation failed')
+					} catch {
+						// A consumer logger cannot prevent the terminal cleanup above.
+					}
+				}
+			)
+			.catch(() => {
+				// The reporter contains teardown and publish failures; this final guard
+				// also contains a consumer logger that throws from an observation path.
+			})
 		initialized = true
 	}
 
