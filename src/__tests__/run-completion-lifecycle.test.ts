@@ -214,12 +214,12 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 
 	it('maps a completion cause when it wins the terminal event race', async () => {
 		const originalWait = WasmWhatsAppClient.prototype.waitForRunCompletion
-		WasmWhatsAppClient.prototype.waitForRunCompletion = () =>
-			Promise.resolve({
-				reason: 'auto-reconnect-disabled',
-				generation: 0,
-				protocolError: { kind: 'conflict' }
-			} as never)
+		const completion: Awaited<ReturnType<WasmWhatsAppClient['waitForRunCompletion']>> = {
+			reason: 'auto-reconnect-disabled',
+			generation: 0,
+			protocolError: { kind: 'conflict' }
+		}
+		WasmWhatsAppClient.prototype.waitForRunCompletion = () => Promise.resolve(completion)
 		const server = createServer(socket => {
 			socket.on('error', () => {})
 			socket.destroy()
