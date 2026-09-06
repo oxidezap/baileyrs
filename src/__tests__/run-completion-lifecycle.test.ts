@@ -10,7 +10,6 @@ import { useMultiFileAuthState } from '../Utils/use-multi-file-auth-state.ts'
 import { expect } from './expect.ts'
 
 const silentLogger = P({ level: 'silent' })
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 	let authFolder: string
@@ -71,11 +70,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 			sock.setAutoReconnect(false)
 			await connectionAccepted
 
-			let client: NonNullable<typeof sock.waClient> | undefined
-			for (let attempt = 0; attempt < 100 && !client; attempt++) {
-				client = sock.waClient
-				if (!client) await wait(20)
-			}
+			const client = sock.waClient
 			if (!client) throw new Error('bridge client did not finish startup')
 
 			let closes = 0
@@ -139,11 +134,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 			sock.setAutoReconnect(false)
 			await connectionAccepted
 
-			let client: NonNullable<typeof sock.waClient> | undefined
-			for (let attempt = 0; attempt < 100 && !client; attempt++) {
-				client = sock.waClient
-				if (!client) await wait(20)
-			}
+			const client = sock.waClient
 			if (!client) throw new Error('bridge client did not finish startup')
 
 			let closes = 0
@@ -156,7 +147,6 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 			const result = await completion
 			expect(result.reason).toBe('shutdown-requested')
 			await ending
-			await wait(100)
 
 			expect(closes).toBe(0)
 			expect(sock.waClient).toBeUndefined()
