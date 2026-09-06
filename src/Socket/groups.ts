@@ -60,11 +60,12 @@ const inviteExpirationNumber = (value: proto.Message.IGroupInviteMessage['invite
 const BARE_JOIN_SUCCESS_FRAGMENT = 'expected <group>, <community>, or <membership_approval_request> in join response'
 
 // A bare `<iq type="result">` join success, as described above. Anything else
-// (server rejections, timeouts, transport loss) must keep propagating.
+// (server rejections, timeouts, transport loss, protocol violations) must keep
+// propagating.
 const isBareJoinSuccess = (error: unknown): boolean => {
 	if (!(error instanceof Error) || error.name !== 'WhatsAppError') return false
 	const kind = (error as { kind?: unknown }).kind
-	if (kind !== 'internal' && kind !== 'protocol-violation') return false
+	if (kind !== 'internal') return false
 	return typeof error.message === 'string' && error.message.includes(BARE_JOIN_SUCCESS_FRAGMENT)
 }
 

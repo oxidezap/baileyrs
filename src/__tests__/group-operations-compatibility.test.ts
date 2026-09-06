@@ -112,8 +112,9 @@ describe('group operation compatibility', () => {
 	})
 
 	// Only the bare-success shape falls back. Genuine failures — server
-	// rejections and unrelated internal errors — must keep propagating by
-	// identity, with no lifecycle side effects.
+	// rejections, unrelated internal errors, and protocol violations even when
+	// they carry the same fragment — must keep propagating by identity, with
+	// no lifecycle side effects.
 	it('rethrows V4 join failures that are not a bare success', async () => {
 		const rejections = [
 			Object.assign(new Error('server error 403: forbidden'), {
@@ -125,7 +126,13 @@ describe('group operation compatibility', () => {
 			Object.assign(new Error('internal: something else broke'), {
 				name: 'WhatsAppError',
 				kind: 'internal'
-			})
+			}),
+			Object.assign(
+				new Error(
+					'protocol violation: expected <group>, <community>, or <membership_approval_request> in join response'
+				),
+				{ name: 'WhatsAppError', kind: 'protocol-violation' }
+			)
 		]
 		for (const rejection of rejections) {
 			const ev = Object.assign(new EventEmitter(), {
