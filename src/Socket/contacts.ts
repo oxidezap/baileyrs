@@ -1,6 +1,5 @@
-import { makeWithClient } from './client-operations.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 export const PROFILE_PICTURE_TYPES = ['preview', 'image'] as const
 
@@ -18,10 +17,9 @@ export type OnWhatsAppResult = {
 }
 
 export const makeContactMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
 	return {
 		onWhatsApp: async (...phoneNumber: string[]): Promise<OnWhatsAppResult[] | undefined> => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				// Single batched usync — the bridge splits PN/LID inputs internally and
 				// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
 				const results = await client.isOnWhatsApp(phoneNumber)
@@ -37,12 +35,12 @@ export const makeContactMethods = (ctx: SocketContext) => {
 
 		profilePictureUrl: async (jid: string, type: ProfilePictureType = 'preview', timeoutMs?: number) => {
 			assertArgumentDomain('profilePictureUrl', 'type', type, PROFILE_PICTURE_TYPES)
-			const result = await withClient(client => client.profilePictureUrl(jid, type, timeoutMs))
+			const result = await ctx.withClient(client => client.profilePictureUrl(jid, type, timeoutMs))
 			return result?.url
 		},
 
 		fetchUserInfo: async (...jids: string[]) => {
-			return await withClient(client => client.fetchUserInfo(jids))
+			return await ctx.withClient(client => client.fetchUserInfo(jids))
 		}
 	}
 }

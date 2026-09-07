@@ -12,7 +12,7 @@ import type { GroupMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap } from '../Types/Events.ts'
 import type { GroupMetadata, GroupParticipant } from '../Types/GroupMetadata.ts'
 import { expect } from './expect.ts'

@@ -1,4 +1,3 @@
-import { makeWithClient } from './client-operations.ts'
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import { bridgeParticipantChangesToBaileys } from '../Compatibility/socket-results.ts'
 import { PARTICIPANT_ACTIONS, type GroupMetadata, type ParticipantAction } from '../Types/index.ts'
@@ -14,7 +13,7 @@ import {
 	type JoinApprovalMode,
 	type MemberAddMode
 } from './groups.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 type LinkedGroup = {
 	id: string | undefined
@@ -25,12 +24,10 @@ type LinkedGroup = {
 }
 
 export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMethods(ctx)) => {
-	const withClient = makeWithClient(ctx)
-
 	const communityMetadata = async (jid: string): Promise<GroupMetadata> => groups.groupMetadata(jid)
 
 	const communityFetchAllParticipating = async (): Promise<Record<string, GroupMetadata>> => {
-		const bridgeCommunities = await withClient(client => client.communityFetchAllParticipating())
+		const bridgeCommunities = await ctx.withClient(client => client.communityFetchAllParticipating())
 		const result: Record<string, GroupMetadata> = {}
 		for (const [communityJid, metadata] of Object.entries(bridgeCommunities)) {
 			result[communityJid] = bridgeGroupMetadataToBaileys(metadata)
@@ -44,7 +41,9 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		communityMetadata,
 
 		communityCreate: async (subject: string, body: string): Promise<GroupMetadata | null> => {
-			const metadata = await withClient(client => client.createCommunity(subject, body || undefined, true, true, true))
+			const metadata = await ctx.withClient(client =>
+				client.createCommunity(subject, body || undefined, true, true, true)
+			)
 			return bridgeGroupMetadataToBaileys(metadata)
 		},
 
@@ -53,14 +52,14 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 			participants: string[],
 			parentCommunityJid: string
 		): Promise<GroupMetadata | null> => {
-			const metadata = await withClient(client =>
+			const metadata = await ctx.withClient(client =>
 				client.createCommunitySubgroup(subject, participants, parentCommunityJid)
 			)
 			return bridgeGroupMetadataToBaileys(metadata)
 		},
 
 		communityLeave: async (id: string): Promise<void> => {
-			await withClient(client => client.deactivateCommunity(id))
+			await ctx.withClient(client => client.deactivateCommunity(id))
 		},
 
 		communityUpdateSubject: async (jid: string, subject: string): Promise<void> => {
@@ -68,11 +67,11 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		},
 
 		communityLinkGroup: async (groupJid: string, parentCommunityJid: string): Promise<void> => {
-			await withClient(client => client.linkCommunitySubgroups(parentCommunityJid, [groupJid]))
+			await ctx.withClient(client => client.linkCommunitySubgroups(parentCommunityJid, [groupJid]))
 		},
 
 		communityUnlinkGroup: async (groupJid: string, parentCommunityJid: string): Promise<void> => {
-			await withClient(client => client.unlinkCommunitySubgroups(parentCommunityJid, [groupJid], false))
+			await ctx.withClient(client => client.unlinkCommunitySubgroups(parentCommunityJid, [groupJid], false))
 		},
 
 		communityFetchLinkedGroups: async (
@@ -81,7 +80,7 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 			const metadata = await groups.groupMetadata(jid)
 			const communityJid = metadata.linkedParent || jid
 			const isCommunity = !metadata.linkedParent
-			const subgroups = await withClient(client => client.getCommunitySubgroups(communityJid))
+			const subgroups = await ctx.withClient(client => client.getCommunitySubgroups(communityJid))
 			const linkedGroups: LinkedGroup[] = subgroups.map(group => ({
 				id: group.id,
 				subject: group.subject,
@@ -107,7 +106,7 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 		communityParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
 			assertArgumentDomain('communityParticipantsUpdate', 'action', action, PARTICIPANT_ACTIONS)
 			return bridgeParticipantChangesToBaileys(
-				await withClient(client => client.communityParticipantsUpdate(jid, participants, action))
+				await ctx.withClient(client => client.communityParticipantsUpdate(jid, participants, action))
 			)
 		},
 

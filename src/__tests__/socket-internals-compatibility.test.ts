@@ -18,7 +18,7 @@ import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import makeWASocket from '../Socket/index.ts'
 import { makeInternalMethods, makeUnexpectedErrorReporter } from '../Socket/internals.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { WAMessage } from '../Types/index.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
 import { delay } from '../Utils/generics.ts'

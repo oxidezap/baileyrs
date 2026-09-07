@@ -1,11 +1,10 @@
-import { makeWithClient } from './client-operations.ts'
 import type { OrderResult, BusinessProfileUpdateInput } from '@oxidezap/whatsapp-rust-bridge'
 import type { CatalogPage, CollectionsPage, GetCatalogOptions, ProductCreate, ProductUpdate } from '../Types/Product.ts'
 import type { UpdateBussinesProfileProps } from '../Types/Bussines.ts'
 import type { WAMediaUpload } from '../Types/Message.ts'
 import { Boom } from '../Utils/boom.ts'
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 /**
  * Product create, update and delete exist only in Baileys: the operations they
@@ -56,16 +55,15 @@ const catalogSubject = (method: string, ctx: SocketContext, jid?: string): strin
 }
 
 export const makeBusinessMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
 	return {
 		getCatalog: async ({ jid, limit, cursor }: GetCatalogOptions): Promise<CatalogPage> => {
 			const subject = catalogSubject('getCatalog', ctx, jid)
-			return await withClient(client => client.getCatalog(subject, { limit, after: cursor }))
+			return await ctx.withClient(client => client.getCatalog(subject, { limit, after: cursor }))
 		},
 
 		getCollections: async (jid?: string, limit?: number): Promise<CollectionsPage> => {
 			const subject = catalogSubject('getCollections', ctx, jid)
-			return await withClient(client => client.getCollections(subject, { collectionLimit: limit }))
+			return await ctx.withClient(client => client.getCollections(subject, { collectionLimit: limit }))
 		},
 
 		/**
@@ -81,7 +79,7 @@ export const makeBusinessMethods = (ctx: SocketContext) => {
 					{ statusCode: 400 }
 				)
 			}
-			return await withClient(client => client.getOrder(sellerJid, orderId, tokenBase64))
+			return await ctx.withClient(client => client.getOrder(sellerJid, orderId, tokenBase64))
 		},
 
 		updateBussinesProfile: async (args: UpdateBussinesProfileProps): Promise<void> => {
@@ -108,7 +106,7 @@ export const makeBusinessMethods = (ctx: SocketContext) => {
 						}
 					: {})
 			}
-			await withClient(client => client.updateBusinessProfile(update))
+			await ctx.withClient(client => client.updateBusinessProfile(update))
 		},
 
 		/**
@@ -126,7 +124,7 @@ export const makeBusinessMethods = (ctx: SocketContext) => {
 		},
 
 		removeCoverPhoto: async (id: string): Promise<void> => {
-			await withClient(client => client.removeBusinessCoverPhoto(id))
+			await ctx.withClient(client => client.removeBusinessCoverPhoto(id))
 		},
 
 		productCreate: async (create: ProductCreate): Promise<never> => noProductWriteRoute('productCreate', create),

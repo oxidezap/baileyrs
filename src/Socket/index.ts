@@ -73,7 +73,7 @@ import { makeServerQueryMethods } from './server-queries.ts'
 import { makeProfileMethods } from './profile.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { makeHttpClient, makeTransport } from './transport.ts'
-import type { WithClientSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 import { makeWithClient } from './client-operations.ts'
 import { makeUSyncMethods } from './usync.ts'
 
@@ -368,15 +368,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		setUser: u => {
 			user = u
 		},
-		withClient: makeWithClient({ getClient }),
-		getClientSync: () => {
-			if (owner.isClosing()) {
-				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
-			}
-			const built = owner.peek()
-			if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
-			return wrapBridgeClient(built)
-		}
+		withClient: makeWithClient(getClient)
 	}
 	function getClient(): Promise<WasmWhatsAppClient> {
 		// Teardown retains the client through closing to disconnect the transport.

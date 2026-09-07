@@ -1,4 +1,3 @@
-import { makeWithClient } from './client-operations.ts'
 import { Buffer } from 'node:buffer'
 import { bridgeNewsletterMetadataToBaileys } from '../Compatibility/newsletter-results.ts'
 import type { NewsletterMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
@@ -7,18 +6,17 @@ import type { WAMediaUpload } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateProfilePicture } from '../Utils/messages-media.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 export const NEWSLETTER_KEY_TYPES = ['invite', 'jid'] as const
 
 export type NewsletterKeyType = (typeof NEWSLETTER_KEY_TYPES)[number]
 
 export const makeNewsletterMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
 	return {
 		newsletterCreate: async (name: string, description?: string): Promise<NewsletterMetadata> => {
 			return bridgeNewsletterMetadataToBaileys(
-				await withClient(client => client.newsletterCreate(name, description ?? null))
+				await ctx.withClient(client => client.newsletterCreate(name, description ?? null))
 			)
 		},
 
@@ -29,7 +27,7 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		 */
 		newsletterMetadata: async (type: NewsletterKeyType, key: string): Promise<NewsletterMetadata | null> => {
 			assertArgumentDomain('newsletterMetadata', 'type', type, NEWSLETTER_KEY_TYPES)
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				const result =
 					type === 'invite' ? await client.newsletterMetadataByInvite(key) : await client.newsletterMetadata(key)
 				return result ? bridgeNewsletterMetadataToBaileys(result) : null
@@ -42,7 +40,7 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		 * methods, so the field is dispatched rather than forwarded.
 		 */
 		newsletterUpdate: async (jid: string, updates: NewsletterUpdate): Promise<NewsletterMetadata> => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				let result: NewsletterMetadataResult | undefined
 				if (updates.name !== undefined || updates.description !== undefined) {
 					result = await client.newsletterUpdate(jid, updates.name ?? null, updates.description ?? null)
@@ -60,30 +58,30 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		},
 
 		newsletterUpdateName: async (jid: string, name: string): Promise<NewsletterMetadata> => {
-			return bridgeNewsletterMetadataToBaileys(await withClient(client => client.newsletterUpdate(jid, name, null)))
+			return bridgeNewsletterMetadataToBaileys(await ctx.withClient(client => client.newsletterUpdate(jid, name, null)))
 		},
 
 		newsletterUpdateDescription: async (jid: string, description: string): Promise<NewsletterMetadata> => {
 			return bridgeNewsletterMetadataToBaileys(
-				await withClient(client => client.newsletterUpdate(jid, null, description))
+				await ctx.withClient(client => client.newsletterUpdate(jid, null, description))
 			)
 		},
 
 		newsletterUpdatePicture: async (jid: string, content: WAMediaUpload): Promise<NewsletterMetadata> => {
 			const { img } = await generateProfilePicture(content)
-			return bridgeNewsletterMetadataToBaileys(await withClient(client => client.newsletterSetPicture(jid, img)))
+			return bridgeNewsletterMetadataToBaileys(await ctx.withClient(client => client.newsletterSetPicture(jid, img)))
 		},
 
 		newsletterRemovePicture: async (jid: string): Promise<NewsletterMetadata> => {
-			return bridgeNewsletterMetadataToBaileys(await withClient(client => client.newsletterRemovePicture(jid)))
+			return bridgeNewsletterMetadataToBaileys(await ctx.withClient(client => client.newsletterRemovePicture(jid)))
 		},
 
 		newsletterFollow: async (jid: string): Promise<NewsletterMetadata> => {
-			return bridgeNewsletterMetadataToBaileys(await withClient(client => client.newsletterSubscribe(jid)))
+			return bridgeNewsletterMetadataToBaileys(await ctx.withClient(client => client.newsletterSubscribe(jid)))
 		},
 
 		newsletterUnfollow: async (jid: string): Promise<void> => {
-			await withClient(client => client.newsletterUnsubscribe(jid))
+			await ctx.withClient(client => client.newsletterUnsubscribe(jid))
 		},
 
 		/**
@@ -94,11 +92,11 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		 * `newsletterFollow` is the one that speaks upstream's shape.
 		 */
 		newsletterSubscribe: async (jid: string): Promise<NewsletterMetadataResult> => {
-			return await withClient(client => client.newsletterSubscribe(jid))
+			return await ctx.withClient(client => client.newsletterSubscribe(jid))
 		},
 
 		newsletterUnsubscribe: async (jid: string): Promise<void> => {
-			await withClient(client => client.newsletterUnsubscribe(jid))
+			await ctx.withClient(client => client.newsletterUnsubscribe(jid))
 		},
 
 		/**
@@ -107,20 +105,20 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		 * control, so the ambiguous alias is avoided here.
 		 */
 		newsletterMute: async (jid: string): Promise<void> => {
-			await withClient(client => client.newsletterFollowerMute(jid, true))
+			await ctx.withClient(client => client.newsletterFollowerMute(jid, true))
 		},
 
 		newsletterUnmute: async (jid: string): Promise<void> => {
-			await withClient(client => client.newsletterFollowerMute(jid, false))
+			await ctx.withClient(client => client.newsletterFollowerMute(jid, false))
 		},
 
 		newsletterSubscribers: async (jid: string): Promise<{ subscribers: number }> => {
-			const metadata = await withClient(client => client.newsletterMetadata(jid))
+			const metadata = await ctx.withClient(client => client.newsletterMetadata(jid))
 			return { subscribers: metadata.subscriberCount }
 		},
 
 		newsletterReactMessage: async (jid: string, serverId: string, reaction?: string): Promise<void> => {
-			await withClient(client => client.newsletterReactMessage(jid, serverId, reaction ?? null))
+			await ctx.withClient(client => client.newsletterReactMessage(jid, serverId, reaction ?? null))
 		},
 
 		/**
@@ -145,11 +143,11 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 					{ statusCode: 400 }
 				)
 			}
-			return await withClient(client => client.newsletterMessages(jid, count, null))
+			return await ctx.withClient(client => client.newsletterMessages(jid, count, null))
 		},
 
 		subscribeNewsletterUpdates: async (jid: string): Promise<{ duration: string }> => {
-			const duration = await withClient(client => client.newsletterSubscribeLiveUpdates(jid))
+			const duration = await ctx.withClient(client => client.newsletterSubscribeLiveUpdates(jid))
 			return { duration: String(duration) }
 		},
 
@@ -159,7 +157,7 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		 * read as "no admins", which no newsletter can be.
 		 */
 		newsletterAdminCount: async (jid: string): Promise<number> => {
-			const info = await withClient(client => client.newsletterAdminInfo(jid))
+			const info = await ctx.withClient(client => client.newsletterAdminInfo(jid))
 			if (info.adminCount === undefined) {
 				throw new Boom('newsletterAdminCount: the server did not return an admin count for this newsletter', {
 					statusCode: 404
@@ -169,15 +167,15 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		},
 
 		newsletterChangeOwner: async (jid: string, newOwnerJid: string): Promise<void> => {
-			await withClient(client => client.newsletterChangeOwner(jid, newOwnerJid))
+			await ctx.withClient(client => client.newsletterChangeOwner(jid, newOwnerJid))
 		},
 
 		newsletterDemote: async (jid: string, userJid: string): Promise<void> => {
-			await withClient(client => client.newsletterDemoteAdmin(jid, userJid))
+			await ctx.withClient(client => client.newsletterDemoteAdmin(jid, userJid))
 		},
 
 		newsletterDelete: async (jid: string): Promise<void> => {
-			await withClient(client => client.newsletterDelete(jid))
+			await ctx.withClient(client => client.newsletterDelete(jid))
 		}
 	}
 }

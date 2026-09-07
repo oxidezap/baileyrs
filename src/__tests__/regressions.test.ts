@@ -12,7 +12,7 @@ import { adaptBridgeEvent } from '../Bridge/adapt.ts'
 import type { CanonicalEvent, CanonicalGroupAction } from '../Bridge/types.ts'
 import { buildGroupNotificationDomainEvent, buildGroupNotificationStubMessages } from '../Socket/group-notifications.ts'
 import { makeEventHandler, makeEventHandlers } from '../Socket/events.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
@@ -50,10 +50,7 @@ const makeCtx = () => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		withClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	}
 	return { ctx, ev, ws }
 }

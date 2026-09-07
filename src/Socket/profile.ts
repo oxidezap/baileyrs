@@ -1,20 +1,17 @@
-import { makeWithClient } from './client-operations.ts'
 import type { WAMediaUpload } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateProfilePicture } from '../Utils/messages-media.ts'
 import { isJidGroup } from '../WABinary/index.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 export const makeProfileMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
-
 	const setPushName = async (name: string) => {
-		await withClient(client => client.setPushName(name))
+		await ctx.withClient(client => client.setPushName(name))
 	}
 
 	return {
 		requestPairingCode: async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
-			return await withClient(client => client.requestPairingCode(phoneNumber, customPairingCode))
+			return await ctx.withClient(client => client.requestPairingCode(phoneNumber, customPairingCode))
 		},
 
 		setPushName,
@@ -23,15 +20,15 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 		updateProfileName: setPushName,
 
 		getPushName: async () => {
-			return await withClient(client => client.getPushName())
+			return await ctx.withClient(client => client.getPushName())
 		},
 
 		getJid: async () => {
-			return await withClient(client => client.getJid())
+			return await ctx.withClient(client => client.getJid())
 		},
 
 		getLid: async () => {
-			return await withClient(client => client.getLid())
+			return await ctx.withClient(client => client.getLid())
 		},
 
 		updateProfilePicture: async (
@@ -45,7 +42,7 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 				)
 			}
 			const { img } = await generateProfilePicture(content, dimensions)
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				if (isJidGroup(jid)) {
 					await client.setGroupProfilePicture(jid, img)
 					return
@@ -60,7 +57,7 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 					'Illegal no-jid profile update. Please specify either your ID or the ID of the chat you wish to update'
 				)
 			}
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				if (isJidGroup(jid)) {
 					await client.removeGroupProfilePicture(jid)
 					return
@@ -70,7 +67,7 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 		},
 
 		updateProfileStatus: async (status: string) => {
-			await withClient(client => client.updateProfileStatus(status))
+			await ctx.withClient(client => client.updateProfileStatus(status))
 		}
 	}
 }

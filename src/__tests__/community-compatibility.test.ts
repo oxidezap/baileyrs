@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import type { GroupMetadataResult, WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { makeCommunityMethods } from '../Socket/communities.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 
 const neutralGroup = (overrides: Partial<GroupMetadataResult> = {}): GroupMetadataResult => ({
 	id: 'parent@g.us',

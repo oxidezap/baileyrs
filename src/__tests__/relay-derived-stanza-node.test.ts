@@ -20,7 +20,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { derivedNodeConflictTag, withoutDerivedNode } from '../Compatibility/derived-stanza-nodes.ts'
 import { makeMessageMethods } from '../Socket/messages.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
 /** The rejection the engine raises, as the bridge hands it to JavaScript. */

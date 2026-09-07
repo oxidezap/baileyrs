@@ -1,8 +1,7 @@
-import { makeWithClient } from './client-operations.ts'
 import type { BinaryNode, MessageUpsertType, WAMessage, WAPatchCreate } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { ILogger } from '../Utils/logger.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 /**
  * The one place an unexpected failure is reported, shared by the socket's
@@ -59,8 +58,6 @@ export const makeUnexpectedErrorReporter = (logger: ILogger) => {
 const TRANSPORT_CONNECT_TIMEOUT_MS = 20_000
 
 export const makeInternalMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
-
 	/** Warned once per socket rather than per call, as with the other no-ops. */
 	let warnedAboutResync = false
 
@@ -75,7 +72,7 @@ export const makeInternalMethods = (ctx: SocketContext) => {
 		 * that wants the next attempt waits again.
 		 */
 		waitForSocketOpen: async (): Promise<void> => {
-			await withClient(client => client.waitForSocket(TRANSPORT_CONNECT_TIMEOUT_MS))
+			await ctx.withClient(client => client.waitForSocket(TRANSPORT_CONNECT_TIMEOUT_MS))
 		},
 
 		/**

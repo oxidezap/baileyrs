@@ -1,4 +1,3 @@
-import { makeWithClient } from './client-operations.ts'
 import { sendReportingUpstreamFailure } from '../Compatibility/all-encryptions-failed.ts'
 import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
@@ -19,7 +18,7 @@ import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
 import { jidNormalizedUser } from '../WABinary/index.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 /** Extract the media content from a WAMessage (image, video, audio, document, sticker) */
 function getMediaContent(content: WAMessageContent | null | undefined) {
@@ -48,14 +47,13 @@ const getNormalizedUserJid = (ctx: SocketContext): string | undefined => {
 }
 
 export const makeMessageMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
 	return {
 		sendMessage: async (
 			jid: string,
 			content: AnyMessageContent,
 			options?: Omit<MessageGenerationOptions, 'waClient' | 'logger' | 'userJid' | 'mediaInNote'>
 		): Promise<WAMessage> => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				const userJid = getNormalizedUserJid(ctx) ?? ''
 
 				// SocketConfig contains transport/auth/cache state that message
@@ -155,7 +153,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 		},
 
 		updateMediaMessage: async (message: WAMessage): Promise<WAMessage> => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				const content = normalizeMessageContent(message.message)
 				const mediaContent = getMediaContent(content)
 				if (!mediaContent) {
@@ -205,7 +203,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 		 * @param options Relay options
 		 */
 		relayMessage: async (jid: string, message: WAProto.IMessage, options: MessageRelayOptions): Promise<string> => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				const plan = planMessageRelay(jid, options, ctx.getUser())
 				ctx.logger.debug(
 					{
@@ -273,7 +271,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 
 		readMessages: async (keys: WAMessageKey[]) => {
 			const receiptKeys = receiptMessageKeys(keys)
-			if (receiptKeys.length) await withClient(client => client.readMessages(receiptKeys))
+			if (receiptKeys.length) await ctx.withClient(client => client.readMessages(receiptKeys))
 		},
 
 		/**
@@ -301,7 +299,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 					id,
 					...(participant ? { participant } : {})
 				}))
-				await withClient(client => client.readMessages(keys))
+				await ctx.withClient(client => client.readMessages(keys))
 			} else if (type === 'played') {
 				// Voice/video-note played receipts. The bridge (and core) pick the wire
 				// type (`played` vs `played-self` for newsletters) and the `participant`
@@ -312,7 +310,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 					id,
 					...(participant ? { participant } : {})
 				}))
-				await withClient(client => client.markPlayed(keys))
+				await ctx.withClient(client => client.markPlayed(keys))
 			} else {
 				// delivered/sender/inactive receipts are sent automatically by the Rust bridge
 				// hist_sync/peer_msg require bridge-side support
@@ -328,7 +326,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 		 */
 		sendReceipts: async (keys: WAMessageKey[], type: MessageReceiptType) => {
 			assertArgumentDomain('sendReceipts', 'type', type, MESSAGE_RECEIPT_TYPES)
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				const receiptKeys = receiptMessageKeys(keys)
 
 				if (type === 'read' || type === 'read-self') {
@@ -368,7 +366,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 			}
 
 			const bytes = encodeProtoCompat('Message', message)
-			return withClient(client => client.relayMessageBytes(messageKey.remoteJid!, bytes, null))
+			return ctx.withClient(client => client.relayMessageBytes(messageKey.remoteJid!, bytes, null))
 		}
 	}
 }

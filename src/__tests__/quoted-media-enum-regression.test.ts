@@ -5,7 +5,7 @@ import { decodeProto, encodeMessageWireBatch, encodeProto } from '@oxidezap/what
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 
 import { makeEventHandlers } from '../Socket/events.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, WAMessage } from '../Types/index.ts'
 import { generateWAMessageContent, generateWAMessageFromContent } from '../Utils/messages.ts'
 import { expect } from './expect.ts'
@@ -32,10 +32,7 @@ const makeCtx = () => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		withClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	}
 	return { ctx, ev }
 }

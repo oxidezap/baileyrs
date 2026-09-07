@@ -1,10 +1,9 @@
-import { makeWithClient } from './client-operations.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import type { QuickReplyAction } from '../Types/Bussines.ts'
 import type { LabelActionBody } from '../Types/Label.ts'
 import type { ChatModification } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 /**
  * Refuse a field the mutation carries but the wire call cannot. Dropping it
@@ -22,23 +21,21 @@ const rejectUnsupportedFields = (where: string, value: object, fields: readonly 
 }
 
 export const makeChatActionMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
-
 	const methods = {
 		pinChat: async (jid: string, pin: boolean) => {
-			await withClient(client => client.pinChat(jid, pin))
+			await ctx.withClient(client => client.pinChat(jid, pin))
 		},
 
 		muteChat: async (jid: string, muteUntil?: number | null) => {
-			await withClient(client => client.muteChat(jid, muteUntil))
+			await ctx.withClient(client => client.muteChat(jid, muteUntil))
 		},
 
 		archiveChat: async (jid: string, archive: boolean) => {
-			await withClient(client => client.archiveChat(jid, archive))
+			await ctx.withClient(client => client.archiveChat(jid, archive))
 		},
 
 		starMessage: async (jid: string, messageId: string, star: boolean) => {
-			await withClient(client => client.starMessage(jid, messageId, star))
+			await ctx.withClient(client => client.starMessage(jid, messageId, star))
 		},
 
 		/**
@@ -50,7 +47,7 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 		 * synced, and no signature or type catches that.
 		 */
 		chatModify: async (mod: ChatModification, jid: string) => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				if ('archive' in mod) {
 					await client.archiveChat(jid, mod.archive)
 				} else if ('pin' in mod) {

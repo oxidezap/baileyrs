@@ -18,7 +18,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { asAllEncryptionsFailed } from '../Compatibility/all-encryptions-failed.ts'
 import { makeMessageMethods } from '../Socket/messages.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import { isBoom } from '../Utils/boom.ts'
 import type { WAProto } from '../Types/index.ts'
 

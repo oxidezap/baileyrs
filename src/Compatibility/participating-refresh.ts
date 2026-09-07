@@ -1,4 +1,4 @@
-import type { CompatibleSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 
 interface ParticipatingRefreshMethods {
 	groupFetchAllParticipating(): Promise<unknown>

@@ -25,7 +25,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
 import { makeEventHandler, makeEventHandlers } from '../Socket/events.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { ConnectionState } from '../Types/index.ts'
 import { DisconnectReason } from '../Types/index.ts'
 import type { Boom } from '../Utils/boom.ts'
@@ -54,10 +54,7 @@ const makeCtx = () => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		withClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	}
 	return { ctx, ev }
 }

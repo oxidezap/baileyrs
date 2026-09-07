@@ -7,7 +7,7 @@ import { makeGroupMethods } from '../Socket/groups.ts'
 import { makeMessageMethods } from '../Socket/messages.ts'
 import { makePreKeyMethods } from '../Socket/prekeys.ts'
 import { makeStanzaResponseMethods } from '../Compatibility/stanza-responses.ts'
-import type { SocketContext, WithClientSocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
 import makeWASocket from '../Socket/index.ts'
 import { useMemoryStore } from '../Utils/use-memory-store.ts'
@@ -26,7 +26,7 @@ const deferred = <T>() => {
 describe('withClient', () => {
 	it('waits for initialization and returns synchronous and asynchronous results', async () => {
 		const init = deferred<{ value: number }>()
-		const withClient = makeWithClient({ getClient: () => init.promise })
+		const withClient = makeWithClient(() => init.promise)
 		let calls = 0
 		const pending = withClient(client => {
 			calls++
@@ -42,7 +42,7 @@ describe('withClient', () => {
 	it('does not invoke callbacks when initialization fails', async () => {
 		const init = deferred<object>()
 		const failure = new Error('initialization failed')
-		const withClient = makeWithClient({ getClient: () => init.promise })
+		const withClient = makeWithClient(() => init.promise)
 		const pending = withClient(() => assert.fail('callback ran'))
 		init.reject(failure)
 		await assert.rejects(pending, error => error === failure)
@@ -52,13 +52,11 @@ describe('withClient', () => {
 		const init = deferred<void>()
 		const failure = new Error('Connection Closed')
 		let closing = false
-		const withClient = makeWithClient({
-			getClient: async () => {
-				if (closing) throw failure
-				await init.promise
-				if (closing) throw failure
-				return {}
-			}
+		const withClient = makeWithClient(async () => {
+			if (closing) throw failure
+			await init.promise
+			if (closing) throw failure
+			return {}
 		})
 		const pending = withClient(() => assert.fail('callback ran'))
 		closing = true
@@ -71,7 +69,7 @@ describe('withClient', () => {
 	})
 
 	it('turns synchronous callback throws into rejections and preserves rejected values', async () => {
-		const withClient = makeWithClient({ getClient: async () => ({}) })
+		const withClient = makeWithClient(async () => ({}))
 		const failure = new Error('callback failed')
 		let pending!: Promise<never>
 		assert.doesNotThrow(() => {
@@ -87,38 +85,31 @@ describe('withClient', () => {
 		assert.equal(await withClient(() => 'still usable'), 'still usable')
 	})
 
-	it('preserves the getter receiver and the bridge method receiver', async () => {
+	it('preserves the bridge method receiver', async () => {
 		const client = {
 			value: 7,
 			read() {
 				return this.value
 			}
 		}
-		const ctx = {
-			client,
-			async getClient() {
-				assert.equal(this, ctx)
-				return this.client
-			}
-		}
-		assert.equal(await makeWithClient(ctx)(ready => ready.read()), 7)
+		assert.equal(await makeWithClient(async () => client)(ready => ready.read()), 7)
 	})
 
-	it('preserves modern context receivers and prefers withClient over legacy access', async () => {
-		const ctx = {
-			value: 9,
-			async withClient<T>(operation: (client: number) => T | Promise<T>): Promise<T> {
-				assert.equal(this, ctx)
-				return operation(this.value)
-			},
-			getClient: async (): Promise<number> => assert.fail('legacy getter ran')
-		}
-		assert.equal(await makeWithClient(ctx)(value => value), 9)
+	it('turns synchronous getter throws into rejections', async () => {
+		const failure = new Error('acquisition failed')
+		const withClient = makeWithClient(() => {
+			throw failure
+		})
+		let pending!: Promise<never>
+		assert.doesNotThrow(() => {
+			pending = withClient(() => assert.fail('callback ran'))
+		})
+		await assert.rejects(pending, error => error === failure)
 	})
 
 	it('does not drain or track admitted operations', async () => {
 		const operation = deferred<number>()
-		const withClient = makeWithClient({ getClient: async () => ({}) })
+		const withClient = makeWithClient(async () => ({}))
 		const pending = withClient(() => operation.promise)
 		assert.equal(await withClient(() => 2), 2)
 		operation.resolve(1)
@@ -127,48 +118,44 @@ describe('withClient', () => {
 })
 
 describe('factory acquisition ordering', () => {
-	for (const legacy of [false, true]) {
-		it(`keeps validation before acquisition and argument reads after it, legacy=${legacy}`, async () => {
-			const init = deferred<WasmWhatsAppClient>()
-			const order: string[] = []
-			const access = {
-				getClient: () => {
-					order.push('acquire')
-					return init.promise
-				}
+	it('keeps validation before acquisition and argument reads after it', async () => {
+		const init = deferred<WasmWhatsAppClient>()
+		const order: string[] = []
+		const ctx = {
+			async withClient<T>(operation: (client: WasmWhatsAppClient) => T | Promise<T>): Promise<T> {
+				assert.equal(this, ctx)
+				order.push('acquire')
+				return operation(await init.promise)
+			},
+			ev: makeEventBuffer(P({ level: 'silent' }))
+		} as SocketContext
+		const groups = makeGroupMethods(ctx)
+		await assert.rejects(groups.groupParticipantsUpdate('group', [], 'invalid' as never))
+		assert.equal(order.length, 0)
+		const label = {
+			slice() {
+				order.push('argument')
+				return 'label'
 			}
-			const ctx = {
-				...(legacy ? access : { withClient: makeWithClient(access) }),
-				ev: makeEventBuffer(P({ level: 'silent' }))
-			} as SocketContext | WithClientSocketContext
-			const groups = makeGroupMethods(ctx)
-			await assert.rejects(groups.groupParticipantsUpdate('group', [], 'invalid' as never))
-			assert.equal(order.length, 0)
-			const label = {
-				slice() {
-					order.push('argument')
-					return 'label'
-				}
-			} as unknown as string
-			const pending = groups.updateMemberLabel('group', label)
-			assert.deepEqual(order, ['acquire'])
-			const client = {
-				updateMemberLabel() {
-					assert.equal(this, client)
-					order.push('bridge')
-					return 'result'
-				}
-			} as unknown as WasmWhatsAppClient
-			init.resolve(client)
-			assert.equal(await pending, 'result')
-			assert.deepEqual(order, ['acquire', 'argument', 'bridge'])
-		})
-	}
+		} as unknown as string
+		const pending = groups.updateMemberLabel('group', label)
+		assert.deepEqual(order, ['acquire'])
+		const client = {
+			updateMemberLabel() {
+				assert.equal(this, client)
+				order.push('bridge')
+				return 'result'
+			}
+		} as unknown as WasmWhatsAppClient
+		init.resolve(client)
+		assert.equal(await pending, 'result')
+		assert.deepEqual(order, ['acquire', 'argument', 'bridge'])
+	})
 
 	it('keeps complex message validation after acquisition', async () => {
 		const init = deferred<WasmWhatsAppClient>()
 		let read = false
-		const ctx = { withClient: makeWithClient({ getClient: () => init.promise }) } as WithClientSocketContext
+		const ctx = { withClient: makeWithClient(() => init.promise) } as SocketContext
 		const message = {
 			get message() {
 				read = true
@@ -199,7 +186,7 @@ describe('factory acquisition ordering', () => {
 		assert.deepEqual(logged, { error: failure })
 	})
 
-	it('accepts published legacy stanza contexts and modern narrow-client contexts', async () => {
+	it('accepts narrow stanza clients and preserves context and bridge receivers', async () => {
 		let calls = 0
 		const client = {
 			async acknowledgeStanza() {
@@ -209,30 +196,13 @@ describe('factory acquisition ordering', () => {
 			async rejectStanza() {},
 			async requestMessageRetry() {}
 		}
-		const modern: ClientOperations<typeof client> = { withClient: makeWithClient({ getClient: async () => client }) }
-		for (const ctx of [{ getClient: async () => client }, modern]) {
-			await makeStanzaResponseMethods(ctx).sendMessageAck({ tag: 'message', attrs: {} })
-		}
-		assert.equal(calls, 2)
-	})
-
-	it('retains the captured, unbound getter contract of the legacy stanza factory', async () => {
-		let calls = 0
-		const client = {
-			async acknowledgeStanza() {
-				calls++
-			},
-			async rejectStanza() {},
-			async requestMessageRetry() {}
-		}
-		const ctx = {
-			getClient: async function (this: undefined) {
-				assert.equal(this, undefined)
-				return client
+		const ctx: ClientOperations<typeof client> = {
+			async withClient(operation) {
+				assert.equal(this, ctx)
+				return operation(client)
 			}
 		}
 		const methods = makeStanzaResponseMethods(ctx)
-		ctx.getClient = async () => assert.fail('replacement getter ran')
 		await methods.sendMessageAck({ tag: 'message', attrs: {} })
 		assert.equal(calls, 1)
 	})

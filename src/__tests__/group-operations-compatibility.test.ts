@@ -5,7 +5,7 @@ import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { makeCommunityMethods } from '../Socket/communities.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import { WAMessageStubType } from '../Types/index.ts'
 
 describe('group operation compatibility', () => {

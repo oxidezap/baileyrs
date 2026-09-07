@@ -1,4 +1,3 @@
-import { makeWithClient } from './client-operations.ts'
 /**
  * Canonical → Baileys event dispatcher.
  *
@@ -57,7 +56,7 @@ import { emitMessageUpsert, type MessageUpsertMetadata } from '../Compatibility/
 import { extractMessageCappingPayload } from './message-capping.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { isReconnectableConnectFailure, mapConnectFailureToDisconnect } from './terminal-close.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 const CANONICAL_MESSAGE_EVENT = 'message'
 const MESSAGE_UPSERT_APPEND = 'append'
@@ -691,7 +690,7 @@ const DISPATCHERS: DispatcherMap = {
 			// the same complete lifecycle and ordering as upstream.
 			void (async () => {
 				try {
-					const bridgeMetadata = await makeWithClient(ctx)(client => client.getGroupMetadata(evt.groupJid))
+					const bridgeMetadata = await ctx.withClient(client => client.getGroupMetadata(evt.groupJid))
 					const metadata = bridgeGroupMetadataToBaileys(bridgeMetadata)
 					ctx.ev.emit('chats.upsert', [
 						{ id: metadata.id, name: metadata.subject, conversationTimestamp: metadata.creation }

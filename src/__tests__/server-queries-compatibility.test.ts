@@ -15,7 +15,7 @@ import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import { makeServerQueryMethods } from '../Socket/server-queries.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import { delay } from '../Utils/generics.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'

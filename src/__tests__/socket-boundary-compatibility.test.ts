@@ -8,7 +8,7 @@ import { makeContactMethods } from '../Socket/contacts.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'
 import { makeMessageMethods } from '../Socket/messages.ts'
 import { makeProfileMethods } from '../Socket/profile.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { WAProto } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 

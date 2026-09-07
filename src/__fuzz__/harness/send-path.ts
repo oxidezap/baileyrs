@@ -15,7 +15,7 @@ import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-b
 import { EventEmitter } from 'node:events'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { makeMessageMethods } from '../../Socket/messages.ts'
-import type { WithClientSocketContext as SocketContext } from '../../Socket/types.ts'
+import type { SocketContext } from '../../Socket/types.ts'
 import type { WAProto } from '../../Types/index.ts'
 import type { ILogger } from '../../Utils/logger.ts'
 

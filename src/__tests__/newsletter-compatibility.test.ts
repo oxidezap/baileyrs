@@ -15,7 +15,7 @@ import type { NewsletterMetadataResult, WasmWhatsAppClient } from '@oxidezap/wha
 
 import { bridgeNewsletterMetadataToBaileys } from '../Compatibility/newsletter-results.ts'
 import { makeNewsletterMethods } from '../Socket/newsletter.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
 

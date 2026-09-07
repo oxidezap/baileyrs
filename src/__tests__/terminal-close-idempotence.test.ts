@@ -27,7 +27,7 @@ import { describe, it } from 'node:test'
 
 import { makeEventHandlers } from '../Socket/events.ts'
 import { makeTerminalCloseReporter } from '../Socket/terminal-close-reporter.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { ConnectionState } from '../Types/index.ts'
 import { expect } from './expect.ts'
 
@@ -72,10 +72,7 @@ const makeHarness = (): Harness => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		withClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	} as unknown as SocketContext
 	let releaseTeardown!: () => void
 	const teardownGate = new Promise<void>(resolve => {

@@ -1,20 +1,16 @@
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode } from '../Types/index.ts'
-import { makeWithClient, type ClientOperations } from '../Socket/client-operations.ts'
+import type { ClientOperations } from '../Socket/client-operations.ts'
 
 type StanzaResponseClient = Pick<WasmWhatsAppClient, 'acknowledgeStanza' | 'rejectStanza' | 'requestMessageRetry'>
 
-export interface StanzaResponseContext {
-	getClient: () => Promise<StanzaResponseClient>
-}
+export interface StanzaResponseContext extends ClientOperations<StanzaResponseClient> {}
 
 /** Translate the public socket calls into the core-owned response operations. */
-export const makeStanzaResponseMethods = (ctx: StanzaResponseContext | ClientOperations<StanzaResponseClient>) => {
-	// The legacy factory captured getClient and invoked it without a receiver.
-	const withClient = makeWithClient('withClient' in ctx ? ctx : { getClient: ctx.getClient.bind(undefined) })
+export const makeStanzaResponseMethods = (ctx: StanzaResponseContext) => {
 	return {
 		sendMessageAck: async (node: BinaryNode, errorCode?: number): Promise<void> => {
-			return withClient(async client => {
+			return ctx.withClient(async client => {
 				if (errorCode) {
 					await client.rejectStanza(node, errorCode)
 				} else {
@@ -23,7 +19,7 @@ export const makeStanzaResponseMethods = (ctx: StanzaResponseContext | ClientOpe
 			})
 		},
 		sendRetryRequest: async (node: BinaryNode, forceIncludeKeys = false): Promise<void> => {
-			await withClient(client => client.requestMessageRetry(node, forceIncludeKeys))
+			await ctx.withClient(client => client.requestMessageRetry(node, forceIncludeKeys))
 		}
 	}
 }

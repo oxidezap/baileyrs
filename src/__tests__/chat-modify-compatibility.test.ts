@@ -21,7 +21,7 @@ import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import { makeChatActionMethods } from '../Socket/chat-actions.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { ChatModification } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'

@@ -1,4 +1,3 @@
-import { makeWithClient } from './client-operations.ts'
 import {
 	WA_PRIVACY_CALL_VALUES,
 	WA_PRIVACY_GROUP_ADD_VALUES,
@@ -14,18 +13,16 @@ import {
 	type WAReadReceiptsValue
 } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
-import type { CompatibleSocketContext as SocketContext } from './types.ts'
+import type { SocketContext } from './types.ts'
 
 export const makePrivacyMethods = (ctx: SocketContext) => {
-	const withClient = makeWithClient(ctx)
-
 	/** Per socket, so a send loop calling this does not flood the log. */
 	let warnedAboutPrivacyTokens = false
 
 	return {
 		fetchPrivacySettings: async (force?: boolean) => {
 			void force
-			return withClient(client => client.fetchPrivacySettings())
+			return ctx.withClient(client => client.fetchPrivacySettings())
 		},
 
 		/**
@@ -35,47 +32,47 @@ export const makePrivacyMethods = (ctx: SocketContext) => {
 		 * name yet. The wrappers are the checked path.
 		 */
 		updatePrivacySetting: async (category: string, value: string) => {
-			await withClient(client => client.updatePrivacySetting(category, value))
+			await ctx.withClient(client => client.updatePrivacySetting(category, value))
 		},
 
 		updateLastSeenPrivacy: async (value: WAPrivacyValue) => {
 			assertArgumentDomain('updateLastSeenPrivacy', 'value', value, WA_PRIVACY_VALUES)
-			await withClient(client => client.updatePrivacySetting('last', value))
+			await ctx.withClient(client => client.updatePrivacySetting('last', value))
 		},
 
 		updateOnlinePrivacy: async (value: WAPrivacyOnlineValue) => {
 			assertArgumentDomain('updateOnlinePrivacy', 'value', value, WA_PRIVACY_ONLINE_VALUES)
-			await withClient(client => client.updatePrivacySetting('online', value))
+			await ctx.withClient(client => client.updatePrivacySetting('online', value))
 		},
 
 		updateProfilePicturePrivacy: async (value: WAPrivacyValue) => {
 			assertArgumentDomain('updateProfilePicturePrivacy', 'value', value, WA_PRIVACY_VALUES)
-			await withClient(client => client.updatePrivacySetting('profile', value))
+			await ctx.withClient(client => client.updatePrivacySetting('profile', value))
 		},
 
 		updateStatusPrivacy: async (value: WAPrivacyValue) => {
 			assertArgumentDomain('updateStatusPrivacy', 'value', value, WA_PRIVACY_VALUES)
-			await withClient(client => client.updatePrivacySetting('status', value))
+			await ctx.withClient(client => client.updatePrivacySetting('status', value))
 		},
 
 		updateReadReceiptsPrivacy: async (value: WAReadReceiptsValue) => {
 			assertArgumentDomain('updateReadReceiptsPrivacy', 'value', value, WA_READ_RECEIPTS_VALUES)
-			await withClient(client => client.updatePrivacySetting('readreceipts', value))
+			await ctx.withClient(client => client.updatePrivacySetting('readreceipts', value))
 		},
 
 		updateGroupsAddPrivacy: async (value: WAPrivacyGroupAddValue) => {
 			assertArgumentDomain('updateGroupsAddPrivacy', 'value', value, WA_PRIVACY_GROUP_ADD_VALUES)
-			await withClient(client => client.updatePrivacySetting('groupadd', value))
+			await ctx.withClient(client => client.updatePrivacySetting('groupadd', value))
 		},
 
 		updateCallPrivacy: async (value: WAPrivacyCallValue) => {
 			assertArgumentDomain('updateCallPrivacy', 'value', value, WA_PRIVACY_CALL_VALUES)
-			await withClient(client => client.updatePrivacySetting('calladd', value))
+			await ctx.withClient(client => client.updatePrivacySetting('calladd', value))
 		},
 
 		updateMessagesPrivacy: async (value: WAPrivacyMessagesValue) => {
 			assertArgumentDomain('updateMessagesPrivacy', 'value', value, WA_PRIVACY_MESSAGES_VALUES)
-			await withClient(client => client.updatePrivacySetting('messages', value))
+			await ctx.withClient(client => client.updatePrivacySetting('messages', value))
 		},
 
 		/**

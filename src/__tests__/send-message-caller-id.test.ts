@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { makeMessageMethods } from '../Socket/messages.ts'
-import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
+import type { SocketContext } from '../Socket/types.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
 const CALLER_ID = '3EB0CALLERPROVIDED'

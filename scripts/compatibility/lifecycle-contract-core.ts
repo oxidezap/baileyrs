@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { makeWASocket } from '../../src/index.ts'
 import { makeEventHandlers } from '../../src/Socket/events.ts'
-import type { WithClientSocketContext as SocketContext } from '../../src/Socket/types.ts'
+import type { SocketContext } from '../../src/Socket/types.ts'
 import type { BaileysEventEmitter, BaileysEventMap, ConnectionState } from '../../src/Types/index.ts'
 import type { Boom } from '../../src/Utils/boom.ts'
 import { useMultiFileAuthState } from '../../src/Utils/use-multi-file-auth-state.ts'
@@ -613,10 +613,7 @@ export const runScenario = (scenario: LifecycleScenario): LifecycleTrace => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		withClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	}
 
 	let clock = 0
