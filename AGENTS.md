@@ -59,5 +59,5 @@ Report passed, failed, skipped, and blocked checks. For documentation-only chang
 ## Pull requests and releases
 
 - Keep PRs scoped, with compatibility evidence and performance measurements when applicable. Use English titles and bodies. Commit or publish only when requested; never include trailers or tool signatures.
-- PR titles become squash commit titles. Follow [.github/workflows/release.yml](.github/workflows/release.yml) and [release-please-config.json](release-please-config.json). `feat`, `fix`, and `perf` trigger releases. Use `fix(deps): ...` for runtime upgrades intended for release; keep documentation-only changes as `docs`.
+- PR titles become squash commit titles. Follow [.github/workflows/release.yml](.github/workflows/release.yml) and [release-please-config.json](release-please-config.json). With the current configuration, `feat`, `fix`, `perf`, `deps`, and `refactor` can generate a release PR. Use `fix(deps): ...` for runtime upgrades intended for release; keep documentation-only changes as `docs`.
 - Let release-please manage versions and release notes unless asked otherwise. Preserve publication of the exact CI-verified build. Do not ship preview URLs as runtime dependency pins.
