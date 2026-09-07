@@ -251,24 +251,19 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		},
 
 		release: async client => {
-			// `disconnect()` before `free()` is defence in depth, not a fix for a
-			// reproduced bug on this path.
+			// `disconnect()` before `free()` drains exactly one shape: a
+			// `disconnect()` still in flight. Since bridge 0.21.1, freeing
+			// with ordinary calls pending (`fetchBlocklist()`, `logout()`) is
+			// safe — its `Drop` signals shutdown and aborts the background
+			// tasks — but freeing mid-`disconnect()` still aborts the process
+			// (`async-lock` panicking while panicking). See
+			// `__tests__/bridge-free-safety.test.ts`.
 			//
-			// The hazard is real and reproducible at the bridge: freeing a client
-			// with any call still pending corrupts the wasm heap — dlmalloc trips
-			// `assertion failed: psize <= size + max_overhead` and the process
-			// dies on `RuntimeError: unreachable`, from a microtask no try/catch
-			// here can reach, since `free()` itself returns normally.
-			// `logout()`, `disconnect()` and a plain `fetchBlocklist()` all
-			// reproduce it — see `__tests__/bridge-free-safety.test.ts`.
-			//
-			// What keeps teardown off that path is the `ws.close()` above, which
-			// is itself a `client.disconnect()` (`Compatibility/websocket-client.ts`).
-			// This is the belt to that braces, and the gap it closes is
-			// `WebSocketClient.close()`'s early return when `closing`/`closed` is
-			// already set: that path does NOT await the disconnect it skipped, so
-			// `void sock.ws.close(); await sock.end()` could otherwise reach
-			// `free()` with the first disconnect still running.
+			// That shape is reachable: `WebSocketClient.close()` early-returns
+			// when `closing`/`closed` is already set without awaiting the
+			// disconnect it skipped, so `void sock.ws.close(); await sock.end()`
+			// could otherwise reach `free()` with the first disconnect still
+			// running. Awaiting it here is the belt to `ws.close()`'s braces.
 			let disconnected = true
 			try {
 				await client.disconnect()
