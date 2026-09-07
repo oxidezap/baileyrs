@@ -617,10 +617,9 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
  *  - `created.free()` on the mid-init dispose path. Nothing in the parent says
  *    whether that client was freed, but an unfreed `WasmWhatsAppClient` keeps
  *    the wasm instance alive and the process cannot exit.
- *  - `await c.disconnect()` before `c.free()` in `end()`. Freeing with a bridge
- *    call still in flight corrupts the wasm heap: dlmalloc trips
- *    `assertion failed: psize <= size + max_overhead` and the process dies on
- *    `RuntimeError: unreachable`, thrown from a microtask no try/catch reaches.
+ *  - `end()` with a bridge call still in flight exits cleanly. Since bridge
+ *    0.21.1 ordinary pending calls survive `free()`; the release drain covers
+ *    the remaining fatal shape (a `disconnect()` still running).
  *
  * Both therefore assert the same thing — the child exits cleanly, on its own.
  */
@@ -672,10 +671,9 @@ describe('makeWASocket: teardown frees the client without corrupting the wasm he
 		expect(result.code).toBe(0)
 	})
 
-	it('end() with a bridge call still in flight exits cleanly instead of corrupting the heap', async () => {
+	it('end() with a bridge call still in flight exits cleanly', async () => {
 		// `fetchBlocklist()` is deliberately not awaited: it stays pending
-		// inside wasm across the `end()`. Without `await c.disconnect()` before
-		// `c.free()`, this child dies on the dlmalloc assertion.
+		// inside wasm across the `end()`, which frees without draining first.
 		const result = await runChild(
 			`
 			await new Promise(r => setTimeout(r, 400))
