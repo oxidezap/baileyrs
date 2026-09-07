@@ -12,7 +12,7 @@ import { adaptBridgeEvent } from '../Bridge/adapt.ts'
 import type { CanonicalEvent, CanonicalGroupAction } from '../Bridge/types.ts'
 import { buildGroupNotificationDomainEvent, buildGroupNotificationStubMessages } from '../Socket/group-notifications.ts'
 import { makeEventHandler, makeEventHandlers } from '../Socket/events.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
@@ -50,7 +50,7 @@ const makeCtx = () => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		getClient: () => Promise.reject(new Error('not used')),
+		withClient: () => Promise.reject(new Error('not used')),
 		getClientSync: () => {
 			throw new Error('not used')
 		}
@@ -1123,31 +1123,33 @@ describe('dispatch: group_update.create', () => {
 			observed.push('messages.upsert')
 			messages.push(payload)
 		})
-		ctx.getClient = async () =>
-			({
-				getGroupMetadata: async () => ({
-					id: '120363@g.us',
-					subject: 'Created group',
-					participants: [],
-					addressingMode: 'pn',
-					creator: '5511@s.whatsapp.net',
-					creationTime: 1730000000,
-					isLocked: false,
-					isAnnouncement: false,
-					membershipApproval: false,
-					isParentGroup: false,
-					isDefaultSubGroup: false,
-					isGeneralChat: false,
-					allowNonAdminSubGroupCreation: false,
-					noFrequentlyForwarded: false,
-					isSuspended: false,
-					allowAdminReports: false,
-					isHiddenGroup: false,
-					isIncognito: false,
-					hasGroupHistory: false,
-					isLimitSharingEnabled: false
-				})
-			}) as never
+		ctx.withClient = async operation =>
+			operation(
+				(await {
+					getGroupMetadata: async () => ({
+						id: '120363@g.us',
+						subject: 'Created group',
+						participants: [],
+						addressingMode: 'pn',
+						creator: '5511@s.whatsapp.net',
+						creationTime: 1730000000,
+						isLocked: false,
+						isAnnouncement: false,
+						membershipApproval: false,
+						isParentGroup: false,
+						isDefaultSubGroup: false,
+						isGeneralChat: false,
+						allowNonAdminSubGroupCreation: false,
+						noFrequentlyForwarded: false,
+						isSuspended: false,
+						allowAdminReports: false,
+						isHiddenGroup: false,
+						isIncognito: false,
+						hasGroupHistory: false,
+						isLimitSharingEnabled: false
+					})
+				}) as never
+			)
 
 		makeEventHandler(ctx)({
 			type: 'group_update',

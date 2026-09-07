@@ -1,10 +1,11 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { makeCommunityMethods } from '../Socket/communities.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import { WAMessageStubType } from '../Types/index.ts'
 
 describe('group operation compatibility', () => {
@@ -25,7 +26,8 @@ describe('group operation compatibility', () => {
 		} as unknown as WasmWhatsAppClient
 		const ctx = {
 			ev,
-			getClient: async () => client,
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient),
 			getUser: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid' }),
 			getMe: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid', name: 'Bot' })
 		} as unknown as SocketContext
@@ -97,7 +99,8 @@ describe('group operation compatibility', () => {
 			} as unknown as WasmWhatsAppClient
 			const ctx = {
 				ev,
-				getClient: async () => client,
+				withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+					operation((await client) as MockClient),
 				getUser: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid' }),
 				getMe: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid', name: 'Bot' })
 			} as unknown as SocketContext
@@ -129,7 +132,11 @@ describe('group operation compatibility', () => {
 		const ev = Object.assign(new EventEmitter(), {
 			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
 		})
-		const ctx = { ev, getClient: async () => client } as unknown as SocketContext
+		const ctx = {
+			ev,
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient)
+		} as unknown as SocketContext
 		const groups = makeGroupMethods(ctx)
 
 		await groups.groupUpdateDescription('120363000000000001@g.us', 'new description')
@@ -164,7 +171,11 @@ describe('group operation compatibility', () => {
 		const ev = Object.assign(new EventEmitter(), {
 			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
 		})
-		const ctx = { ev, getClient: async () => client } as unknown as SocketContext
+		const ctx = {
+			ev,
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient)
+		} as unknown as SocketContext
 		const groups = makeGroupMethods(ctx)
 
 		const thrown = await groups

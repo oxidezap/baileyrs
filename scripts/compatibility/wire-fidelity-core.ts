@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { proto as upstreamProto } from 'baileys'
 import { decodeProto, encodeProto, type WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { makeMessageMethods } from '../../src/Socket/messages.ts'
-import type { SocketContext } from '../../src/Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../../src/Socket/types.ts'
 import type { WAProto } from '../../src/Types/index.ts'
 import {
 	PROTO_ENUM_SCHEMAS,
@@ -219,7 +219,7 @@ const capturingContext = (captured: Uint8Array[]): SocketContext => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: WasmWhatsAppClient) => T | Promise<T>) => operation(await client)
 	} as unknown as SocketContext
 }
 

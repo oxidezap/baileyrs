@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * `messageId` is a documented upstream option: "override the message ID with a
  * custom provided string". Upstream honours it on every send. Here it was
@@ -15,7 +16,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { makeMessageMethods } from '../Socket/messages.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
 const CALLER_ID = '3EB0CALLERPROVIDED'
@@ -98,7 +99,8 @@ const sendRecording = () => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+			operation((await client) as unknown as MockClient)
 	} as unknown as SocketContext
 	const methods = makeMessageMethods(ctx)
 	return { calls, warns, send: methods.sendMessage, relay: methods.relayMessage }

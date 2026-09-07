@@ -398,7 +398,7 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 			await wait(300)
 
 			const ending = sock.end(undefined)
-			// `sendNode` goes through `ctx.getClient()`.
+			// `sendNode` goes through `ctx.withClient(callback)`.
 			const message = await sock
 				.sendNode({ tag: 'iq', attrs: {} })
 				.then(() => '<resolved>')

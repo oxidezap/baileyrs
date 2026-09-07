@@ -1,9 +1,10 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { decodeProto, type WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import { makeMessageMethods } from '../Socket/messages.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import type { WAProto } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
@@ -69,7 +70,7 @@ const makeCapturingContext = () => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { ctx, relayed }
 }

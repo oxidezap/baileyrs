@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * `chatModify` used to end in an `else` that logged a warning and resolved, for
  * every variant the bridge did not expose: link previews, the five label
@@ -20,7 +21,7 @@ import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import { makeChatActionMethods } from '../Socket/chat-actions.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import type { ChatModification } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
@@ -53,7 +54,7 @@ const makeHarness = () => {
 	const ctx = {
 		ev: new EventEmitter(),
 		logger,
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { calls, methods: makeChatActionMethods(ctx) }
 }
@@ -404,7 +405,8 @@ describe('chatModify does not swallow a bridge failure', () => {
 		const ctx = {
 			ev: new EventEmitter(),
 			logger,
-			getClient: async () => client
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient)
 		} as unknown as SocketContext
 
 		await expect(makeChatActionMethods(ctx).addChatLabel(CHAT, 'lbl-1')).rejects.toThrow(

@@ -1,5 +1,6 @@
+import { makeWithClient } from './client-operations.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
-import type { SocketContext } from './types.ts'
+import type { CompatibleSocketContext as SocketContext } from './types.ts'
 
 export const PROFILE_PICTURE_TYPES = ['preview', 'image'] as const
 
@@ -16,28 +17,32 @@ export type OnWhatsAppResult = {
 	verifiedName?: string
 }
 
-export const makeContactMethods = (ctx: SocketContext) => ({
-	onWhatsApp: async (...phoneNumber: string[]): Promise<OnWhatsAppResult[] | undefined> => {
-		const client = await ctx.getClient()
-		// Single batched usync — the bridge splits PN/LID inputs internally and
-		// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
-		const results = await client.isOnWhatsApp(phoneNumber)
-		return results.map(r => {
-			const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
-			if (r.lid) out.lid = r.lid
-			if (r.pnJid) out.pnJid = r.pnJid
-			if (r.verifiedName) out.verifiedName = r.verifiedName
-			return out
-		})
-	},
+export const makeContactMethods = (ctx: SocketContext) => {
+	const withClient = makeWithClient(ctx)
+	return {
+		onWhatsApp: async (...phoneNumber: string[]): Promise<OnWhatsAppResult[] | undefined> => {
+			return withClient(async client => {
+				// Single batched usync — the bridge splits PN/LID inputs internally and
+				// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
+				const results = await client.isOnWhatsApp(phoneNumber)
+				return results.map(r => {
+					const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
+					if (r.lid) out.lid = r.lid
+					if (r.pnJid) out.pnJid = r.pnJid
+					if (r.verifiedName) out.verifiedName = r.verifiedName
+					return out
+				})
+			})
+		},
 
-	profilePictureUrl: async (jid: string, type: ProfilePictureType = 'preview', timeoutMs?: number) => {
-		assertArgumentDomain('profilePictureUrl', 'type', type, PROFILE_PICTURE_TYPES)
-		const result = await (await ctx.getClient()).profilePictureUrl(jid, type, timeoutMs)
-		return result?.url
-	},
+		profilePictureUrl: async (jid: string, type: ProfilePictureType = 'preview', timeoutMs?: number) => {
+			assertArgumentDomain('profilePictureUrl', 'type', type, PROFILE_PICTURE_TYPES)
+			const result = await withClient(client => client.profilePictureUrl(jid, type, timeoutMs))
+			return result?.url
+		},
 
-	fetchUserInfo: async (...jids: string[]) => {
-		return await (await ctx.getClient()).fetchUserInfo(jids)
+		fetchUserInfo: async (...jids: string[]) => {
+			return await withClient(client => client.fetchUserInfo(jids))
+		}
 	}
-})
+}

@@ -42,7 +42,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
 import { makeEventHandlers } from '../Socket/events.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import type { ConnectionState } from '../Types/index.ts'
 import { expect } from './expect.ts'
 
@@ -73,7 +73,7 @@ const makeCtx = () => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		getClient: () => Promise.reject(new Error('not used')),
+		withClient: () => Promise.reject(new Error('not used')),
 		getClientSync: () => {
 			throw new Error('not used')
 		}

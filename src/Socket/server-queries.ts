@@ -1,10 +1,11 @@
+import { makeWithClient } from './client-operations.ts'
 import type { BotListResult, NewChatMessageCappingResult } from '@oxidezap/whatsapp-rust-bridge'
 import type { BotListInfo } from '../Types/Chat.ts'
 import type { NewChatMessageCapInfo } from '../Types/State.ts'
 import type { MediaConnInfo } from '../Types/Message.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
-import type { SocketContext } from './types.ts'
+import type { CompatibleSocketContext as SocketContext } from './types.ts'
 
 export const DIRTY_BIT_TYPES = ['account_sync', 'groups'] as const
 
@@ -54,6 +55,8 @@ const toCapInfo = (result: NewChatMessageCappingResult): NewChatMessageCapInfo &
 })
 
 export const makeServerQueryMethods = (ctx: SocketContext) => {
+	const withClient = makeWithClient(ctx)
+
 	/** Last host seen, so the synchronous accessor upstream exposes can answer. */
 	let mediaHost = ''
 	/**
@@ -83,7 +86,7 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 			// already hold a connection acquired by an upload, and stamping that
 			// one as fetched now would report it fresher than it is.
 			const held = fetched
-			const conn = await (await ctx.getClient()).getMediaConn(forceGet || !held)
+			const conn = await withClient(client => client.getMediaConn(forceGet || !held))
 			mediaHost = conn.hosts[0]?.hostname ?? mediaHost
 			const isFetch = forceGet || !held || held.auth !== conn.auth || !isLive(held)
 			fetched = isFetch ? { auth: conn.auth, ttl: conn.ttl, at: new Date() } : held
@@ -96,11 +99,11 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 		getMediaHost: (): string => mediaHost,
 
 		getBotListV2: async (): Promise<BotListInfo[]> => {
-			return flattenBotList(await (await ctx.getClient()).getBotList())
+			return flattenBotList(await withClient(client => client.getBotList()))
 		},
 
 		fetchNewChatMessageCap: async () => {
-			return toCapInfo(await (await ctx.getClient()).fetchNewChatMessageCappingInfo())
+			return toCapInfo(await withClient(client => client.fetchNewChatMessageCappingInfo()))
 		},
 
 		cleanDirtyBits: async (type: DirtyBitType, fromTimestamp?: number | string): Promise<void> => {
@@ -116,7 +119,7 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 					throw new Boom(`cleanDirtyBits: fromTimestamp '${fromTimestamp}' is not a number`, { statusCode: 400 })
 				}
 			}
-			await (await ctx.getClient()).cleanDirtyBits(type, timestamp)
+			await withClient(client => client.cleanDirtyBits(type, timestamp))
 		},
 
 		/**

@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
@@ -11,7 +12,7 @@ import type { GroupMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import { makeGroupMethods } from '../Socket/groups.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap } from '../Types/Events.ts'
 import type { GroupMetadata, GroupParticipant } from '../Types/GroupMetadata.ts'
 import { expect } from './expect.ts'
@@ -241,7 +242,10 @@ describe('bridge group metadata compatibility boundary', () => {
 		const fixture = neutralGroup({ id: '120363@g.us', subject: 'Participating group' })
 		const ctx = {
 			ev,
-			getClient: async () => ({ groupFetchAllParticipating: async () => ({ '120363@g.us': fixture }) })
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation(
+					(await { groupFetchAllParticipating: async () => ({ '120363@g.us': fixture }) }) as unknown as MockClient
+				)
 		} as unknown as SocketContext
 
 		const result = await makeGroupMethods(ctx).groupFetchAllParticipating()

@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
@@ -14,7 +15,10 @@ const messageNode: BinaryNode = {
 }
 
 const methodsFor = (client: Partial<WasmWhatsAppClient>) =>
-	makeStanzaResponseMethods({ getClient: async () => client as WasmWhatsAppClient })
+	makeStanzaResponseMethods({
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+			operation((await (client as WasmWhatsAppClient)) as MockClient)
+	})
 
 describe('stanza response compatibility adapter', () => {
 	it('routes a normal acknowledgement to the core operation', async () => {

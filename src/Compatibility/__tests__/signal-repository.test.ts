@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
@@ -15,7 +16,8 @@ const logger = P({ level: 'silent' })
 const makeRepository = (client: Partial<WasmWhatsAppClient>) =>
 	makeSignalRepository({
 		logger,
-		getClient: async () => client as WasmWhatsAppClient
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+			operation((await (client as WasmWhatsAppClient)) as MockClient)
 	})
 
 describe('Signal repository compatibility adapter', () => {
@@ -26,7 +28,8 @@ describe('Signal repository compatibility adapter', () => {
 		} as Partial<WasmWhatsAppClient>
 		bindSignalRepositoryContext(auth, {
 			logger,
-			getClient: async () => client as WasmWhatsAppClient
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await (client as WasmWhatsAppClient)) as MockClient)
 		})
 
 		const repository = makeDefaultSignalRepository(auth, logger)

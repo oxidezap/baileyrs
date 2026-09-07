@@ -1,17 +1,20 @@
+import { makeWithClient } from './client-operations.ts'
 import type { WAMediaUpload } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateProfilePicture } from '../Utils/messages-media.ts'
 import { isJidGroup } from '../WABinary/index.ts'
-import type { SocketContext } from './types.ts'
+import type { CompatibleSocketContext as SocketContext } from './types.ts'
 
 export const makeProfileMethods = (ctx: SocketContext) => {
+	const withClient = makeWithClient(ctx)
+
 	const setPushName = async (name: string) => {
-		await (await ctx.getClient()).setPushName(name)
+		await withClient(client => client.setPushName(name))
 	}
 
 	return {
 		requestPairingCode: async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
-			return await (await ctx.getClient()).requestPairingCode(phoneNumber, customPairingCode)
+			return await withClient(client => client.requestPairingCode(phoneNumber, customPairingCode))
 		},
 
 		setPushName,
@@ -20,15 +23,15 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 		updateProfileName: setPushName,
 
 		getPushName: async () => {
-			return await (await ctx.getClient()).getPushName()
+			return await withClient(client => client.getPushName())
 		},
 
 		getJid: async () => {
-			return await (await ctx.getClient()).getJid()
+			return await withClient(client => client.getJid())
 		},
 
 		getLid: async () => {
-			return await (await ctx.getClient()).getLid()
+			return await withClient(client => client.getLid())
 		},
 
 		updateProfilePicture: async (
@@ -42,12 +45,13 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 				)
 			}
 			const { img } = await generateProfilePicture(content, dimensions)
-			const client = await ctx.getClient()
-			if (isJidGroup(jid)) {
-				await client.setGroupProfilePicture(jid, img)
-				return
-			}
-			await client.updateProfilePicture(img)
+			return withClient(async client => {
+				if (isJidGroup(jid)) {
+					await client.setGroupProfilePicture(jid, img)
+					return
+				}
+				await client.updateProfilePicture(img)
+			})
 		},
 
 		removeProfilePicture: async (jid: string): Promise<void> => {
@@ -56,16 +60,17 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 					'Illegal no-jid profile update. Please specify either your ID or the ID of the chat you wish to update'
 				)
 			}
-			const client = await ctx.getClient()
-			if (isJidGroup(jid)) {
-				await client.removeGroupProfilePicture(jid)
-				return
-			}
-			await client.removeProfilePicture()
+			return withClient(async client => {
+				if (isJidGroup(jid)) {
+					await client.removeGroupProfilePicture(jid)
+					return
+				}
+				await client.removeProfilePicture()
+			})
 		},
 
 		updateProfileStatus: async (status: string) => {
-			await (await ctx.getClient()).updateProfileStatus(status)
+			await withClient(client => client.updateProfileStatus(status))
 		}
 	}
 }

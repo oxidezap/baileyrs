@@ -1,5 +1,5 @@
 import type { BaileysEventMap, WAMessage } from '../Types/index.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { CompatibleSocketContext as SocketContext } from '../Socket/types.ts'
 
 type MessageUpsert = BaileysEventMap['messages.upsert']
 

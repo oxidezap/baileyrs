@@ -3,6 +3,7 @@ import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { Contact, SocketConfig } from '../Types/index.ts'
 import type { makeEventBuffer } from '../Utils/event-buffer.ts'
 import type { ILogger } from '../Utils/logger.ts'
+import type { ClientOperations } from './client-operations.ts'
 
 /** Shared context passed to all Socket method factories */
 export interface SocketContext {
@@ -25,6 +26,10 @@ export interface SocketContext {
 	 */
 	reportUnexpectedError: (err: unknown, msg: string) => void
 }
+
+export interface WithClientSocketContext extends Omit<SocketContext, 'getClient'>, ClientOperations {}
+
+export type CompatibleSocketContext = SocketContext | WithClientSocketContext
 
 /** Convert a bridge Jid struct to a string */
 export const jidStr = (jid: { user: string; server: string }): string => `${jid.user}@${jid.server}`

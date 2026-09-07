@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * A send that reached nobody.
  *
@@ -17,7 +18,7 @@ import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { asAllEncryptionsFailed } from '../Compatibility/all-encryptions-failed.ts'
 import { makeMessageMethods } from '../Socket/messages.ts'
-import type { SocketContext } from '../Socket/types.ts'
+import type { WithClientSocketContext as SocketContext } from '../Socket/types.ts'
 import { isBoom } from '../Utils/boom.ts'
 import type { WAProto } from '../Types/index.ts'
 
@@ -105,7 +106,8 @@ const relayRejecting = (rejection: unknown) => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+			operation((await client) as unknown as MockClient)
 	} as unknown as SocketContext
 	const methods = makeMessageMethods(ctx)
 	return { attempts, relay: methods.relayMessage, send: methods.sendMessage }
