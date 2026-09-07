@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * A caller's `<biz>` on an interactive message, which upstream Baileys requires
  * and this engine derives for itself.
@@ -129,7 +130,8 @@ const relayRefusing = (...refusedTags: readonly string[]) => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+			operation((await client) as unknown as MockClient)
 	} as unknown as SocketContext
 	return { attempts, relay: makeMessageMethods(ctx).relayMessage }
 }
@@ -198,7 +200,8 @@ describe('relayMessage against an engine that derives its own stanza children', 
 			fullConfig: { options: {}, emitOwnEvents: false },
 			getUser: () => ({ id: '15550000000@s.whatsapp.net' }),
 			getMe: () => ({ id: '15550000000@s.whatsapp.net' }),
-			getClient: async () => client
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as unknown as MockClient)
 		} as unknown as SocketContext
 		await assert.rejects(
 			() =>

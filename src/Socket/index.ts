@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer'
 import { randomBytes } from 'node:crypto'
 import {
 	createWhatsAppClient,
+	type WasmWhatsAppClient,
 	type DevicePlatformType,
 	initWasmEngine,
 	type RunCompletionResult,
@@ -73,6 +74,7 @@ import { makeProfileMethods } from './profile.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { makeHttpClient, makeTransport } from './transport.ts'
 import type { SocketContext } from './types.ts'
+import { makeWithClient } from './client-operations.ts'
 import { makeUSyncMethods } from './usync.ts'
 
 let wasmInitialized = false
@@ -366,61 +368,43 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		setUser: u => {
 			user = u
 		},
-		getClient: () => {
-			// `peek()` keeps returning the client through `closing` so teardown
-			// can still close the transport with it — but that is teardown's
-			// client, not everyone's. Handing it to an ordinary call racing
-			// shutdown, or made from an end handler, starts a bridge operation
-			// while the client is being disconnected and freed, which is the
-			// heap-corruption hazard the whole teardown ordering exists to
-			// avoid. Refuse from the moment `close()` is called.
-			if (owner.isClosing()) {
-				return Promise.reject(new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
-			}
+		withClient: makeWithClient(getClient)
+	}
+	function getClient(): Promise<WasmWhatsAppClient> {
+		// Teardown retains the client through closing to disconnect the transport.
+		// Ordinary operations must stop being admitted when close() is called.
+		if (owner.isClosing()) {
+			return Promise.reject(new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
+		}
 
-			// Otherwise gated on `initialized`, not merely on the client
-			// existing. `adopt()` publishes it several awaits before
-			// `setDeviceProps`, the account lookups and `run()`, so keying off
-			// `peek()` alone would hand ordinary calls like `sendMessage()` a
-			// half-built client whose read loop has not started — and skip the
-			// `initError` check when startup later fails.
-			if (initialized) {
-				const ready = owner.peek()
-				if (ready) return Promise.resolve(wrapBridgeClient(ready))
-			}
+		// Otherwise gated on `initialized`, not merely on the client
+		// existing. `adopt()` publishes it several awaits before
+		// `setDeviceProps`, the account lookups and `run()`, so keying off
+		// `peek()` alone would hand ordinary calls like `sendMessage()` a
+		// half-built client whose read loop has not started — and skip the
+		// `initError` check when startup later fails.
+		if (initialized) {
+			const ready = owner.peek()
+			if (ready) return Promise.resolve(wrapBridgeClient(ready))
+		}
 
-			return initPromise.then(() => {
-				// Rechecked after the await: a close landing while startup was
-				// still running would otherwise be handed the client anyway.
-				//
-				// The window between handing a client back and the call reaching
-				// wasm cannot be closed here — that needs in-flight call
-				// tracking. What covers it is `release`, which awaits
-				// `client.disconnect()` before `free()`; the corruption comes
-				// from freeing with a call pending, and the disconnect drains
-				// those first (`__tests__/bridge-free-safety.test.ts`).
-				if (owner.isClosing()) {
-					throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
-				}
-
-				if (initError) {
-					throw new Boom('Bridge client failed to initialize: ' + initError.message, { statusCode: 500 })
-				}
-
-				const built = owner.peek()
-				if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
-				return wrapBridgeClient(built)
-			})
-		},
-		getClientSync: () => {
-			// Same rule as `getClient` — see there.
+		return initPromise.then(() => {
+			// Closing may have started while initialization was pending.
+			// This gate does not track admitted operations. Bridge 0.21.1 tolerates
+			// free() during ordinary calls, but not during disconnect(); release
+			// still awaits that drain before freeing the client.
 			if (owner.isClosing()) {
 				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
 			}
+
+			if (initError) {
+				throw new Boom('Bridge client failed to initialize: ' + initError.message, { statusCode: 500 })
+			}
+
 			const built = owner.peek()
 			if (!built) throw new Boom('Client not initialized', { statusCode: 500 })
 			return wrapBridgeClient(built)
-		}
+		})
 	}
 	// The native repository delegates Signal state directly to the core and does
 	// not need the standalone transaction facade. Keep that facade lazy for the
@@ -843,21 +827,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	}
 
 	const fetchReachoutTimelock = async (): Promise<ReachoutTimelockState> => {
-		const payload = await (await ctx.getClient()).fetchReachoutTimelock()
+		const payload = await ctx.withClient(client => client.fetchReachoutTimelock())
 		const state = mapReachoutTimelock(payload) ?? { isActive: false }
 		ev.emit('connection.update', { reachoutTimeLock: state } as Partial<ConnectionState>)
 		return state
 	}
 	const query = async (node: BinaryNode, timeoutMs?: number): Promise<BinaryNode> => {
 		if (!node.attrs.id) node.attrs.id = generateMessageTag()
-		const result = (await (await ctx.getClient()).queryNode(node, timeoutMs)) as BinaryNode
+		const result = (await ctx.withClient(client => client.queryNode(node, timeoutMs))) as BinaryNode
 		assertNodeErrorFree(result)
 		return result
 	}
 	const waitForMessage = makeTaggedMessageWaiter(ws, logger, fullConfig.defaultQueryTimeoutMs)
 	const usyncMethods = makeUSyncMethods({
 		queryNode: query,
-		queryUsync: async typedQuery => (await ctx.getClient()).queryUsync(typedQuery)
+		queryUsync: async typedQuery => ctx.withClient(client => client.queryUsync(typedQuery))
 	})
 
 	const sock = {
@@ -941,18 +925,18 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		notificationMutex,
 		generateMessageTag,
 		sendNode: async (frame: BinaryNode) => {
-			return (await ctx.getClient()).sendNode(frame)
+			return ctx.withClient(client => client.sendNode(frame))
 		},
 		assertSessions: async (jids: string[], force?: boolean) => {
-			return (await ctx.getClient()).assertSessions(jids, force ?? false)
+			return ctx.withClient(client => client.assertSessions(jids, force ?? false))
 		},
 		getUSyncDevices: async (jids: string[], useCache: boolean, ignoreZeroDevices: boolean) => {
-			return (await ctx.getClient()).getUSyncDevices(jids, useCache, ignoreZeroDevices)
+			return ctx.withClient(client => client.getUSyncDevices(jids, useCache, ignoreZeroDevices))
 		},
 		waitForMessage,
 		query,
 		sendRawMessage: async (data: Uint8Array | Buffer) => {
-			return (await ctx.getClient()).sendRawMessage(data instanceof Uint8Array ? data : new Uint8Array(data))
+			return ctx.withClient(client => client.sendRawMessage(data instanceof Uint8Array ? data : new Uint8Array(data)))
 		},
 		/**
 		 * `dsmMessage` is accepted so the signature matches upstream, and
@@ -974,7 +958,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				)
 			}
 			const bytes = encodeProtoCompat('Message', message as Record<string, unknown>)
-			return (await ctx.getClient()).createParticipantNodesBytes(jids, bytes, extraAttrs ?? {})
+			return ctx.withClient(client => client.createParticipantNodesBytes(jids, bytes, extraAttrs ?? {}))
 		},
 		signalRepository,
 		...makePreKeyMethods(ctx),
@@ -999,16 +983,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// Ahead of the client: an off-union value used to fall through to the
 			// chat-state branch and be reported as a missing jid.
 			assertArgumentDomain('sendPresenceUpdate', 'type', type, WA_PRESENCES)
-			const c = await ctx.getClient()
-			if (type === 'available' || type === 'unavailable') {
-				return c.sendPresence(type)
-			}
+			return ctx.withClient(async c => {
+				if (type === 'available' || type === 'unavailable') {
+					return c.sendPresence(type)
+				}
 
-			if (!toJid) {
-				throw new Boom(`sendPresenceUpdate('${type}') requires a target jid`, { statusCode: 400 })
-			}
+				if (!toJid) {
+					throw new Boom(`sendPresenceUpdate('${type}') requires a target jid`, { statusCode: 400 })
+				}
 
-			return c.sendChatState(toJid, type)
+				return c.sendChatState(toJid, type)
+			})
 		},
 		/**
 		 * Plaintext media upload helper, source-compatible with the upstream
@@ -1021,15 +1006,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// `toBridgeMediaType` below still refuses the ones it cannot map.
 			assertArgumentDomain('waUploadToServer', 'mediaType', opts?.mediaType, MEDIA_TYPES)
 			const bytes = data instanceof Uint8Array && !Buffer.isBuffer(data) ? data : new Uint8Array(data)
-			return (await ctx.getClient()).uploadMedia(bytes, toBridgeMediaType(opts.mediaType))
+			return ctx.withClient(client => client.uploadMedia(bytes, toBridgeMediaType(opts.mediaType)))
 		},
 		...makePrivacyMethods(ctx),
 		updateDefaultDisappearingMode: async (duration: number) => {
-			await (await ctx.getClient()).updateDefaultDisappearingMode(duration)
+			await ctx.withClient(client => client.updateDefaultDisappearingMode(duration))
 		},
 		rejectCall: async (callId: string, callFrom: string) => {
 			const context = activeCallContexts.get(callId)
-			await (await ctx.getClient()).rejectCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+			await ctx.withClient(client =>
+				client.rejectCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+			)
 			activeCallContexts.delete(callId)
 		},
 		/**
@@ -1049,20 +1036,22 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		/** Upstream Baileys-compatible name. */
 		fetchAccountReachoutTimelock: fetchReachoutTimelock,
 		getBusinessProfile: async (jid: string): Promise<WABusinessProfile | void> => {
-			return bridgeBusinessProfileToBaileys(await (await ctx.getClient()).getBusinessProfile(jid))
+			return bridgeBusinessProfileToBaileys(await ctx.withClient(client => client.getBusinessProfile(jid)))
 		},
 		fetchMessageHistory: async (count: number, oldestMsgKey: WAMessageKey, oldestMsgTimestamp: number | Long) => {
-			return (await ctx.getClient()).fetchMessageHistory(
-				count,
-				oldestMsgKey.remoteJid || '',
-				oldestMsgKey.id || '',
-				oldestMsgKey.fromMe || false,
-				typeof oldestMsgTimestamp === 'number' ? oldestMsgTimestamp : oldestMsgTimestamp.toNumber()
+			return ctx.withClient(client =>
+				client.fetchMessageHistory(
+					count,
+					oldestMsgKey.remoteJid || '',
+					oldestMsgKey.id || '',
+					oldestMsgKey.fromMe || false,
+					typeof oldestMsgTimestamp === 'number' ? oldestMsgTimestamp : oldestMsgTimestamp.toNumber()
+				)
 			)
 		},
 		sendStatusMessage: async (message: Record<string, unknown>, recipients: string[]): Promise<string> => {
 			const bytes = encodeProtoCompat('Message', message)
-			return (await ctx.getClient()).sendStatusMessageBytes(bytes, recipients)
+			return ctx.withClient(client => client.sendStatusMessageBytes(bytes, recipients))
 		},
 		...makeMessageMethods(ctx),
 		...groupMethods,
@@ -1087,11 +1076,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// the context below is built, and a check past that await reports a
 			// stack without the caller in it.
 			assertArgumentDomain('downloadMedia', 'type', type, MEDIA_DOWNLOAD_TYPES)
-			return downloadMediaMessage(message, type, options, {
-				logger,
-				reuploadRequest: (m: WAMessage) => sock.updateMediaMessage(m),
-				waClient: await ctx.getClient()
-			})
+			return ctx.withClient(client =>
+				downloadMediaMessage(message, type, options, {
+					logger,
+					reuploadRequest: (m: WAMessage) => sock.updateMediaMessage(m),
+					waClient: client
+				})
+			)
 		}
 	}
 

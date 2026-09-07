@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * Upstream exposes a good deal of socket internals: caches, buffers, a clock
  * offset, a retry manager. In this package that state lives in the Rust core by
@@ -67,7 +68,7 @@ const makeHarness = (overrides: Record<string, unknown> = {}, connectTimeoutMs?:
 		logger,
 		fullConfig: connectTimeoutMs === undefined ? {} : { connectTimeoutMs },
 		reportUnexpectedError: (err: unknown, msg: string) => logger.error({ err }, `unexpected error in '${msg}'`),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { calls, ev, events, logged, methods: makeInternalMethods(ctx) }
 }

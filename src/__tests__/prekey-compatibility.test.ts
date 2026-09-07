@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
@@ -19,7 +20,11 @@ describe('pre-key socket compatibility', () => {
 				counts.push(count)
 			}
 		} as Partial<WasmWhatsAppClient> as WasmWhatsAppClient
-		const methods = makePreKeyMethods({ getClient: async () => client, logger })
+		const methods = makePreKeyMethods({
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient),
+			logger
+		})
 
 		await methods.uploadPreKeys()
 		await methods.uploadPreKeys(17)
@@ -40,7 +45,11 @@ describe('pre-key socket compatibility', () => {
 				calls.push('rotate')
 			}
 		} as Partial<WasmWhatsAppClient> as WasmWhatsAppClient
-		const methods = makePreKeyMethods({ getClient: async () => client, logger })
+		const methods = makePreKeyMethods({
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient),
+			logger
+		})
 
 		await methods.uploadPreKeysToServerIfRequired()
 		await methods.digestKeyBundle()
@@ -56,7 +65,11 @@ describe('pre-key socket compatibility', () => {
 				throw new Error('offline')
 			}
 		} as Partial<WasmWhatsAppClient> as WasmWhatsAppClient
-		const methods = makePreKeyMethods({ getClient: async () => client, logger })
+		const methods = makePreKeyMethods({
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient),
+			logger
+		})
 
 		await methods.uploadPreKeysToServerIfRequired()
 

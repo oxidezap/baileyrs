@@ -72,7 +72,7 @@ export const makeInternalMethods = (ctx: SocketContext) => {
 		 * that wants the next attempt waits again.
 		 */
 		waitForSocketOpen: async (): Promise<void> => {
-			await (await ctx.getClient()).waitForSocket(TRANSPORT_CONNECT_TIMEOUT_MS)
+			await ctx.withClient(client => client.waitForSocket(TRANSPORT_CONNECT_TIMEOUT_MS))
 		},
 
 		/**

@@ -21,8 +21,8 @@
  *  - Anything that is not the bridge's shape (an `Error` carrying a string
  *    `kind`) passes through with the same identity it arrived with.
  *
- * The wrap happens once per client: `getClient()`/`getClientSync()` hand out
- * a `Proxy` whose method wrappers are built on first access and cached, so
+ * The private `getClient()` getter returns a cached `Proxy` for each client.
+ * Its method wrappers are built on first access and cached, so
  * the happy path pays one property trap and one extra promise layer, and the
  * error path pays for everything else.
  */

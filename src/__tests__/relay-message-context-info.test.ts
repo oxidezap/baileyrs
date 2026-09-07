@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import { decodeProto, type WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
@@ -69,7 +70,7 @@ const makeCapturingContext = () => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { ctx, relayed }
 }

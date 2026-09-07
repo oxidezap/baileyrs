@@ -50,10 +50,7 @@ const makeCtx = () => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		getClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	}
 	return { ctx, ev, ws }
 }
@@ -1123,31 +1120,33 @@ describe('dispatch: group_update.create', () => {
 			observed.push('messages.upsert')
 			messages.push(payload)
 		})
-		ctx.getClient = async () =>
-			({
-				getGroupMetadata: async () => ({
-					id: '120363@g.us',
-					subject: 'Created group',
-					participants: [],
-					addressingMode: 'pn',
-					creator: '5511@s.whatsapp.net',
-					creationTime: 1730000000,
-					isLocked: false,
-					isAnnouncement: false,
-					membershipApproval: false,
-					isParentGroup: false,
-					isDefaultSubGroup: false,
-					isGeneralChat: false,
-					allowNonAdminSubGroupCreation: false,
-					noFrequentlyForwarded: false,
-					isSuspended: false,
-					allowAdminReports: false,
-					isHiddenGroup: false,
-					isIncognito: false,
-					hasGroupHistory: false,
-					isLimitSharingEnabled: false
-				})
-			}) as never
+		ctx.withClient = async operation =>
+			operation(
+				(await {
+					getGroupMetadata: async () => ({
+						id: '120363@g.us',
+						subject: 'Created group',
+						participants: [],
+						addressingMode: 'pn',
+						creator: '5511@s.whatsapp.net',
+						creationTime: 1730000000,
+						isLocked: false,
+						isAnnouncement: false,
+						membershipApproval: false,
+						isParentGroup: false,
+						isDefaultSubGroup: false,
+						isGeneralChat: false,
+						allowNonAdminSubGroupCreation: false,
+						noFrequentlyForwarded: false,
+						isSuspended: false,
+						allowAdminReports: false,
+						isHiddenGroup: false,
+						isIncognito: false,
+						hasGroupHistory: false,
+						isLimitSharingEnabled: false
+					})
+				}) as never
+			)
 
 		makeEventHandler(ctx)({
 			type: 'group_update',

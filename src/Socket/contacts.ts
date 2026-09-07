@@ -16,28 +16,31 @@ export type OnWhatsAppResult = {
 	verifiedName?: string
 }
 
-export const makeContactMethods = (ctx: SocketContext) => ({
-	onWhatsApp: async (...phoneNumber: string[]): Promise<OnWhatsAppResult[] | undefined> => {
-		const client = await ctx.getClient()
-		// Single batched usync — the bridge splits PN/LID inputs internally and
-		// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
-		const results = await client.isOnWhatsApp(phoneNumber)
-		return results.map(r => {
-			const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
-			if (r.lid) out.lid = r.lid
-			if (r.pnJid) out.pnJid = r.pnJid
-			if (r.verifiedName) out.verifiedName = r.verifiedName
-			return out
-		})
-	},
+export const makeContactMethods = (ctx: SocketContext) => {
+	return {
+		onWhatsApp: async (...phoneNumber: string[]): Promise<OnWhatsAppResult[] | undefined> => {
+			return ctx.withClient(async client => {
+				// Single batched usync — the bridge splits PN/LID inputs internally and
+				// returns lid/pnJid/isBusiness in the same payload, so no secondary IQ.
+				const results = await client.isOnWhatsApp(phoneNumber)
+				return results.map(r => {
+					const out: OnWhatsAppResult = { exists: r.isRegistered, jid: r.jid, isBusiness: r.isBusiness }
+					if (r.lid) out.lid = r.lid
+					if (r.pnJid) out.pnJid = r.pnJid
+					if (r.verifiedName) out.verifiedName = r.verifiedName
+					return out
+				})
+			})
+		},
 
-	profilePictureUrl: async (jid: string, type: ProfilePictureType = 'preview', timeoutMs?: number) => {
-		assertArgumentDomain('profilePictureUrl', 'type', type, PROFILE_PICTURE_TYPES)
-		const result = await (await ctx.getClient()).profilePictureUrl(jid, type, timeoutMs)
-		return result?.url
-	},
+		profilePictureUrl: async (jid: string, type: ProfilePictureType = 'preview', timeoutMs?: number) => {
+			assertArgumentDomain('profilePictureUrl', 'type', type, PROFILE_PICTURE_TYPES)
+			const result = await ctx.withClient(client => client.profilePictureUrl(jid, type, timeoutMs))
+			return result?.url
+		},
 
-	fetchUserInfo: async (...jids: string[]) => {
-		return await (await ctx.getClient()).fetchUserInfo(jids)
+		fetchUserInfo: async (...jids: string[]) => {
+			return await ctx.withClient(client => client.fetchUserInfo(jids))
+		}
 	}
-})
+}

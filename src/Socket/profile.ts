@@ -6,12 +6,12 @@ import type { SocketContext } from './types.ts'
 
 export const makeProfileMethods = (ctx: SocketContext) => {
 	const setPushName = async (name: string) => {
-		await (await ctx.getClient()).setPushName(name)
+		await ctx.withClient(client => client.setPushName(name))
 	}
 
 	return {
 		requestPairingCode: async (phoneNumber: string, customPairingCode?: string): Promise<string> => {
-			return await (await ctx.getClient()).requestPairingCode(phoneNumber, customPairingCode)
+			return await ctx.withClient(client => client.requestPairingCode(phoneNumber, customPairingCode))
 		},
 
 		setPushName,
@@ -20,15 +20,15 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 		updateProfileName: setPushName,
 
 		getPushName: async () => {
-			return await (await ctx.getClient()).getPushName()
+			return await ctx.withClient(client => client.getPushName())
 		},
 
 		getJid: async () => {
-			return await (await ctx.getClient()).getJid()
+			return await ctx.withClient(client => client.getJid())
 		},
 
 		getLid: async () => {
-			return await (await ctx.getClient()).getLid()
+			return await ctx.withClient(client => client.getLid())
 		},
 
 		updateProfilePicture: async (
@@ -42,12 +42,13 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 				)
 			}
 			const { img } = await generateProfilePicture(content, dimensions)
-			const client = await ctx.getClient()
-			if (isJidGroup(jid)) {
-				await client.setGroupProfilePicture(jid, img)
-				return
-			}
-			await client.updateProfilePicture(img)
+			return ctx.withClient(async client => {
+				if (isJidGroup(jid)) {
+					await client.setGroupProfilePicture(jid, img)
+					return
+				}
+				await client.updateProfilePicture(img)
+			})
 		},
 
 		removeProfilePicture: async (jid: string): Promise<void> => {
@@ -56,16 +57,17 @@ export const makeProfileMethods = (ctx: SocketContext) => {
 					'Illegal no-jid profile update. Please specify either your ID or the ID of the chat you wish to update'
 				)
 			}
-			const client = await ctx.getClient()
-			if (isJidGroup(jid)) {
-				await client.removeGroupProfilePicture(jid)
-				return
-			}
-			await client.removeProfilePicture()
+			return ctx.withClient(async client => {
+				if (isJidGroup(jid)) {
+					await client.removeGroupProfilePicture(jid)
+					return
+				}
+				await client.removeProfilePicture()
+			})
 		},
 
 		updateProfileStatus: async (status: string) => {
-			await (await ctx.getClient()).updateProfileStatus(status)
+			await ctx.withClient(client => client.updateProfileStatus(status))
 		}
 	}
 }

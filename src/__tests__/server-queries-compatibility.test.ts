@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * Loose ends: bot list, message cap, dirty bits, media connection, and two
  * refusals.
@@ -44,7 +45,7 @@ const makeHarness = (overrides: Record<string, unknown> = {}) => {
 	const ctx = {
 		ev: new EventEmitter(),
 		logger,
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { calls, methods: makeServerQueryMethods(ctx) }
 }

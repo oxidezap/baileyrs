@@ -83,7 +83,7 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 			// already hold a connection acquired by an upload, and stamping that
 			// one as fetched now would report it fresher than it is.
 			const held = fetched
-			const conn = await (await ctx.getClient()).getMediaConn(forceGet || !held)
+			const conn = await ctx.withClient(client => client.getMediaConn(forceGet || !held))
 			mediaHost = conn.hosts[0]?.hostname ?? mediaHost
 			const isFetch = forceGet || !held || held.auth !== conn.auth || !isLive(held)
 			fetched = isFetch ? { auth: conn.auth, ttl: conn.ttl, at: new Date() } : held
@@ -96,11 +96,11 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 		getMediaHost: (): string => mediaHost,
 
 		getBotListV2: async (): Promise<BotListInfo[]> => {
-			return flattenBotList(await (await ctx.getClient()).getBotList())
+			return flattenBotList(await ctx.withClient(client => client.getBotList()))
 		},
 
 		fetchNewChatMessageCap: async () => {
-			return toCapInfo(await (await ctx.getClient()).fetchNewChatMessageCappingInfo())
+			return toCapInfo(await ctx.withClient(client => client.fetchNewChatMessageCappingInfo()))
 		},
 
 		cleanDirtyBits: async (type: DirtyBitType, fromTimestamp?: number | string): Promise<void> => {
@@ -116,7 +116,7 @@ export const makeServerQueryMethods = (ctx: SocketContext) => {
 					throw new Boom(`cleanDirtyBits: fromTimestamp '${fromTimestamp}' is not a number`, { statusCode: 400 })
 				}
 			}
-			await (await ctx.getClient()).cleanDirtyBits(type, timestamp)
+			await ctx.withClient(client => client.cleanDirtyBits(type, timestamp))
 		},
 
 		/**

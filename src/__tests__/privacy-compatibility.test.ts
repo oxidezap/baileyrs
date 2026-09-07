@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * A privacy wrapper is one line, and the only thing that line can get wrong is
  * the category string. Nothing downstream catches that: the bridge takes
@@ -38,7 +39,7 @@ const makeHarness = (overrides: Partial<WasmWhatsAppClient> = {}) => {
 	const ctx = {
 		ev: new EventEmitter(),
 		logger,
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { calls, methods: makePrivacyMethods(ctx) }
 }
@@ -111,7 +112,8 @@ describe('issuePrivacyTokens is a no-op that says so once', () => {
 		const ctx = {
 			ev: new EventEmitter(),
 			logger: { ...logger, warn: (_data: unknown, msg: string) => warnings.push(msg) },
-			getClient: async () => ({}) as never
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await ({} as never)) as MockClient)
 		} as unknown as SocketContext
 		const methods = makePrivacyMethods(ctx)
 

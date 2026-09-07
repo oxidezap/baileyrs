@@ -46,10 +46,7 @@ const makeCtx = (user?: { id?: string; lid?: string }) => {
 		ws: new EventEmitter(),
 		getUser: () => user,
 		setUser: () => {},
-		getClient: async () => {
-			throw new Error('not used')
-		},
-		getClientSync: () => {
+		withClient: async () => {
 			throw new Error('not used')
 		}
 	} as unknown as SocketContext

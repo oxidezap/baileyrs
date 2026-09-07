@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 
@@ -241,7 +242,10 @@ describe('bridge group metadata compatibility boundary', () => {
 		const fixture = neutralGroup({ id: '120363@g.us', subject: 'Participating group' })
 		const ctx = {
 			ev,
-			getClient: async () => ({ groupFetchAllParticipating: async () => ({ '120363@g.us': fixture }) })
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation(
+					(await { groupFetchAllParticipating: async () => ({ '120363@g.us': fixture }) }) as unknown as MockClient
+				)
 		} as unknown as SocketContext
 
 		const result = await makeGroupMethods(ctx).groupFetchAllParticipating()

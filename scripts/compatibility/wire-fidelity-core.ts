@@ -219,7 +219,7 @@ const capturingContext = (captured: Uint8Array[]): SocketContext => {
 		fullConfig: { options: {}, emitOwnEvents: false },
 		getUser: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
 		getMe: () => ({ id: '15550000000@s.whatsapp.net', lid: '100000000000000@lid' }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: WasmWhatsAppClient) => T | Promise<T>) => operation(await client)
 	} as unknown as SocketContext
 }
 

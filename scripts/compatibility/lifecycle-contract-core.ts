@@ -613,10 +613,7 @@ export const runScenario = (scenario: LifecycleScenario): LifecycleTrace => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		getClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	}
 
 	let clock = 0

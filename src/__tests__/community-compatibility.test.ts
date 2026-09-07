@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
@@ -32,7 +33,8 @@ const context = (client: Partial<WasmWhatsAppClient>): SocketContext =>
 		ev: Object.assign(new EventEmitter(), {
 			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
 		}),
-		getClient: async () => client as WasmWhatsAppClient
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+			operation((await (client as WasmWhatsAppClient)) as MockClient)
 	}) as unknown as SocketContext
 
 describe('community socket compatibility', () => {

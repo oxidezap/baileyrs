@@ -72,10 +72,7 @@ const makeHarness = (): Harness => {
 		getMe: () => undefined,
 		setUser: () => {},
 		reportUnexpectedError: () => {},
-		getClient: () => Promise.reject(new Error('not used')),
-		getClientSync: () => {
-			throw new Error('not used')
-		}
+		withClient: () => Promise.reject(new Error('not used'))
 	} as unknown as SocketContext
 	let releaseTeardown!: () => void
 	const teardownGate = new Promise<void>(resolve => {

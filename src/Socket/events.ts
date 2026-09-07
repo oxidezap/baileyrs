@@ -690,7 +690,7 @@ const DISPATCHERS: DispatcherMap = {
 			// the same complete lifecycle and ordering as upstream.
 			void (async () => {
 				try {
-					const bridgeMetadata = await (await ctx.getClient()).getGroupMetadata(evt.groupJid)
+					const bridgeMetadata = await ctx.withClient(client => client.getGroupMetadata(evt.groupJid))
 					const metadata = bridgeGroupMetadataToBaileys(bridgeMetadata)
 					ctx.ev.emit('chats.upsert', [
 						{ id: metadata.id, name: metadata.subject, conversationTimestamp: metadata.creation }

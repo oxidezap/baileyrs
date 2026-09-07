@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * Catalog, collections, orders and the business profile.
  *
@@ -50,7 +51,7 @@ const makeHarness = (overrides: Record<string, unknown> = {}, ownId?: string) =>
 		ev: new EventEmitter(),
 		logger,
 		getMe: () => (ownId === undefined ? undefined : { id: ownId }),
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { calls, methods: makeBusinessMethods(ctx) }
 }

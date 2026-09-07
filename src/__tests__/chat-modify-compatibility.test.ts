@@ -1,3 +1,4 @@
+import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-bridge'
 /**
  * `chatModify` used to end in an `else` that logged a warning and resolved, for
  * every variant the bridge did not expose: link previews, the five label
@@ -53,7 +54,7 @@ const makeHarness = () => {
 	const ctx = {
 		ev: new EventEmitter(),
 		logger,
-		getClient: async () => client
+		withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) => operation((await client) as MockClient)
 	} as unknown as SocketContext
 	return { calls, methods: makeChatActionMethods(ctx) }
 }
@@ -404,7 +405,8 @@ describe('chatModify does not swallow a bridge failure', () => {
 		const ctx = {
 			ev: new EventEmitter(),
 			logger,
-			getClient: async () => client
+			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
+				operation((await client) as MockClient)
 		} as unknown as SocketContext
 
 		await expect(makeChatActionMethods(ctx).addChatLabel(CHAT, 'lbl-1')).rejects.toThrow(
