@@ -141,6 +141,61 @@ describe('generated protobuf runtime facade', () => {
 		)
 	})
 
+	it('preserves wire fixtures captured with Baileys rc14 and protobufjs 7.6.5', () => {
+		const fixtures: ReadonlyArray<readonly [string, Record<string, unknown>, string]> = [
+			['Message', { conversation: '' }, '0a00'],
+			[
+				'Message',
+				{
+					requestPaymentMessage: {
+						amount1000: '18446744073709551615',
+						expiryTimestamp: '-9007199254740993',
+						currencyCodeIso4217: 'BRL'
+					}
+				},
+				'b2011b0a0342524c10ffffffffffffffffff0128ffffffffffffffefff01'
+			],
+			[
+				'Config',
+				{ field: { '1': { minVersion: 1, maxVersion: 2, subfield: { '9': { isMessage: true } } } }, version: 3 },
+				'0a100801120c080110022a060809120220011003'
+			],
+			[
+				'Message',
+				{ imageMessage: { caption: 'hello', mediaKey: 'AQID', fileLength: '9007199254740993', width: 0 } },
+				'1a171a0568656c6c6f28818080808080801038004203010203'
+			]
+		]
+		for (const [path, input, hex] of fixtures) {
+			for (const root of [localProto, upstreamProto]) {
+				const type = messageType(root, path)
+				const message = type.fromObject(input)
+				assert.equal(Buffer.from(type.encode(message).finish()).toString('hex'), hex, path)
+				assert.deepEqual(
+					type.toObject(type.decode(Buffer.from(hex, 'hex')), { longs: String, bytes: String }),
+					type.toObject(message, { longs: String, bytes: String }),
+					path
+				)
+			}
+		}
+	})
+
+	it('preserves forked writer state and length-bounded reader positions', () => {
+		for (const writer of [new protobuf.Writer(), protobuf.Writer.create()]) {
+			writer.uint32(42).fork()
+			assert.equal(localProto.Message.encode({ conversation: 'hello' }, writer), writer)
+			writer.ldelim().uint32(99)
+			assert.equal(Buffer.from(writer.finish()).toString('hex'), '2a070a0568656c6c6f63')
+			const reader = protobuf.Reader.create(writer.finish())
+			assert.equal(reader.uint32(), 42)
+			const length = reader.uint32()
+			assert.equal(localProto.Message.decode(reader as unknown as Uint8Array, length).conversation, 'hello')
+			assert.equal(reader.pos, 9)
+			assert.equal(reader.uint32(), 99)
+			assert.equal(reader.pos, reader.len)
+		}
+	})
+
 	it('measures every upstream field on the wire and rejects unreviewed drift', () => {
 		const script = new URL('../../scripts/compatibility/proto-runtime-audit.ts', import.meta.url)
 		const result = spawnSync(process.execPath, [script.pathname, '--format=json', '--strict'], {
