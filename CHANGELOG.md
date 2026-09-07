@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0](https://github.com/oxidezap/baileyrs/compare/v0.2.13...v0.3.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **socket:** execute bridge operations through withClient ([#119](https://github.com/oxidezap/baileyrs/issues/119))
+
+### Bug Fixes
+
+* **deps:** upgrade protobufjs to 8.8.0 ([#120](https://github.com/oxidezap/baileyrs/issues/120)) ([499b36a](https://github.com/oxidezap/baileyrs/commit/499b36a8f33ae1dcd8721325118aa695606b0865))
+* **socket:** drop bare-join shim on bridge 0.21.1 ([#117](https://github.com/oxidezap/baileyrs/issues/117)) ([c5d042e](https://github.com/oxidezap/baileyrs/commit/c5d042e69ac5f63c501689d3c588804b0d5f09d5))
+
+
+### Refactors
+
+* **socket:** execute bridge operations through withClient ([#119](https://github.com/oxidezap/baileyrs/issues/119)) ([86dccc9](https://github.com/oxidezap/baileyrs/commit/86dccc968e48c0c253f48c4c94ebaf68ce928721))
+
 ## [0.2.13](https://github.com/oxidezap/baileyrs/compare/v0.2.12...v0.2.13) (2026-09-06)
 
 
