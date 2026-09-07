@@ -63,59 +63,11 @@ describe('group operation compatibility', () => {
 		])
 	})
 
-	// The server also answers an accepted V4 join with a bare
-	// `<iq type="result">` (no `<group>`/`<community>`/
-	// `<membership_approval_request>` child). The core surfaces that shape as
-	// an internal parse error even though the join succeeded; Baileys returns
-	// the envelope's `from` there, which echoes the request's `to`, so this
-	// layer answers with the requested group JID and still runs the buffered
-	// lifecycle instead of rejecting (issue #114).
-	it('answers a bare join success with the group JID and keeps the buffered lifecycle', async () => {
-		const ev = Object.assign(new EventEmitter(), {
-			createBufferedFunction: <Args extends unknown[], Result>(work: (...args: Args) => Promise<Result>) => work
-		})
-		const updates: unknown[] = []
-		const upserts: unknown[] = []
-		ev.on('messages.update', value => updates.push(value))
-		ev.on('messages.upsert', value => upserts.push(value))
-		const calls: unknown[][] = []
-		const bareSuccess = Object.assign(
-			new Error(
-				'failed to parse IQ response: expected <group>, <community>, or <membership_approval_request> in join response'
-			),
-			{ name: 'WhatsAppError', kind: 'internal' }
-		)
-		const client = {
-			groupAcceptInviteV4: async (...args: unknown[]) => {
-				calls.push(args)
-				throw bareSuccess
-			}
-		} as unknown as WasmWhatsAppClient
-		const ctx = {
-			ev,
-			getClient: async () => client,
-			getUser: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid' }),
-			getMe: () => ({ id: 'bot@s.whatsapp.net', lid: 'bot@lid', name: 'Bot' })
-		} as unknown as SocketContext
-
-		const result = await makeGroupMethods(ctx).groupAcceptInviteV4(
-			{ remoteJid: 'inviter@lid', id: 'invite-message-id', fromMe: false },
-			{ groupJid: 'parent@g.us', inviteCode: 'INVITE', inviteExpiration: 1_800_000_000 }
-		)
-
-		assert.equal(result, 'parent@g.us')
-		assert.deepEqual(calls, [['parent@g.us', 'INVITE', 1_800_000_000, 'inviter@lid']])
-		assert.equal(updates.length, 1)
-		assert.equal(upserts.length, 1)
-		const upsert = upserts[0] as { type: string }
-		assert.equal(upsert.type, 'notify')
-	})
-
-	// Only the bare-success shape falls back. Genuine failures — server
-	// rejections, unrelated internal errors, and protocol violations even when
-	// they carry the same fragment — must keep propagating by identity, with
-	// no lifecycle side effects.
-	it('rethrows V4 join failures that are not a bare success', async () => {
+	// Bridge rejections propagate untouched: this layer adds no fallback of
+	// its own (the bare join success is answered by the core since bridge
+	// 0.21.1). Every failure keeps its identity, with no lifecycle side
+	// effects.
+	it('rethrows V4 join failures without masking them', async () => {
 		const rejections = [
 			Object.assign(new Error('server error 403: forbidden'), {
 				name: 'WhatsAppError',
@@ -123,15 +75,11 @@ describe('group operation compatibility', () => {
 				serverCode: 403,
 				serverText: 'forbidden'
 			}),
-			Object.assign(new Error('internal: something else broke'), {
-				name: 'WhatsAppError',
-				kind: 'internal'
-			}),
 			Object.assign(
 				new Error(
-					'protocol violation: expected <group>, <community>, or <membership_approval_request> in join response'
+					'failed to parse IQ response: expected <group>, <community>, or <membership_approval_request> in join response'
 				),
-				{ name: 'WhatsAppError', kind: 'protocol-violation' }
+				{ name: 'WhatsAppError', kind: 'internal' }
 			)
 		]
 		for (const rejection of rejections) {
