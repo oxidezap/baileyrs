@@ -258,7 +258,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// with ordinary calls pending (`fetchBlocklist()`, `logout()`) is
 			// safe — its `Drop` signals shutdown and aborts the background
 			// tasks — but freeing mid-`disconnect()` still aborts the process
-			// (`async-lock` panicking while panicking). See
+			// (recursively acquiring the teardown mutex). See
 			// `__tests__/bridge-free-safety.test.ts`.
 			//
 			// That shape is reachable: `WebSocketClient.close()` early-returns

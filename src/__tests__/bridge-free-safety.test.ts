@@ -9,8 +9,9 @@
  * build).
  *
  * One shape still kills the process: freeing mid-`disconnect()`, which
- * aborts inside `async-lock` (`Panicking while panicking to abort`). That is
- * why `end()` still drains with `disconnect()` before freeing
+ * aborts on a recursively acquired std mutex (`cannot recursively acquire
+ * mutex`). That is why `end()` still drains with `disconnect()` before
+ * freeing
  * (`src/Socket/index.ts`) — reachable via `void sock.ws.close(); await
  * sock.end()`, whose skipped disconnect keeps running underneath.
  *
@@ -134,9 +135,9 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 	})
 
 	it('free() mid-disconnect still kills the process, so end() keeps draining', async () => {
-		// The one shape `free()` never became safe for: the disconnect future
-		// parks inside `async-lock`, and freeing under it aborts the process
-		// (`Panicking while panicking to abort`). This pins why `release`
+		// The one shape `free()` never became safe for: freeing under the
+		// disconnect teardown aborts the process (`cannot recursively acquire
+		// mutex`). This pins why `release`
 		// awaits `disconnect()` before freeing — drop that drain and `void
 		// sock.ws.close(); await sock.end()` can land here.
 		const outcome = await runChild(
@@ -153,7 +154,7 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		// The crash signature, not just any nonzero exit: anything else (a
 		// sync error, an unhandled rejection after setup) would satisfy the
 		// lines above while describing a different hazard.
-		expect(outcome.stderr).toContain('Panicking while panicking to abort')
+		expect(outcome.stderr).toContain('cannot recursively acquire mutex')
 		expect(outcome.stderr).toContain('wasm://wasm/')
 	})
 
