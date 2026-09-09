@@ -623,6 +623,14 @@ const DISPATCHERS: DispatcherMap = {
 		}) as WAMessage
 		if (evt.participantAlt) stubMsg.key.participantAlt = evt.participantAlt
 		if (evt.remoteJidAlt) stubMsg.key.remoteJidAlt = evt.remoteJidAlt
+		// A field of its own, not a second slot in `messageStubParameters`:
+		// that array is positional, and two independently optional values in it
+		// cannot be told apart — a lone `"pay"` would sit where an
+		// unavailability reason used to. This is the one thing that survives a
+		// decryption failure to say what the message was (the server stamps it
+		// on the sender's own outgoing stanza, in the clear), so it is named
+		// rather than placed.
+		if (evt.stanzaType) stubMsg.stanzaType = evt.stanzaType
 		ctx.ev.emit('messages.upsert', { messages: [stubMsg], type: 'notify' })
 	},
 

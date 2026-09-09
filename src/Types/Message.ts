@@ -37,6 +37,15 @@ export type WAMessage = Omit<proto.IWebMessageInfo, 'messageStubParameters' | 'm
 	// Kept deliberately broad by upstream Baileys for legacy stub payloads.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	messageStubParameters?: any
+	/**
+	 * The envelope's `type` attribute, as the server stamped it on the sending
+	 * stanza: `"text"`, `"media"`, `"pay"`, `"poll"`, `"reaction"`, `"event"`.
+	 *
+	 * Set only on the CIPHERTEXT stub emitted for a message that failed to
+	 * decrypt, where it is the one fact about the message that survives — it
+	 * describes the stanza, not the ciphertext. Absent everywhere else.
+	 */
+	stanzaType?: string
 }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage

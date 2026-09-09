@@ -571,6 +571,13 @@ export interface CanonicalUndecryptableMessage {
 	isUnavailable: boolean
 	/** Bridge `unavailable_type`: "view_once" | "unknown". */
 	unavailableType?: string
+	/**
+	 * The envelope's `type` attribute, as the server stamped it: "text",
+	 * "media", "pay", "poll", "reaction", "event"… It describes the stanza,
+	 * not the ciphertext, so it survives a decryption failure — the one thing
+	 * a consumer can still learn about a message it cannot read.
+	 */
+	stanzaType?: string
 	/** Bridge `decrypt_fail_mode`: "show" | "hide". */
 	decryptFailMode?: string
 	/** Original raw payload, preserved for debug logging. */

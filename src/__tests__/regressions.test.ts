@@ -942,6 +942,45 @@ describe('dispatch: undecryptable_message', () => {
 		expect(stub?.key.id).toBe('BAD-1')
 	})
 
+	// The envelope's `type` is the one thing that survives a decryption failure
+	// to say what the message was: the server stamps it on the sender's
+	// outgoing stanza, in the clear. A consumer moderating a message it cannot
+	// read — a payment stanza, say — has nothing else to classify it by.
+	it("carries the envelope's type alongside the unavailable type", () => {
+		const upserts = collect(
+			{
+				type: 'undecryptable_message',
+				data: {
+					...baseUndecryptable,
+					info: { ...baseUndecryptable.info, type: 'pay' },
+					decrypt_fail_mode: 'show'
+				}
+			},
+			'messages.upsert'
+		)
+		const stub = upserts[0]?.messages[0]
+		expect(stub?.stanzaType).toBe('pay')
+		expect(stub?.messageStubParameters).toEqual(['view_once'])
+	})
+
+	it('leaves messageStubParameters alone when the stanza has no unavailable type', () => {
+		const upserts = collect(
+			{
+				type: 'undecryptable_message',
+				data: {
+					...baseUndecryptable,
+					info: { ...baseUndecryptable.info, type: 'pay' },
+					unavailable_type: undefined,
+					decrypt_fail_mode: 'show'
+				}
+			},
+			'messages.upsert'
+		)
+		const stub = upserts[0]?.messages[0]
+		expect(stub?.stanzaType).toBe('pay')
+		expect(stub?.messageStubParameters).toEqual([])
+	})
+
 	it("suppresses emission when decrypt_fail_mode is 'hide'", () => {
 		const upserts = collect(
 			{ type: 'undecryptable_message', data: { ...baseUndecryptable, decrypt_fail_mode: 'hide' } },

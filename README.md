@@ -237,6 +237,18 @@ preserved. No QR re-scan, no logged-out events.
 
 A few behaviors that differ from upstream — almost always to your advantage:
 
+- **An undecryptable message tells you what it was.** The CIPHERTEXT stub
+  emitted on `messages.upsert` for a message that failed to decrypt carries
+  `stanzaType`: the envelope's `type` attribute as the server stamped it on the
+  sending stanza — `"text"`, `"media"`, `"pay"`, `"poll"`, `"reaction"`,
+  `"event"`. It describes the stanza rather than the ciphertext, so it survives
+  the failure, and it is stamped on the sender's own outgoing stanza, so it
+  cannot be pointed at anyone else. Upstream has no equivalent: there the
+  placeholder is unclassifiable. `messageStubParameters` is untouched and still
+  holds only the unavailability reason, when the server named one — the two are
+  independently optional, which is exactly what a positional array cannot
+  express.
+
 - **Auto-reconnect is built in, but `close` still means `close`.** The Rust
   engine retries transient drops on a fibonacci backoff and reports them as
   `connection: 'connecting'`, so the canonical upstream handler never fires

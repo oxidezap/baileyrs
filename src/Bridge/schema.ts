@@ -255,6 +255,7 @@ const ADAPTERS = {
 			remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
 			isUnavailable: asBoolOr(data?.is_unavailable, false),
 			unavailableType: asString(data?.unavailable_type),
+			stanzaType: asString(info.type),
 			decryptFailMode: asString(data?.decrypt_fail_mode),
 			raw: data
 		}
