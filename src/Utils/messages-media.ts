@@ -160,20 +160,28 @@ export const mediaMessageSHA256B64 = (message: WAMessageContent): string | null 
 
 /** Returns audio duration in seconds, parsed via `music-metadata`. */
 export async function getAudioDuration(buffer: Buffer | string | Readable) {
-	const musicMetadata = await import('music-metadata')
-	let metadata: IAudioMetadata
-	const options = {
-		duration: true
-	}
-	if (Buffer.isBuffer(buffer)) {
-		metadata = await musicMetadata.parseBuffer(buffer, undefined, options)
-	} else if (typeof buffer === 'string') {
-		metadata = await musicMetadata.parseFile(buffer, options)
-	} else {
-		metadata = await musicMetadata.parseStream(buffer, undefined, options)
-	}
+	// `music-metadata` is an optional peer: without it the duration is simply
+	// unknown and the caller sends without `seconds`. The specifier cast keeps
+	// bundlers from failing the build when the peer is absent, the same trick
+	// `link-preview.ts` uses for `link-preview-js`.
+	try {
+		const musicMetadata = await import('music-metadata' as string)
+		let metadata: IAudioMetadata
+		const options = {
+			duration: true
+		}
+		if (Buffer.isBuffer(buffer)) {
+			metadata = await musicMetadata.parseBuffer(buffer, undefined, options)
+		} else if (typeof buffer === 'string') {
+			metadata = await musicMetadata.parseFile(buffer, options)
+		} else {
+			metadata = await musicMetadata.parseStream(buffer, undefined, options)
+		}
 
-	return metadata.format.duration
+		return metadata.format.duration
+	} catch {
+		return undefined
+	}
 }
 
 /**

@@ -297,6 +297,11 @@ A few behaviors that differ from upstream — almost always to your advantage:
   `(err as Boom).output.statusCode` pattern works unchanged. If your
   `package.json` was pulling `@hapi/boom` only for baileys, you can drop
   the dependency.
+- **Audio duration needs the optional `music-metadata` peer.** Upstream
+  Baileys bundles it as a hard dependency; here it is optional like the
+  other media peers (`sharp`, `jimp`, `audio-decode`, `link-preview-js`).
+  Without it, audio messages still send — they just carry no `seconds`
+  value. Install `music-metadata` if you want durations computed.
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**
   See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
   one can break a boot path, so it has its own section.
