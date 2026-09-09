@@ -1,4 +1,3 @@
-import type { IAudioMetadata } from 'music-metadata'
 import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
@@ -173,7 +172,7 @@ export async function getAudioDuration(buffer: Buffer | string | Readable) {
 	} catch {
 		return undefined
 	}
-	let metadata: IAudioMetadata
+	let metadata: musicMetadataTypes.IAudioMetadata
 	const options = {
 		duration: true
 	}
