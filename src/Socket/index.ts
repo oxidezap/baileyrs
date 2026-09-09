@@ -53,6 +53,7 @@ import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
+import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -420,7 +421,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const receiptMutex = makeMutex()
 	const appStatePatchMutex = makeMutex()
 	const notificationMutex = makeMutex()
-	const activeCallContexts = new Map<string, { peer: string; callCreator: string }>()
+	const activeCallContexts: CallOfferCache = new Map()
 	socketEndHandlers.push(() => activeCallContexts.clear())
 	const groupMethods = makeGroupMethods(ctx)
 	const communityMethods = makeCommunityMethods(ctx, groupMethods)
@@ -441,12 +442,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				.catch(() => {})
 		},
 		onIncomingCall: event => {
-			const { callId, callCreator, type } = event.action
-			if (type === 'reject' || type === 'accept' || type === 'timeout' || type === 'terminate') {
-				activeCallContexts.delete(callId)
-			} else if (callCreator) {
-				activeCallContexts.set(callId, { peer: event.from, callCreator })
-			}
+			trackIncomingCall(activeCallContexts, event)
 		},
 		onDirtyState: event => refreshParticipating(event.dirtyType),
 		/**
@@ -1016,6 +1012,20 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			const context = activeCallContexts.get(callId)
 			await ctx.withClient(client =>
 				client.rejectCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+			)
+			activeCallContexts.delete(callId)
+		},
+		/**
+		 * Hang up a live call. Same routing as `rejectCall`: the identifiers
+		 * come from the `incoming_call` event that rang, and the cached
+		 * peer/call-creator pair wins when this socket saw the offer. Fire
+		 * and forget — resolving means the `<terminate>` stanza went out, per
+		 * the bridge calls domain (preview PR 115).
+		 */
+		terminateCall: async (callId: string, callFrom: string) => {
+			const context = activeCallContexts.get(callId)
+			await ctx.withClient(client =>
+				client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
 			)
 			activeCallContexts.delete(callId)
 		},

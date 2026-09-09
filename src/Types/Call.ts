@@ -47,4 +47,15 @@ export type WACallEvent = {
 	platform?: string
 	/** WhatsApp client version on the caller side. */
 	version?: string
+	/**
+	 * Reject/terminate reason string from the bridge (e.g. `"timeout"`).
+	 * A `terminate` carrying `"timeout"` surfaces as status `timeout`,
+	 * matching upstream Baileys.
+	 */
+	reason?: string
+	/**
+	 * Camera rotation announced on the stanza's `<video>` child (`0..3`).
+	 * Only an `offer` or `accept` carries one.
+	 */
+	videoOrientation?: number
 }

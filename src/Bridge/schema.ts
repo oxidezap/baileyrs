@@ -998,6 +998,12 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 		logger?.debug({ data }, 'incoming_call adapter: missing action.type/call_id')
 		return null
 	}
+	// Upstream maps `<terminate reason="timeout">` onto the `timeout` status
+	// (`Utils/generics.ts` `getCallStatusFromNode`); the bridge carries that
+	// reason as a plain field, so apply the same mapping here rather than
+	// surfacing a `terminate` upstream would never emit for a missed call.
+	const effectiveType: CanonicalCallActionType =
+		actionType === 'terminate' && asString(fields.reason) === 'timeout' ? 'timeout' : actionType
 
 	// The call offer is timeline-ordered by its timestamp downstream; an
 	// unparseable one drops the event rather than dating it at the epoch.
@@ -1011,23 +1017,29 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	}
 
 	const canonicalAction: CanonicalCallAction = {
-		type: actionType,
+		type: effectiveType,
 		callId,
 		callCreator: asJidAddressString(fields.call_creator)
 	}
-	if (actionType === 'offer') {
+	if (effectiveType === 'offer') {
 		canonicalAction.callerPn = asJidString(fields.caller_pn)
 		canonicalAction.callerCountryCode = asString(fields.caller_country_code)
 		canonicalAction.deviceClass = asString(fields.device_class)
 		canonicalAction.joinable = asBoolOr(fields.joinable, false)
 		canonicalAction.isVideo = asBoolOr(fields.is_video, false)
+		canonicalAction.groupJid = asJidString(fields.group_jid)
 		if (Array.isArray(fields.audio)) {
 			canonicalAction.audio = fields.audio.filter((x): x is string => typeof x === 'string')
 		}
-	} else if (actionType === 'terminate') {
+	} else if (effectiveType === 'terminate' || effectiveType === 'timeout') {
 		canonicalAction.duration = asNumber(fields.duration)
 		canonicalAction.audioDuration = asNumber(fields.audio_duration)
+		canonicalAction.reason = asString(fields.reason)
+	} else if (effectiveType === 'reject') {
+		canonicalAction.reason = asString(fields.reason)
 	}
+
+	const videoOrientation = asNumber(data.video_orientation)
 
 	return {
 		type: 'incomingCall',
@@ -1038,6 +1050,7 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 		notify: asString(data.notify),
 		platform: asString(data.platform),
 		version: asString(data.version),
+		videoOrientation: videoOrientation !== undefined ? videoOrientation : undefined,
 		action: canonicalAction
 	}
 }
@@ -1046,6 +1059,7 @@ const parseCallActionType = (raw: unknown): CanonicalCallActionType | undefined 
 	const norm = normalizeDiscriminator(raw)
 	switch (norm) {
 		case 'offer':
+		case 'offer_notice':
 			return 'offer'
 		case 'pre_accept':
 		case 'preaccept':
