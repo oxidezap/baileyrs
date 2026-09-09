@@ -214,6 +214,35 @@ const sock = await connectToWhatsApp()
 await sock.sendMessage('1234567890@s.whatsapp.net', { text: 'Hello!' })
 ```
 
+## Calls
+
+Incoming call signaling arrives on the `call` event, one entry per update.
+Later updates reuse the remembered offer, so an `accept` still carries the
+offer's `isVideo`, `callerPn` and group JID:
+
+```ts
+sock.ev.on('call', ([call]) => {
+    if (!call) return
+    if (call.status === 'offer') {
+        console.log('incoming call from', call.from, 'video:', call.isVideo)
+    }
+})
+```
+
+Decline a ringing call, or hang up a live one. Both take the call id and the
+chat the stanza came from; when the socket saw the offer it routes from the
+remembered peer and call creator instead:
+
+```ts
+await sock.rejectCall(call.id, call.chatId)
+await sock.terminateCall(call.id, call.chatId)
+```
+
+`terminateCall` is a baileyrs extension, upstream Baileys stops at
+`rejectCall`. A missed call arrives as status `timeout`, group calls carry
+`groupJid`, and `reason` says why a call ended when the bridge knows. There
+is no dial operation yet, outgoing calls come with the media work.
+
 ## Migrating from Upstream Baileys
 
 baileyrs accepts the upstream `auth: { creds, keys }` shape directly — the

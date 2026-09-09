@@ -93,15 +93,44 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 		expect(emitted[1]?.[0]).toMatchObject({ status: 'accept', isVideo: true, callerPn: '5522@s.whatsapp.net' })
 	})
 
-	it('the terminal update clears the offer: a later update is no longer enriched', () => {
+	it('accept keeps the entry: later live-call updates stay enriched and routable', () => {
 		const cache: CallOfferCache = new Map()
 		const emitted = driveCalls(cache, [offer('CALL-2'), update('CALL-2', 'accept'), update('CALL-2', 'transport')])
 		expect(emitted.length).toBe(3)
 		expect(emitted[1]?.[0]).toMatchObject({ status: 'accept', isVideo: true })
-		expect(emitted[2]?.[0]?.isVideo).toBe(undefined)
-		// The non-terminal transport re-arms a bare routing entry for a later
-		// reject, but the offer fields are gone with the terminal update.
-		expect(cache.get('CALL-2')?.isVideo).toBe(undefined)
+		expect(emitted[2]?.[0]).toMatchObject({ status: 'transport', isVideo: true })
+		// Routing survives acceptance so a later terminateCall still uses the
+		// remembered peer and call creator instead of doubling up callFrom.
+		expect(cache.get('CALL-2')).toMatchObject({
+			peer: '5511@s.whatsapp.net',
+			callCreator: '5511@s.whatsapp.net'
+		})
+	})
+
+	it('reject, timeout and terminate clear the entry', () => {
+		const timeoutViaTerminate = update('CALL-timeout', 'terminate', { reason: 'timeout' })
+		const cases = [update('CALL-reject', 'reject'), timeoutViaTerminate, update('CALL-terminate', 'terminate')]
+		for (const terminal of cases) {
+			const cache: CallOfferCache = new Map()
+			const callId = (terminal.data as { action: { call_id: string } }).action.call_id
+			driveCalls(cache, [offer(callId), terminal])
+			expect(cache.size).toBe(0)
+		}
+	})
+
+	it('an offer without callCreator still enriches later updates', () => {
+		const noCreator = {
+			type: 'incoming_call',
+			data: {
+				from: jid('5511'),
+				stanza_id: 'STAN-9',
+				timestamp: 1_730_000_000,
+				offline: false,
+				action: { type: 'offer', call_id: 'CALL-9', is_video: true, joinable: false, audio: [] }
+			}
+		}
+		const emitted = driveCalls(new Map(), [noCreator, update('CALL-9', 'accept')])
+		expect(emitted[1]?.[0]).toMatchObject({ status: 'accept', isVideo: true })
 	})
 
 	it('an explicit group_jid on the offer marks the call as a group call', () => {
