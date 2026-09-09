@@ -10,10 +10,11 @@ export interface ILogger {
 	error(obj: unknown, msg?: string): void
 }
 
-/** Options accepted by `child()`. A subset of the peer's own shape. */
+/** Options accepted by `child()`. The fallback honors `level`; anything else
+ * is accepted for signature compatibility and ignored there. */
 export interface ChildLoggerOptions {
 	level?: string
-	[msgPrefix: string]: unknown
+	[option: string]: unknown
 }
 
 /**
@@ -33,6 +34,10 @@ export interface Logger {
 	silent(...args: unknown[]): void
 	flush(callback?: () => void): void
 	bindings(): Record<string, unknown>
+	/** Replace the bindings carried on every line from here on. */
+	setBindings(bindings: Record<string, unknown>): void
+	/** Numeric value of the current level. Mirrors the peer. */
+	readonly levelVal: number
 	levels: { values: Record<string, number>; labels: Record<number, string> }
 	isLevelEnabled(level: string): boolean
 }
@@ -74,6 +79,59 @@ const FALLBACK_LEVEL_LABELS: Record<number, string> = Object.fromEntries(
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 	typeof value === 'object' && value !== null && !Array.isArray(value)
 
+const CIRCULAR_SENTINEL = '[Circular]'
+const UNSERIALIZABLE_SENTINEL = '[Unserializable]'
+
+const readProperty = (holder: Record<string, unknown>, key: string): unknown => {
+	try {
+		return holder[key]
+	} catch {
+		return UNSERIALIZABLE_SENTINEL
+	}
+}
+
+/** An Error as plain data: type, message and stack survive serialization. */
+const errorToRecord = (error: Error): Record<string, unknown> => {
+	const record: Record<string, unknown> = { type: error.name, message: error.message }
+	if (typeof error.stack === 'string') record.stack = error.stack
+	const fields = error as unknown as Record<string, unknown>
+	for (const key of Object.keys(error)) record[key] = readProperty(fields, key)
+	if ('cause' in error) record.cause = readProperty(fields, 'cause')
+	return record
+}
+
+/**
+ * Deep-clone a logged value into JSON-safe data. Circular references become
+ * `[Circular]`, `BigInt` its string form, `Error` a record carrying message
+ * and stack. Never throws: logging must not crash the process it observes.
+ */
+const cloneForLog = (value: unknown, seen = new Set<object>()): unknown => {
+	try {
+		if (typeof value === 'bigint') return String(value)
+		if (value instanceof Error) return cloneForLog(errorToRecord(value), seen)
+		if (Array.isArray(value)) {
+			if (seen.has(value)) return CIRCULAR_SENTINEL
+			seen.add(value)
+			const copy = value.map(entry => cloneForLog(entry, seen))
+			seen.delete(value)
+			return copy
+		}
+		if (isPlainObject(value)) {
+			if (seen.has(value)) return CIRCULAR_SENTINEL
+			seen.add(value)
+			const copy: Record<string, unknown> = {}
+			for (const key of Object.keys(value)) copy[key] = cloneForLog(readProperty(value, key), seen)
+			seen.delete(value)
+			return copy
+		}
+		return value
+	} catch {
+		return UNSERIALIZABLE_SENTINEL
+	}
+}
+
+const safeStringify = (value: unknown): string => JSON.stringify(cloneForLog(value)) ?? UNSERIALIZABLE_SENTINEL
+
 const censorPath = (root: Record<string, unknown>, path: string): void => {
 	if (path.startsWith('*.')) {
 		const key = path.slice(2)
@@ -97,9 +155,76 @@ const censorPath = (root: Record<string, unknown>, path: string): void => {
 
 const redactForFallback = (value: unknown): unknown => {
 	if (!isPlainObject(value)) return value
-	const copy = structuredClone(value)
+	const copy = cloneForLog(value) as Record<string, unknown>
 	for (const path of REDACTED_PATHS) censorPath(copy, path)
 	return copy
+}
+
+/**
+ * Minimal `%s`/`%d`/`%i`/`%f`/`%j`/`%o`/`%O` interpolation for the fallback,
+ * mirroring the peer's printf-style messages without adding a dependency.
+ * Leftover arguments are appended rather than dropped so no detail is lost.
+ */
+const formatFallbackMessage = (message: string, args: unknown[]): string => {
+	let index = 0
+	const formatted = message.replace(/%[sdifjoO%]/g, match => {
+		if (match === '%%') return '%'
+		if (index >= args.length) return match
+		const arg = args[index++]
+		switch (match) {
+			case '%s':
+				return String(arg)
+			case '%d':
+			case '%i':
+			case '%f':
+				return String(Number(arg))
+			default:
+				return safeStringify(arg)
+		}
+	})
+	const rest = args.slice(index).map(entry => (typeof entry === 'string' ? entry : safeStringify(entry)))
+	return rest.length > 0 ? `${formatted} ${rest.join(' ')}` : formatted
+}
+
+const levelValue = (level: string, fallback: number): number => FALLBACK_LEVEL_VALUES[level] ?? fallback
+
+export interface FallbackLineInput {
+	method: string
+	currentLevel: string
+	bindings: Record<string, unknown>
+	args: unknown[]
+}
+
+/**
+ * Render one fallback log line, or `undefined` when the level disables it.
+ * Pure so tests can exercise redaction, Error handling and formatting
+ * without hiding the `pino` peer. Never throws.
+ */
+export const formatFallbackLine = ({ method, currentLevel, bindings, args }: FallbackLineInput): string | undefined => {
+	if (currentLevel === 'silent' || levelValue(method, 60) < levelValue(currentLevel, 30)) return undefined
+	let logged: unknown
+	let message: string | undefined
+	const [first, second, ...rest] = args
+	if (typeof first === 'string') {
+		message = formatFallbackMessage(first, second === undefined ? rest : [second, ...rest])
+	} else if (args.length > 0) {
+		logged = redactForFallback(first)
+		if (typeof second === 'string') message = formatFallbackMessage(second, rest)
+		else if (second !== undefined) logged = [logged, cloneForLog(second), ...rest.map(entry => cloneForLog(entry))]
+	}
+	const entry: Record<string, unknown> = {
+		level: levelValue(method, 30),
+		time: new Date().toJSON(),
+		...(redactForFallback(bindings) as Record<string, unknown>)
+	}
+	if (isPlainObject(logged)) Object.assign(entry, logged)
+	else if (logged !== undefined) entry.data = logged
+	if (message !== undefined) entry.msg = message
+	try {
+		return JSON.stringify(entry)
+	} catch {
+		return JSON.stringify({ level: entry.level, time: entry.time, msg: UNSERIALIZABLE_SENTINEL })
+	}
 }
 
 interface FallbackState {
@@ -110,35 +235,15 @@ interface FallbackState {
 /**
  * Console-backed logger used only when `pino` is not installed. Emits one
  * JSON line per call with the same `level`/`time`/`msg` shape operators
- * already parse, redacts the same credential paths, and honors `level` and
- * `child` bindings so level-gated code keeps working.
+ * already parse, redacts the same credential paths from both per-call
+ * objects and child bindings, serializes `Error` values with their message
+ * and stack, and honors `level` and `child` bindings so level-gated code
+ * keeps working. A documented step down from the peer, never a crash.
  */
 const createFallbackLogger = (state: FallbackState): Logger => {
-	const isEnabled = (method: string): boolean => {
-		if (state.level === 'silent') return false
-		return (FALLBACK_LEVEL_VALUES[method] ?? 60) >= (FALLBACK_LEVEL_VALUES[state.level] ?? 30)
-	}
-
 	const write = (method: string, args: unknown[]): void => {
-		if (!isEnabled(method)) return
-		let logged: unknown
-		let message: string | undefined
-		const [first, second] = args
-		if (typeof first === 'string') {
-			message = args.map(entry => (typeof entry === 'string' ? entry : JSON.stringify(entry))).join(' ')
-		} else {
-			logged = redactForFallback(first)
-			if (typeof second === 'string') message = second
-		}
-		const entry: Record<string, unknown> = {
-			level: FALLBACK_LEVEL_VALUES[method] ?? 30,
-			time: new Date().toJSON(),
-			...state.bindings
-		}
-		if (isPlainObject(logged)) Object.assign(entry, logged)
-		else if (logged !== undefined) entry.data = logged
-		if (message !== undefined) entry.msg = message
-		process.stdout.write(`${JSON.stringify(entry)}\n`)
+		const line = formatFallbackLine({ method, currentLevel: state.level, bindings: state.bindings, args })
+		if (line !== undefined) process.stdout.write(`${line}\n`)
 	}
 
 	const logger: Logger = {
@@ -147,6 +252,9 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 		},
 		set level(next: string) {
 			state.level = next
+		},
+		get levelVal() {
+			return levelValue(state.level, 30)
 		},
 		child: (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger =>
 			createFallbackLogger({
@@ -162,10 +270,13 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 		silent: () => {},
 		flush: (callback?: () => void) => callback?.(),
 		bindings: () => ({ ...state.bindings }),
+		setBindings: (extra: Record<string, unknown>) => {
+			Object.assign(state.bindings, extra)
+		},
 		levels: { values: { ...FALLBACK_LEVEL_VALUES }, labels: { ...FALLBACK_LEVEL_LABELS } },
 		isLevelEnabled: (level: string) => {
 			if (state.level === 'silent') return false
-			return (FALLBACK_LEVEL_VALUES[level] ?? Infinity) >= (FALLBACK_LEVEL_VALUES[state.level] ?? 30)
+			return levelValue(level, Infinity) >= levelValue(state.level, 30)
 		}
 	}
 	return logger
@@ -173,13 +284,20 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 
 type PinoFactory = (options: Record<string, unknown>) => Logger
 
+/**
+ * Resolve the peer without loading it first, so a broken installation
+ * (present but unloadable, e.g. a missing nested dependency) surfaces as
+ * the real error instead of silently degrading to the fallback.
+ */
 const loadPinoPeer = (): PinoFactory | undefined => {
+	const requireFrom = createRequire(import.meta.url)
 	try {
-		return createRequire(import.meta.url)('pino') as PinoFactory
+		requireFrom.resolve('pino')
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === 'MODULE_NOT_FOUND') return undefined
 		throw error
 	}
+	return requireFrom('pino') as PinoFactory
 }
 
 /**

@@ -240,12 +240,17 @@ interface BoomPeerModule {
 }
 
 const loadBoomPeer = (): BoomPeerModule | undefined => {
+	const requireFrom = createRequire(import.meta.url)
 	try {
-		return createRequire(import.meta.url)('@hapi/boom') as BoomPeerModule
+		requireFrom.resolve('@hapi/boom')
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === 'MODULE_NOT_FOUND') return undefined
 		throw error
 	}
+	// Resolved above, so a failure here is a broken installation (e.g. a
+	// missing nested dependency), not an absent peer. Let it throw rather
+	// than silently downgrading every error in the process.
+	return requireFrom('@hapi/boom') as BoomPeerModule
 }
 
 const peer = loadBoomPeer()
