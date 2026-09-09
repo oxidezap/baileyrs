@@ -630,8 +630,8 @@ class ProtoCompatibilityRuntime {
 			// The codec's own writer is what comes back, with `finish` shadowed on
 			// the instance rather than replaced by a bare `{ finish }`. The published
 			// declaration types this return as the facade's structural `Writer`,
-			// which mirrors the full `protobufjs` instance surface, so a caller
-			// chaining on it keeps typechecking. The writer is freshly made
+			// which mirrors the `protobufjs` 7.6.6 instance surface Baileys
+			// consumers hold, so a caller chaining on it keeps typechecking. The writer is freshly made
 			// by this call, so shadowing one method on it touches nothing else.
 			encoded.finish = finish
 			return encoded
