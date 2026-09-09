@@ -109,4 +109,15 @@ describe('fallback log lines', () => {
 		const silenced = { method: 'fatal', currentLevel: 'silent', bindings: {}, args: ['hidden'] }
 		expect(formatFallbackLine(silenced)).toBeUndefined()
 	})
+
+	it('prepends msgPrefix to messages', () => {
+		const line = formatFallbackLine({
+			method: 'info',
+			currentLevel: 'info',
+			bindings: {},
+			msgPrefix: 'worker: ',
+			args: ['started']
+		})
+		expect(parse(line).msg).toBe('worker: started')
+	})
 })

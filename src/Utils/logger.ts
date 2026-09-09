@@ -10,10 +10,11 @@ export interface ILogger {
 	error(obj: unknown, msg?: string): void
 }
 
-/** Options accepted by `child()`. The fallback honors `level`; anything else
- * is accepted for signature compatibility and ignored there. */
+/** Options accepted by `child()`. The fallback honors `level` and `msgPrefix`;
+ * anything else is accepted for signature compatibility and ignored there. */
 export interface ChildLoggerOptions {
 	level?: string
+	msgPrefix?: string
 	[option: string]: unknown
 }
 
@@ -38,6 +39,8 @@ export interface Logger {
 	setBindings(bindings: Record<string, unknown>): void
 	/** Numeric value of the current level. Mirrors the peer. */
 	readonly levelVal: number
+	/** Prefix prepended to every message. Mirrors the peer. */
+	readonly msgPrefix: string | undefined
 	levels: { values: Record<string, number>; labels: Record<number, string> }
 	isLevelEnabled(level: string): boolean
 }
@@ -192,6 +195,7 @@ export interface FallbackLineInput {
 	method: string
 	currentLevel: string
 	bindings: Record<string, unknown>
+	msgPrefix?: string
 	args: unknown[]
 }
 
@@ -200,7 +204,13 @@ export interface FallbackLineInput {
  * Pure so tests can exercise redaction, Error handling and formatting
  * without hiding the `pino` peer. Never throws.
  */
-export const formatFallbackLine = ({ method, currentLevel, bindings, args }: FallbackLineInput): string | undefined => {
+export const formatFallbackLine = ({
+	method,
+	currentLevel,
+	bindings,
+	msgPrefix,
+	args
+}: FallbackLineInput): string | undefined => {
 	if (currentLevel === 'silent' || levelValue(method, 60) < levelValue(currentLevel, 30)) return undefined
 	let logged: unknown
 	let message: string | undefined
@@ -212,6 +222,7 @@ export const formatFallbackLine = ({ method, currentLevel, bindings, args }: Fal
 		if (typeof second === 'string') message = formatFallbackMessage(second, rest)
 		else if (second !== undefined) logged = [logged, cloneForLog(second), ...rest.map(entry => cloneForLog(entry))]
 	}
+	if (msgPrefix) message = `${msgPrefix}${message ?? ''}`
 	const entry: Record<string, unknown> = {
 		level: levelValue(method, 30),
 		time: new Date().toJSON(),
@@ -229,6 +240,7 @@ export const formatFallbackLine = ({ method, currentLevel, bindings, args }: Fal
 
 interface FallbackState {
 	level: string
+	msgPrefix?: string
 	bindings: Record<string, unknown>
 }
 
@@ -242,7 +254,13 @@ interface FallbackState {
  */
 const createFallbackLogger = (state: FallbackState): Logger => {
 	const write = (method: string, args: unknown[]): void => {
-		const line = formatFallbackLine({ method, currentLevel: state.level, bindings: state.bindings, args })
+		const line = formatFallbackLine({
+			method,
+			currentLevel: state.level,
+			bindings: state.bindings,
+			msgPrefix: state.msgPrefix,
+			args
+		})
 		if (line !== undefined) process.stdout.write(`${line}\n`)
 	}
 
@@ -256,9 +274,14 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 		get levelVal() {
 			return levelValue(state.level, 30)
 		},
+		get msgPrefix() {
+			return state.msgPrefix
+		},
 		child: (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger =>
 			createFallbackLogger({
 				level: options?.level ?? state.level,
+				msgPrefix:
+					`${state.msgPrefix ?? ''}${typeof options?.msgPrefix === 'string' ? options.msgPrefix : ''}` || undefined,
 				bindings: { ...state.bindings, ...extra }
 			}),
 		trace: (...args: unknown[]) => write('trace', args),
