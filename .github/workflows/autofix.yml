@@ -50,7 +50,29 @@ jobs:
       # `src` and `Example`, never `lib`.
       - run: npm ci --ignore-scripts
 
-      # The repo's own fixer: `oxlint --fix && oxfmt src Example`.
-      - run: npm run lint:fix
+      # Two steps instead of `npm run lint:fix` on purpose. `oxlint --fix`
+      # exits nonzero while unfixable findings remain, and the script's `&&`
+      # would then skip the formatter — so on exactly the mixed-error PRs this
+      # workflow exists for, neither the lint fixes already made nor any
+      # formatting fix would reach the commit below. Each fixer runs; the
+      # leftover failure is reported at the end instead, and the job still
+      # fails on it.
+      - name: Fix auto-fixable lint findings
+        id: lint-fix
+        continue-on-error: true
+        run: npm exec -- oxlint --fix
 
+      # Same formatter and scope as `npm run format`: `oxfmt src Example`.
+      - name: Format
+        run: npm run format
+
+      # `always()`: publish whatever the fixers produced even when the lint
+      # step above reported findings it could not fix.
       - uses: autofix-ci/action@c5b2d67aa2274e7b5a18224e8171550871fc7e4a
+        if: always()
+
+      # Still a check, not just a committer: mixed-error PRs stay red until
+      # the manual part is fixed. The CI lint job reports the same leftovers.
+      - name: Fail on findings the fixers could not fix
+        if: steps.lint-fix.outcome == 'failure'
+        run: exit 1
