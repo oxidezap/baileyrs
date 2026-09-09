@@ -1,0 +1,56 @@
+name: autofix.ci
+
+# Commit the fixes `npm run lint:fix` already knows how to make — `oxlint
+# --fix` plus `oxfmt` — back to the pull request, so routine lint and format
+# findings fix themselves instead of bouncing the PR. The workflow name is part
+# of the setup: autofix.ci uses it to recognise this job's commits.
+#
+# One manual step outside this file: install the autofix.ci GitHub App on the
+# repository. Without it this job runs the fixers and has nothing to commit
+# through.
+#
+# Scope, on purpose:
+#   * Covers only what the fixers can rewrite: oxlint suggestions and oxfmt
+#     formatting over `src` and `Example`, the same tree `format:check` reads.
+#   * Everything else stays a reporting check in CI: `tsc` type errors, tests,
+#     the build, the e2e suite, fuzz and the release path never rewrite code.
+#
+# The job holds `contents: read`: pushing the fix is the App's job, through its
+# own installation token, not this runner's.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# One run per PR or ref. A newer commit on a PR supersedes the run fixing the
+# older one; pushes to main queue instead, so each commit gets its own fix.
+concurrency:
+  group: autofix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  autofix:
+    name: Fix lint & format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # --ignore-scripts skips `prepare`, like the lint job: the fixers read
+      # `src` and `Example`, never `lib`.
+      - run: npm ci --ignore-scripts
+
+      # The repo's own fixer: `oxlint --fix && oxfmt src Example`.
+      - run: npm run lint:fix
+
+      - uses: autofix-ci/action@c5b2d67aa2274e7b5a18224e8171550871fc7e4a
