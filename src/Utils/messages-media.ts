@@ -1,4 +1,5 @@
 import type { IAudioMetadata } from 'music-metadata'
+import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -163,25 +164,28 @@ export async function getAudioDuration(buffer: Buffer | string | Readable) {
 	// `music-metadata` is an optional peer: without it the duration is simply
 	// unknown and the caller sends without `seconds`. The specifier cast keeps
 	// bundlers from failing the build when the peer is absent, the same trick
-	// `link-preview.ts` uses for `link-preview-js`.
+	// `link-preview.ts` uses for `link-preview-js`. Only the import is
+	// guarded: parser failures still throw so the caller's warning reports
+	// corrupt audio instead of silently dropping the duration.
+	let musicMetadata: typeof musicMetadataTypes
 	try {
-		const musicMetadata = await import('music-metadata' as string)
-		let metadata: IAudioMetadata
-		const options = {
-			duration: true
-		}
-		if (Buffer.isBuffer(buffer)) {
-			metadata = await musicMetadata.parseBuffer(buffer, undefined, options)
-		} else if (typeof buffer === 'string') {
-			metadata = await musicMetadata.parseFile(buffer, options)
-		} else {
-			metadata = await musicMetadata.parseStream(buffer, undefined, options)
-		}
-
-		return metadata.format.duration
+		musicMetadata = await import('music-metadata' as string)
 	} catch {
 		return undefined
 	}
+	let metadata: IAudioMetadata
+	const options = {
+		duration: true
+	}
+	if (Buffer.isBuffer(buffer)) {
+		metadata = await musicMetadata.parseBuffer(buffer, undefined, options)
+	} else if (typeof buffer === 'string') {
+		metadata = await musicMetadata.parseFile(buffer, options)
+	} else {
+		metadata = await musicMetadata.parseStream(buffer, undefined, options)
+	}
+
+	return metadata.format.duration
 }
 
 /**

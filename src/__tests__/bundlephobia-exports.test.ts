@@ -42,4 +42,14 @@ describe('bundler export surface', () => {
 		expect(typeof manifest.peerDependencies?.['music-metadata']).toBe('string')
 		expect(manifest.peerDependenciesMeta?.['music-metadata']?.optional).toBe(true)
 	})
+
+	it('keeps the music-metadata import opaque to bundlers', () => {
+		// Webpack turns a statically analyzable `import('music-metadata')`
+		// into a hard error when the optional peer is absent, but only warns
+		// on a non-literal specifier. The `as string` cast is what keeps the
+		// published build warning-only, so a change dropping it must fail here.
+		const source = readFileSync(resolve(repoRoot, 'src/Utils/messages-media.ts'), 'utf8')
+		expect(source.includes("import('music-metadata' as string)")).toBe(true)
+		expect(source.includes("await import('music-metadata')")).toBe(false)
+	})
 })
