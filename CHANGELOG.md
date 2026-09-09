@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.3](https://github.com/oxidezap/baileyrs/compare/v0.3.2...v0.3.3) (2026-09-09)
+
+
+### Features
+
+* **events:** carry the envelope's type on an undecryptable stub ([#131](https://github.com/oxidezap/baileyrs/issues/131)) ([15b4a5f](https://github.com/oxidezap/baileyrs/commit/15b4a5f3418f30fbf950315510ff40f591b014d6))
+
+
+### Bug Fixes
+
+* **deps:** bump @oxidezap/whatsapp-rust-bridge to 0.21.4 ([#132](https://github.com/oxidezap/baileyrs/issues/132)) ([c917578](https://github.com/oxidezap/baileyrs/commit/c917578a40a9f7fc12603f32d959edb2193f42ba))
+* use one music-metadata type import in the optional audio-duration path ([#130](https://github.com/oxidezap/baileyrs/issues/130)) ([0a73430](https://github.com/oxidezap/baileyrs/commit/0a73430a3462a7189801c1d867b5d164ea649ce6))
+
+
+### Performance
+
+* drop protobufjs runtime dependency with structural facade shim ([#127](https://github.com/oxidezap/baileyrs/issues/127)) ([4d0038f](https://github.com/oxidezap/baileyrs/commit/4d0038f45745e679122f9152e9aaedcef879bc0d))
+
 ## [0.3.2](https://github.com/oxidezap/baileyrs/compare/v0.3.1...v0.3.2) (2026-09-09)
 
 
