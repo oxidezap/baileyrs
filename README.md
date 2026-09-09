@@ -88,6 +88,37 @@ That writes the alias to your `package.json` (with the latest version at install
 Every `import { makeWASocket } from '@whiskeysockets/baileys'` in your codebase
 now resolves to baileyrs.
 
+### What gets installed
+
+`npm install @oxidezap/baileyrs` always brings two runtime dependencies.
+
+- `@oxidezap/whatsapp-rust-bridge` is the Rust engine doing the protocol
+  work. It is the library, not an add-on, so it stays a hard dependency.
+- `long` stays too. Fields like `messageTimestamp` and `fileLength` are
+  `Long` objects in the types, and the package builds real ones at runtime.
+  A consumer without it fails compilation in four declaration files and
+  fails at import, so there is nothing to save by dropping it. I checked.
+
+Everything else is an optional peer. It is used when present and skipped
+when not.
+
+| Peer | What it does | Without it |
+| --- | --- | --- |
+| `@hapi/boom` (`^9` or `^10`) | Backs the exported `Boom` errors | A built-in implementation with the same shape |
+| `pino` (`^9` or `^10`) | Backs the default logger | JSON lines on stdout, same redaction |
+| `sharp`, `jimp`, `audio-decode`, `link-preview-js`, `music-metadata` | Media work | Same behavior as before this change |
+
+Two setups both work.
+
+- Migrating a Baileys project. Your tree already has `@hapi/boom` and
+  `pino`, and baileyrs reuses those copies. Error identity is shared, so
+  `instanceof` and `isBoom` checks against your own copy keep passing.
+  Install nothing, remove nothing.
+- Fresh project. Install only what you touch. The defaults work with zero
+  extra dependencies. Add `@hapi/boom` if you compare errors against
+  another library's copy, and `pino` if you want transports and
+  pretty-printing instead of stdout JSON.
+
 ### Preview builds
 
 Every commit on `main` and every pull request publishes an installable build
@@ -304,11 +335,12 @@ A few behaviors that differ from upstream — almost always to your advantage:
   of one group can pick the same one, and a handler that keys on it would drop
   the second person's message rather than a duplicate. That is why the engine's
   own check carries the sender too.
-- **`Boom` ships in the box.** baileyrs exports its own
+- **`Boom` works with or without `@hapi/boom`.** baileyrs exports a
   `@hapi/boom`-compatible `Boom`, so the existing
-  `(err as Boom).output.statusCode` pattern works unchanged. If your
-  `package.json` was pulling `@hapi/boom` only for baileys, you can drop
-  the dependency.
+  `(err as Boom).output.statusCode` pattern works unchanged. The package is
+  an optional peer. With it installed your copy backs the export, without
+  it a built-in implementation with the same shape does. See
+  [What gets installed](#what-gets-installed).
 - **Audio duration needs the optional `music-metadata` peer.** Upstream
   Baileys bundles it as a hard dependency; here it is optional like the
   other media peers (`sharp`, `jimp`, `audio-decode`, `link-preview-js`).
