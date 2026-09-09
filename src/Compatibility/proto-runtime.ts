@@ -629,9 +629,9 @@ class ProtoCompatibilityRuntime {
 			if (writer !== undefined) return appendBytes(writer, finish())
 			// The codec's own writer is what comes back, with `finish` shadowed on
 			// the instance rather than replaced by a bare `{ finish }`. The published
-			// declaration types this return as a protobufjs `Writer`, and a caller
-			// that chains anything on it — `fork`, `join`, another field — has to
-			// find the rest of the surface still there. The writer is freshly made
+			// declaration types this return as the facade's structural `Writer`,
+			// which mirrors the full `protobufjs` instance surface, so a caller
+			// chaining on it keeps typechecking. The writer is freshly made
 			// by this call, so shadowing one method on it touches nothing else.
 			encoded.finish = finish
 			return encoded
