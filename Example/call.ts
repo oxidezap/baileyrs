@@ -215,7 +215,7 @@ interface CallExampleArgs {
 	audioFile?: string
 	mic?: string
 	authDir: string
-	socketUrl: string
+	socketUrl: string | undefined
 	dangerSkipCertVerify: boolean
 }
 
@@ -253,7 +253,10 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		audioFile,
 		mic,
 		authDir: get('--auth') ?? './call-auth',
-		socketUrl: get('--socket') ?? process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat',
+		// No mock fallback: without --socket or SOCKET_URL the socket keeps
+		// its production WhatsApp Web default, so an ordinary run places a
+		// real call instead of timing out against an absent localhost mock.
+		socketUrl: get('--socket') ?? process.env.SOCKET_URL,
 		dangerSkipCertVerify: argv.includes('--danger-skip-cert-verify')
 	}
 }
@@ -322,7 +325,7 @@ const main = async (): Promise<void> => {
 	const sock = makeWASocket({
 		auth: state,
 		logger: logger as never,
-		waWebSocketUrl: args.socketUrl,
+		...(args.socketUrl !== undefined ? { waWebSocketUrl: args.socketUrl } : {}),
 		...(args.dangerSkipCertVerify ? { dangerSkipCertChainVerify: true as const } : {})
 	})
 	// UDP pipe to the relay: the core builds every datagram, this only ships
@@ -333,9 +336,25 @@ const main = async (): Promise<void> => {
 			const socket = dgram.createSocket('udp4')
 			await new Promise<void>((resolve, reject) => {
 				socket.once('error', reject)
-				socket.bind(0, () => resolve())
+				socket.bind(0, () => {
+					// Off on success: a leftover one-shot would swallow the
+					// first operational error as a no-op reject instead of
+					// reporting the relay closed.
+					socket.off('error', reject)
+					resolve()
+				})
 			})
 			let opened = false
+			let finished = false
+			const finish = (reason?: string): void => {
+				if (finished) return
+				finished = true
+				try {
+					events.onClose(reason)
+				} catch {
+					// The bridge is already gone; nothing left to tell.
+				}
+			}
 			socket.on('message', (message: Buffer) => {
 				if (!opened) {
 					opened = true
@@ -343,7 +362,8 @@ const main = async (): Promise<void> => {
 				}
 				events.onPacket(new Uint8Array(message))
 			})
-			socket.on('close', () => events.onClose())
+			socket.on('error', () => finish('udp socket error'))
+			socket.on('close', () => finish())
 			queueMicrotask(() => {
 				if (!opened) {
 					opened = true
@@ -401,9 +421,10 @@ const main = async (): Promise<void> => {
 	// starting it at launch would spend the audio before anyone answers.
 	const ensureEncoder = (): void => {
 		if (encoder || (!args.audioFile && args.mic === undefined)) return
-		encoder = spawnOpusEncoder(args)
+		const child = spawnOpusEncoder(args)
+		encoder = child
 		demux = demuxOggOpus()
-		encoder?.stdout?.on('data', (chunk: Buffer) => {
+		child?.stdout?.on('data', (chunk: Buffer) => {
 			if (!liveCallId) return
 			for (const packet of demux.push(new Uint8Array(chunk))) {
 				void sock
@@ -417,9 +438,12 @@ const main = async (): Promise<void> => {
 					.catch(err => console.error('push failed:', (err as Error).message))
 			}
 		})
-		encoder?.on('exit', code => {
+		child?.on('exit', code => {
 			console.log(`ffmpeg exited (${code}); audio input spent`)
-			encoder = null
+			// Only the current child clears the slot: a hangup followed by
+			// a new call installs a replacement first, and the old child's
+			// delayed exit must not untrack it.
+			if (encoder === child) encoder = null
 		})
 	}
 
@@ -445,14 +469,15 @@ const main = async (): Promise<void> => {
 		stopPlaying?.()
 		stopPlaying = undefined
 		muxFrame = undefined
+		// Stopped before the hangup lands: a new ring answered while endCall
+		// is in flight must find a clear slot, not the dying capture.
+		stopEncoder()
 		try {
 			const end = await sock.endCall(id)
 			console.log('hangup:', end.outcome)
 		} catch (err) {
 			console.error('hangup failed:', (err as Error).message)
 		}
-		stopEncoder()
-		player.stop()
 	}
 
 	sock.ev.on('call.media', event => {

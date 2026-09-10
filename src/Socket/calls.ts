@@ -979,6 +979,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * sinks, so decode synchronously and never modify the bytes. The
 		 * returned function unregisters the sink; `ended` and socket teardown
 		 * unregister it automatically.
+		 *
+		 * Pure registration, unlike the methods above: it never reaches the
+		 * bridge, so there is no capability probe and no 501 — on a bridge
+		 * without the audio domain the sink simply never fires.
 		 */
 		onCallAudio: (callId: string, sink: CallAudioSink): (() => void) => {
 			assertCallId('onCallAudio', callId)
