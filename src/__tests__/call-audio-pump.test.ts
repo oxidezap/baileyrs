@@ -247,6 +247,21 @@ describe('call audio pump', () => {
 		expect(Date.now() - started >= 30).toBe(true)
 	})
 
+	it('a stop during the clock wait settles at once', async () => {
+		const pump = startCallAudioPump(() => true, scriptedSource([new Uint8Array([1])]), {
+			timing: { mode: 'clock', packetDurationMs: 60_000 }
+		})
+		// Let the first pull land, then stop inside the hour-long wait: done
+		// must settle in milliseconds, and the parked pull after it must not
+		// hang a later stop either.
+		await new Promise(resolve => setImmediate(resolve))
+		await new Promise(resolve => setImmediate(resolve))
+		const started = Date.now()
+		pump.stop()
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'stopped' })
+		expect(Date.now() - started < 5_000).toBe(true)
+	})
+
 	it('rejects a clock period that is not a positive number', () => {
 		for (const packetDurationMs of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
 			expect(() =>

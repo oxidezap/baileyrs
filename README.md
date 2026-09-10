@@ -396,7 +396,9 @@ A few behaviors that differ from upstream — almost always to your advantage:
   need no microphone, codec, or ffmpeg and are meant for tests. Encoders with
   their own capture can skip the pump and hold a sync writer from
   `sock.openCallAudioWriter(callId)` instead, and file playback paces itself
-  through the pump's clock timing rather than the queue. Calls need a
+  through the pump's clock timing rather than the queue. Clock timing paces
+  the pulls, so pair it with an unpaced source (`intervalMs: 0`) or the two
+  cadences add up. Calls need a
   bridge with the `client-calls-audio` domain — a preview build, not a
   release — and without one every method above throws `501` naming it.
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**

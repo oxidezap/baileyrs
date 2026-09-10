@@ -709,17 +709,9 @@ export const startCallAudioPump = (
 				// Checked before pulling: a pump stopped before its first pull
 				// never touches the source at all.
 				if (stopped) break
-				if (clockMs !== undefined && pulls > 0) {
-					// Clock pacing, per pull rather than per push: shed audio
-					// still consumes its slot, so playback cadence survives
-					// congestion instead of compressing into it.
-					const wait = nextDeadline - Date.now()
-					if (wait > 0) await paceDelay(wait)
-				}
-				// Raced, not awaited bare: a source parked in `next()` must not
-				// outlive the stop. A pull that resolves after the break drops
-				// its packet, which is the loss-tolerant answer anyway. The
-				// interrupt is fresh per iteration so a settled race leaves
+				// One interrupt per iteration, shared by the clock wait, the
+				// pull and the push: a stop during any of the three settles
+				// `done` instead of stranding it. A settled race leaves
 				// nothing registered behind.
 				let wakeCurrent!: () => void
 				const interruptCurrent = new Promise<null>(resolve => {
@@ -727,6 +719,16 @@ export const startCallAudioPump = (
 				})
 				wakeParkedPull = wakeCurrent
 				try {
+					if (clockMs !== undefined && pulls > 0) {
+						// Clock pacing, per pull rather than per push: shed
+						// audio still consumes its slot, so playback cadence
+						// survives congestion instead of compressing into it.
+						// Raced like everything else: a bare sleep would lose
+						// the stop and strand the pull race behind it.
+						const wait = nextDeadline - Date.now()
+						if (wait > 0) await Promise.race([paceDelay(wait), interruptCurrent])
+						if (stopped) break
+					}
 					const packet = await Promise.race([source.next(), interruptCurrent])
 					if (stopped) break
 					if (packet === null) {
