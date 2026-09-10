@@ -26,6 +26,7 @@ import { makeSilenceCallAudioSource } from '../../Socket/calls.ts'
 import type { CallMediaStats } from '../../index.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
+import { makeUdpRelayProvider } from './udp-relay-provider.ts'
 import { waitForEvent } from './wait.ts'
 
 const STAT_FIELDS = [
@@ -55,12 +56,30 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 	let alice: TestClient
 	let bob: TestClient
 
+	const relayProviders: { closeAll(): Promise<void> }[] = []
+
 	before(async () => {
 		alice = await createTestClient({ label: 'caller' })
 		bob = await createTestClient({ label: 'callee' })
+		// The caller's engine starts relay setup on dial; without a provider
+		// that setup fails fast and the dormant call is gone before the first
+		// push. The old mock never got this far, so the provider is new.
+		for (const sock of [alice.sock, bob.sock]) {
+			const provider = makeUdpRelayProvider()
+			relayProviders.push(provider)
+			await sock.setRelayTransportProvider(provider)
+		}
 	})
 
 	after(async () => {
+		for (const provider of relayProviders) {
+			try {
+				await provider.closeAll()
+			} catch {
+				/* ignore */
+			}
+		}
+		relayProviders.length = 0
 		await destroyTestClient(alice)
 		await destroyTestClient(bob)
 	})
