@@ -138,6 +138,19 @@ describe('deferred logger', () => {
 		expect(JSON.parse(lines[0]!)).toMatchObject({ level: 20, scope: 'fresh', msg: 'inherited' })
 	})
 
+	it('holds an assigned onChild, then fires it when the child resolves', async () => {
+		const fresh = (await import(`${'../Utils/logger.ts'}?onchild-instance`)).default as typeof logger
+		const seen: unknown[] = []
+		fresh.onChild = child => {
+			seen.push(child)
+		}
+		const child = fresh.child({ scope: 'lazy' })
+		expect(seen).toHaveLength(0)
+		fresh.level = 'silent'
+		child.info('resolves the child')
+		expect(seen).toHaveLength(1)
+	})
+
 	it('keeps the configured redaction and timestamp format', () => {
 		logger.level = 'info'
 		let lines: string[] = []

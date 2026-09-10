@@ -194,11 +194,14 @@ class FallbackBoom<Data = unknown> extends Error implements Boom<Data> {
 
 	constructor(messageOrError?: string | Error, options: BoomOptions<Data> = {}) {
 		if (messageOrError instanceof Error) {
+			// Own properties are copied, the prototype is kept: a custom
+			// Error subclass still answers `instanceof` after wrapping,
+			// exactly like the peer's clone. Boom recognition does not need
+			// the fallback prototype, it goes through `isBoom`.
 			const copy = Object.create(
 				Object.getPrototypeOf(messageOrError),
 				Object.getOwnPropertyDescriptors(messageOrError)
 			) as FallbackBoom<Data>
-			Object.setPrototypeOf(copy, FallbackBoom.prototype)
 			return boomifyFallback(copy, options)
 		}
 		const { statusCode = 500, data = null, ctor = FallbackBoom } = options

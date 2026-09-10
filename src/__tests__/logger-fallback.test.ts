@@ -110,6 +110,18 @@ describe('fallback log lines', () => {
 		expect(formatFallbackLine(silenced)).toBeUndefined()
 	})
 
+	it('redacts credential paths inside array payloads too', () => {
+		const line = formatFallbackLine({
+			method: 'info',
+			currentLevel: 'info',
+			bindings: {},
+			args: [[{ privateKey: 'shh', keep: 'visible' }]]
+		})
+		const entry = parse(line) as { data: Array<{ privateKey: string; keep: string }> }
+		expect(entry.data[0]?.privateKey).toBe('[REDACTED]')
+		expect(entry.data[0]?.keep).toBe('visible')
+	})
+
 	it('prepends msgPrefix to messages', () => {
 		const line = formatFallbackLine({
 			method: 'info',

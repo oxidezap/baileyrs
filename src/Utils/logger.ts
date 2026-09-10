@@ -41,6 +41,8 @@ export interface Logger {
 	readonly levelVal: number
 	/** Prefix prepended to every message. Mirrors the peer. */
 	readonly msgPrefix: string | undefined
+	/** Callback run on creation of a child. Assignable, like the peer. */
+	onChild: (child: Logger) => void
 	levels: { values: Record<string, number>; labels: Record<number, string> }
 	isLevelEnabled(level: string): boolean
 }
@@ -157,9 +159,17 @@ const censorPath = (root: Record<string, unknown>, path: string): void => {
 }
 
 const redactForFallback = (value: unknown): unknown => {
-	if (!isPlainObject(value)) return value
-	const copy = cloneForLog(value) as Record<string, unknown>
-	for (const path of REDACTED_PATHS) censorPath(copy, path)
+	const copy = cloneForLog(value)
+	if (isPlainObject(copy)) {
+		for (const path of REDACTED_PATHS) censorPath(copy, path)
+	} else if (Array.isArray(copy)) {
+		// Arrays skip the per-call object branch downstream and land under
+		// `data`, so redact each element the same way. Without this a
+		// `[{ privateKey }]` payload leaks while `{ privateKey }` does not.
+		for (const entry of copy) {
+			if (isPlainObject(entry)) for (const path of REDACTED_PATHS) censorPath(entry, path)
+		}
+	}
 	return copy
 }
 
@@ -241,7 +251,34 @@ export const formatFallbackLine = ({
 interface FallbackState {
 	level: string
 	msgPrefix?: string
+	onChild: (child: Logger) => void
 	bindings: Record<string, unknown>
+}
+
+/** Stdout is process-global, so pending-write tracking is too. */
+let fallbackPendingWrites = 0
+const fallbackFlushWaiters: Array<() => void> = []
+
+const noteFallbackDelivered = (): void => {
+	fallbackPendingWrites--
+	if (fallbackPendingWrites === 0) {
+		for (const resume of fallbackFlushWaiters.splice(0, fallbackFlushWaiters.length)) resume()
+	}
+}
+
+const writeFallbackLine = (line: string): void => {
+	fallbackPendingWrites++
+	let settled = false
+	const delivered = (): void => {
+		if (settled) return
+		settled = true
+		noteFallbackDelivered()
+	}
+	try {
+		process.stdout.write(`${line}\n`, delivered)
+	} catch {
+		delivered()
+	}
 }
 
 /**
@@ -261,7 +298,7 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 			msgPrefix: state.msgPrefix,
 			args
 		})
-		if (line !== undefined) process.stdout.write(`${line}\n`)
+		if (line !== undefined) writeFallbackLine(line)
 	}
 
 	const logger: Logger = {
@@ -277,13 +314,23 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 		get msgPrefix() {
 			return state.msgPrefix
 		},
-		child: (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger =>
-			createFallbackLogger({
+		get onChild() {
+			return state.onChild
+		},
+		set onChild(callback: (child: Logger) => void) {
+			state.onChild = callback
+		},
+		child: (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger => {
+			const created = createFallbackLogger({
 				level: options?.level ?? state.level,
 				msgPrefix:
 					`${state.msgPrefix ?? ''}${typeof options?.msgPrefix === 'string' ? options.msgPrefix : ''}` || undefined,
+				onChild: state.onChild,
 				bindings: { ...state.bindings, ...extra }
-			}),
+			})
+			state.onChild(created)
+			return created
+		},
 		trace: (...args: unknown[]) => write('trace', args),
 		debug: (...args: unknown[]) => write('debug', args),
 		info: (...args: unknown[]) => write('info', args),
@@ -291,7 +338,13 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 		error: (...args: unknown[]) => write('error', args),
 		fatal: (...args: unknown[]) => write('fatal', args),
 		silent: () => {},
-		flush: (callback?: () => void) => callback?.(),
+		flush: (callback?: () => void) => {
+			// Drain-aware: when stdout is a pipe, earlier lines may still be
+			// queued, and exiting from the callback would lose them.
+			if (!callback) return
+			if (fallbackPendingWrites === 0) callback()
+			else fallbackFlushWaiters.push(callback)
+		},
 		bindings: () => ({ ...state.bindings }),
 		setBindings: (extra: Record<string, unknown>) => {
 			Object.assign(state.bindings, extra)
@@ -332,7 +385,7 @@ const resolveRootLogger = (): Logger => {
 					timestamp: () => `,"time":"${new Date().toJSON()}"`,
 					redact: { paths: REDACTED_PATHS, censor: '[REDACTED]' }
 				})
-			: createFallbackLogger({ level: configuredLevel, bindings: { name: 'baileyrs' } })
+			: createFallbackLogger({ level: configuredLevel, onChild: () => {}, bindings: { name: 'baileyrs' } })
 	}
 	return rootLogger
 }
@@ -366,6 +419,7 @@ const createDeferredLogger = (
 ): Logger => {
 	let resolved: Logger | undefined
 	let pendingLevel: string | undefined
+	let pendingOnChild: ((child: Logger) => void) | undefined
 	const members = new Map<PropertyKey, unknown>()
 
 	const resolve = (): Logger => {
@@ -373,6 +427,7 @@ const createDeferredLogger = (
 			const source = parent ? parent.resolve() : resolveRootLogger()
 			resolved = bindings ? source.child(bindings, childOptions) : source
 			if (pendingLevel !== undefined) resolved.level = pendingLevel
+			if (pendingOnChild !== undefined) resolved.onChild = pendingOnChild
 		}
 		return resolved
 	}
@@ -395,6 +450,7 @@ const createDeferredLogger = (
 		get(_target, property) {
 			if (property === 'child') return child
 			if (property === 'level' && !resolved) return peekLevel()
+			if (property === 'onChild' && !resolved && pendingOnChild !== undefined) return pendingOnChild
 			const cached = members.get(property)
 			if (cached !== undefined) return cached
 			const logger = resolve()
@@ -407,6 +463,12 @@ const createDeferredLogger = (
 		set(_target, property, value) {
 			if (property === 'level' && !resolved) {
 				pendingLevel = value as string
+				return true
+			}
+			if (property === 'onChild' && !resolved) {
+				// Stored like `level`: assigning a hook must not build the
+				// logger the hook observes.
+				pendingOnChild = value as (child: Logger) => void
 				return true
 			}
 			;(resolve() as unknown as Record<PropertyKey, unknown>)[property] = value
