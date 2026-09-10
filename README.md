@@ -314,6 +314,22 @@ A few behaviors that differ from upstream — almost always to your advantage:
   other media peers (`sharp`, `jimp`, `audio-decode`, `link-preview-js`).
   Without it, audio messages still send — they just carry no `seconds`
   value. Install `music-metadata` if you want durations computed.
+- **Voice calls ride the bridge calls preview, not the release bridge.**
+  `sock.dialCall(peerJid)` / `sock.acceptCall(callId)` open an encoded-audio
+  call (`'mlow'` by default, `'opus'` for the in-profile escape);
+  `sock.pushCallAudio(callId, bytes)` queues one packet and resolves `false`
+  when the engine shed it under backpressure — that is the normal
+  loss-tolerant answer, not an error. Decoded packets arrive through
+  per-call `sock.onCallAudio(callId, sink)` sinks, lifecycle steps
+  (`relay-allocated`, …, `ended`) on the `call.media` event, and
+  `sock.endCall` / `setCallMuted` / `getCallMediaStats` / `getActiveCalls`
+  round out the surface. There is no watermark readout: the bridge names the
+  `false` return as the pacing signal, with the shed counters in the stats
+  for the rest. `startCallAudioPump(callId, source)` wires a packet source
+  to the push; the built-in silence (`0x90` MLOW SID) and file-chunk sources
+  need no microphone, codec, or ffmpeg and are meant for tests. Calls need a
+  bridge with the `client-calls-audio` domain — a preview build, not a
+  release — and without one every method above throws `501` naming it.
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**
   See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
   one can break a boot path, so it has its own section.
