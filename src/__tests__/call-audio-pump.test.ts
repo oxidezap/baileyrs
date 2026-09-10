@@ -78,6 +78,12 @@ describe('call audio silence source', () => {
 		expect(() => makeSilenceCallAudioSource({ packet: new Uint8Array(0) })).toThrow(/non-empty/)
 		expect(() => makeSilenceCallAudioSource({ intervalMs: -1 })).toThrow(/intervalMs/)
 	})
+
+	it('rejects a packet count that is not a non-negative integer', () => {
+		for (const packets of [Number.NaN, 2.5, -1]) {
+			expect(() => makeSilenceCallAudioSource({ packets, intervalMs: 0 })).toThrow(/non-negative integer/)
+		}
+	})
 })
 
 describe('call audio file source', () => {
@@ -116,6 +122,7 @@ describe('call audio file source', () => {
 			const path = join(dir, 'fixture.bin')
 			await writeFile(path, new Uint8Array([1]))
 			await expect(makeFileCallAudioSource(path, { packetBytes: 0 })).rejects.toThrow(/packetBytes/)
+			await expect(makeFileCallAudioSource(path, { packets: Number.NaN })).rejects.toThrow(/non-negative integer/)
 		} finally {
 			await rm(dir, { recursive: true, force: true })
 		}
@@ -256,13 +263,10 @@ describe('call audio pump', () => {
 			}
 		}
 		let pump!: { done: Promise<{ pushed: number; shed: number }>; stop: () => void }
-		pump = startCallAudioPump(
-			data => {
-				if (data[0] === 1) pump.stop()
-				return true
-			},
-			packets()
-		)
+		pump = startCallAudioPump(data => {
+			if (data[0] === 1) pump.stop()
+			return true
+		}, packets())
 		expect(await pump.done).toEqual({ pushed: 1, shed: 0 })
 		expect(cleanedUp).toBe(true)
 	})
@@ -355,6 +359,18 @@ describe('call media router', () => {
 			reportError: err => failures.push(err)
 		})
 		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocated' })
+		expect(failures).toHaveLength(1)
+	})
+
+	it('drops a version-skewed event kind instead of publishing it', () => {
+		const emitted: CallMediaEvent[] = []
+		const failures: unknown[] = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: event => emitted.push(event),
+			reportError: err => failures.push(err)
+		})
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'exploded' } as unknown as CallMediaEvent)
+		expect(emitted).toEqual([])
 		expect(failures).toHaveLength(1)
 	})
 

@@ -1057,6 +1057,23 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// engine gets no terminal response here to fire `ended` off, so
 			// without this a pump would keep pulling after the hangup.
 			callMedia.stopCall(callId)
+			// The native handle ends with it too when this socket opened one:
+			// stopCall above only drops the JS routing, and the bridge record
+			// would otherwise stay listed by getActiveCalls. A signaling-only
+			// call has no record, which reads as invalid-argument on callId
+			// and is ignored; anything else still throws. Skipped entirely on
+			// a bridge without the audio domain.
+			await ctx.withClient(async client => {
+				const endCall = (client as unknown as { endCall?: unknown }).endCall
+				if (typeof endCall !== 'function') return
+				try {
+					await (endCall as (this: unknown, callId: string) => Promise<unknown>).call(client, callId)
+				} catch (err) {
+					const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
+					if (coded.kind === 'invalid-argument' && coded.field === 'callId') return
+					throw err
+				}
+			})
 		},
 		/**
 		 * Fetch the account's current reachout-timelock state from the server.

@@ -94,6 +94,10 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 		await alice.sock.terminateCall(callId, bob.lid ?? bob.jid)
 		const lingeringStats = await lingering.done
 		expect(lingeringStats.pushed + lingeringStats.shed >= 1).toBe(true)
+		// The native handle goes with it: terminate ends the bridge record,
+		// not just the JS routing.
+		const afterTerminate = await alice.sock.getActiveCalls()
+		expect(afterTerminate.some(call => call.callId === callId)).toBe(false)
 
 		const end = await alice.sock.endCall(callId)
 		expect(end.outcome === 'peer-notified' || end.outcome === 'already-ended').toBe(true)

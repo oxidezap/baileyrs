@@ -206,10 +206,27 @@ const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 	)
 }
 
+const MEDIA_EVENT_KINDS: readonly CallMediaEvent['kind'][] = [
+	'relay-allocated',
+	'relay-allocate-failed',
+	'relay-allocate-timed-out',
+	'media-setup-failed',
+	'audio-codec-switched',
+	'audio-codec-source-fixed',
+	'ended'
+]
+
 const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 	if (typeof event !== 'object' || event === null) return false
 	const record = event as Record<string, unknown>
-	return typeof record.callId === 'string' && typeof record.kind === 'string'
+	// The kind is closed: a version-skewed spelling must not publish as the
+	// union the consumers were promised, and a misspelled terminal kind must
+	// not skip the stop below by matching nothing.
+	return (
+		typeof record.callId === 'string' &&
+		typeof record.kind === 'string' &&
+		(MEDIA_EVENT_KINDS as readonly string[]).includes(record.kind)
+	)
 }
 
 export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRouterDeps): CallMediaRouter => {
@@ -328,6 +345,9 @@ export interface SilenceCallAudioSourceOptions {
 }
 
 export const makeSilenceCallAudioSource = (options: SilenceCallAudioSourceOptions = {}): CallAudioPacketSource => {
+	if (options.packets !== undefined && (!Number.isInteger(options.packets) || options.packets < 0)) {
+		throw new Boom('makeSilenceCallAudioSource: packets must be a non-negative integer', { statusCode: 400 })
+	}
 	const intervalMs = options.packets === 0 ? 0 : (options.intervalMs ?? 60)
 	const total = options.packets ?? Number.POSITIVE_INFINITY
 	const packet = options.packet ?? MLOW_SILENCE_PACKET
@@ -380,6 +400,9 @@ export const makeFileCallAudioSource = async (
 		throw new Boom('makeFileCallAudioSource: intervalMs must be a finite number >= 0', { statusCode: 400 })
 	}
 	const bytes = await readFile(path)
+	if (options.packets !== undefined && (!Number.isInteger(options.packets) || options.packets < 0)) {
+		throw new Boom('makeFileCallAudioSource: packets must be a non-negative integer', { statusCode: 400 })
+	}
 	const total = options.packets ?? Number.POSITIVE_INFINITY
 	let offset = 0
 	let sent = 0
