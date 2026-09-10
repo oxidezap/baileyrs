@@ -5,7 +5,7 @@
  * through the real engine, reads the media stats, and ends the call. Bob
  * observes the offer on `call`, which proves the offer stanza crossed the
  * mock — the mock answers no relay, so the media plane stays dormant and no
- * decoded packet can come back down `onCallAudio` here. That direction is
+ * encoded packet can come back down `onCallAudio` here. That direction is
  * covered by the loopback half of `call-audio-pump.test.ts`.
  *
  * What this pins, all against the preview bridge and the mock:

@@ -10,7 +10,7 @@
  *   ffmpeg, or any codec in the package;
  * - the pump moves every packet, counts shed audio instead of erroring on
  *   it, and stops on a spent source, an abort, or a throwing push;
- * - the media router delivers each decoded frame to the right call's sinks,
+ * - the media router delivers each encoded frame to the right call's sinks,
  *   never throws back into the bridge pump, and ends pumps on `ended`;
  * - the socket methods validate arguments ahead of the bridge and report a
  *   missing audio domain as 501 rather than `not a function`.
@@ -315,6 +315,19 @@ describe('call media router', () => {
 		router.routeAudioFrame(frame('CALL-1'))
 		expect(first).toHaveLength(1)
 		expect(second).toHaveLength(1)
+	})
+
+	it('shares one owned frame across a call sinks, valid after the route', () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const seen: CallAudioFrame[] = []
+		router.addAudioSink('CALL-1', f => seen.push(f))
+		router.addAudioSink('CALL-1', f => seen.push(f))
+		router.routeAudioFrame(frame('CALL-1'))
+		expect(seen).toHaveLength(2)
+		expect(seen[0]).toBe(seen[1])
+		// Retained past the callback: the bytes stay valid, so a sink may
+		// queue the reference instead of copying for validity.
+		expect(Array.from(seen[0]!.data)).toEqual([0x90])
 	})
 
 	it('a throwing sink neither breaks the other sinks nor escapes to the bridge', () => {

@@ -48,8 +48,8 @@ import type { SocketContext } from './types.ts'
  * the preview client satisfies this interface at runtime.
  */
 export interface CallAudioBridgeClient {
-	acceptCall(callId: string, audioFormat?: CallAudioFormat | null): Promise<string>
-	dialCall(peer: string, audioFormat?: CallAudioFormat | null): Promise<string>
+	acceptCall(callId: string, audioFormat: CallAudioFormat): Promise<string>
+	dialCall(peer: string, audioFormat: CallAudioFormat): Promise<string>
 	callPushAudio(callId: string, data: Uint8Array): boolean
 	endCall(callId: string): Promise<CallEndResult>
 	setCallMuted(callId: string, muted: boolean): Promise<void>
@@ -283,9 +283,11 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			}
 			const live = sinks.get(frame.callId)
 			if (!live) return
-			// The frame is handed through, never copied: the bridge already
-			// paid the one copy out of linear memory, and a sink that needs to
-			// keep bytes copies them itself before returning.
+			// The frame object is handed through, never re-wrapped: the bridge
+			// already copied the encoded bytes out of linear memory once, so
+			// what arrives here is an owned buffer, not a borrowed view. It is
+			// shared between the call's sinks — do not modify it; copy only
+			// to mutate or hand ownership elsewhere.
 			for (const sink of live) {
 				try {
 					sink(frame)
@@ -509,20 +511,19 @@ export const startCallAudioPump = (
 ): CallAudioPump => {
 	let stopped = false
 	let onAbort: (() => void) | undefined
-	let wakeBlockedPull: (() => void) | undefined
 	let releaseSettled: Promise<unknown> | undefined
+	// Wakes the pull currently parked in `source.next()`, if any. Replaced
+	// every iteration: a shared stop promise would pile one pair of reactions
+	// per raced pull onto itself and hold them for the whole call, while a
+	// per-iteration promise goes out of scope with the race that settled it.
+	let wakeParkedPull: (() => void) | undefined
 	const stats: CallAudioPumpStats = { pushed: 0, shed: 0 }
 	const source = asCallAudioPacketSource('startCallAudioPump', input)
-	// Wakes a pull blocked in `source.next()`: stopping, aborting, ending the
-	// call or tearing down the socket settles `done` instead of leaving it
-	// pending behind a source that never resolves.
-	const blockedPullWoken = new Promise<null>(resolve => {
-		wakeBlockedPull = () => resolve(null)
-	})
 
 	const stop = (): void => {
 		stopped = true
-		wakeBlockedPull?.()
+		wakeParkedPull?.()
+		wakeParkedPull = undefined
 		// Releases generator `finally` blocks and reader closes. A spent
 		// source has no release to run; an early stop must not leave one open.
 		// Rejections have nowhere to go on the stop path, so they stay silent
@@ -552,19 +553,30 @@ export const startCallAudioPump = (
 				if (stopped) break
 				// Raced, not awaited bare: a source parked in `next()` must not
 				// outlive the stop. A pull that resolves after the break drops
-				// its packet, which is the loss-tolerant answer anyway.
-				const packet = await Promise.race([source.next(), blockedPullWoken])
-				if (stopped) break
-				if (packet === null) {
-					exhausted = true
-					break
-				}
-				assertAudioPacket('startCallAudioPump: source', packet)
-				if (await push(packet)) {
-					stats.pushed++
-				} else {
-					stats.shed++
-					options.onShed?.(stats.shed)
+				// its packet, which is the loss-tolerant answer anyway. The
+				// interrupt is fresh per iteration so a settled race leaves
+				// nothing registered behind.
+				let wakeCurrent!: () => void
+				const interruptCurrent = new Promise<null>(resolve => {
+					wakeCurrent = () => resolve(null)
+				})
+				wakeParkedPull = wakeCurrent
+				try {
+					const packet = await Promise.race([source.next(), interruptCurrent])
+					if (stopped) break
+					if (packet === null) {
+						exhausted = true
+						break
+					}
+					assertAudioPacket('startCallAudioPump: source', packet)
+					if (await push(packet)) {
+						stats.pushed++
+					} else {
+						stats.shed++
+						options.onShed?.(stats.shed)
+					}
+				} finally {
+					if (wakeParkedPull === wakeCurrent) wakeParkedPull = undefined
 				}
 			}
 		} finally {
@@ -577,10 +589,11 @@ export const startCallAudioPump = (
 			} else {
 				stop()
 			}
+			// Cleanup settles inside the finally, not past it: a propagating
+			// failure must not skip the release wait. The original error still
+			// propagates afterwards, so failures keep their shape.
+			await releaseSettled
 		}
-		// Source cleanup settles first: by the time `done` resolves, generator
-		// `finally` blocks have run and readers are closed.
-		await releaseSettled
 		return { ...stats }
 	})()
 
@@ -630,7 +643,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 				throw new Boom('dialCall: peerJid must be a non-empty string', { statusCode: 400 })
 			}
 			assertArgumentDomain('dialCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
-			return withAudioClient('dialCall', client => client.dialCall(peerJid, audioFormat ?? null))
+			// Normalized, not passed through: the pinned bridge takes the
+			// format as required with no default, so an omitted promise would
+			// fail there instead of meaning mlow.
+			return withAudioClient('dialCall', client => client.dialCall(peerJid, audioFormat ?? 'mlow'))
 		},
 		/**
 		 * Answer a ringing call with encoded audio. The offer arrives on the
@@ -640,7 +656,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 		acceptCall: async (callId: string, audioFormat?: CallAudioFormat): Promise<string> => {
 			assertCallId('acceptCall', callId)
 			assertArgumentDomain('acceptCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
-			return withAudioClient('acceptCall', client => client.acceptCall(callId, audioFormat ?? null))
+			return withAudioClient('acceptCall', client => client.acceptCall(callId, audioFormat ?? 'mlow'))
 		},
 		/**
 		 * Push one encoded packet toward the peer. Resolves `true` when the
@@ -688,10 +704,12 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 			})
 		},
 		/**
-		 * Register a per-call decoded-audio sink. Frames arrive at voice
-		 * cadence on the bridge pump: decode or copy before returning, and
-		 * never retain the view. The returned function unregisters the sink;
-		 * `ended` and socket teardown unregister it automatically.
+		 * Register a per-call encoded-audio sink. Frames arrive at voice
+		 * cadence on the bridge pump: each carries one owned encoded packet,
+		 * valid after the callback returns and shared with the call's other
+		 * sinks, so decode synchronously and never modify the bytes. The
+		 * returned function unregisters the sink; `ended` and socket teardown
+		 * unregister it automatically.
 		 */
 		onCallAudio: (callId: string, sink: CallAudioSink): (() => void) => {
 			assertCallId('onCallAudio', callId)

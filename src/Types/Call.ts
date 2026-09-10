@@ -71,7 +71,13 @@ export type WACallEvent = {
  */
 export type CallAudioFormat = 'mlow' | 'opus'
 
-/** One decoded audio packet for a live call, as the engine received it. */
+/**
+ * One encoded audio packet for a live call, as the engine received it: the
+ * codec payload plus its RTP metadata. The buffer is owned, not a borrowed
+ * view — it stays valid after the callback returns — and it is shared between
+ * the call's listeners, so never modify it; copy only to mutate or transfer
+ * ownership. `codec` names the grammar inside the negotiated timing.
+ */
 export type CallAudioFrame = {
 	callId: string
 	data: Uint8Array
@@ -180,7 +186,11 @@ export type CallAudioPacketSource = {
  */
 export type CallAudioSourceInput = CallAudioPacketSource | AsyncIterable<Uint8Array>
 
-/** Per-packet sink for one live call's decoded audio. */
+/**
+ * Per-packet sink for one live call's encoded audio. Runs synchronously per
+ * packet; a returned promise is not observed, so an async sink must catch its
+ * own failures rather than leaking unhandled rejections.
+ */
 export type CallAudioSink = (frame: CallAudioFrame) => void
 
 /** What one `startCallAudioPump` run moved. */

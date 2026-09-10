@@ -243,7 +243,7 @@ await sock.terminateCall(call.id, call.chatId)
 `groupJid`, and `reason` says why a call ended when the bridge knows. To
 place an outgoing call instead of answering one, `sock.dialCall(peerJid)`
 opens it with encoded audio; the voice-calls entry under Gotchas below covers
-pushing packets, collecting decoded ones, and hanging up through either
+pushing packets, collecting the peer's encoded ones, and hanging up through either
 `endCall` or `terminateCall`.
 
 ## Migrating from Upstream Baileys
@@ -383,9 +383,11 @@ A few behaviors that differ from upstream — almost always to your advantage:
   call (`'mlow'` by default, `'opus'` for the in-profile escape);
   `sock.pushCallAudio(callId, bytes)` queues one packet and resolves `false`
   when the engine shed it under backpressure — that is the normal
-  loss-tolerant answer, not an error. Decoded packets arrive through
-  per-call `sock.onCallAudio(callId, sink)` sinks, lifecycle steps
-  (`relay-allocated`, …, `ended`) on the `call.media` event, and
+  loss-tolerant answer, not an error. The peer's encoded packets arrive through
+  per-call `sock.onCallAudio(callId, sink)` sinks. Each frame carries one owned
+  encoded packet, valid after the callback returns and shared with the call's
+  other sinks, so decode synchronously and never modify the bytes. Lifecycle
+  steps (`relay-allocated`, …, `ended`) ride the `call.media` event, and
   `sock.endCall` / `setCallMuted` / `getCallMediaStats` / `getActiveCalls`
   round out the surface. There is no watermark readout: the bridge names the
   `false` return as the pacing signal, with the shed counters in the stats
