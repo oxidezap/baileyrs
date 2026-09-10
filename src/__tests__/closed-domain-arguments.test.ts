@@ -325,6 +325,10 @@ const EXEMPT: Record<string, string> = {
 	'business.ts:minutesPastMidnight:which': 'a module-internal helper, called with a literal at both call sites',
 	'internals.ts:resyncAppState:collections': 'a no-op wrapper: nothing is forwarded to the bridge',
 	'server-queries.ts:createCallLink:_type': 'refused with a 501 whatever the value is',
+	'calls.ts:stopEntry:reason': 'a module-internal helper, called with a literal at both call sites',
+	'calls.ts:stopCallWith:reason': 'a module-internal helper, called with a literal at both call sites',
+	'calls.ts:stopAllWith:reason': 'a module-internal helper, called with a literal at both call sites',
+	'calls.ts:stop:reason': 'a module-internal helper defaulting to stopped, with literals at the abort and router call sites',
 	'calls.ts:<module>:audioFormat':
 		'the bridge-contract interface restatement, not a parameter; dialCall and acceptCall validate it',
 	'internals.ts:upsertMessage:type': 'published on the event bus, so the value comes back to the caller unchanged'
