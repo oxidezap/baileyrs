@@ -109,8 +109,7 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		await destroyTestClient(bob)
 	})
 
-	test('answer, relay, audio both ways, hangup', async t => {
-		const aliceFrames: CallAudioFrame[] = []
+	test('answer, relay, audio both ways, hangup', async () => {		const aliceFrames: CallAudioFrame[] = []
 		const bobFrames: CallAudioFrame[] = []
 		const aliceAudio: CallAudioSink = frame => aliceFrames.push(frame)
 		const bobAudio: CallAudioSink = frame => bobFrames.push(frame)
@@ -140,22 +139,14 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const stopBobSink = bob.sock.onCallAudio(bobCallId, bobAudio)
 		try {
 			// Both engines must report the relay up before media can flow.
-			// A mock without a UDP relay path never fires this: skipping
-			// keeps the suite green there instead of timing out, and the
-			// recorded events below say which half went quiet. The skip
-			// enables itself the day the mock advertises UDP candidates.
-			// TODO(voip-mock-relay): once that support lands and proves
-			// stable, drop this wait to a fast probe instead of a 60s timeout.
+			// The recorded events below say which half went quiet if this
+			// ever times out again.
 			try {
 				await aliceRelay.promise
 				await bobRelay.promise
-			} catch {
+			} catch (err) {
 				console.log('media events seen:', JSON.stringify(mediaSeen))
-				aliceRelay.cancel()
-				bobRelay.cancel()
-				bobEnded.cancel()
-				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
-				return
+				throw err
 			}
 
 			for (let i = 0; i < 5; i++) {
@@ -173,14 +164,23 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			expect(echoed[0]!.codec).toBe('mlow')
 			expect(echoed[0]!.data).toEqual(SID)
 
+			// The encoded path forwards opaque payloads: per-packet
+			// classification counters (decoded, inactive-or-sid) belong to
+			// the PCM decoder and stay zero here. Delivery plus received
+			// counters prove the relay, decrypt and handoff ran.
 			const bobStats = (await bob.sock.getCallMediaStats(bobCallId)) as CallMediaStats
-			expect(bobStats.audioFramesDecoded > 0).toBe(true)
 			expect(bobStats.audioFramesDelivered > 0).toBe(true)
+			expect(bobStats.rtpReceived > 0).toBe(true)
 			const aliceStats = (await alice.sock.getCallMediaStats(callId)) as CallMediaStats
-			expect(aliceStats.audioFramesDecoded > 0).toBe(true)
+			expect(aliceStats.audioFramesDelivered > 0).toBe(true)
+			expect(aliceStats.rtpReceived > 0).toBe(true)
 
+			// The mock suppresses the bare-LID terminate leg as
+			// accepted_elsewhere and routes the device-addressed one, so a
+			// partial notification is the honest answer here. local-only
+			// would mean nobody was told.
 			const end = await alice.sock.endCall(callId)
-			expect(end.outcome === 'peer-notified' || end.outcome === 'already-ended').toBe(true)
+			expect(end.outcome !== 'local-only').toBe(true)
 			await bobEnded.promise
 			expect(await bob.sock.getActiveCalls()).toEqual([])
 			expect(await alice.sock.getActiveCalls()).toEqual([])
