@@ -201,6 +201,18 @@ const formatFallbackMessage = (message: string, args: unknown[]): string => {
 
 const levelValue = (level: string, fallback: number): number => FALLBACK_LEVEL_VALUES[level] ?? fallback
 
+/**
+ * Whether a log call at `method` emits under `currentLevel`. Unknown
+ * requested levels are disabled, matching the peer: without the check a
+ * misspelled level maps to Infinity and wrongly enables guarded work.
+ */
+export const isFallbackLevelEnabled = (method: string, currentLevel: string): boolean => {
+	if (currentLevel === 'silent') return false
+	const want = FALLBACK_LEVEL_VALUES[method]
+	if (want === undefined) return false
+	return want >= levelValue(currentLevel, 30)
+}
+
 export interface FallbackLineInput {
 	method: string
 	currentLevel: string
@@ -221,7 +233,7 @@ export const formatFallbackLine = ({
 	msgPrefix,
 	args
 }: FallbackLineInput): string | undefined => {
-	if (currentLevel === 'silent' || levelValue(method, 60) < levelValue(currentLevel, 30)) return undefined
+	if (!isFallbackLevelEnabled(method, currentLevel)) return undefined
 	let logged: unknown
 	let message: string | undefined
 	const [first, second, ...rest] = args
@@ -350,10 +362,7 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 			Object.assign(state.bindings, extra)
 		},
 		levels: { values: { ...FALLBACK_LEVEL_VALUES }, labels: { ...FALLBACK_LEVEL_LABELS } },
-		isLevelEnabled: (level: string) => {
-			if (state.level === 'silent') return false
-			return levelValue(level, Infinity) >= levelValue(state.level, 30)
-		}
+		isLevelEnabled: (level: string) => isFallbackLevelEnabled(level, state.level)
 	}
 	return logger
 }

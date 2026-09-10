@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test'
-import { formatFallbackLine } from '../Utils/logger.ts'
+import { formatFallbackLine, isFallbackLevelEnabled } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
 
 const parse = (line: string | undefined): Record<string, unknown> =>
@@ -131,5 +131,14 @@ describe('fallback log lines', () => {
 			args: ['started']
 		})
 		expect(parse(line).msg).toBe('worker: started')
+	})
+
+	it('reports unknown levels as disabled, like the peer', () => {
+		expect(isFallbackLevelEnabled('typo', 'info')).toBe(false)
+		expect(isFallbackLevelEnabled('TRACE', 'info')).toBe(false)
+		expect(isFallbackLevelEnabled('debug', 'info')).toBe(false)
+		expect(isFallbackLevelEnabled('info', 'info')).toBe(true)
+		expect(isFallbackLevelEnabled('silent', 'info')).toBe(true)
+		expect(isFallbackLevelEnabled('fatal', 'silent')).toBe(false)
 	})
 })
