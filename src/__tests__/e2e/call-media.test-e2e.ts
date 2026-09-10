@@ -142,7 +142,10 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			// Both engines must report the relay up before media can flow.
 			// A mock without a UDP relay path never fires this: skipping
 			// keeps the suite green there instead of timing out, and the
-			// recorded events below say which half went quiet.
+			// recorded events below say which half went quiet. The skip
+			// enables itself the day the mock advertises UDP candidates.
+			// TODO(voip-mock-relay): once that support lands and proves
+			// stable, drop this wait to a fast probe instead of a 60s timeout.
 			try {
 				await aliceRelay.promise
 				await bobRelay.promise
