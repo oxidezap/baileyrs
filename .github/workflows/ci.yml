@@ -265,9 +265,14 @@ jobs:
           password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
         ports:
           - 8080:8080
+          # UDP loopback relay for VoIP media tests: the offer's relay
+          # candidates name 127.0.0.1, so the mapped host port is what the
+          # runner dials. Must match BARBACK_RELAY_PORT below.
+          - 3479:3479/udp
         env:
           CHATSTATE_TTL_SECS: "3"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          BARBACK_RELAY_PORT: "3479"
         options: --log-driver none
 
     steps:
