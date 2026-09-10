@@ -120,12 +120,9 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 		const afterTerminate = await alice.sock.getActiveCalls()
 		expect(afterTerminate.some(call => call.callId === callId)).toBe(false)
 
-		// The exact outcome is mock-dependent (the new image confirms
-		// fewer legs, so local-only is honest there): what this pins is that
-		// ending resolves and the bridge record is gone either way.
-		const end = await alice.sock.endCall(callId)
-		console.log('endCall outcome:', JSON.stringify(end))
-		expect(typeof end.outcome).toBe('string')
+		// terminateCall already ended the native record above, so there
+		// is no second hangup to assert here: the empty record list is the
+		// whole proof. endCall itself is covered by the media test.
 		expect(await alice.sock.getActiveCalls()).toEqual([])
 	})
 })
