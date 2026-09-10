@@ -210,14 +210,18 @@ const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 	if (typeof frame !== 'object' || frame === null) return false
 	const record = frame as Record<string, unknown>
 	// Every field the type promises, checked: a partial or version-skewed
-	// object must not reach typed sinks with undefined fields.
+	// object must not reach typed sinks with undefined fields. The RTP
+	// metadata must be finite integers in protocol range — NaN, Infinity and
+	// out-of-range values are malformed, not audio.
+	const inRange = (value: unknown, min: number, max: number): boolean =>
+		typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
 	return (
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
 		(record.codec === 'mlow' || record.codec === 'opus') &&
-		typeof record.payloadType === 'number' &&
-		typeof record.sequenceNumber === 'number' &&
-		typeof record.timestamp === 'number' &&
+		inRange(record.payloadType, 0, 127) &&
+		inRange(record.sequenceNumber, 0, 65535) &&
+		inRange(record.timestamp, 0, 4294967295) &&
 		typeof record.marker === 'boolean'
 	)
 }
@@ -662,8 +666,13 @@ export interface CallAudioPumpOptions {
 export interface CallAudioPump {
 	/** Resolves with the moved totals when the source is spent or the pump stops. */
 	done: Promise<CallAudioPumpStats>
-	/** Stop pulling; in-flight `done` resolves with the totals so far. */
-	stop: () => void
+	/**
+	 * Stop pulling; in-flight `done` resolves with the totals so far. The
+	 * optional reason is for lifecycle callers (router teardown re-stops
+	 * with `socket-closed`); the first reason wins the report, and a plain
+	 * `stop()` still means `stopped`.
+	 */
+	stop: (reason?: CallAudioStopReason) => void
 }
 
 /**
@@ -720,6 +729,13 @@ export const startCallAudioPump = (
 	// a wedged generator release would otherwise hold socket teardown open.
 	// Call-scoped stops still wait, so `finally` blocks run before `done`.
 	let skipReleaseWait = false
+	// Resolved by a teardown stop: the release wait below races it, so a
+	// teardown that arrives while `done` already waits out cleanup settles
+	// at once instead of hanging on it.
+	let wakeReleaseWait: (() => void) | undefined
+	const releaseWaitSkipped = new Promise<void>(resolve => {
+		wakeReleaseWait = () => resolve()
+	})
 	// Wakes the pull currently parked in `source.next()`, if any. Replaced
 	// every iteration: a shared stop promise would pile one pair of reactions
 	// per raced pull onto itself and hold them for the whole call, while a
@@ -746,6 +762,14 @@ export const startCallAudioPump = (
 	}
 
 	const stop = (reason: CallAudioStopReason = 'stopped'): void => {
+		// A teardown stop always flips the wait policy, even after the pump
+		// finished: the release already ran (or was correctly skipped), but
+		// `done` may still be waiting it out, and only this flag settles it.
+		// First stop reason still wins for the report.
+		if (reason === 'socket-closed') {
+			skipReleaseWait = true
+			wakeReleaseWait?.()
+		}
 		if (finished) return
 		stopped = true
 		stopReason ??= reason
@@ -758,7 +782,6 @@ export const startCallAudioPump = (
 			.then(() => source.release?.())
 			.catch(() => {})
 		if (onAbort) options.signal?.removeEventListener('abort', onAbort)
-		if (reason === 'socket-closed') skipReleaseWait = true
 	}
 	if (options.signal) {
 		if (options.signal.aborted) {
@@ -867,7 +890,8 @@ export const startCallAudioPump = (
 			// propagates afterwards, so failures keep their shape. Teardown
 			// stops skip the wait and settle at once; their cleanup keeps
 			// running detached rather than holding the socket close open.
-			if (!skipReleaseWait) await releaseSettled
+			// Raced, not branched: a teardown arriving mid-await settles too.
+			if (!skipReleaseWait) await Promise.race([releaseSettled, releaseWaitSkipped])
 		}
 		return { ...stats, stopReason: stopReason ?? 'source-ended' }
 	})()

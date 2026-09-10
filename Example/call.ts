@@ -405,7 +405,6 @@ const main = async (): Promise<void> => {
 	let stopSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
-	let demux = demuxOggOpus()
 	// Playback is per call, not per process: hangup stops the player, and the
 	// next ring mints a fresh Ogg stream rather than writing into a dead
 	// stdin with stale sequence state.
@@ -426,10 +425,16 @@ const main = async (): Promise<void> => {
 		if (encoder || (!args.audioFile && args.mic === undefined)) return
 		const child = spawnOpusEncoder(args)
 		encoder = child
-		demux = demuxOggOpus()
+		// Per-child demux and call id: a killed child can still flush
+		// buffered stdout after its replacement started, and those stale
+		// bytes belong to the old stream — parsed with the new demux they
+		// would corrupt it, and pushed to the new call id they would land
+		// on the wrong call. Both are captured here and checked per chunk.
+		const stream = demuxOggOpus()
+		const callForChild = liveCallId
 		child?.stdout?.on('data', (chunk: Buffer) => {
-			if (!liveCallId) return
-			for (const packet of demux.push(new Uint8Array(chunk))) {
+			if (child !== encoder || callForChild !== liveCallId || !liveCallId) return
+			for (const packet of stream.push(new Uint8Array(chunk))) {
 				void sock
 					.pushCallAudio(liveCallId, packet)
 					.then(accepted => {

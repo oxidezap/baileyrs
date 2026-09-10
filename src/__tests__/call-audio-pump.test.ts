@@ -495,6 +495,19 @@ describe('call audio pump', () => {
 		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'source-ended' })
 		expect(released).toBe(false)
 	})
+
+	it('a teardown stop settles done past a wedged release', async () => {
+		// The release never settles: a call-scoped stop would wait it out
+		// forever, but the teardown policy must settle `done` at once while
+		// the first stop reason still wins the report.
+		const pump = startCallAudioPump(() => true, {
+			next: () => new Promise<Uint8Array | null>(() => {}),
+			release: () => new Promise<void>(() => {})
+		})
+		pump.stop('call-ended')
+		pump.stop('socket-closed')
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'call-ended' })
+	})
 })
 
 describe('call media router', () => {
@@ -565,6 +578,33 @@ describe('call media router', () => {
 		} as unknown as CallAudioFrame)
 		router.routeMediaEvent({ nope: true } as unknown as CallMediaEvent)
 		expect(failures).toHaveLength(3)
+	})
+
+	it('drops frames with non-finite or out-of-range RTP metadata', () => {
+		const failures: unknown[] = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: () => undefined,
+			reportError: err => failures.push(err)
+		})
+		const received: CallAudioFrame[] = []
+		router.addAudioSink('CALL-1', f => received.push(f))
+		const bad = (override: Partial<CallAudioFrame>): unknown => ({ ...frame('CALL-1'), ...override })
+		for (const candidate of [
+			bad({ payloadType: Number.NaN }),
+			bad({ payloadType: Number.POSITIVE_INFINITY }),
+			bad({ payloadType: 128 }),
+			bad({ payloadType: 1.5 }),
+			bad({ sequenceNumber: -1 }),
+			bad({ sequenceNumber: 65536 }),
+			bad({ timestamp: -1 }),
+			bad({ timestamp: 4294967296 })
+		]) {
+			router.routeAudioFrame(candidate as CallAudioFrame)
+		}
+		expect(received).toHaveLength(0)
+		expect(failures).toHaveLength(8)
+		router.routeAudioFrame(frame('CALL-1'))
+		expect(received).toHaveLength(1)
 	})
 
 	it('emits media events and ends the call on ended', () => {
@@ -711,8 +751,7 @@ describe('call media router', () => {
 		expect(released).toBe(true)
 	})
 
-	it('drainAll re-stops earlier pumps with the teardown policy', async () => {
-		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+	it('drainAll re-stops earlier pumps with the teardown policy', async () => {		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
 		const reasons: (string | undefined)[] = []
 		let release!: () => void
 		const done = new Promise<unknown>(resolve => {
@@ -737,6 +776,22 @@ describe('call media router', () => {
 		})
 		await Promise.race([router.drainAll(), watchdog])
 		expect(reasons).toEqual(['call-ended', 'socket-closed'])
+	})
+
+	it('a real pump wedged in release settles through router teardown', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const pump = startCallAudioPump(() => true, {
+			next: () => new Promise<Uint8Array | null>(() => {}),
+			release: () => new Promise<void>(() => {})
+		})
+		router.trackPump('CALL-1', pump.stop, pump.done)
+		router.stopCall('CALL-1')
+		const watchdog = new Promise<never>((_, reject) => {
+			const timer = setTimeout(() => reject(new Error('drainAll hung on a wedged pump')), 2_000)
+			timer.unref?.()
+		})
+		await Promise.race([router.drainAll(), watchdog])
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'call-ended' })
 	})
 
 	it('untracking one pump leaves its siblings and sinks alone', () => {
