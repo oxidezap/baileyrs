@@ -242,6 +242,18 @@ const CASES: readonly BoundaryCase[] = [
 				}),
 				off<'buffer' | 'stream'>(v)
 			)
+	},
+	{
+		method: 'dialCall',
+		parameter: 'audioFormat',
+		source: 'Socket/calls.ts:dialCall:audioFormat',
+		call: (s, v) => s.dialCall(USER, off(v))
+	},
+	{
+		method: 'acceptCall',
+		parameter: 'audioFormat',
+		source: 'Socket/calls.ts:acceptCall:audioFormat',
+		call: (s, v) => s.acceptCall('NEVER-RANG', off(v))
 	}
 ]
 
@@ -443,7 +455,11 @@ const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 	'Socket/communities.ts:communityParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
 	'Socket/communities.ts:communitySettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
 	'Socket/communities.ts:communityMemberAddMode:mode': ['admin_add', 'all_member_add'],
-	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off']
+	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off'],
+	// `undefined`, not `null`: omitting the format takes the bridge default,
+	// and the two are different values to `includes`.
+	'Socket/calls.ts:dialCall:audioFormat': ['mlow', 'opus', undefined],
+	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', undefined]
 }
 
 /** The same values as reported by the guard itself, for the pin below. */

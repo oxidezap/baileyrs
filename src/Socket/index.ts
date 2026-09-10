@@ -24,6 +24,8 @@ import { DEFAULT_CONNECTION_CONFIG, MEDIA_TYPES, type MediaType } from '../Defau
 import type {
 	BinaryNode,
 	AuthenticationCreds,
+	CallAudioFrame,
+	CallMediaEvent,
 	ConnectionState,
 	Contact,
 	ReachoutTimelockState,
@@ -54,6 +56,7 @@ import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
 import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
+import { makeCallAudioMethods, makeCallMediaRouter } from './calls.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -423,6 +426,19 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const notificationMutex = makeMutex()
 	const activeCallContexts: CallOfferCache = new Map()
 	socketEndHandlers.push(() => activeCallContexts.clear())
+	/**
+	 * Encoded-audio call media routing. The bridge fires `onCallAudio` per
+	 * decoded packet and `onCallEvent` per lifecycle step off the same
+	 * callbacks object it reads for everything else; assigning them here
+	 * (rather than inside `makeEventHandlers`) keeps the media routing next
+	 * to the methods that consume it. A release bridge ignores the extra
+	 * properties, so this is inert until the audio domain exists.
+	 */
+	const callMedia = makeCallMediaRouter({
+		emitMediaEvent: event => ev.emit('call.media', event),
+		reportError: (err, msg) => unexpectedErrors.report(err, msg)
+	})
+	socketEndHandlers.push(() => callMedia.stopAll())
 	const groupMethods = makeGroupMethods(ctx)
 	const communityMethods = makeCommunityMethods(ctx, groupMethods)
 	const refreshParticipating = makeParticipatingRefreshHandler(ctx, {
@@ -472,6 +488,15 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// way — `sock.end()`, an `await using` scope exiting — has to as well,
 		// or one fires from a socket whose client is already freed.
 		onCleanup: cleanup => socketEndHandlers.push(cleanup)
+	})
+	// The audio domain reads these off the callbacks object before it moves
+	// into the parsed form. `Object.assign` rather than a literal: the
+	// release `.d.ts` does not declare the members, and a literal would fail
+	// its excess-property check there. This keeps the wiring compiling under
+	// both the release bridge and the preview.
+	Object.assign(eventHandlers, {
+		onCallAudio: (frame: CallAudioFrame) => callMedia.routeAudioFrame(frame),
+		onCallEvent: (event: CallMediaEvent) => callMedia.routeMediaEvent(event)
 	})
 
 	const init = async () => {
@@ -1076,6 +1101,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
+		...makeCallAudioMethods(ctx, callMedia),
 		...makeServerQueryMethods(ctx),
 		downloadMedia: async <T extends MediaDownloadType>(
 			message: WAMessage,
