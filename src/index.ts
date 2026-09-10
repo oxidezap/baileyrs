@@ -17,6 +17,7 @@ export {
 	makeFileCallAudioSource,
 	makeSilenceCallAudioSource,
 	MLOW_SILENCE_PACKET,
+	openFilePacketReader,
 	startCallAudioPump
 } from './Socket/calls.ts'
 export default makeWASocket

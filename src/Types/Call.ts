@@ -187,6 +187,25 @@ export type CallAudioPacketSource = {
 export type CallAudioSourceInput = CallAudioPacketSource | AsyncIterable<Uint8Array>
 
 /**
+ * Incremental reader of complete encoded packets, one full packet per call.
+ * The fixture helper reads the whole file up front; this is the streaming
+ * counterpart with bounded memory: the open handle plus the caller's target.
+ */
+export type EncodedPacketReader = {
+	/**
+	 * Read exactly one packet into `target`, returning its size, or `null`
+	 * at end of file. Never truncates: a short final chunk and a target too
+	 * small for a packet both throw. The bytes stay valid until the next
+	 * read, so a pump reuses one target across pulls — safe because the
+	 * bridge push copies synchronously. Aborting the signal closes the
+	 * reader, and every later call throws.
+	 */
+	readInto(target: Uint8Array, signal?: AbortSignal): Promise<number | null>
+	/** Close the handle. Idempotent. */
+	close(): Promise<void>
+}
+
+/**
  * Per-packet sink for one live call's encoded audio. Runs synchronously per
  * packet; a returned promise is not observed, so an async sink must catch its
  * own failures rather than leaking unhandled rejections.
@@ -199,4 +218,36 @@ export type CallAudioPumpStats = {
 	pushed: number
 	/** Packets shed under backpressure — the loss-tolerant answer, not an error. */
 	shed: number
+}
+
+/**
+ * Pump pull pacing. `source` pulls as fast as the source yields — right for
+ * live capture, where the microphone sets the cadence. `clock` paces pulls to
+ * wall-clock deadlines, one packet per `packetDurationMs` — right for file
+ * playback, where nothing else sets the pace and a full queue must not become
+ * the only regulator. Late pulls skip the wait instead of sleeping to catch
+ * up, and deadlines snap forward so one stall cannot spiral the schedule.
+ */
+export type CallAudioTiming = { mode: 'source' } | { mode: 'clock'; packetDurationMs: number }
+
+/**
+ * An acquired-once encoded-audio writer for one live call. For consumers with
+ * their own encoder or capture that push outside the pump: resolve the client
+ * once, then send synchronously with no per-packet async hop.
+ */
+export type CallAudioWriter = {
+	/**
+	 * Queue one packet. True means the engine queue accepted it locally, not
+	 * that the peer will hear it. False means the packet was not queued —
+	 * shed under backpressure, or the writer is closed. Never retains the
+	 * caller buffer: the bridge copies it synchronously. Never allocates per
+	 * call: the answer is the primitive. A malformed packet throws instead of
+	 * answering false, and so does a call the bridge no longer holds.
+	 */
+	tryWrite(packet: Uint8Array): boolean
+	/**
+	 * Invalidate the writer. Idempotent, and does not end the call. Ended
+	 * calls and socket teardown invalidate it automatically.
+	 */
+	close(): void
 }

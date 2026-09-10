@@ -29,9 +29,12 @@ import type {
 	CallAudioPumpStats,
 	CallAudioSink,
 	CallAudioSourceInput,
+	CallAudioTiming,
+	CallAudioWriter,
 	CallEndResult,
 	CallMediaEvent,
-	CallMediaStats
+	CallMediaStats,
+	EncodedPacketReader
 } from '../Types/Call.ts'
 import type { SocketContext } from './types.ts'
 
@@ -455,11 +458,111 @@ export const makeFileCallAudioSource = async (
 // Pump: source in, bridge push out, shed counted
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface FilePacketReaderOptions {
+	/** Packet size in bytes. Raw framing, not transcoding: no ffmpeg involved. */
+	packetBytes?: number
+}
+
+/**
+ * Open a file as an incremental packet reader for tests. Unlike the fixture
+ * helper above, this never holds the whole file: one open handle plus the
+ * caller's target buffer. Every item is one complete packet — a trailing
+ * short chunk fails instead of feeding a runt — so arbitrary read chunks
+ * never reach the pump as audio.
+ */
+export const openFilePacketReader = async (
+	path: string,
+	options: FilePacketReaderOptions = {}
+): Promise<EncodedPacketReader> => {
+	const { open } = await import('node:fs/promises')
+	const packetBytes = options.packetBytes ?? 160
+	if (!Number.isInteger(packetBytes) || packetBytes <= 0) {
+		throw new Boom('openFilePacketReader: packetBytes must be a positive integer', { statusCode: 400 })
+	}
+	const handle = await open(path, 'r')
+	let position = 0
+	let closed = false
+	const closeHandle = async (): Promise<void> => {
+		if (closed) return
+		closed = true
+		try {
+			await handle.close()
+		} catch {
+			// Teardown races a failed open the same way: the handle is gone
+			// either way, and close stays idempotent.
+		}
+	}
+	return {
+		readInto: (target, signal) =>
+			new Promise<number | null>((resolve, reject) => {
+				if (closed) {
+					reject(new Boom('openFilePacketReader: reader is closed', { statusCode: 400 }))
+					return
+				}
+				if (!(target instanceof Uint8Array) || target.length < packetBytes) {
+					reject(new Boom('openFilePacketReader: target must hold a full packet', { statusCode: 400 }))
+					return
+				}
+				const abortSignal: AbortSignal | undefined = signal
+				// Any abort closes the reader — including one that already
+				// fired, which never dispatches again: the caller walked away,
+				// so the handle must not stay open either way.
+				const failAborted = (): void => {
+					void closeHandle().finally(() => reject(abortSignal?.reason ?? new Error('aborted')))
+				}
+				abortSignal?.addEventListener('abort', failAborted, { once: true })
+				if (abortSignal?.aborted) {
+					abortSignal.removeEventListener('abort', failAborted)
+					failAborted()
+					return
+				}
+				handle
+					.read(target, 0, packetBytes, position)
+					.then(
+						({ bytesRead }) => {
+							abortSignal?.removeEventListener('abort', failAborted)
+							if (abortSignal?.aborted) {
+								failAborted()
+								return
+							}
+							if (bytesRead === 0) {
+								resolve(null)
+								return
+							}
+							if (bytesRead < packetBytes) {
+								reject(
+									new Boom(
+										`openFilePacketReader: file length is not a multiple of the ${packetBytes}-byte packet size`,
+										{ statusCode: 400 }
+									)
+								)
+								return
+							}
+							position += bytesRead
+							resolve(bytesRead)
+						},
+						(err: unknown) => {
+							abortSignal?.removeEventListener('abort', failAborted)
+							reject(abortSignal?.aborted ? (abortSignal.reason as unknown) : err)
+						}
+					)
+					.catch(reject)
+			}),
+		close: () => closeHandle()
+	}
+}
+
 export interface CallAudioPumpOptions {
 	/** AbortSignal that stops the pump; stopping is silent, never an error. */
 	signal?: AbortSignal
 	/** Called per shed packet with the running shed total. */
 	onShed?: (shedTotal: number) => void
+	/**
+	 * Pull pacing. Defaults to `{ mode: 'source' }`: pull as fast as the
+	 * source yields. Pair `{ mode: 'clock' }` with an unpaced source
+	 * (`intervalMs: 0`) — pacing twice just adds the two cadences together.
+	 */
+	timing?: CallAudioTiming
 }
 
 export interface CallAudioPump {
@@ -519,6 +622,10 @@ export const startCallAudioPump = (
 	let wakeParkedPull: (() => void) | undefined
 	const stats: CallAudioPumpStats = { pushed: 0, shed: 0 }
 	const source = asCallAudioPacketSource('startCallAudioPump', input)
+	const clockMs = options.timing?.mode === 'clock' ? options.timing.packetDurationMs : undefined
+	if (clockMs !== undefined && (!Number.isFinite(clockMs) || clockMs <= 0)) {
+		throw new Boom('startCallAudioPump: timing.packetDurationMs must be a finite number > 0', { statusCode: 400 })
+	}
 
 	const stop = (): void => {
 		stopped = true
@@ -542,6 +649,8 @@ export const startCallAudioPump = (
 
 	const done = (async (): Promise<CallAudioPumpStats> => {
 		let exhausted = false
+		let pulls = 0
+		let nextDeadline = 0
 		// The loop throws on two documented paths: `source.next()` rejects,
 		// and `push()` throws when the call already ended. Both converge on
 		// the same cleanup below: the release runs and the abort listener
@@ -551,6 +660,13 @@ export const startCallAudioPump = (
 				// Checked before pulling: a pump stopped before its first pull
 				// never touches the source at all.
 				if (stopped) break
+				if (clockMs !== undefined && pulls > 0) {
+					// Clock pacing, per pull rather than per push: shed audio
+					// still consumes its slot, so playback cadence survives
+					// congestion instead of compressing into it.
+					const wait = nextDeadline - Date.now()
+					if (wait > 0) await paceDelay(wait)
+				}
 				// Raced, not awaited bare: a source parked in `next()` must not
 				// outlive the stop. A pull that resolves after the break drops
 				// its packet, which is the loss-tolerant answer anyway. The
@@ -569,11 +685,23 @@ export const startCallAudioPump = (
 						break
 					}
 					assertAudioPacket('startCallAudioPump: source', packet)
-					if (await push(packet)) {
+					// Without forcing the sync path through async: the bridge
+					// answers synchronously, and awaiting a plain boolean would
+					// spend a microtask hop per packet for nothing. Async pushes
+					// still await. Cadence stays in the source, never here.
+					const pushed = push(packet)
+					if (typeof pushed === 'boolean' ? pushed : await pushed) {
 						stats.pushed++
 					} else {
 						stats.shed++
 						options.onShed?.(stats.shed)
+					}
+					pulls++
+					if (clockMs !== undefined) {
+						// Late pulls skip the wait and snap the deadline forward:
+						// the schedule never sleeps to make up lost time.
+						nextDeadline = pulls === 1 ? Date.now() + clockMs : nextDeadline + clockMs
+						if (nextDeadline < Date.now()) nextDeadline = Date.now() + clockMs
 					}
 				} finally {
 					if (wakeParkedPull === wakeCurrent) wakeParkedPull = undefined
@@ -672,6 +800,34 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 		endCall: (callId: string): Promise<CallEndResult> => {
 			assertCallId('endCall', callId)
 			return withAudioClient('endCall', client => client.endCall(callId)).finally(() => media.stopCall(callId))
+		},
+		/**
+		 * Acquire a sync writer for one live call, for encoders and capture
+		 * paths that push outside the pump. The client resolves once here;
+		 * every `tryWrite` after that is a synchronous bridge call with no
+		 * async hop. Invalidated by `close`, by `ended`, and by teardown —
+		 * ahead of the client being freed, on the same tracking pumps use.
+		 */
+		openCallAudioWriter: async (callId: string): Promise<CallAudioWriter> => {
+			assertCallId('openCallAudioWriter', callId)
+			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
+			let closed = false
+			const invalidate = (): void => {
+				closed = true
+			}
+			media.trackPump(callId, invalidate)
+			return {
+				tryWrite: packet => {
+					assertAudioPacket('tryWrite', packet)
+					if (closed) return false
+					return client.callPushAudio(callId, packet)
+				},
+				close: () => {
+					if (closed) return
+					closed = true
+					media.untrackPump(callId, invalidate)
+				}
+			}
 		},
 		/** Mute or unmute the mic on a live call. */
 		setCallMuted: (callId: string, muted: boolean): Promise<void> => {

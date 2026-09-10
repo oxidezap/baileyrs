@@ -393,7 +393,10 @@ A few behaviors that differ from upstream — almost always to your advantage:
   `false` return as the pacing signal, with the shed counters in the stats
   for the rest. `startCallAudioPump(callId, source)` wires a packet source
   to the push; the built-in silence (`0x90` MLOW SID) and file-chunk sources
-  need no microphone, codec, or ffmpeg and are meant for tests. Calls need a
+  need no microphone, codec, or ffmpeg and are meant for tests. Encoders with
+  their own capture can skip the pump and hold a sync writer from
+  `sock.openCallAudioWriter(callId)` instead, and file playback paces itself
+  through the pump's clock timing rather than the queue. Calls need a
   bridge with the `client-calls-audio` domain — a preview build, not a
   release — and without one every method above throws `501` naming it.
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**

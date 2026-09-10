@@ -32,6 +32,7 @@ import {
 	makeFileCallAudioSource,
 	makeSilenceCallAudioSource,
 	MLOW_SILENCE_PACKET,
+	openFilePacketReader,
 	startCallAudioPump,
 	type CallAudioBridgeClient,
 	type CallMediaRouter
@@ -130,6 +131,75 @@ describe('call audio file source', () => {
 	})
 })
 
+describe('call audio file reader', () => {
+	const fixture = async (dir: string, bytes: number[]): Promise<string> => {
+		const path = join(dir, 'fixture.bin')
+		await writeFile(path, new Uint8Array(bytes))
+		return path
+	}
+
+	it('reads full packets into one reused target', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'baileyrs-call-reader-'))
+		try {
+			const reader = await openFilePacketReader(await fixture(dir, [0, 1, 2, 3, 4, 5]), { packetBytes: 2 })
+			const target = new Uint8Array(2)
+			try {
+				expect(await reader.readInto(target)).toBe(2)
+				expect(Array.from(target)).toEqual([0, 1])
+				expect(await reader.readInto(target)).toBe(2)
+				expect(Array.from(target)).toEqual([2, 3])
+				expect(await reader.readInto(target)).toBe(2)
+				expect(await reader.readInto(target)).toBe(null)
+			} finally {
+				await reader.close()
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('fails a runt tail instead of truncating, and rejects a small target', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'baileyrs-call-reader-'))
+		try {
+			const reader = await openFilePacketReader(await fixture(dir, [0, 1, 2]), { packetBytes: 2 })
+			try {
+				expect(await reader.readInto(new Uint8Array(2))).toBe(2)
+				await expect(reader.readInto(new Uint8Array(2))).rejects.toThrow(/multiple/)
+				await expect(reader.readInto(new Uint8Array(1))).rejects.toThrow(/full packet/)
+			} finally {
+				await reader.close()
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('close is idempotent and reads after close throw', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'baileyrs-call-reader-'))
+		try {
+			const reader = await openFilePacketReader(await fixture(dir, [0, 1]), { packetBytes: 2 })
+			await reader.close()
+			await reader.close()
+			await expect(reader.readInto(new Uint8Array(2))).rejects.toThrow(/closed/)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('an aborted read closes the reader', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'baileyrs-call-reader-'))
+		try {
+			const reader = await openFilePacketReader(await fixture(dir, [0, 1]), { packetBytes: 2 })
+			const controller = new AbortController()
+			controller.abort()
+			await expect(reader.readInto(new Uint8Array(2), controller.signal)).rejects.toThrow()
+			await expect(reader.readInto(new Uint8Array(2))).rejects.toThrow(/closed/)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+})
+
 describe('call audio pump', () => {
 	it('moves every packet and reports the totals', async () => {
 		const seen: number[] = []
@@ -142,6 +212,35 @@ describe('call audio pump', () => {
 		)
 		expect(await pump.done).toEqual({ pushed: 2, shed: 0 })
 		expect(seen).toEqual([1, 2])
+	})
+
+	it('awaits an async push the same way', async () => {
+		const pump = startCallAudioPump(
+			async data => data[0] === 1,
+			scriptedSource([new Uint8Array([1]), new Uint8Array([2])])
+		)
+		expect(await pump.done).toEqual({ pushed: 1, shed: 1 })
+	})
+
+	it('paces pulls to a clock instead of the source', async () => {
+		const pump = startCallAudioPump(
+			() => true,
+			scriptedSource([new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])]),
+			{
+				timing: { mode: 'clock', packetDurationMs: 20 }
+			}
+		)
+		const started = Date.now()
+		expect(await pump.done).toEqual({ pushed: 3, shed: 0 })
+		expect(Date.now() - started >= 30).toBe(true)
+	})
+
+	it('rejects a clock period that is not a positive number', () => {
+		for (const packetDurationMs of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() =>
+				startCallAudioPump(() => true, scriptedSource([]), { timing: { mode: 'clock', packetDurationMs } })
+			).toThrow(/packetDurationMs/)
+		}
 	})
 
 	it('counts shed packets and reports them instead of erroring', async () => {
@@ -608,6 +707,40 @@ describe('call audio socket methods', () => {
 		const methods = makeCallAudioMethods(stubCtx({ endCall: async () => ({ outcome: 'already-ended' }) }), router)
 		expect(await methods.endCall('CALL-1')).toEqual({ outcome: 'already-ended' })
 		expect(stopped).toBe(true)
+	})
+
+	it('a writer sends synchronously and dies with the call, not the process', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const seen: Uint8Array[] = []
+		const methods = makeCallAudioMethods(
+			stubCtx({
+				callPushAudio: (callId: string, data: Uint8Array) => {
+					if (callId.endsWith('FULL')) return false
+					seen.push(data)
+					return true
+				}
+			}),
+			router
+		)
+		const writer = await methods.openCallAudioWriter('CALL-1')
+		const packet = new Uint8Array([0x90])
+		expect(writer.tryWrite(packet)).toBe(true)
+		// No copy on this side: the bridge got the caller's own buffer.
+		expect(seen[0]).toBe(packet)
+		expect(writer.tryWrite(packet)).toBe(true)
+		writer.close()
+		writer.close()
+		expect(writer.tryWrite(packet)).toBe(false)
+		expect(seen).toHaveLength(2)
+
+		const shedding = await methods.openCallAudioWriter('CALL-1FULL')
+		expect(shedding.tryWrite(packet)).toBe(false)
+
+		const live = await methods.openCallAudioWriter('CALL-2')
+		expect(live.tryWrite(packet)).toBe(true)
+		router.routeMediaEvent({ callId: 'CALL-2', kind: 'ended' })
+		expect(live.tryWrite(packet)).toBe(false)
+		expect(seen).toHaveLength(3)
 	})
 
 	it('a finished pump leaves the live call alone', async () => {
