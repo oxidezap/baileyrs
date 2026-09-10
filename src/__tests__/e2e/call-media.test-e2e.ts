@@ -83,8 +83,21 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const bobFrames: CallAudioFrame[] = []
 		const aliceAudio: CallAudioSink = frame => aliceFrames.push(frame)
 		const bobAudio: CallAudioSink = frame => bobFrames.push(frame)
-
+		// Every wait below is armed before the action that can fire it: media
+		// events do not queue for late listeners, so attaching after the
+		// trigger would turn a fast relay into a timeout.
 		const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
+		const aliceRelay = waitForEvent(alice.sock, 'call.media', event => event.kind === 'relay-allocated', 60_000)
+		const bobRelay = waitForEvent(bob.sock, 'call.media', event => event.kind === 'relay-allocated', 60_000)
+		const bobEnded = waitForEvent(bob.sock, 'call.media', event => event.kind === 'ended', 30_000)
+		const mediaSeen: string[] = []
+		const recordMedia = (tag: string) => (event: { callId: string; kind: string }) => {
+			mediaSeen.push(`${tag}:${event.callId.slice(0, 8)}:${event.kind}`)
+		}
+		const onAliceMedia = recordMedia('alice')
+		const onBobMedia = recordMedia('bob')
+		alice.sock.ev.on('call.media', onAliceMedia)
+		bob.sock.ev.on('call.media', onBobMedia)
 		const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
 		const offer = await bobOffer
 		const offeredId = offer.find(event => event.status === 'offer')?.id
@@ -96,18 +109,8 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const stopBobSink = bob.sock.onCallAudio(bobCallId, bobAudio)
 		try {
 			// Both engines must report the relay up before media can flow.
-			await waitForEvent(
-				alice.sock,
-				'call.media',
-				event => event.callId === callId && event.kind === 'relay-allocated',
-				60_000
-			)
-			await waitForEvent(
-				bob.sock,
-				'call.media',
-				event => event.callId === bobCallId && event.kind === 'relay-allocated',
-				60_000
-			)
+			await aliceRelay
+			await bobRelay
 
 			for (let i = 0; i < 5; i++) {
 				expect(await alice.sock.pushCallAudio(callId, SID)).toBe(true)
@@ -132,24 +135,25 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 
 			const end = await alice.sock.endCall(callId)
 			expect(end.outcome === 'peer-notified' || end.outcome === 'already-ended').toBe(true)
-			await waitForEvent(bob.sock, 'call.media', event => event.callId === bobCallId && event.kind === 'ended', 30_000)
+			await bobEnded
 			expect(await bob.sock.getActiveCalls()).toEqual([])
 			expect(await alice.sock.getActiveCalls()).toEqual([])
+		} catch (err) {
+			console.log('media events seen:', JSON.stringify(mediaSeen))
+			throw err
 		} finally {
 			stopAliceSink()
 			stopBobSink()
+			alice.sock.ev.off('call.media', onAliceMedia)
+			bob.sock.ev.off('call.media', onBobMedia)
 		}
 	})
 
 	test('a silence pump moves real packets through the relay', async () => {
+		const offer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
 		const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
-		const offer = await waitForEvent(
-			bob.sock,
-			'call',
-			events => events.some(event => event.status === 'offer' && event.id === callId),
-			30_000
-		)
-		expect(offer.length > 0).toBe(true)
+		const offered = await offer
+		expect(offered.some(event => event.status === 'offer' && event.id === callId)).toBe(true)
 		await bob.sock.acceptCall(callId, 'mlow')
 		const pump = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ packets: 3, intervalMs: 5 }))
 		expect(await pump.done).toEqual({ pushed: 3, shed: 0, stopReason: 'source-ended' })

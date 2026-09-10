@@ -51,7 +51,8 @@ const scriptedSource = (packets: Uint8Array[]): CallAudioPacketSource => {
 const stubCtx = (client: object, closing = false): SocketContext =>
 	({
 		withClient: async (operation: (client: never) => unknown) => operation(client as never),
-		isClosing: () => closing
+		isClosing: () => closing,
+		reportUnexpectedError: () => undefined
 	}) as unknown as SocketContext
 
 const nullRouter = (): CallMediaRouter =>
@@ -760,6 +761,15 @@ describe('call audio socket methods', () => {
 		expect(
 			await endMediaCallIfPresent(stubCtx({ endCall: async () => ({ outcome: 'local-only', failure: 'x' }) }), 'CALL-1')
 		).toBe(false)
+		const reported: unknown[] = []
+		const reportingCtx = {
+			withClient: async (operation: (client: never) => unknown) =>
+				operation({ endCall: async () => ({ outcome: 'frobnicated' }) } as never),
+			isClosing: () => false,
+			reportUnexpectedError: (err: unknown) => reported.push(err)
+		} as unknown as SocketContext
+		expect(await endMediaCallIfPresent(reportingCtx, 'CALL-1')).toBe(false)
+		expect(reported).toHaveLength(1)
 		expect(
 			await endMediaCallIfPresent(
 				stubCtx({
@@ -805,6 +815,24 @@ describe('call audio socket methods', () => {
 		const methods = makeCallAudioMethods(stubCtx({ endCall: async () => ({ outcome: 'already-ended' }) }), router)
 		expect(await methods.endCall('CALL-1')).toEqual({ outcome: 'already-ended' })
 		expect(stopped).toBe(true)
+	})
+
+	it('endCall forgets the call through the hook on success only', async () => {
+		const forgotten: string[] = []
+		const withHooks = (client: object): ReturnType<typeof makeCallAudioMethods> =>
+			makeCallAudioMethods(stubCtx(client), nullRouter(), { onCallEnded: id => forgotten.push(id) })
+		expect(await withHooks({ endCall: async () => ({ outcome: 'peer-notified' }) }).endCall('CALL-1')).toEqual({
+			outcome: 'peer-notified'
+		})
+		expect(forgotten).toEqual(['CALL-1'])
+		await expect(
+			withHooks({
+				endCall: async () => {
+					throw new Error('offline')
+				}
+			}).endCall('CALL-2')
+		).rejects.toThrow(/offline/)
+		expect(forgotten).toEqual(['CALL-1'])
 	})
 
 	it('a writer sends synchronously and dies with the call, not the process', async () => {

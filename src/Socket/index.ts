@@ -1128,7 +1128,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
-		...makeCallAudioMethods(ctx, callMedia),
+		...makeCallAudioMethods(ctx, callMedia, {
+			onCallEnded: callId => activeCallContexts.delete(callId)
+		}),
 		...makeServerQueryMethods(ctx),
 		downloadMedia: async <T extends MediaDownloadType>(
 			message: WAMessage,

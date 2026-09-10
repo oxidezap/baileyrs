@@ -220,17 +220,28 @@ interface CallExampleArgs {
 }
 
 const parseArgs = (argv: string[]): CallExampleArgs => {
+	// A flag takes the next argument only when one is there and it is not
+	// itself a flag: `--mic --auth ./auth` means the default microphone,
+	// not a device literally named `--auth`.
 	const get = (flag: string): string | undefined => {
 		const index = argv.indexOf(flag)
-		return index >= 0 ? argv[index + 1] : undefined
+		if (index < 0) return undefined
+		const value = argv[index + 1]
+		if (value === undefined || value.startsWith('--')) usage()
+		return value
+	}
+	const getOptional = (flag: string, fallback: string): string | undefined => {
+		const index = argv.indexOf(flag)
+		if (index < 0) return undefined
+		const value = argv[index + 1]
+		return value === undefined || value.startsWith('--') ? fallback : value
 	}
 	const command = argv[0]
 	if (command !== 'dial' && command !== 'listen') usage()
 	const peer = command === 'dial' ? argv[1] : undefined
-	if (command === 'dial' && !peer) usage()
+	if (command === 'dial' && (!peer || peer.startsWith('--'))) usage()
 	const audioFile = get('--audio-file')
-	const micIndex = argv.indexOf('--mic')
-	const mic = micIndex >= 0 ? (argv[micIndex + 1] ?? 'default') : undefined
+	const mic = getOptional('--mic', 'default')
 	if (audioFile && mic !== undefined) {
 		console.error('pick one audio input: --audio-file or --mic')
 		process.exit(2)
@@ -250,8 +261,15 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 /** ffmpeg turns a file or microphone into 16 kHz mono Opus on stdout. */
 const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 	if (!args.audioFile && args.mic === undefined) return null
-	const input: string[] =
-		args.audioFile !== undefined ? ['-re', '-i', args.audioFile] : ['-f', 'alsa', '-i', args.mic ?? 'default']
+	// Capture devices are OS-specific; only Linux names one here, the rest
+	// pass their own ffmpeg device through --mic.
+	const micInput: string[] =
+		process.platform === 'darwin'
+			? ['-f', 'avfoundation', '-i', args.mic === 'default' ? ':0' : (args.mic ?? ':0')]
+			: process.platform === 'win32'
+				? ['-f', 'dshow', '-i', `audio=${args.mic ?? 'default'}`]
+				: ['-f', 'alsa', '-i', args.mic ?? 'default']
+	const input: string[] = args.audioFile !== undefined ? ['-re', '-i', args.audioFile] : micInput
 	const ffmpeg = spawn('ffmpeg', [...input, '-ac', '1', '-ar', '16000', '-c:a', 'libopus', '-f', 'opus', 'pipe:1'], {
 		stdio: ['ignore', 'pipe', 'inherit']
 	})
@@ -365,10 +383,18 @@ const main = async (): Promise<void> => {
 	let muted = false
 	let shed = 0
 	let demux = demuxOggOpus()
-	const mux = muxOggOpus()
-	const player = spawnOpusPlayer()
-	const playPage = (page: Uint8Array): void => player.write(page)
-	for (const page of mux.headerPages()) playPage(page)
+	// Playback is per call, not per process: hangup stops the player, and the
+	// next ring mints a fresh Ogg stream rather than writing into a dead
+	// stdin with stale sequence state.
+	let muxFrame: ((data: Uint8Array) => void) | undefined
+	let stopPlaying: (() => void) | undefined
+	const startPlayback = (): void => {
+		const mux = muxOggOpus()
+		const player = spawnOpusPlayer()
+		for (const page of mux.headerPages()) player.write(page)
+		muxFrame = data => player.write(mux.page(data))
+		stopPlaying = () => player.stop()
+	}
 	let encoder: ChildProcess | null = null
 
 	// The encoder runs only while a call is live: a file input exhausts, and
@@ -404,7 +430,7 @@ const main = async (): Promise<void> => {
 
 	const onFrame = (frame: CallAudioFrame): void => {
 		try {
-			playPage(mux.page(frame.data))
+			muxFrame?.(frame.data)
 		} catch (err) {
 			console.error('dropping an unmuxable peer packet:', (err as Error).message)
 		}
@@ -416,6 +442,9 @@ const main = async (): Promise<void> => {
 		liveCallId = undefined
 		stopSink?.()
 		stopSink = undefined
+		stopPlaying?.()
+		stopPlaying = undefined
+		muxFrame = undefined
 		try {
 			const end = await sock.endCall(id)
 			console.log('hangup:', end.outcome)
@@ -443,6 +472,7 @@ const main = async (): Promise<void> => {
 		stopSink?.()
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
+		startPlayback()
 		console.log('answered', id)
 	}
 
@@ -464,6 +494,7 @@ const main = async (): Promise<void> => {
 		liveCallId = id
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
+		startPlayback()
 		console.log('dialed', id, '- waiting for answer (q hangs up)')
 	} else {
 		console.log(args.accept ? 'listening (answering every ring)' : 'listening (rejecting every ring)')
