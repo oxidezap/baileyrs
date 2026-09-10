@@ -43,6 +43,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import process from 'node:process'
 import readline from 'node:readline'
 import {
+	fetchLatestWaWebVersion,
 	makeWASocket,
 	useMultiFileAuthState,
 	type CallAudioFrame,
@@ -271,7 +272,7 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		audioFile,
 		mic,
 		video,
-		authDir: get('--auth') ?? './call-auth',
+		authDir: get('--auth') ?? './baileys_auth_info',
 		// No mock fallback: without --socket or SOCKET_URL the socket keeps
 		// its production WhatsApp Web default, so an ordinary run places a
 		// real call instead of timing out against an absent localhost mock.
@@ -411,6 +412,11 @@ const main = async (): Promise<void> => {
 	const args = parseArgs(process.argv.slice(2))
 
 	const { state } = await useMultiFileAuthState(args.authDir)
+	// fetch latest version of WA Web, exactly like example.ts: the embedded
+	// default goes stale and the server rejects it with "Client outdated".
+	const latest = await fetchLatestWaWebVersion()
+	const { version } = latest
+	console.log(`using WA version ${version.join('.')} (latest: ${latest.isLatest})`)
 	interface ConsoleLogger {
 		level: string
 		child(_obj: Record<string, unknown>): ConsoleLogger
@@ -430,6 +436,7 @@ const main = async (): Promise<void> => {
 		error: (obj, msg) => console.error(msg ?? '', obj ?? '')
 	}
 	const sock = makeWASocket({
+		version,
 		auth: state,
 		logger: logger as never,
 		...(args.socketUrl !== undefined ? { waWebSocketUrl: args.socketUrl } : {}),
