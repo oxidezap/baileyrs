@@ -270,6 +270,18 @@ describe('call audio pump', () => {
 		expect(await pump.done).toEqual({ pushed: 1, shed: 0 })
 		expect(cleanedUp).toBe(true)
 	})
+
+	it('natural exhaustion never triggers release', async () => {
+		let released = false
+		const pump = startCallAudioPump(() => true, {
+			next: async () => null,
+			release: () => {
+				released = true
+			}
+		})
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+		expect(released).toBe(false)
+	})
 })
 
 describe('call media router', () => {

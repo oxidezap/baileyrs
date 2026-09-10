@@ -509,6 +509,7 @@ export const startCallAudioPump = (
 	}
 
 	const done = (async (): Promise<CallAudioPumpStats> => {
+		let exhausted = false
 		for (;;) {
 			// Checked before pulling: a pump stopped before its first pull
 			// never touches the source at all.
@@ -517,7 +518,11 @@ export const startCallAudioPump = (
 			// outlive the stop. A pull that resolves after the break drops
 			// its packet, which is the loss-tolerant answer anyway.
 			const packet = await Promise.race([source.next(), blockedPullWoken])
-			if (packet === null || stopped) break
+			if (stopped) break
+			if (packet === null) {
+				exhausted = true
+				break
+			}
 			assertAudioPacket('startCallAudioPump: source', packet)
 			if (await push(packet)) {
 				stats.pushed++
@@ -526,7 +531,15 @@ export const startCallAudioPump = (
 				options.onShed?.(stats.shed)
 			}
 		}
-		stop()
+		if (exhausted) {
+			// Natural end: the source is spent, so there is nothing to
+			// release — only disarm. Early stops go through `stop()` above,
+			// which runs the release.
+			stopped = true
+			if (onAbort) options.signal?.removeEventListener('abort', onAbort)
+		} else {
+			stop()
+		}
 		// Source cleanup settles first: by the time `done` resolves, generator
 		// `finally` blocks have run and readers are closed.
 		await releaseSettled
