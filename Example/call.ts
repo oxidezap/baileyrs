@@ -328,6 +328,22 @@ const main = async (): Promise<void> => {
 		...(args.socketUrl !== undefined ? { waWebSocketUrl: args.socketUrl } : {}),
 		...(args.dangerSkipCertVerify ? { dangerSkipCertChainVerify: true as const } : {})
 	})
+	// Listen before the relay provider waits for the client, so an open
+	// emitted during that await is still observed.
+	const connected = new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error('connect timeout')), 60_000)
+		sock.ev.on('connection.update', update => {
+			if (update.qr) console.log('scan this QR with your phone:', update.qr)
+			if (update.connection === 'open') {
+				clearTimeout(timer)
+				resolve()
+			}
+			if (update.connection === 'close') {
+				clearTimeout(timer)
+				reject(update.lastDisconnect?.error ?? new Error('connection closed'))
+			}
+		})
+	})
 	// UDP pipe to the relay: the core builds every datagram, this only ships
 	// bytes. Same shape as the e2e helper, inlined so the example stands alone.
 	const dgram = await import('node:dgram')
@@ -381,24 +397,11 @@ const main = async (): Promise<void> => {
 		}
 	})
 
-	const connected = new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error('connect timeout')), 60_000)
-		sock.ev.on('connection.update', update => {
-			if (update.qr) console.log('scan this QR with your phone:', update.qr)
-			if (update.connection === 'open') {
-				clearTimeout(timer)
-				resolve()
-			}
-			if (update.connection === 'close') {
-				clearTimeout(timer)
-				reject(update.lastDisconnect?.error ?? new Error('connection closed'))
-			}
-		})
-	})
 	await connected
 	console.log('connected as', sock.user?.id)
 
 	let liveCallId: string | undefined
+	let accepting = false
 	let stopSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
@@ -453,6 +456,10 @@ const main = async (): Promise<void> => {
 	}
 
 	const onFrame = (frame: CallAudioFrame): void => {
+		if (frame.codec !== 'opus') {
+			console.error(`dropping peer packet with unsupported codec ${frame.codec}`)
+			return
+		}
 		try {
 			muxFrame?.(frame.data)
 		} catch (err) {
@@ -492,13 +499,24 @@ const main = async (): Promise<void> => {
 	})
 
 	const answer = async (call: WACallEvent): Promise<void> => {
-		const id = await sock.acceptCall(call.id, 'opus')
-		liveCallId = id
-		stopSink?.()
-		stopSink = sock.onCallAudio(id, onFrame)
-		ensureEncoder()
-		startPlayback()
-		console.log('answered', id)
+		if (liveCallId !== undefined || accepting) {
+			console.log(`rejecting overlapping call from ${call.from} while busy`)
+			await sock.rejectCall(call.id, call.chatId).catch(err => console.error('reject failed:', (err as Error).message))
+			return
+		}
+		accepting = true
+		try {
+			const id = await sock.acceptCall(call.id, 'opus')
+			liveCallId = id
+			muted = false
+			stopSink?.()
+			stopSink = sock.onCallAudio(id, onFrame)
+			ensureEncoder()
+			startPlayback()
+			console.log('answered', id)
+		} finally {
+			accepting = false
+		}
 	}
 
 	sock.ev.on('call', events => {
@@ -529,7 +547,10 @@ const main = async (): Promise<void> => {
 	if (process.stdin.isTTY) process.stdin.setRawMode(true)
 	process.stdin.on('keypress', (_chunk, key: { name?: string } | undefined) => {
 		if (key?.name === 'q') {
-			void hangup().then(() => process.exit(0))
+			void hangup().then(async () => {
+				await sock.end(undefined).catch(err => console.error('socket close failed:', (err as Error).message))
+				process.exit(0)
+			})
 		}
 		if (key?.name === 'm' && liveCallId) {
 			muted = !muted

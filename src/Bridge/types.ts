@@ -564,6 +564,13 @@ export interface CanonicalIncomingCall {
 	 * (`0..3`). Only an `offer` or `accept` carries one.
 	 */
 	videoOrientation?: number
+	/**
+	 * `true` when this update resolved the call on another of our devices
+	 * (`call_ended_elsewhere`): this device owns no live call. The socket
+	 * uses it to drop the offer snapshot instead of keeping routing state
+	 * for a call handled elsewhere.
+	 */
+	endedElsewhere?: boolean
 	action: CanonicalCallAction
 }
 

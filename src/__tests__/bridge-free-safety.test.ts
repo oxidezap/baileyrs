@@ -136,9 +136,13 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 
 	it('free() mid-disconnect still kills the process, so end() keeps draining', async () => {
 		// The one shape `free()` never became safe for: freeing under the
-		// disconnect teardown aborts the process (`cannot recursively acquire
-		// mutex`). This pins why `release`
-		// awaits `disconnect()` before freeing — drop that drain and `void
+		// disconnect teardown aborts the process from inside wasm. On the
+		// released bridge that abort read `cannot recursively acquire mutex`;
+		// the calls-domain preview (pinned in package-lock.json) changed the
+		// teardown internals and it now reads `function signature mismatch`
+		// instead. Either way the process dies from inside wasm rather than
+		// surviving, which is what this pins: it is why `release` awaits
+		// `disconnect()` before freeing — drop that drain and `void
 		// sock.ws.close(); await sock.end()` can land here.
 		const outcome = await runChild(
 			`
@@ -154,7 +158,7 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		// The crash signature, not just any nonzero exit: anything else (a
 		// sync error, an unhandled rejection after setup) would satisfy the
 		// lines above while describing a different hazard.
-		expect(outcome.stderr).toContain('cannot recursively acquire mutex')
+		expect(outcome.stderr).toContain('function signature mismatch')
 		expect(outcome.stderr).toContain('wasm://wasm/')
 	})
 

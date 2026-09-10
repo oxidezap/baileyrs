@@ -169,6 +169,46 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 		expect(emitted[0]?.[0]).toMatchObject({ videoOrientation: 1 })
 	})
 
+	it('an out-of-range video orientation is dropped, not emitted', () => {
+		for (const bad of [4, 1.5, -1]) {
+			const event = {
+				type: 'incoming_call',
+				data: {
+					...(offer('CALL-7B').data as Record<string, unknown>),
+					video_orientation: bad
+				}
+			}
+			const emitted = driveCalls(new Map(), [event])
+			expect(emitted[0]?.[0]?.videoOrientation).toBe(undefined)
+		}
+	})
+
+	it('a call ended on another device clears the entry despite reading as accept', () => {
+		const cache: CallOfferCache = new Map()
+		const elsewhere = {
+			type: 'call_ended_elsewhere',
+			data: { from: jid('5511'), call_id: 'CALL-9B', timestamp: 1_730_000_100, outcome: 'accepted' }
+		}
+		const emitted = driveCalls(cache, [offer('CALL-9B'), elsewhere])
+		expect(emitted[1]?.[0]).toMatchObject({ status: 'accept', isVideo: true })
+		expect(cache.size).toBe(0)
+	})
+
+	it('a sparse missed call keeps the offer identity', () => {
+		const cache: CallOfferCache = new Map()
+		const missed = {
+			type: 'missed_call',
+			data: { from: jid('5511'), call_id: 'CALL-9C', timestamp: 1_730_000_100, reason: 'remote' }
+		}
+		const emitted = driveCalls(cache, [offer('CALL-9C'), missed])
+		expect(emitted[1]?.[0]).toMatchObject({
+			status: 'timeout',
+			isVideo: true,
+			callerPn: '5522@s.whatsapp.net',
+			callCreator: '5511@s.whatsapp.net'
+		})
+	})
+
 	it('an accept with no offer seen stays a bare accept', () => {
 		const emitted = driveCalls(new Map(), [update('CALL-8', 'accept')])
 		const call = emitted[0]?.[0] as BaileysEventMap['call'][number]

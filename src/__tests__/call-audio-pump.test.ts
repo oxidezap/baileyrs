@@ -99,6 +99,15 @@ describe('call audio silence source', () => {
 			expect(() => makeSilenceCallAudioSource({ packets, intervalMs: 0 })).toThrow(/non-negative integer/)
 		}
 	})
+
+	it('copies a Buffer packet per tick instead of aliasing it', async () => {
+		const packet = Buffer.from([0x90])
+		const source = makeSilenceCallAudioSource({ packet, packets: 2, intervalMs: 0 })
+		const first = (await source.next())!
+		expect(first).not.toBe(packet)
+		first[0] = 0x00
+		expect(await source.next()).toEqual(new Uint8Array([0x90]))
+	})
 })
 
 describe('call audio file source', () => {
@@ -211,6 +220,40 @@ describe('call audio file reader', () => {
 			await rm(dir, { recursive: true, force: true })
 		}
 	})
+
+	it('concurrent reads run in order without duplicating packets', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'baileyrs-call-reader-'))
+		try {
+			const reader = await openFilePacketReader(await fixture(dir, [0, 1, 2, 3]), { packetBytes: 2 })
+			try {
+				const first = new Uint8Array(2)
+				const second = new Uint8Array(2)
+				const [firstRead, secondRead] = await Promise.all([reader.readInto(first), reader.readInto(second)])
+				expect(firstRead).toBe(2)
+				expect(secondRead).toBe(2)
+				const packets = [Array.from(first).join(','), Array.from(second).join(',')].toSorted()
+				expect(packets).toEqual(['0,1', '2,3'])
+			} finally {
+				await reader.close()
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
+
+	it('concurrent closes share one completion', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'baileyrs-call-reader-'))
+		try {
+			const reader = await openFilePacketReader(await fixture(dir, [0, 1]), { packetBytes: 2 })
+			const first = reader.close()
+			const second = reader.close()
+			expect(second).toBe(first)
+			await first
+			await expect(reader.readInto(new Uint8Array(2))).rejects.toThrow(/closed/)
+		} finally {
+			await rm(dir, { recursive: true, force: true })
+		}
+	})
 })
 
 describe('call audio pump', () => {
@@ -269,6 +312,14 @@ describe('call audio pump', () => {
 				startCallAudioPump(() => true, scriptedSource([]), { timing: { mode: 'clock', packetDurationMs } })
 			).toThrow(/packetDurationMs/)
 		}
+	})
+
+	it('rejects a misspelled timing mode instead of running unpaced', () => {
+		expect(() =>
+			startCallAudioPump(() => true, scriptedSource([]), {
+				timing: { mode: 'clcok', packetDurationMs: 20 } as unknown as { mode: 'clock'; packetDurationMs: number }
+			})
+		).toThrow(/timing\.mode/)
 	})
 
 	it('counts shed packets and reports them instead of erroring', async () => {
@@ -561,6 +612,46 @@ describe('call media router', () => {
 		expect(failures).toHaveLength(1)
 	})
 
+	it('drops variant fields that break their documented shape', () => {
+		const emitted: CallMediaEvent[] = []
+		const failures: unknown[] = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: event => emitted.push(event),
+			reportError: err => failures.push(err)
+		})
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocate-failed', code: '500' } as never)
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'audio-codec-switched', from: 7 } as never)
+		expect(emitted).toEqual([])
+		expect(failures).toHaveLength(2)
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocate-failed', code: 500 })
+		expect(emitted).toHaveLength(1)
+	})
+
+	it('a sink registered mid-dispatch waits for the next frame', () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const makeFrame = (sequenceNumber: number): CallAudioFrame => ({
+			callId: 'CALL-1',
+			data: new Uint8Array([0x90]),
+			codec: 'mlow',
+			payloadType: 120,
+			sequenceNumber,
+			timestamp: 960,
+			marker: false
+		})
+		const second: CallAudioFrame[] = []
+		let registered = false
+		router.addAudioSink('CALL-1', () => {
+			if (!registered) {
+				registered = true
+				router.addAudioSink('CALL-1', f => second.push(f))
+			}
+		})
+		router.routeAudioFrame(makeFrame(1))
+		expect(second).toHaveLength(0)
+		router.routeAudioFrame(makeFrame(2))
+		expect(second).toHaveLength(1)
+	})
+
 	it('stopAll ends every pump and drops every sink', () => {
 		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
 		let stops = 0
@@ -618,6 +709,34 @@ describe('call media router', () => {
 		router.stopCall('CALL-1')
 		await router.drainAll()
 		expect(released).toBe(true)
+	})
+
+	it('drainAll re-stops earlier pumps with the teardown policy', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const reasons: (string | undefined)[] = []
+		let release!: () => void
+		const done = new Promise<unknown>(resolve => {
+			release = () => resolve(undefined)
+		})
+		let stops = 0
+		// Settles only on the second stop: without the teardown re-stop,
+		// drainAll would wait this out forever.
+		router.trackPump(
+			'CALL-1',
+			reason => {
+				stops++
+				reasons.push(reason)
+				if (stops === 2) release()
+			},
+			done
+		)
+		router.stopCall('CALL-1')
+		const watchdog = new Promise<never>((_, reject) => {
+			const timer = setTimeout(() => reject(new Error('drainAll hung on a settling pump')), 2_000)
+			timer.unref?.()
+		})
+		await Promise.race([router.drainAll(), watchdog])
+		expect(reasons).toEqual(['call-ended', 'socket-closed'])
 	})
 
 	it('untracking one pump leaves its siblings and sinks alone', () => {
@@ -761,6 +880,15 @@ describe('call audio socket methods', () => {
 		expect(
 			await endMediaCallIfPresent(stubCtx({ endCall: async () => ({ outcome: 'local-only', failure: 'x' }) }), 'CALL-1')
 		).toBe(false)
+		const localOnlyReported: unknown[] = []
+		const localOnlyCtx = {
+			withClient: async (operation: (client: never) => unknown) =>
+				operation({ endCall: async () => ({ outcome: 'local-only', failure: 'x' }) } as never),
+			isClosing: () => false,
+			reportUnexpectedError: (err: unknown) => localOnlyReported.push(err)
+		} as unknown as SocketContext
+		expect(await endMediaCallIfPresent(localOnlyCtx, 'CALL-1')).toBe(false)
+		expect(localOnlyReported).toEqual([])
 		const reported: unknown[] = []
 		const reportingCtx = {
 			withClient: async (operation: (client: never) => unknown) =>

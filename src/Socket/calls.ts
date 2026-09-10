@@ -238,11 +238,24 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 	// The kind is closed: a version-skewed spelling must not publish as the
 	// union the consumers were promised, and a misspelled terminal kind must
 	// not skip the stop below by matching nothing.
-	return (
-		typeof record.callId === 'string' &&
-		typeof record.kind === 'string' &&
-		(MEDIA_EVENT_KINDS as readonly string[]).includes(record.kind)
-	)
+	if (typeof record.callId !== 'string' || typeof record.kind !== 'string') return false
+	if (!(MEDIA_EVENT_KINDS as readonly string[]).includes(record.kind)) return false
+	// Per-variant field checks: the boundary that publishes typed events must
+	// not let impossible values through on a malformed or version-skewed
+	// payload. Absent stays absent; present must match the documented shape.
+	const optionalString = (value: unknown): boolean => value === undefined || typeof value === 'string'
+	switch (record.kind) {
+		case 'relay-allocate-failed':
+			return record.code === undefined || (typeof record.code === 'number' && Number.isFinite(record.code))
+		case 'media-setup-failed':
+			return optionalString(record.detail)
+		case 'audio-codec-switched':
+			return optionalString(record.from) && optionalString(record.to)
+		case 'audio-codec-source-fixed':
+			return optionalString(record.sending) && optionalString(record.peerExpects)
+		default:
+			return true
+	}
 }
 
 export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRouterDeps): CallMediaRouter => {
@@ -254,6 +267,16 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	// their `done` settles; only a release that never settles pins one, which
 	// is a contract-violating source, not a router leak.
 	const settling = new Set<Promise<unknown>>()
+	// Stop functions for the pumps above, kept so teardown can re-stop them
+	// with the nonblocking `socket-closed` policy: their `done` then settles
+	// without waiting out source cleanup. Without this, a pump removed from
+	// `pumps` by an earlier `stopCall` could never be re-stopped, and
+	// `drainAll` would wait out its release forever — hanging `sock.end()`
+	// after an ordinary call-ended-then-socket-close sequence. Stored
+	// pre-bound: the teardown reason is fixed, and an open reason parameter
+	// here would trip the closed-domain argument scan for an internal-only
+	// value every call site already passes as a literal.
+	const settlingStops = new Map<Promise<unknown>, () => void>()
 
 	const settleEntry = (entry: TrackedCallPump): void => {
 		if (entry.done === undefined) return
@@ -262,7 +285,11 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			() => undefined
 		)
 		settling.add(waited)
-		void waited.finally(() => settling.delete(waited))
+		settlingStops.set(waited, () => entry.stop('socket-closed'))
+		void waited.finally(() => {
+			settling.delete(waited)
+			settlingStops.delete(waited)
+		})
 	}
 
 	const stopEntry = (callId: string, entry: TrackedCallPump, reason: CallAudioStopReason): void => {
@@ -332,7 +359,10 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			// what arrives here is an owned buffer, not a borrowed view. It is
 			// shared between the call's sinks — do not modify it; copy only
 			// to mutate or hand ownership elsewhere.
-			for (const sink of live) {
+			// Snapshot: a sink may register another sink while handling a frame,
+			// and a live Set iterator would visit the newcomer in this same loop.
+			const snapshot = Array.from(live)
+			for (const sink of snapshot) {
 				try {
 					sink(frame)
 				} catch (err) {
@@ -382,7 +412,22 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			// holding the teardown open. entries stopped by earlier `stopCall`
 			// calls are already in `settling` and join the same wait, so
 			// cleanup they started still finishes before teardown resolves.
+			// Snapshot those first: only they get re-stopped below. Pumps
+			// the stop above just reached need no second stop, and counting
+			// stops is how the pump tests pin exact teardown behavior.
+			const priorSettling = new Set(settling)
 			stopAllWith('socket-closed')
+			// Re-stop the earlier entries with the teardown policy: their
+			// first stop waited out source cleanup, which teardown must not
+			// wait for. First stop reason still wins inside the pump.
+			for (const [waited, stop] of settlingStops) {
+				if (!priorSettling.has(waited)) continue
+				try {
+					stop()
+				} catch (err) {
+					reportError(err, 'stopping a settling call audio pump for teardown')
+				}
+			}
 			await Promise.allSettled(settling)
 		}
 	}
@@ -437,10 +482,13 @@ export const makeSilenceCallAudioSource = (options: SilenceCallAudioSourceOption
 			if (sent >= total) return null
 			if (intervalMs > 0 && sent > 0) await paceDelay(intervalMs)
 			sent++
-			// A fresh view per tick: the push copies synchronously, but the
+			// A fresh copy per tick: the push copies synchronously, but the
 			// caller owns the packet afterwards and must not see later ticks
-			// overwrite it.
-			return packet.slice()
+			// overwrite it. Built field by field on purpose — `packet.slice()`
+			// on a Node Buffer aliases the same storage instead of copying.
+			const copy = new Uint8Array(packet.length)
+			copy.set(packet)
+			return copy
 		}
 	}
 }
@@ -523,62 +571,76 @@ export const openFilePacketReader = async (
 	const handle = await open(path, 'r')
 	let position = 0
 	let closed = false
-	const closeHandle = async (): Promise<void> => {
-		if (closed) return
+	// The in-flight close, shared: an abort racing a pending read must
+	// observe actual completion, not just the flag. Every close path returns
+	// this same promise, so callers never finish cleanup while the OS handle
+	// is still closing.
+	let closePromise: Promise<void> | undefined
+	const closeHandle = (): Promise<void> => {
 		closed = true
+		return (closePromise ??= handle.close().catch(() => {
+			// Teardown races a failed open the same way: the handle is
+			// gone either way, and close stays idempotent.
+		}))
+	}
+	let tail: Promise<unknown> = Promise.resolve()
+	const readIntoInner = async (target: Uint8Array, signal?: AbortSignal): Promise<number | null> => {
+		if (closed) {
+			throw new Boom('openFilePacketReader: reader is closed', { statusCode: 400 })
+		}
+		if (!(target instanceof Uint8Array) || target.length < packetBytes) {
+			throw new Boom('openFilePacketReader: target must hold a full packet', { statusCode: 400 })
+		}
+		const abortSignal: AbortSignal | undefined = signal
+		let onAbort: (() => void) | undefined
 		try {
-			await handle.close()
-		} catch {
-			// Teardown races a failed open the same way: the handle is gone
-			// either way, and close stays idempotent.
+			if (abortSignal?.aborted) {
+				await closeHandle()
+				throw abortSignal.reason
+			}
+			onAbort = () => {
+				void closeHandle()
+			}
+			abortSignal?.addEventListener('abort', onAbort, { once: true })
+			// A filesystem read may legally return short of the request
+			// before EOF, so accumulate to a full packet: only EOF after
+			// a partial aggregate is a runt tail.
+			let got = 0
+			while (got < packetBytes) {
+				const { bytesRead } = await handle.read(target, got, packetBytes - got, position + got)
+				if (bytesRead === 0) break
+				got += bytesRead
+			}
+			if (abortSignal?.aborted) {
+				await closeHandle()
+				throw abortSignal.reason
+			}
+			if (got === 0) return null
+			if (got < packetBytes) {
+				throw new Boom(`openFilePacketReader: file length is not a multiple of the ${packetBytes}-byte packet size`, {
+					statusCode: 400
+				})
+			}
+			position += got
+			return got
+		} catch (err) {
+			if (abortSignal?.aborted) throw abortSignal.reason
+			throw err
+		} finally {
+			if (onAbort) abortSignal?.removeEventListener('abort', onAbort)
 		}
 	}
 	return {
-		readInto: async (target: Uint8Array, signal?: AbortSignal): Promise<number | null> => {
-			if (closed) {
-				throw new Boom('openFilePacketReader: reader is closed', { statusCode: 400 })
-			}
-			if (!(target instanceof Uint8Array) || target.length < packetBytes) {
-				throw new Boom('openFilePacketReader: target must hold a full packet', { statusCode: 400 })
-			}
-			const abortSignal: AbortSignal | undefined = signal
-			let onAbort: (() => void) | undefined
-			try {
-				if (abortSignal?.aborted) {
-					await closeHandle()
-					throw abortSignal.reason
-				}
-				onAbort = () => {
-					void closeHandle()
-				}
-				abortSignal?.addEventListener('abort', onAbort, { once: true })
-				// A filesystem read may legally return short of the request
-				// before EOF, so accumulate to a full packet: only EOF after
-				// a partial aggregate is a runt tail.
-				let got = 0
-				while (got < packetBytes) {
-					const { bytesRead } = await handle.read(target, got, packetBytes - got, position + got)
-					if (bytesRead === 0) break
-					got += bytesRead
-				}
-				if (abortSignal?.aborted) {
-					await closeHandle()
-					throw abortSignal.reason
-				}
-				if (got === 0) return null
-				if (got < packetBytes) {
-					throw new Boom(`openFilePacketReader: file length is not a multiple of the ${packetBytes}-byte packet size`, {
-						statusCode: 400
-					})
-				}
-				position += got
-				return got
-			} catch (err) {
-				if (abortSignal?.aborted) throw abortSignal.reason
-				throw err
-			} finally {
-				if (onAbort) abortSignal?.removeEventListener('abort', onAbort)
-			}
+		readInto: (target: Uint8Array, signal?: AbortSignal): Promise<number | null> => {
+			// One read at a time: concurrent calls share `position`, and
+			// without ordering two of them can read the same range, then each
+			// advance past it and skip a packet. Each call chains behind the
+			// previous one; the chain itself never rejects, so one failed
+			// read does not wedge later ones. A signal aborted while queued
+			// still throws on entry to the inner read below.
+			const run = tail.then(() => readIntoInner(target, signal))
+			tail = run.catch(() => {})
+			return run
 		},
 		close: () => closeHandle()
 	}
@@ -665,9 +727,22 @@ export const startCallAudioPump = (
 	let wakeParkedPull: (() => void) | undefined
 	const stats = { pushed: 0, shed: 0 }
 	const source = asCallAudioPacketSource('startCallAudioPump', input)
-	const clockMs = options.timing?.mode === 'clock' ? options.timing.packetDurationMs : undefined
-	if (clockMs !== undefined && (!Number.isFinite(clockMs) || clockMs <= 0)) {
-		throw new Boom('startCallAudioPump: timing.packetDurationMs must be a finite number > 0', { statusCode: 400 })
+	// The mode discriminator is closed: a misspelling must fail here, not
+	// silently run unpaced as source timing and flood the media queue.
+	const rawTiming = options.timing as { mode?: unknown; packetDurationMs?: unknown } | undefined
+	const timingMode = rawTiming?.mode
+	if (rawTiming !== undefined && timingMode !== 'source' && timingMode !== 'clock') {
+		throw new Boom(`startCallAudioPump: timing.mode must be 'source' or 'clock'`, { statusCode: 400 })
+	}
+	let clockMs: number | undefined
+	if (timingMode === 'clock') {
+		const durationMs = rawTiming?.packetDurationMs
+		if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0) {
+			throw new Boom('startCallAudioPump: timing.packetDurationMs must be a finite number > 0', {
+				statusCode: 400
+			})
+		}
+		clockMs = durationMs
 	}
 
 	const stop = (reason: CallAudioStopReason = 'stopped'): void => {
@@ -820,12 +895,12 @@ export interface CallAudioMethodHooks {
  * out through the handle, so the caller sends nothing more. False means no
  * record, no audio domain — or a record whose peer was never notified
  * (`local-only`): the caller falls back to plain signaling so the remote side
- * still hears the hangup. An unrecognized outcome shape also reads as not
- * told and falls back, reported rather than trusted: the bridge enum is
- * non-exhaustive, so failing closed would break future notified outcomes,
- * while an extra stanza is recoverable. Anything else throws, so a failed
- * hangup keeps its routing context for the retry instead of reading as a
- * call that is gone.
+ * still hears the hangup. `local-only` is the documented fallback, not an
+ * anomaly, so it returns quietly; only a shape the bridge enum never named
+ * reports, rather than trusted: failing closed would break future notified
+ * outcomes, while an extra stanza is recoverable. Anything else throws, so a
+ * failed hangup keeps its routing context for the retry instead of reading
+ * as a call that is gone.
  */
 export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
 	ctx.withClient(async client => {
@@ -836,6 +911,7 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 				client,
 				callId
 			)) as CallEndResult
+			if (outcome?.outcome === 'local-only') return false
 			const notified =
 				outcome?.outcome === 'peer-notified' ||
 				outcome?.outcome === 'partly-notified' ||

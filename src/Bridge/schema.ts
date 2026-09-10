@@ -507,6 +507,7 @@ const ADAPTERS = {
 			from,
 			timestamp,
 			offline: false,
+			endedElsewhere: true,
 			action: { type: data?.outcome === 'accepted' ? 'accept' : 'reject', callId }
 		}
 	},
@@ -1040,6 +1041,20 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	}
 
 	const videoOrientation = asNumber(data.video_orientation)
+	// The bridge promises the `<video>` rotation in `0..3`; a finite but
+	// out-of-range or fractional value is malformed or version-skewed wire
+	// data, and the public contract has no impossible state to put it in.
+	// Omit it rather than emitting a rotation no consumer can look up.
+	const validOrientation =
+		videoOrientation !== undefined &&
+		Number.isInteger(videoOrientation) &&
+		videoOrientation >= 0 &&
+		videoOrientation <= 3
+			? videoOrientation
+			: undefined
+	if (videoOrientation !== undefined && validOrientation === undefined) {
+		logger?.debug({ videoOrientation }, 'incoming_call adapter: dropping out-of-range video orientation')
+	}
 
 	return {
 		type: 'incomingCall',
@@ -1050,7 +1065,7 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 		notify: asString(data.notify),
 		platform: asString(data.platform),
 		version: asString(data.version),
-		videoOrientation: videoOrientation !== undefined ? videoOrientation : undefined,
+		videoOrientation: validOrientation,
 		action: canonicalAction
 	}
 }

@@ -644,47 +644,53 @@ describe(
 			}
 		)
 
-		test('Phase 8b — no silent re-handshake: bob disk session for alice has the SAME baseKey as before the swap', async () => {
-			// What this proves: in Phases 6-8, bob (upstream) decrypted alice's
-			// real Signal message using the on-disk session bytes that bridge
-			// wrote pre-swap, NOT a freshly-handshaked replacement triggered
-			// by a `pkmsg` retry. That distinction is invisible from the
-			// message-level assertions (both paths deliver plaintext) but
-			// matters operationally: re-handshakes cost extra wire roundtrips
-			// per peer pair and reset out-of-order tolerance.
-			//
-			// Mechanism: a session's `baseKey` (alice base key) is fixed at
-			// session creation. The post-swap snapshot must INCLUDE every
-			// baseKey present pre-swap; if any vanished, that session was
-			// closed and replaced by a re-handshake.
-			//
-			// We give the upstream a beat to flush its post-receive writes
-			// before reading the file (`useMultiFileAuthState` does mutex
-			// + writeFile sequentially per id, no debounce, but we want the
-			// chain advance from Phase 8's exchange to be on disk).
-			await new Promise(r => setTimeout(r, 200))
-			const afterSnapshot = snapshotAllSessionBaseKeys(bob.authFolder)
-			// A re-handshake means the old open baseKey is GONE from the
-			// session file entirely (deleted), or replaced. Mere rotation
-			// where the old session is kept (`closed > 0`) and a new one
-			// opens at a different device variant doesn't count as a
-			// re-handshake on the path we exercised.
-			const rotated: Array<{ addr: string; pre: string[]; post: string[] }> = []
-			for (const [addr, preSet] of bobSessionBaseKeysBeforeSwap) {
-				const postSet = afterSnapshot.get(addr) ?? new Set<string>()
-				const missing = Array.from(preSet).filter(k => !postSet.has(k))
-				if (missing.length > 0) {
-					rotated.push({ addr, pre: Array.from(preSet), post: Array.from(postSet) })
+		test(
+			'Phase 8b — no silent re-handshake: bob disk session for alice has the SAME baseKey as before the swap',
+			skipOnBarback,
+			async () => {
+				// Gated with Phases 6-8: without their post-swap traffic this
+				// comparison runs on stale snapshots and cannot detect anything.
+				// What this proves: in Phases 6-8, bob (upstream) decrypted alice's
+				// real Signal message using the on-disk session bytes that bridge
+				// wrote pre-swap, NOT a freshly-handshaked replacement triggered
+				// by a `pkmsg` retry. That distinction is invisible from the
+				// message-level assertions (both paths deliver plaintext) but
+				// matters operationally: re-handshakes cost extra wire roundtrips
+				// per peer pair and reset out-of-order tolerance.
+				//
+				// Mechanism: a session's `baseKey` (alice base key) is fixed at
+				// session creation. The post-swap snapshot must INCLUDE every
+				// baseKey present pre-swap; if any vanished, that session was
+				// closed and replaced by a re-handshake.
+				//
+				// We give the upstream a beat to flush its post-receive writes
+				// before reading the file (`useMultiFileAuthState` does mutex
+				// + writeFile sequentially per id, no debounce, but we want the
+				// chain advance from Phase 8's exchange to be on disk).
+				await new Promise(r => setTimeout(r, 200))
+				const afterSnapshot = snapshotAllSessionBaseKeys(bob.authFolder)
+				// A re-handshake means the old open baseKey is GONE from the
+				// session file entirely (deleted), or replaced. Mere rotation
+				// where the old session is kept (`closed > 0`) and a new one
+				// opens at a different device variant doesn't count as a
+				// re-handshake on the path we exercised.
+				const rotated: Array<{ addr: string; pre: string[]; post: string[] }> = []
+				for (const [addr, preSet] of bobSessionBaseKeysBeforeSwap) {
+					const postSet = afterSnapshot.get(addr) ?? new Set<string>()
+					const missing = Array.from(preSet).filter(k => !postSet.has(k))
+					if (missing.length > 0) {
+						rotated.push({ addr, pre: Array.from(preSet), post: Array.from(postSet) })
+					}
 				}
+				if (rotated.length > 0) {
+					logger.warn(
+						{ rotated },
+						'Phase 8b: re-handshake detected — pre-swap baseKey(s) missing from post-swap (open OR closed) for some peer addresses'
+					)
+				}
+				expect(rotated.length).toBe(0)
 			}
-			if (rotated.length > 0) {
-				logger.warn(
-					{ rotated },
-					'Phase 8b: re-handshake detected — pre-swap baseKey(s) missing from post-swap (open OR closed) for some peer addresses'
-				)
-			}
-			expect(rotated.length).toBe(0)
-		})
+		)
 
 		// ── Post-swap: Group (sender keys cross-impl) ───────────────────────────
 

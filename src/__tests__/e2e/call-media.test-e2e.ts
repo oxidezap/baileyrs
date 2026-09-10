@@ -189,6 +189,13 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			console.log('media events seen:', JSON.stringify(mediaSeen))
 			throw err
 		} finally {
+			// Cancel every armed media wait first: a failure after relay
+			// allocation leaves their timers live, and a late rejection past
+			// the end of the test reads as an unhandled failure in another
+			// test instead of this one.
+			aliceRelay.cancel()
+			bobRelay.cancel()
+			bobEnded.cancel()
 			stopAliceSink()
 			stopBobSink()
 			alice.sock.ev.off('call.media', onAliceMedia)
