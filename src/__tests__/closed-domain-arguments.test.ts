@@ -328,7 +328,8 @@ const EXEMPT: Record<string, string> = {
 	'calls.ts:stopEntry:reason': 'a module-internal helper, called with a literal at both call sites',
 	'calls.ts:stopCallWith:reason': 'a module-internal helper, called with a literal at both call sites',
 	'calls.ts:stopAllWith:reason': 'a module-internal helper, called with a literal at both call sites',
-	'calls.ts:stop:reason': 'a module-internal helper defaulting to stopped, with literals at the abort and router call sites',
+	'calls.ts:stop:reason':
+		'a module-internal helper defaulting to stopped, with literals at the abort and router call sites',
 	'calls.ts:<module>:audioFormat':
 		'the bridge-contract interface restatement, not a parameter; dialCall and acceptCall validate it',
 	'internals.ts:upsertMessage:type': 'published on the event bus, so the value comes back to the caller unchanged'
