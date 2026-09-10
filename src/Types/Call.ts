@@ -166,6 +166,12 @@ export type CallAudioPacketSource = {
 	next(): Promise<Uint8Array | null>
 }
 
+/**
+ * What a pump accepts as its packet source: either a `next()` source or any
+ * async iterable of packets — a generator works directly, no wrapper needed.
+ */
+export type CallAudioSourceInput = CallAudioPacketSource | AsyncIterable<Uint8Array>
+
 /** Per-packet sink for one live call's decoded audio. */
 export type CallAudioSink = (frame: CallAudioFrame) => void
 

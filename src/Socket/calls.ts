@@ -28,6 +28,7 @@ import type {
 	CallAudioPacketSource,
 	CallAudioPumpStats,
 	CallAudioSink,
+	CallAudioSourceInput,
 	CallEndResult,
 	CallMediaEvent,
 	CallMediaStats
@@ -391,6 +392,32 @@ export interface CallAudioPump {
 }
 
 /**
+ * Settle what the pump pulls from. An async iterable (a generator, a
+ * `ReadableStream` reader wrapped as one) pulls through its iterator, where
+ * `done` reads as a spent source — this branch comes first because generators
+ * also carry a `next()` method, one that yields `{ value, done }` rather than
+ * packets. A bare `next()` source is used directly.
+ */
+export const asCallAudioPacketSource = (method: string, source: CallAudioSourceInput): CallAudioPacketSource => {
+	if (typeof source === 'object' && source !== null) {
+		const iterable = (source as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]
+		if (typeof iterable === 'function') {
+			const iterator = (source as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]()
+			return {
+				next: async () => {
+					const step = await iterator.next()
+					return step.done ? null : step.value
+				}
+			}
+		}
+		if (typeof (source as CallAudioPacketSource).next === 'function') {
+			return source as CallAudioPacketSource
+		}
+	}
+	throw new Boom(`${method}: source must carry next() or be an async iterable of Uint8Array`, { statusCode: 400 })
+}
+
+/**
  * Pull packets from a source and push them through `push` until the source is
  * spent, the signal aborts, or `stop()` runs. A `false` push is shed audio —
  * counted (and reported via `onShed`), never an error. A throwing push ends
@@ -398,12 +425,13 @@ export interface CallAudioPump {
  */
 export const startCallAudioPump = (
 	push: (data: Uint8Array) => boolean | Promise<boolean>,
-	source: CallAudioPacketSource,
+	input: CallAudioSourceInput,
 	options: CallAudioPumpOptions = {}
 ): CallAudioPump => {
 	let stopped = false
 	let onAbort: (() => void) | undefined
 	const stats: CallAudioPumpStats = { pushed: 0, shed: 0 }
+	const source = asCallAudioPacketSource('startCallAudioPump', input)
 
 	const stop = (): void => {
 		stopped = true
@@ -528,19 +556,18 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 		/**
 		 * Run a packet source into a live call until it is spent, aborted, or
 		 * the call ends. Resolves the client once, then pushes directly; the
-		 * pump stops with the call on `ended` or socket teardown.
+		 * pump stops with the call on `ended` or socket teardown. The source
+		 * is a `next()` object or any async iterable of packets.
 		 */
 		startCallAudioPump: async (
 			callId: string,
-			source: CallAudioPacketSource,
+			source: CallAudioSourceInput,
 			options: CallAudioPumpOptions = {}
 		): Promise<CallAudioPump> => {
 			assertCallId('startCallAudioPump', callId)
-			if (typeof source !== 'object' || source === null || typeof source.next !== 'function') {
-				throw new Boom('startCallAudioPump: source must carry next()', { statusCode: 400 })
-			}
+			const packets = asCallAudioPacketSource('startCallAudioPump', source)
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
-			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), source, options)
+			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), packets, options)
 			media.trackPump(callId, pump.stop)
 			// A spent or failed pump holds no call resources: drop its
 			// tracking either way. Both branches stop the call's pumps, and

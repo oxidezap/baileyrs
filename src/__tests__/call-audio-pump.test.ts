@@ -189,6 +189,24 @@ describe('call audio pump', () => {
 		const pump = startCallAudioPump(() => true, scriptedSource([new Uint8Array(0)]))
 		await expect(pump.done).rejects.toThrow(/non-empty/)
 	})
+
+	it('pulls straight from an async generator, no wrapper', async () => {
+		const seen: number[] = []
+		async function* packets(): AsyncGenerator<Uint8Array> {
+			yield new Uint8Array([1])
+			yield new Uint8Array([2])
+		}
+		const pump = startCallAudioPump(data => {
+			seen.push(data[0]!)
+			return true
+		}, packets())
+		expect(await pump.done).toEqual({ pushed: 2, shed: 0 })
+		expect(seen).toEqual([1, 2])
+	})
+
+	it('rejects a source that is neither next() nor iterable', () => {
+		expect(() => startCallAudioPump(() => true, {} as never)).toThrow(/async iterable/)
+	})
 })
 
 describe('call media router', () => {
