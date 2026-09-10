@@ -1053,6 +1053,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
 			)
 			activeCallContexts.delete(callId)
+			// Local media ends with the stanza: unlike endCall the media
+			// engine gets no terminal response here to fire `ended` off, so
+			// without this a pump would keep pulling after the hangup.
+			callMedia.stopCall(callId)
 		},
 		/**
 		 * Fetch the account's current reachout-timelock state from the server.

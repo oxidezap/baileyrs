@@ -88,6 +88,13 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 			expect(typeof stats[field]).toBe('number')
 		}
 
+		// Hanging up also stops local media: the open-ended pump below would
+		// outlive the test if terminateCall left it pulling.
+		const lingering = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ intervalMs: 5 }))
+		await alice.sock.terminateCall(callId, bob.lid ?? bob.jid)
+		const lingeringStats = await lingering.done
+		expect(lingeringStats.pushed + lingeringStats.shed >= 1).toBe(true)
+
 		const end = await alice.sock.endCall(callId)
 		expect(end.outcome === 'peer-notified' || end.outcome === 'already-ended').toBe(true)
 	})

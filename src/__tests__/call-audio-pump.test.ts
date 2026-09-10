@@ -294,8 +294,13 @@ describe('call media router', () => {
 			reportError: err => failures.push(err)
 		})
 		router.routeAudioFrame({ callId: 'CALL-1' } as unknown as CallAudioFrame)
+		router.routeAudioFrame({
+			callId: 'CALL-1',
+			data: new Uint8Array([0x90]),
+			codec: 'mlow'
+		} as unknown as CallAudioFrame)
 		router.routeMediaEvent({ nope: true } as unknown as CallMediaEvent)
-		expect(failures).toHaveLength(2)
+		expect(failures).toHaveLength(3)
 	})
 
 	it('emits media events and ends the call on ended', () => {
@@ -317,6 +322,18 @@ describe('call media router', () => {
 		expect(stopped).toBe(true)
 		router.routeAudioFrame(frame('CALL-1'))
 		expect(received).toHaveLength(0)
+	})
+
+	it('a throwing call.media listener never reaches the bridge callback', () => {
+		const failures: unknown[] = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: () => {
+				throw new Error('broken consumer')
+			},
+			reportError: err => failures.push(err)
+		})
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocated' })
+		expect(failures).toHaveLength(1)
 	})
 
 	it('stopAll ends every pump and drops every sink', () => {

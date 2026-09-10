@@ -193,10 +193,16 @@ export interface CallMediaRouter {
 const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 	if (typeof frame !== 'object' || frame === null) return false
 	const record = frame as Record<string, unknown>
+	// Every field the type promises, checked: a partial or version-skewed
+	// object must not reach typed sinks with undefined fields.
 	return (
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
-		(record.codec === 'mlow' || record.codec === 'opus')
+		(record.codec === 'mlow' || record.codec === 'opus') &&
+		typeof record.payloadType === 'number' &&
+		typeof record.sequenceNumber === 'number' &&
+		typeof record.timestamp === 'number' &&
+		typeof record.marker === 'boolean'
 	)
 }
 
@@ -264,7 +270,15 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				return
 			}
 			if (event.kind === 'ended') stopCall(event.callId)
-			emitMediaEvent(event)
+			// Guarded like every other dispatch into consumer code: a throwing
+			// `call.media` listener must not propagate through the bridge's
+			// `onCallEvent` callback, which answers a throw by stopping its
+			// forwarding for the call.
+			try {
+				emitMediaEvent(event)
+			} catch (err) {
+				reportError(err, `call.media listener for ${event.callId}`)
+			}
 		},
 		trackPump(callId, stop) {
 			let set = pumps.get(callId)
