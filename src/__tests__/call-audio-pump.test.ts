@@ -48,9 +48,10 @@ const scriptedSource = (packets: Uint8Array[]): CallAudioPacketSource => {
 	}
 }
 
-const stubCtx = (client: object): SocketContext =>
+const stubCtx = (client: object, closing = false): SocketContext =>
 	({
-		withClient: async (operation: (client: never) => unknown) => operation(client as never)
+		withClient: async (operation: (client: never) => unknown) => operation(client as never),
+		isClosing: () => closing
 	}) as unknown as SocketContext
 
 const nullRouter = (): CallMediaRouter =>
@@ -74,6 +75,17 @@ describe('call audio silence source', () => {
 
 	it('a zero packet budget is spent immediately', async () => {
 		expect(await makeSilenceCallAudioSource({ packets: 0 }).next()).toBe(null)
+	})
+
+	it('mutating the exported sample never changes call traffic', async () => {
+		MLOW_SILENCE_PACKET[0] = 0x00
+		try {
+			const source = makeSilenceCallAudioSource({ packets: 1, intervalMs: 0 })
+			expect(await source.next()).toEqual(new Uint8Array([0x90]))
+		} finally {
+			MLOW_SILENCE_PACKET[0] = 0x90
+		}
+		expect(MLOW_SILENCE_PACKET).toEqual(new Uint8Array([0x90]))
 	})
 
 	it('rejects an empty custom packet and a negative interval', () => {
@@ -336,6 +348,33 @@ describe('call audio pump', () => {
 		expect(released).toBe(true)
 	})
 
+	it('a synchronously throwing release neither escapes stop nor masks the failure', async () => {
+		const failure = new Error('no live call for this call id')
+		const source = {
+			next: async () => new Uint8Array([1]),
+			release: () => {
+				throw new Error('broken host cleanup')
+			}
+		}
+		const pump = startCallAudioPump(() => {
+			throw failure
+		}, source)
+		await expect(pump.done).rejects.toThrow(failure)
+		expect(() => pump.stop()).not.toThrow()
+	})
+
+	it('a stalled async push settles on stop without counting', async () => {
+		const pump = startCallAudioPump(
+			() => new Promise<boolean>(() => {}),
+			scriptedSource([new Uint8Array([1]), new Uint8Array([2])])
+		)
+		// Let the first push park, then stop: done resolves with nothing
+		// counted either way.
+		await new Promise(resolve => setImmediate(resolve))
+		pump.stop()
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'stopped' })
+	})
+
 	it('refuses an empty packet from a broken source', async () => {
 		const pump = startCallAudioPump(() => true, scriptedSource([new Uint8Array(0)]))
 		await expect(pump.done).rejects.toThrow(/non-empty/)
@@ -549,6 +588,22 @@ describe('call media router', () => {
 		expect(received).toHaveLength(0)
 	})
 
+	it('drainAll waits for releases that an earlier stopCall started', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		let released = false
+		const gate = (): Promise<unknown> =>
+			new Promise(resolve =>
+				setImmediate(() => {
+					released = true
+					resolve(undefined)
+				})
+			)
+		router.trackPump('CALL-1', () => undefined, gate())
+		router.stopCall('CALL-1')
+		await router.drainAll()
+		expect(released).toBe(true)
+	})
+
 	it('untracking one pump leaves its siblings and sinks alone', () => {
 		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
 		const received: CallAudioFrame[] = []
@@ -660,6 +715,21 @@ describe('call audio socket methods', () => {
 		await expect(methods.dialCall('5511999999999@s.whatsapp.net')).rejects.toThrow(/client-calls-audio/)
 	})
 
+	it('refuses pumps and writers once teardown owns the client', async () => {
+		const pushClient = {
+			callPushAudio: () => true
+		}
+		const open = makeCallAudioMethods(stubCtx(pushClient), nullRouter())
+		const pump = await open.startCallAudioPump('CALL-1', scriptedSource([new Uint8Array([1])]))
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
+
+		const closing = makeCallAudioMethods(stubCtx(pushClient, true), nullRouter())
+		await expect(closing.startCallAudioPump('CALL-1', scriptedSource([new Uint8Array([1])]))).rejects.toThrow(
+			/Connection Closed/
+		)
+		await expect(closing.openCallAudioWriter('CALL-1')).rejects.toThrow(/Connection Closed/)
+	})
+
 	it('asCallAudioClient probes the method being used', () => {
 		const partial = { dialCall: async () => 'CALL-1' }
 		expect(asCallAudioClient(partial, 'dialCall').dialCall).toBe(partial.dialCall)
@@ -672,6 +742,9 @@ describe('call audio socket methods', () => {
 		expect(
 			await endMediaCallIfPresent(stubCtx({ endCall: async () => ({ outcome: 'peer-notified' }) }), 'CALL-1')
 		).toBe(true)
+		expect(
+			await endMediaCallIfPresent(stubCtx({ endCall: async () => ({ outcome: 'local-only', failure: 'x' }) }), 'CALL-1')
+		).toBe(false)
 		expect(
 			await endMediaCallIfPresent(
 				stubCtx({

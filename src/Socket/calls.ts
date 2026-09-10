@@ -37,6 +37,7 @@ import type {
 	CallMediaStats,
 	EncodedPacketReader
 } from '../Types/Call.ts'
+import { DisconnectReason } from '../Types/index.ts'
 import type { SocketContext } from './types.ts'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,6 +248,22 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRouterDeps): CallMediaRouter => {
 	const sinks = new Map<string, Set<CallAudioSink>>()
 	const pumps = new Map<string, Set<TrackedCallPump>>()
+	// Pumps stopped but whose `done` has not settled: `drainAll` waits for
+	// these, so ending a call and then the socket cannot strand source
+	// cleanup behind a teardown that already resolved. Entries leave when
+	// their `done` settles; only a release that never settles pins one, which
+	// is a contract-violating source, not a router leak.
+	const settling = new Set<Promise<unknown>>()
+
+	const settleEntry = (entry: TrackedCallPump): void => {
+		if (entry.done === undefined) return
+		const waited = entry.done.then(
+			() => undefined,
+			() => undefined
+		)
+		settling.add(waited)
+		void waited.finally(() => settling.delete(waited))
+	}
 
 	const stopEntry = (callId: string, entry: TrackedCallPump, reason: CallAudioStopReason): void => {
 		try {
@@ -260,28 +277,30 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		const tracked = pumps.get(callId)
 		if (tracked) {
 			pumps.delete(callId)
-			for (const entry of tracked) stopEntry(callId, entry, reason)
+			for (const entry of tracked) {
+				stopEntry(callId, entry, reason)
+				settleEntry(entry)
+			}
 		}
 		sinks.delete(callId)
 	}
 
 	const stopCall = (callId: string): void => stopCallWith(callId, 'call-ended')
 
-	// Every pump on every call stops with the teardown reason; the caller
-	// decides whether to wait for the dones.
-	const stopAllWith = (reason: CallAudioStopReason): Promise<unknown>[] => {
-		const dones: Promise<unknown>[] = []
+	// Every pump on every call stops with the teardown reason; the waiter
+	// collects them from `settling` instead of a return value, so pumps
+	// stopped by an earlier `stopCall` join the same wait.
+	const stopAllWith = (reason: CallAudioStopReason): void => {
 		// Deleting the current key while iterating a Map is safe; each
 		// removal takes exactly the key being visited.
 		for (const [callId, set] of pumps) {
 			pumps.delete(callId)
 			for (const entry of set) {
 				stopEntry(callId, entry, reason)
-				if (entry.done !== undefined) dones.push(entry.done)
+				settleEntry(entry)
 			}
 			sinks.delete(callId)
 		}
-		return dones
 	}
 
 	return {
@@ -358,8 +377,11 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		async drainAll() {
 			// Stop first, then wait: every pump settles its `done` off the
 			// stop above, and `allSettled` keeps one rejecting pump from
-			// holding the teardown open. Sinks drop with the pumps.
-			await Promise.allSettled(stopAllWith('socket-closed'))
+			// holding the teardown open. entries stopped by earlier `stopCall`
+			// calls are already in `settling` and join the same wait, so
+			// cleanup they started still finishes before teardown resolves.
+			stopAllWith('socket-closed')
+			await Promise.allSettled(settling)
 		}
 	}
 }
@@ -378,6 +400,13 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
  */
 export const MLOW_SILENCE_PACKET: Uint8Array = new Uint8Array([0x90])
 
+/**
+ * The wire byte silence sources send. Private rather than the export above:
+ * a consumer mutating the exported sample must not change future call
+ * traffic. A test pins the two equal.
+ */
+const MLOW_SILENCE_WIRE_BYTE: Uint8Array = new Uint8Array([0x90])
+
 export interface SilenceCallAudioSourceOptions {
 	/** Gap between packets. Defaults to 60 ms, the MLOW frame cadence. */
 	intervalMs?: number
@@ -393,7 +422,7 @@ export const makeSilenceCallAudioSource = (options: SilenceCallAudioSourceOption
 	}
 	const intervalMs = options.packets === 0 ? 0 : (options.intervalMs ?? 60)
 	const total = options.packets ?? Number.POSITIVE_INFINITY
-	const packet = options.packet ?? MLOW_SILENCE_PACKET
+	const packet = options.packet ?? MLOW_SILENCE_WIRE_BYTE
 	if (!(packet instanceof Uint8Array) || packet.length === 0) {
 		throw new Boom('makeSilenceCallAudioSource: packet must be a non-empty Uint8Array', { statusCode: 400 })
 	}
@@ -628,6 +657,10 @@ export const startCallAudioPump = (
 	// First terminal cause wins: a user stop followed by teardown still
 	// reports `stopped`.
 	let stopReason: CallAudioStopReason | undefined
+	// Teardown stops must settle `done` without waiting out source cleanup:
+	// a wedged generator release would otherwise hold socket teardown open.
+	// Call-scoped stops still wait, so `finally` blocks run before `done`.
+	let skipReleaseWait = false
 	// Wakes the pull currently parked in `source.next()`, if any. Replaced
 	// every iteration: a shared stop promise would pile one pair of reactions
 	// per raced pull onto itself and hold them for the whole call, while a
@@ -645,12 +678,14 @@ export const startCallAudioPump = (
 		stopReason ??= reason
 		wakeParkedPull?.()
 		wakeParkedPull = undefined
-		// Releases generator `finally` blocks and reader closes. A spent
-		// source has no release to run; an early stop must not leave one open.
-		// Rejections have nowhere to go on the stop path, so they stay silent
-		// rather than surfacing as unhandled. Kept so `done` can wait for it.
-		releaseSettled ??= Promise.resolve(source.release?.()).catch(() => {})
+		// Invoked from a continuation: a synchronously throwing release must
+		// not escape `stop()` itself, which would replace an in-flight push
+		// or pull failure propagating out of the loop below.
+		releaseSettled ??= Promise.resolve()
+			.then(() => source.release?.())
+			.catch(() => {})
 		if (onAbort) options.signal?.removeEventListener('abort', onAbort)
+		if (reason === 'socket-closed') skipReleaseWait = true
 	}
 	if (options.signal) {
 		if (options.signal.aborted) {
@@ -701,14 +736,33 @@ export const startCallAudioPump = (
 					assertAudioPacket('startCallAudioPump: source', packet)
 					// Without forcing the sync path through async: the bridge
 					// answers synchronously, and awaiting a plain boolean would
-					// spend a microtask hop per packet for nothing. Async pushes
-					// still await. Cadence stays in the source, never here.
-					const pushed = push(packet)
-					if (typeof pushed === 'boolean' ? pushed : await pushed) {
-						stats.pushed++
+					// spend a microtask hop per packet for nothing — and a sync
+					// answer already entered the queue, so it counts at once.
+					// Async pushes race the same interrupt as pulls: a stalled
+					// push settles `done` on stop instead of hanging it, and a
+					// packet whose push loses the race counts neither way.
+					// Cadence stays in the source, never here.
+					const pending = push(packet)
+					if (typeof pending === 'boolean') {
+						if (pending) {
+							stats.pushed++
+						} else {
+							stats.shed++
+							options.onShed?.(stats.shed)
+						}
 					} else {
-						stats.shed++
-						options.onShed?.(stats.shed)
+						const accepted = await Promise.race([pending, interruptCurrent])
+						if (stopped) break
+						// Null means the interrupt won, which only stop()
+						// triggers — covered by the check above, kept so the
+						// type narrows.
+						if (accepted === null) break
+						if (accepted) {
+							stats.pushed++
+						} else {
+							stats.shed++
+							options.onShed?.(stats.shed)
+						}
 					}
 					pulls++
 					if (clockMs !== undefined) {
@@ -734,8 +788,10 @@ export const startCallAudioPump = (
 			}
 			// Cleanup settles inside the finally, not past it: a propagating
 			// failure must not skip the release wait. The original error still
-			// propagates afterwards, so failures keep their shape.
-			await releaseSettled
+			// propagates afterwards, so failures keep their shape. Teardown
+			// stops skip the wait and settle at once; their cleanup keeps
+			// running detached rather than holding the socket close open.
+			if (!skipReleaseWait) await releaseSettled
 		}
 		return { ...stats, stopReason: stopReason ?? 'source-ended' }
 	})()
@@ -749,19 +805,23 @@ export const startCallAudioPump = (
 
 /**
  * End the native media record when this socket opened one. True means a
- * record existed: its own terminate stanza already went out through the
- * handle, so the caller sends nothing more. False means no record, or no
- * audio domain on the bridge — the caller falls back to plain signaling.
- * Anything else throws, so a failed hangup keeps its routing context for the
- * retry instead of reading as a call that is gone.
+ * record existed and the peer was told: its own terminate stanza already went
+ * out through the handle, so the caller sends nothing more. False means no
+ * record, no audio domain — or a record whose peer was never notified
+ * (`local-only`): the caller falls back to plain signaling so the remote side
+ * still hears the hangup. Anything else throws, so a failed hangup keeps its
+ * routing context for the retry instead of reading as a call that is gone.
  */
 export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
 	ctx.withClient(async client => {
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {
-			await (endCall as (this: unknown, id: string) => Promise<unknown>).call(client, callId)
-			return true
+			const outcome = (await (endCall as (this: unknown, id: string) => Promise<CallEndResult>).call(
+				client,
+				callId
+			)) as CallEndResult
+			return outcome?.outcome !== 'local-only'
 		} catch (err) {
 			const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
 			if (coded.kind === 'invalid-argument' && coded.field === 'callId') return false
@@ -826,6 +886,11 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 		openCallAudioWriter: async (callId: string): Promise<CallAudioWriter> => {
 			assertCallId('openCallAudioWriter', callId)
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
+			// Same admission race as the pump: a writer registered after the
+			// teardown drain would push into a closing client.
+			if (ctx.isClosing?.() ?? false) {
+				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+			}
 			let closed = false
 			const invalidate = (): void => {
 				closed = true
@@ -903,6 +968,12 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 			assertCallId('startCallAudioPump', callId)
 			const packets = asCallAudioPacketSource('startCallAudioPump', source)
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
+			// Rechecked after admission: teardown may have started — and its
+			// drain snapshotted — while the client promise was in flight. What
+			// follows is synchronous, so no second interleaving is possible.
+			if (ctx.isClosing?.() ?? false) {
+				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+			}
 			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), packets, options)
 			media.trackPump(callId, pump.stop, pump.done)
 			// A spent or failed pump only drops its own tracking: sibling

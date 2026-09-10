@@ -367,6 +367,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		fullConfig,
 		ws,
 		reportUnexpectedError: unexpectedErrors.report,
+		isClosing: () => owner.isClosing(),
 		getUser: () => user,
 		getMe: () => {
 			const me = auth.creds.me
