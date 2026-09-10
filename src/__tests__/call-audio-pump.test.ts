@@ -751,7 +751,8 @@ describe('call media router', () => {
 		expect(released).toBe(true)
 	})
 
-	it('drainAll re-stops earlier pumps with the teardown policy', async () => {		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+	it('drainAll re-stops earlier pumps with the teardown policy', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
 		const reasons: (string | undefined)[] = []
 		let release!: () => void
 		const done = new Promise<unknown>(resolve => {
