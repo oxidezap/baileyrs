@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/oxidezap/baileyrs/compare/v0.3.3...v0.3.4) (2026-09-10)
+
+
+### Bug Fixes
+
+* **deps:** make boom and pino optional peers ([#135](https://github.com/oxidezap/baileyrs/issues/135)) ([cdf5be8](https://github.com/oxidezap/baileyrs/commit/cdf5be80aa1877e6a1e75e5ce151fbe6525af891))
+
 ## [0.3.3](https://github.com/oxidezap/baileyrs/compare/v0.3.2...v0.3.3) (2026-09-09)
 
 
