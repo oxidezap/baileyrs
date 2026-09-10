@@ -210,7 +210,7 @@ describe('call audio pump', () => {
 			},
 			scriptedSource([new Uint8Array([1]), new Uint8Array([2])])
 		)
-		expect(await pump.done).toEqual({ pushed: 2, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 2, shed: 0, stopReason: 'source-ended' })
 		expect(seen).toEqual([1, 2])
 	})
 
@@ -219,7 +219,7 @@ describe('call audio pump', () => {
 			async data => data[0] === 1,
 			scriptedSource([new Uint8Array([1]), new Uint8Array([2])])
 		)
-		expect(await pump.done).toEqual({ pushed: 1, shed: 1 })
+		expect(await pump.done).toEqual({ pushed: 1, shed: 1, stopReason: 'source-ended' })
 	})
 
 	it('paces pulls to a clock instead of the source', async () => {
@@ -231,7 +231,7 @@ describe('call audio pump', () => {
 			}
 		)
 		const started = Date.now()
-		expect(await pump.done).toEqual({ pushed: 3, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 3, shed: 0, stopReason: 'source-ended' })
 		expect(Date.now() - started >= 30).toBe(true)
 	})
 
@@ -252,14 +252,14 @@ describe('call audio pump', () => {
 				onShed: total => shedTotals.push(total)
 			}
 		)
-		expect(await pump.done).toEqual({ pushed: 2, shed: 1 })
+		expect(await pump.done).toEqual({ pushed: 2, shed: 1, stopReason: 'source-ended' })
 		expect(shedTotals).toEqual([1])
 	})
 
 	it('stop() wakes a source parked in next()', async () => {
 		const pump = startCallAudioPump(() => true, { next: () => new Promise<Uint8Array | null>(() => {}) })
 		pump.stop()
-		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'stopped' })
 	})
 
 	it('an abort settles a parked pull instead of hanging it', async () => {
@@ -272,7 +272,7 @@ describe('call audio pump', () => {
 			}
 		)
 		controller.abort()
-		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'aborted' })
 	})
 
 	it('a pre-aborted signal runs nothing and still settles', async () => {
@@ -289,7 +289,7 @@ describe('call audio pump', () => {
 			},
 			{ signal: controller.signal }
 		)
-		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'aborted' })
 		expect(pulled).toBe(false)
 	})
 
@@ -305,7 +305,7 @@ describe('call audio pump', () => {
 			},
 			scriptedSource([new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])])
 		)
-		expect(await pump.done).toEqual({ pushed: 1, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'stopped' })
 	})
 
 	it('an abort stops the run without an error', async () => {
@@ -351,7 +351,7 @@ describe('call audio pump', () => {
 			seen.push(data[0]!)
 			return true
 		}, packets())
-		expect(await pump.done).toEqual({ pushed: 2, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 2, shed: 0, stopReason: 'source-ended' })
 		expect(seen).toEqual([1, 2])
 	})
 
@@ -374,7 +374,7 @@ describe('call audio pump', () => {
 			if (data[0] === 1) pump.stop()
 			return true
 		}, packets())
-		expect(await pump.done).toEqual({ pushed: 1, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'stopped' })
 		expect(cleanedUp).toBe(true)
 	})
 
@@ -386,7 +386,7 @@ describe('call audio pump', () => {
 				released = true
 			}
 		})
-		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'source-ended' })
 		expect(released).toBe(false)
 	})
 })
@@ -513,6 +513,16 @@ describe('call media router', () => {
 		router.trackPump('CALL-2', () => stops++)
 		router.stopAll()
 		expect(stops).toBe(2)
+	})
+
+	it('names the reason each stop path reports', () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const reasons: (string | undefined)[] = []
+		router.trackPump('CALL-1', reason => reasons.push(reason))
+		router.stopCall('CALL-1')
+		router.trackPump('CALL-2', reason => reasons.push(reason))
+		router.stopAll()
+		expect(reasons).toEqual(['call-ended', 'socket-closed'])
 	})
 
 	it('drainAll stops every pump and waits for each done', async () => {
@@ -759,8 +769,8 @@ describe('call audio socket methods', () => {
 		methods.onCallAudio('CALL-1', f => received.push(f))
 		const first = await methods.startCallAudioPump('CALL-1', scriptedSource([new Uint8Array([1])]))
 		const second = await methods.startCallAudioPump('CALL-1', scriptedSource([new Uint8Array([2])]))
-		expect(await first.done).toEqual({ pushed: 1, shed: 0 })
-		expect(await second.done).toEqual({ pushed: 1, shed: 0 })
+		expect(await first.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
+		expect(await second.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
 		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocated' })
 		router.routeAudioFrame({
 			callId: 'CALL-1',

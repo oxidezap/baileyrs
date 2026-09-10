@@ -75,7 +75,7 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 		expect(await alice.sock.pushCallAudio(callId, new Uint8Array([0x90]))).toBe(true)
 
 		const pump = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ packets: 1, intervalMs: 0 }))
-		expect(await pump.done).toEqual({ pushed: 1, shed: 0 })
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
 
 		const active = await alice.sock.getActiveCalls()
 		expect(active.some(call => call.callId === callId)).toBe(true)
@@ -94,6 +94,7 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 		await alice.sock.terminateCall(callId, bob.lid ?? bob.jid)
 		const lingeringStats = await lingering.done
 		expect(lingeringStats.pushed + lingeringStats.shed >= 1).toBe(true)
+		expect(lingeringStats.stopReason).toBe('call-ended')
 		// The native handle goes with it: terminate ends the bridge record,
 		// not just the JS routing.
 		const afterTerminate = await alice.sock.getActiveCalls()

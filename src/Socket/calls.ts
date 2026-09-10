@@ -29,6 +29,7 @@ import type {
 	CallAudioPumpStats,
 	CallAudioSink,
 	CallAudioSourceInput,
+	CallAudioStopReason,
 	CallAudioTiming,
 	CallAudioWriter,
 	CallEndResult,
@@ -177,7 +178,7 @@ export interface CallMediaRouterDeps {
 }
 
 interface TrackedCallPump {
-	stop: () => void
+	stop: (reason?: CallAudioStopReason) => void
 	done?: Promise<unknown>
 }
 
@@ -189,7 +190,7 @@ export interface CallMediaRouter {
 	/** Bridge `onCallEvent` entry point. Emits `call.media`; `ended` also stops the call. */
 	routeMediaEvent(event: CallMediaEvent): void
 	/** Track a pump stopper so `ended` / teardown ends it with the call. */
-	trackPump(callId: string, stop: () => void, done?: Promise<unknown>): void
+	trackPump(callId: string, stop: (reason?: CallAudioStopReason) => void, done?: Promise<unknown>): void
 	/** Forget one finished pump. Sinks and sibling pumps stay: only `ended` or teardown ends those. */
 	untrackPump(callId: string, stop: () => void): void
 	/** Stop a call's pumps and drop its sinks. */
@@ -247,21 +248,40 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	const sinks = new Map<string, Set<CallAudioSink>>()
 	const pumps = new Map<string, Set<TrackedCallPump>>()
 
-	const stopEntry = (callId: string, entry: TrackedCallPump): void => {
+	const stopEntry = (callId: string, entry: TrackedCallPump, reason: CallAudioStopReason): void => {
 		try {
-			entry.stop()
+			entry.stop(reason)
 		} catch (err) {
 			reportError(err, `stopping a call audio pump for ${callId}`)
 		}
 	}
 
-	const stopCall = (callId: string): void => {
+	const stopCallWith = (callId: string, reason: CallAudioStopReason): void => {
 		const tracked = pumps.get(callId)
 		if (tracked) {
 			pumps.delete(callId)
-			for (const entry of tracked) stopEntry(callId, entry)
+			for (const entry of tracked) stopEntry(callId, entry, reason)
 		}
 		sinks.delete(callId)
+	}
+
+	const stopCall = (callId: string): void => stopCallWith(callId, 'call-ended')
+
+	// Every pump on every call stops with the teardown reason; the caller
+	// decides whether to wait for the dones.
+	const stopAllWith = (reason: CallAudioStopReason): Promise<unknown>[] => {
+		const dones: Promise<unknown>[] = []
+		// Deleting the current key while iterating a Map is safe; each
+		// removal takes exactly the key being visited.
+		for (const [callId, set] of pumps) {
+			pumps.delete(callId)
+			for (const entry of set) {
+				stopEntry(callId, entry, reason)
+				if (entry.done !== undefined) dones.push(entry.done)
+			}
+			sinks.delete(callId)
+		}
+		return dones
 	}
 
 	return {
@@ -333,23 +353,13 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		},
 		stopCall,
 		stopAll() {
-			// Deleting the current key while iterating a Map is safe; each
-			// stopCall removes exactly the key being visited.
-			for (const callId of pumps.keys()) stopCall(callId)
-			sinks.clear()
+			stopAllWith('socket-closed')
 		},
 		async drainAll() {
 			// Stop first, then wait: every pump settles its `done` off the
 			// stop above, and `allSettled` keeps one rejecting pump from
 			// holding the teardown open. Sinks drop with the pumps.
-			const tracked: { callId: string; entry: TrackedCallPump }[] = []
-			for (const [callId, set] of pumps) {
-				for (const entry of set) tracked.push({ callId, entry })
-			}
-			pumps.clear()
-			sinks.clear()
-			for (const { callId, entry } of tracked) stopEntry(callId, entry)
-			await Promise.allSettled(tracked.map(({ entry }) => entry.done).filter(done => done !== undefined))
+			await Promise.allSettled(stopAllWith('socket-closed'))
 		}
 	}
 }
@@ -615,20 +625,24 @@ export const startCallAudioPump = (
 	let stopped = false
 	let onAbort: (() => void) | undefined
 	let releaseSettled: Promise<unknown> | undefined
+	// First terminal cause wins: a user stop followed by teardown still
+	// reports `stopped`.
+	let stopReason: CallAudioStopReason | undefined
 	// Wakes the pull currently parked in `source.next()`, if any. Replaced
 	// every iteration: a shared stop promise would pile one pair of reactions
 	// per raced pull onto itself and hold them for the whole call, while a
 	// per-iteration promise goes out of scope with the race that settled it.
 	let wakeParkedPull: (() => void) | undefined
-	const stats: CallAudioPumpStats = { pushed: 0, shed: 0 }
+	const stats = { pushed: 0, shed: 0 }
 	const source = asCallAudioPacketSource('startCallAudioPump', input)
 	const clockMs = options.timing?.mode === 'clock' ? options.timing.packetDurationMs : undefined
 	if (clockMs !== undefined && (!Number.isFinite(clockMs) || clockMs <= 0)) {
 		throw new Boom('startCallAudioPump: timing.packetDurationMs must be a finite number > 0', { statusCode: 400 })
 	}
 
-	const stop = (): void => {
+	const stop = (reason: CallAudioStopReason = 'stopped'): void => {
 		stopped = true
+		stopReason ??= reason
 		wakeParkedPull?.()
 		wakeParkedPull = undefined
 		// Releases generator `finally` blocks and reader closes. A spent
@@ -640,9 +654,9 @@ export const startCallAudioPump = (
 	}
 	if (options.signal) {
 		if (options.signal.aborted) {
-			stop()
+			stop('aborted')
 		} else {
-			onAbort = () => stop()
+			onAbort = () => stop('aborted')
 			options.signal.addEventListener('abort', onAbort, { once: true })
 		}
 	}
@@ -713,6 +727,7 @@ export const startCallAudioPump = (
 				// release — only disarm. Early stops go through `stop()`,
 				// which runs the release.
 				stopped = true
+				stopReason ??= 'source-ended'
 				if (onAbort) options.signal?.removeEventListener('abort', onAbort)
 			} else {
 				stop()
@@ -722,7 +737,7 @@ export const startCallAudioPump = (
 			// propagates afterwards, so failures keep their shape.
 			await releaseSettled
 		}
-		return { ...stats }
+		return { ...stats, stopReason: stopReason ?? 'source-ended' }
 	})()
 
 	return { done, stop }

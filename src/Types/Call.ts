@@ -218,7 +218,15 @@ export type CallAudioPumpStats = {
 	pushed: number
 	/** Packets shed under backpressure — the loss-tolerant answer, not an error. */
 	shed: number
+	/** Why the run ended. Produced once, with the totals. */
+	stopReason: CallAudioStopReason
 }
+
+/**
+ * Why a pump run ended. The first terminal cause wins: a user stop followed
+ * by teardown still reports `stopped`.
+ */
+export type CallAudioStopReason = 'source-ended' | 'stopped' | 'aborted' | 'call-ended' | 'socket-closed'
 
 /**
  * Pump pull pacing. `source` pulls as fast as the source yields — right for
