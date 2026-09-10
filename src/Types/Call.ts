@@ -161,9 +161,17 @@ export type CallMediaStats = {
  * A pull source of encoded audio packets for one live call. `next()` resolves
  * with the next packet to push, or `null` when the source is spent — the pump
  * then stops, leaving the call itself up.
+ *
+ * `release` is the early-exit hook: the pump calls it when it stops before
+ * the source is spent (stop, abort, call end, teardown) so generators run
+ * their `finally` blocks and readers close. It is not called after a `null`
+ * — a spent source has nothing left to release. The pump waits for it, the
+ * way `for await...break` waits for `return()`: a release that never settles
+ * holds `done` open, so it must settle.
  */
 export type CallAudioPacketSource = {
 	next(): Promise<Uint8Array | null>
+	release?(): unknown
 }
 
 /**

@@ -429,7 +429,10 @@ export const asCallAudioPacketSource = (method: string, source: CallAudioSourceI
 				next: async () => {
 					const step = await iterator.next()
 					return step.done ? null : step.value
-				}
+				},
+				// The pump guards the rejection; calling `return()` on an
+				// exhausted iterator is a no-op.
+				release: () => iterator.return?.()
 			}
 		}
 		if (typeof (source as CallAudioPacketSource).next === 'function') {
@@ -453,6 +456,7 @@ export const startCallAudioPump = (
 	let stopped = false
 	let onAbort: (() => void) | undefined
 	let wakeBlockedPull: (() => void) | undefined
+	let releaseSettled: Promise<unknown> | undefined
 	const stats: CallAudioPumpStats = { pushed: 0, shed: 0 }
 	const source = asCallAudioPacketSource('startCallAudioPump', input)
 	// Wakes a pull blocked in `source.next()`: stopping, aborting, ending the
@@ -465,6 +469,11 @@ export const startCallAudioPump = (
 	const stop = (): void => {
 		stopped = true
 		wakeBlockedPull?.()
+		// Releases generator `finally` blocks and reader closes. A spent
+		// source has no release to run; an early stop must not leave one open.
+		// Rejections have nowhere to go on the stop path, so they stay silent
+		// rather than surfacing as unhandled. Kept so `done` can wait for it.
+		releaseSettled ??= Promise.resolve(source.release?.()).catch(() => {})
 		if (onAbort) options.signal?.removeEventListener('abort', onAbort)
 	}
 	if (options.signal) {
@@ -495,6 +504,9 @@ export const startCallAudioPump = (
 			}
 		}
 		stop()
+		// Source cleanup settles first: by the time `done` resolves, generator
+		// `finally` blocks have run and readers are closed.
+		await releaseSettled
 		return { ...stats }
 	})()
 

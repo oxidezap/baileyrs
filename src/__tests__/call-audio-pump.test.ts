@@ -244,6 +244,28 @@ describe('call audio pump', () => {
 	it('rejects a source that is neither next() nor iterable', () => {
 		expect(() => startCallAudioPump(() => true, {} as never)).toThrow(/async iterable/)
 	})
+
+	it('stopping early releases the generator', async () => {
+		let cleanedUp = false
+		async function* packets(): AsyncGenerator<Uint8Array> {
+			try {
+				yield new Uint8Array([1])
+				yield new Uint8Array([2])
+			} finally {
+				cleanedUp = true
+			}
+		}
+		let pump!: { done: Promise<{ pushed: number; shed: number }>; stop: () => void }
+		pump = startCallAudioPump(
+			data => {
+				if (data[0] === 1) pump.stop()
+				return true
+			},
+			packets()
+		)
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0 })
+		expect(cleanedUp).toBe(true)
+	})
 })
 
 describe('call media router', () => {
