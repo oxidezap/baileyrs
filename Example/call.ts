@@ -519,6 +519,10 @@ const main = async (): Promise<void> => {
 	let stopSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
+	// The negotiated audio promise for the live call (`mlow` when the offer
+	// names it, `opus` otherwise). Outbound encoding and inbound playback both
+	// follow it: pushing the wrong grammar sheds forever and plays nothing.
+	let audioFormat: 'mlow' | 'opus' = 'opus'
 	// Playback is per call, not per process: hangup stops the player, and the
 	// next ring mints a fresh Ogg stream rather than writing into a dead
 	// stdin with stale sequence state.
@@ -549,13 +553,10 @@ const main = async (): Promise<void> => {
 		stopVideoSink = undefined
 		stopVideoPlayer?.()
 		stopVideoPlayer = undefined
-		muxFrameVideo = undefined
 	}
 	let encoder: ChildProcess | null = null
 	let videoEncoder: ChildProcess | null = null
 	let outboundVideoShed = 0
-	const UNIT = [0, 0, 0, 1]
-	void UNIT
 
 	// The encoder runs only while a call is live: a file input exhausts, and
 	// starting it at launch would spend the audio before anyone answers.
@@ -634,8 +635,15 @@ const main = async (): Promise<void> => {
 	}
 
 	const onFrame = (frame: CallAudioFrame): void => {
+		// Play what was negotiated, not what the example encodes: an mlow
+		// call delivers mlow grammar, and muxing that as Opus plays noise.
+		// Mlow decode has no ffmpeg path here, so it is logged, not played.
+		if (frame.codec !== audioFormat) {
+			console.error(`dropping peer packet outside the negotiated ${audioFormat} promise (codec=${frame.codec})`)
+			return
+		}
 		if (frame.codec !== 'opus') {
-			console.error(`dropping peer packet with unsupported codec ${frame.codec}`)
+			console.error(`dropping peer mlow packet: no mlow decoder in this example`)
 			return
 		}
 		try {
@@ -690,10 +698,19 @@ const main = async (): Promise<void> => {
 		}
 		accepting = true
 		try {
-			const id = await sock.acceptCall(call.id, 'opus')
+			// Accept with the offered profile, not a hardcoded one: the
+			// captain's real call negotiated Mlow while this pushed Opus, so
+			// every packet died in the engine and the queue shed forever.
+			// An explicit `mlow` in the offer names means mlow; anything else
+			// (including no audio list at all) keeps the opus promise ffmpeg
+			// actually encodes.
+			const offered = call.audio ?? []
+			const format = offered.includes('mlow') ? 'mlow' : ('opus' as const)
+			const id = await sock.acceptCall(call.id, format)
 			liveCallId = id
 			muted = false
 			stopSink?.()
+			audioFormat = format
 			stopSink = sock.onCallAudio(id, onFrame)
 			ensureEncoder()
 			startPlayback()
@@ -704,7 +721,7 @@ const main = async (): Promise<void> => {
 				startVideoPlayback()
 				ensureVideoEncoder()
 			}
-			console.log('answered', id)
+			console.log('answered', id, `with ${format}`)
 		} finally {
 			accepting = false
 		}
@@ -724,6 +741,10 @@ const main = async (): Promise<void> => {
 	})
 
 	if (args.command === 'dial') {
+		// Outbound dials promise opus: there is no offer to read, and opus
+		// is the only grammar ffmpeg encodes here. The peer negotiates
+		// against it and the bridge reports a mismatch instead of noise.
+		audioFormat = 'opus'
 		const id = await sock.dialCall(args.peer!, 'opus')
 		liveCallId = id
 		stopSink = sock.onCallAudio(id, onFrame)
@@ -761,7 +782,7 @@ const main = async (): Promise<void> => {
 				.getCallMediaStats(liveCallId)
 				.then((stats: CallMediaStats) =>
 					console.log(
-						`decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} sink-dropped=${stats.audioSinkDropped} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+						`format=${audioFormat} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 					)
 				)
 				.catch(err => console.error('stats failed:', (err as Error).message))

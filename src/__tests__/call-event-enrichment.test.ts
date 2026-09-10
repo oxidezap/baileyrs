@@ -215,4 +215,17 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 		expect(call.status).toBe('accept')
 		expect(call.isVideo).toBe(undefined)
 	})
+
+	it('the offer audio list decides the accept promise (mlow vs opus)', () => {
+		// The captain's real call negotiated Mlow while the example pushed
+		// Opus, so every packet died in the engine. The caller must read the
+		// offer's audio list: `mlow` in it means mlow, anything else (empty
+		// included) keeps the opus promise ffmpeg encodes.
+		const offeredFormat = (audio: string[] | undefined): 'mlow' | 'opus' =>
+			(audio ?? []).includes('mlow') ? 'mlow' : 'opus'
+		expect(offeredFormat(['mlow'])).toBe('mlow')
+		expect(offeredFormat(['opus'])).toBe('opus')
+		expect(offeredFormat([])).toBe('opus')
+		expect(offeredFormat(undefined)).toBe('opus')
+	})
 })
