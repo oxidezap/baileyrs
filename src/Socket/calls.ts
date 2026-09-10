@@ -182,6 +182,8 @@ export interface CallMediaRouter {
 	routeMediaEvent(event: CallMediaEvent): void
 	/** Track a pump stopper so `ended` / teardown ends it with the call. */
 	trackPump(callId: string, stop: () => void): void
+	/** Forget one finished pump. Sinks and sibling pumps stay: only `ended` or teardown ends those. */
+	untrackPump(callId: string, stop: () => void): void
 	/** Stop a call's pumps and drop its sinks. */
 	stopCall(callId: string): void
 	/** Stop everything; socket teardown calls this while the client is still usable. */
@@ -271,6 +273,12 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				pumps.set(callId, set)
 			}
 			set.add(stop)
+		},
+		untrackPump(callId, stop) {
+			const set = pumps.get(callId)
+			if (!set) return
+			set.delete(stop)
+			if (set.size === 0) pumps.delete(callId)
 		},
 		stopCall,
 		stopAll() {
@@ -430,22 +438,39 @@ export const startCallAudioPump = (
 ): CallAudioPump => {
 	let stopped = false
 	let onAbort: (() => void) | undefined
+	let wakeBlockedPull: (() => void) | undefined
 	const stats: CallAudioPumpStats = { pushed: 0, shed: 0 }
 	const source = asCallAudioPacketSource('startCallAudioPump', input)
+	// Wakes a pull blocked in `source.next()`: stopping, aborting, ending the
+	// call or tearing down the socket settles `done` instead of leaving it
+	// pending behind a source that never resolves.
+	const blockedPullWoken = new Promise<null>(resolve => {
+		wakeBlockedPull = () => resolve(null)
+	})
 
 	const stop = (): void => {
 		stopped = true
-		options.signal?.removeEventListener('abort', onAbort as () => void)
+		wakeBlockedPull?.()
+		if (onAbort) options.signal?.removeEventListener('abort', onAbort)
 	}
-	if (options.signal?.aborted) stopped = true
-	if (!stopped && options.signal) {
-		onAbort = () => stop()
-		options.signal.addEventListener('abort', onAbort, { once: true })
+	if (options.signal) {
+		if (options.signal.aborted) {
+			stop()
+		} else {
+			onAbort = () => stop()
+			options.signal.addEventListener('abort', onAbort, { once: true })
+		}
 	}
 
 	const done = (async (): Promise<CallAudioPumpStats> => {
 		for (;;) {
-			const packet = await source.next()
+			// Checked before pulling: a pump stopped before its first pull
+			// never touches the source at all.
+			if (stopped) break
+			// Raced, not awaited bare: a source parked in `next()` must not
+			// outlive the stop. A pull that resolves after the break drops
+			// its packet, which is the loss-tolerant answer anyway.
+			const packet = await Promise.race([source.next(), blockedPullWoken])
 			if (packet === null || stopped) break
 			assertAudioPacket('startCallAudioPump: source', packet)
 			if (await push(packet)) {
@@ -569,12 +594,12 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
 			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), packets, options)
 			media.trackPump(callId, pump.stop)
-			// A spent or failed pump holds no call resources: drop its
-			// tracking either way. Both branches stop the call's pumps, and
-			// the rejection stays on `pump.done` for the caller.
+			// A spent or failed pump only drops its own tracking: sibling
+			// pumps and sinks belong to the call, and only `ended` or teardown
+			// ends those. The rejection stays on `pump.done` for the caller.
 			void pump.done.then(
-				() => media.stopCall(callId),
-				() => media.stopCall(callId)
+				() => media.untrackPump(callId, pump.stop),
+				() => media.untrackPump(callId, pump.stop)
 			)
 			return pump
 		}

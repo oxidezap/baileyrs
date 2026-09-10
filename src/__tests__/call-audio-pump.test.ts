@@ -149,6 +149,43 @@ describe('call audio pump', () => {
 		expect(shedTotals).toEqual([1])
 	})
 
+	it('stop() wakes a source parked in next()', async () => {
+		const pump = startCallAudioPump(() => true, { next: () => new Promise<Uint8Array | null>(() => {}) })
+		pump.stop()
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+	})
+
+	it('an abort settles a parked pull instead of hanging it', async () => {
+		const controller = new AbortController()
+		const pump = startCallAudioPump(
+			() => true,
+			{ next: () => new Promise<Uint8Array | null>(() => {}) },
+			{
+				signal: controller.signal
+			}
+		)
+		controller.abort()
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+	})
+
+	it('a pre-aborted signal runs nothing and still settles', async () => {
+		const controller = new AbortController()
+		controller.abort()
+		let pulled = false
+		const pump = startCallAudioPump(
+			() => true,
+			{
+				next: async () => {
+					pulled = true
+					return new Uint8Array([1])
+				}
+			},
+			{ signal: controller.signal }
+		)
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0 })
+		expect(pulled).toBe(false)
+	})
+
 	it('stop() ends the run with the totals so far', async () => {
 		let first = true
 		const pump = startCallAudioPump(
@@ -290,6 +327,41 @@ describe('call media router', () => {
 		router.stopAll()
 		expect(stops).toBe(2)
 	})
+
+	it('untracking one pump leaves its siblings and sinks alone', () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const received: CallAudioFrame[] = []
+		router.addAudioSink('CALL-1', f => received.push(f))
+		const makeFrame = (sequenceNumber: number): CallAudioFrame => ({
+			callId: 'CALL-1',
+			data: new Uint8Array([0x90]),
+			codec: 'mlow',
+			payloadType: 120,
+			sequenceNumber,
+			timestamp: 960,
+			marker: false
+		})
+		let siblingStops = 0
+		let finishedStops = 0
+		const finished = (): void => {
+			finishedStops++
+		}
+		const sibling = (): void => {
+			siblingStops++
+		}
+		router.trackPump('CALL-1', finished)
+		router.trackPump('CALL-1', sibling)
+		// One pump finishes: its tracking goes, nothing else moves.
+		router.untrackPump('CALL-1', finished)
+		router.routeAudioFrame(makeFrame(1))
+		expect(received).toHaveLength(1)
+		// Only the real end of the call stops the sibling and drops the sink.
+		router.stopCall('CALL-1')
+		expect(siblingStops).toBe(1)
+		expect(finishedStops).toBe(0)
+		router.routeAudioFrame(makeFrame(2))
+		expect(received).toHaveLength(1)
+	})
 })
 
 describe('call audio socket methods', () => {
@@ -396,5 +468,37 @@ describe('call audio socket methods', () => {
 		const methods = makeCallAudioMethods(stubCtx({ endCall: async () => ({ outcome: 'already-ended' }) }), router)
 		expect(await methods.endCall('CALL-1')).toEqual({ outcome: 'already-ended' })
 		expect(stopped).toBe(true)
+	})
+
+	it('a finished pump leaves the live call alone', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		let pushed = 0
+		const methods = makeCallAudioMethods(
+			stubCtx({
+				callPushAudio: () => {
+					pushed++
+					return true
+				}
+			}),
+			router
+		)
+		const received: CallAudioFrame[] = []
+		methods.onCallAudio('CALL-1', f => received.push(f))
+		const first = await methods.startCallAudioPump('CALL-1', scriptedSource([new Uint8Array([1])]))
+		const second = await methods.startCallAudioPump('CALL-1', scriptedSource([new Uint8Array([2])]))
+		expect(await first.done).toEqual({ pushed: 1, shed: 0 })
+		expect(await second.done).toEqual({ pushed: 1, shed: 0 })
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocated' })
+		router.routeAudioFrame({
+			callId: 'CALL-1',
+			data: new Uint8Array([0x90]),
+			codec: 'mlow',
+			payloadType: 120,
+			sequenceNumber: 9,
+			timestamp: 960,
+			marker: false
+		})
+		expect(pushed).toBe(2)
+		expect(received).toHaveLength(1)
 	})
 })
