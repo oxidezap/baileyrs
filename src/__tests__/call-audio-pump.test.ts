@@ -26,6 +26,7 @@ import { describe, it } from 'node:test'
 
 import {
 	asCallAudioClient,
+	endMediaCallIfPresent,
 	makeCallAudioMethods,
 	makeCallMediaRouter,
 	makeFileCallAudioSource,
@@ -220,13 +221,20 @@ describe('call audio pump', () => {
 
 	it('a throwing push rejects done so an ended call surfaces', async () => {
 		const failure = new Error('no live call for this call id')
+		let released = false
 		const pump = startCallAudioPump(
 			() => {
 				throw failure
 			},
-			scriptedSource([new Uint8Array([1])])
+			{
+				next: async () => new Uint8Array([1]),
+				release: () => {
+					released = true
+				}
+			}
 		)
 		await expect(pump.done).rejects.toThrow(failure)
+		expect(released).toBe(true)
 	})
 
 	it('refuses an empty packet from a broken source', async () => {
@@ -395,6 +403,30 @@ describe('call media router', () => {
 		expect(stops).toBe(2)
 	})
 
+	it('drainAll stops every pump and waits for each done', async () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		let stops = 0
+		let settled = 0
+		const gate = (): Promise<unknown> => new Promise(resolve => setImmediate(() => resolve(settled++)))
+		router.trackPump('CALL-1', () => stops++, gate())
+		router.trackPump('CALL-2', () => stops++, Promise.reject(new Error('already gone')))
+		const received: CallAudioFrame[] = []
+		router.addAudioSink('CALL-1', f => received.push(f))
+		await router.drainAll()
+		expect(stops).toBe(2)
+		expect(settled).toBe(1)
+		router.routeAudioFrame({
+			callId: 'CALL-1',
+			data: new Uint8Array([0x90]),
+			codec: 'mlow',
+			payloadType: 120,
+			sequenceNumber: 1,
+			timestamp: 960,
+			marker: false
+		})
+		expect(received).toHaveLength(0)
+	})
+
 	it('untracking one pump leaves its siblings and sinks alone', () => {
 		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
 		const received: CallAudioFrame[] = []
@@ -510,6 +542,34 @@ describe('call audio socket methods', () => {
 		const partial = { dialCall: async () => 'CALL-1' }
 		expect(asCallAudioClient(partial, 'dialCall').dialCall).toBe(partial.dialCall)
 		expect(() => asCallAudioClient(partial, 'acceptCall')).toThrow(/acceptCall/)
+	})
+
+	it('endMediaCallIfPresent ends the record, or reports there is none', async () => {
+		const coded = Object.assign(new Error('no live call'), { kind: 'invalid-argument', field: 'callId' })
+		expect(await endMediaCallIfPresent(stubCtx({}), 'CALL-1')).toBe(false)
+		expect(
+			await endMediaCallIfPresent(stubCtx({ endCall: async () => ({ outcome: 'peer-notified' }) }), 'CALL-1')
+		).toBe(true)
+		expect(
+			await endMediaCallIfPresent(
+				stubCtx({
+					endCall: async () => {
+						throw coded
+					}
+				}),
+				'CALL-1'
+			)
+		).toBe(false)
+		await expect(
+			endMediaCallIfPresent(
+				stubCtx({
+					endCall: async () => {
+						throw new Error('gone')
+					}
+				}),
+				'CALL-1'
+			)
+		).rejects.toThrow(/gone/)
 	})
 
 	it('rejects non-numeric stats instead of forwarding them', async () => {

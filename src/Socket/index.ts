@@ -56,7 +56,7 @@ import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
 import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
-import { makeCallAudioMethods, makeCallMediaRouter } from './calls.ts'
+import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent } from './calls.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -201,6 +201,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * store to drain.
 		 */
 		teardown: async (client, error) => {
+			// Drain call pumps before anything else: they hold the client and
+			// push into it, so they settle ahead of disconnect rather than in
+			// an end handler after the flush. `callMedia` is declared below
+			// and read here the way `ws` is — the closure only runs at close.
+			await callMedia.drainAll()
 			try {
 				await ws.close()
 			} catch {
@@ -1048,32 +1053,32 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * the bridge calls domain (preview PR 115).
 		 */
 		terminateCall: async (callId: string, callFrom: string) => {
-			const context = activeCallContexts.get(callId)
-			await ctx.withClient(client =>
-				client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
-			)
-			activeCallContexts.delete(callId)
-			// Local media ends with the stanza: unlike endCall the media
-			// engine gets no terminal response here to fire `ended` off, so
-			// without this a pump would keep pulling after the hangup.
-			callMedia.stopCall(callId)
-			// The native handle ends with it too when this socket opened one:
-			// stopCall above only drops the JS routing, and the bridge record
-			// would otherwise stay listed by getActiveCalls. A signaling-only
-			// call has no record, which reads as invalid-argument on callId
-			// and is ignored; anything else still throws. Skipped entirely on
-			// a bridge without the audio domain.
-			await ctx.withClient(async client => {
-				const endCall = (client as unknown as { endCall?: unknown }).endCall
-				if (typeof endCall !== 'function') return
-				try {
-					await (endCall as (this: unknown, callId: string) => Promise<unknown>).call(client, callId)
-				} catch (err) {
-					const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
-					if (coded.kind === 'invalid-argument' && coded.field === 'callId') return
-					throw err
+			try {
+				// A media call ends through its own handle: one stanza tears
+				// down both ends, and the result says how much of the peer was
+				// told. Without a record there is nothing native to end, and
+				// the stanza below carries the hangup instead.
+				if (await endMediaCallIfPresent(ctx, callId)) {
+					activeCallContexts.delete(callId)
+					return
 				}
-			})
+				const context = activeCallContexts.get(callId)
+				try {
+					await ctx.withClient(client =>
+						client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+					)
+					activeCallContexts.delete(callId)
+				} finally {
+					// Local media stops even when the stanza fails; the routing
+					// context above stays for the retry, which needs the
+					// remembered peer and call creator.
+					callMedia.stopCall(callId)
+				}
+			} finally {
+				// Belt and braces with the per-path stops: whatever route the
+				// hangup took, no pump keeps pulling after it.
+				callMedia.stopCall(callId)
+			}
 		},
 		/**
 		 * Fetch the account's current reachout-timelock state from the server.

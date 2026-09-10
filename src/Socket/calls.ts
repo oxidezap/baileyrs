@@ -173,6 +173,11 @@ export interface CallMediaRouterDeps {
 	reportError: (err: unknown, msg: string) => void
 }
 
+interface TrackedCallPump {
+	stop: () => void
+	done?: Promise<unknown>
+}
+
 export interface CallMediaRouter {
 	/** Register a per-call audio sink; the returned function unregisters it. */
 	addAudioSink(callId: string, sink: CallAudioSink): () => void
@@ -181,13 +186,19 @@ export interface CallMediaRouter {
 	/** Bridge `onCallEvent` entry point. Emits `call.media`; `ended` also stops the call. */
 	routeMediaEvent(event: CallMediaEvent): void
 	/** Track a pump stopper so `ended` / teardown ends it with the call. */
-	trackPump(callId: string, stop: () => void): void
+	trackPump(callId: string, stop: () => void, done?: Promise<unknown>): void
 	/** Forget one finished pump. Sinks and sibling pumps stay: only `ended` or teardown ends those. */
 	untrackPump(callId: string, stop: () => void): void
 	/** Stop a call's pumps and drop its sinks. */
 	stopCall(callId: string): void
 	/** Stop everything; socket teardown calls this while the client is still usable. */
 	stopAll(): void
+	/**
+	 * Stop every pump and wait for each `done` to settle, fulfilled or
+	 * rejected. Socket teardown awaits this ahead of disconnecting so no pump
+	 * pushes into a closing client and no source release stays in flight.
+	 */
+	drainAll(): Promise<void>
 }
 
 const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
@@ -231,19 +242,21 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 
 export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRouterDeps): CallMediaRouter => {
 	const sinks = new Map<string, Set<CallAudioSink>>()
-	const pumps = new Map<string, Set<() => void>>()
+	const pumps = new Map<string, Set<TrackedCallPump>>()
+
+	const stopEntry = (callId: string, entry: TrackedCallPump): void => {
+		try {
+			entry.stop()
+		} catch (err) {
+			reportError(err, `stopping a call audio pump for ${callId}`)
+		}
+	}
 
 	const stopCall = (callId: string): void => {
 		const tracked = pumps.get(callId)
 		if (tracked) {
 			pumps.delete(callId)
-			for (const stop of tracked) {
-				try {
-					stop()
-				} catch (err) {
-					reportError(err, `stopping a call audio pump for ${callId}`)
-				}
-			}
+			for (const entry of tracked) stopEntry(callId, entry)
 		}
 		sinks.delete(callId)
 	}
@@ -297,18 +310,20 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				reportError(err, `call.media listener for ${event.callId}`)
 			}
 		},
-		trackPump(callId, stop) {
+		trackPump(callId, stop, done?) {
 			let set = pumps.get(callId)
 			if (!set) {
 				set = new Set()
 				pumps.set(callId, set)
 			}
-			set.add(stop)
+			set.add({ stop, done })
 		},
 		untrackPump(callId, stop) {
 			const set = pumps.get(callId)
 			if (!set) return
-			set.delete(stop)
+			for (const entry of set) {
+				if (entry.stop === stop) set.delete(entry)
+			}
 			if (set.size === 0) pumps.delete(callId)
 		},
 		stopCall,
@@ -317,6 +332,19 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			// stopCall removes exactly the key being visited.
 			for (const callId of pumps.keys()) stopCall(callId)
 			sinks.clear()
+		},
+		async drainAll() {
+			// Stop first, then wait: every pump settles its `done` off the
+			// stop above, and `allSettled` keeps one rejecting pump from
+			// holding the teardown open. Sinks drop with the pumps.
+			const tracked: { callId: string; entry: TrackedCallPump }[] = []
+			for (const [callId, set] of pumps) {
+				for (const entry of set) tracked.push({ callId, entry })
+			}
+			pumps.clear()
+			sinks.clear()
+			for (const { callId, entry } of tracked) stopEntry(callId, entry)
+			await Promise.allSettled(tracked.map(({ entry }) => entry.done).filter(done => done !== undefined))
 		}
 	}
 }
@@ -395,14 +423,17 @@ export const makeFileCallAudioSource = async (
 	if (!Number.isInteger(packetBytes) || packetBytes <= 0) {
 		throw new Boom('makeFileCallAudioSource: packetBytes must be a positive integer', { statusCode: 400 })
 	}
+	// Validated before the read: a bad count must not cost a full file read,
+	// and a missing file must not mask it with a filesystem error either —
+	// the read below runs only for arguments that passed.
+	if (options.packets !== undefined && (!Number.isInteger(options.packets) || options.packets < 0)) {
+		throw new Boom('makeFileCallAudioSource: packets must be a non-negative integer', { statusCode: 400 })
+	}
 	const intervalMs = options.intervalMs ?? 60
 	if (!Number.isFinite(intervalMs) || intervalMs < 0) {
 		throw new Boom('makeFileCallAudioSource: intervalMs must be a finite number >= 0', { statusCode: 400 })
 	}
 	const bytes = await readFile(path)
-	if (options.packets !== undefined && (!Number.isInteger(options.packets) || options.packets < 0)) {
-		throw new Boom('makeFileCallAudioSource: packets must be a non-negative integer', { statusCode: 400 })
-	}
 	const total = options.packets ?? Number.POSITIVE_INFINITY
 	let offset = 0
 	let sent = 0
@@ -510,35 +541,42 @@ export const startCallAudioPump = (
 
 	const done = (async (): Promise<CallAudioPumpStats> => {
 		let exhausted = false
-		for (;;) {
-			// Checked before pulling: a pump stopped before its first pull
-			// never touches the source at all.
-			if (stopped) break
-			// Raced, not awaited bare: a source parked in `next()` must not
-			// outlive the stop. A pull that resolves after the break drops
-			// its packet, which is the loss-tolerant answer anyway.
-			const packet = await Promise.race([source.next(), blockedPullWoken])
-			if (stopped) break
-			if (packet === null) {
-				exhausted = true
-				break
+		// The loop throws on two documented paths: `source.next()` rejects,
+		// and `push()` throws when the call already ended. Both converge on
+		// the same cleanup below: the release runs and the abort listener
+		// comes off, while the original failure keeps propagating.
+		try {
+			for (;;) {
+				// Checked before pulling: a pump stopped before its first pull
+				// never touches the source at all.
+				if (stopped) break
+				// Raced, not awaited bare: a source parked in `next()` must not
+				// outlive the stop. A pull that resolves after the break drops
+				// its packet, which is the loss-tolerant answer anyway.
+				const packet = await Promise.race([source.next(), blockedPullWoken])
+				if (stopped) break
+				if (packet === null) {
+					exhausted = true
+					break
+				}
+				assertAudioPacket('startCallAudioPump: source', packet)
+				if (await push(packet)) {
+					stats.pushed++
+				} else {
+					stats.shed++
+					options.onShed?.(stats.shed)
+				}
 			}
-			assertAudioPacket('startCallAudioPump: source', packet)
-			if (await push(packet)) {
-				stats.pushed++
+		} finally {
+			if (exhausted) {
+				// Natural end: the source is spent, so there is nothing to
+				// release — only disarm. Early stops go through `stop()`,
+				// which runs the release.
+				stopped = true
+				if (onAbort) options.signal?.removeEventListener('abort', onAbort)
 			} else {
-				stats.shed++
-				options.onShed?.(stats.shed)
+				stop()
 			}
-		}
-		if (exhausted) {
-			// Natural end: the source is spent, so there is nothing to
-			// release — only disarm. Early stops go through `stop()` above,
-			// which runs the release.
-			stopped = true
-			if (onAbort) options.signal?.removeEventListener('abort', onAbort)
-		} else {
-			stop()
 		}
 		// Source cleanup settles first: by the time `done` resolves, generator
 		// `finally` blocks have run and readers are closed.
@@ -552,6 +590,28 @@ export const startCallAudioPump = (
 // ─────────────────────────────────────────────────────────────────────────────
 // Socket methods
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * End the native media record when this socket opened one. True means a
+ * record existed: its own terminate stanza already went out through the
+ * handle, so the caller sends nothing more. False means no record, or no
+ * audio domain on the bridge — the caller falls back to plain signaling.
+ * Anything else throws, so a failed hangup keeps its routing context for the
+ * retry instead of reading as a call that is gone.
+ */
+export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
+	ctx.withClient(async client => {
+		const endCall = (client as unknown as { endCall?: unknown }).endCall
+		if (typeof endCall !== 'function') return false
+		try {
+			await (endCall as (this: unknown, id: string) => Promise<unknown>).call(client, callId)
+			return true
+		} catch (err) {
+			const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
+			if (coded.kind === 'invalid-argument' && coded.field === 'callId') return false
+			throw err
+		}
+	})
 
 export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter) => {
 	/** Resolve the client once and push directly: per-packet `withClient` hops cost a tick each. */
@@ -655,7 +715,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter)
 			const packets = asCallAudioPacketSource('startCallAudioPump', source)
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
 			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), packets, options)
-			media.trackPump(callId, pump.stop)
+			media.trackPump(callId, pump.stop, pump.done)
 			// A spent or failed pump only drops its own tracking: sibling
 			// pumps and sinks belong to the call, and only `ended` or teardown
 			// ends those. The rejection stays on `pump.done` for the caller.

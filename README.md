@@ -240,8 +240,11 @@ await sock.terminateCall(call.id, call.chatId)
 
 `terminateCall` is a baileyrs extension, upstream Baileys stops at
 `rejectCall`. A missed call arrives as status `timeout`, group calls carry
-`groupJid`, and `reason` says why a call ended when the bridge knows. There
-is no dial operation yet, outgoing calls come with the media work.
+`groupJid`, and `reason` says why a call ended when the bridge knows. To
+place an outgoing call instead of answering one, `sock.dialCall(peerJid)`
+opens it with encoded audio; the voice-calls entry under Gotchas below covers
+pushing packets, collecting decoded ones, and hanging up through either
+`endCall` or `terminateCall`.
 
 ## Migrating from Upstream Baileys
 
