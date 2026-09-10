@@ -1,4 +1,4 @@
-import { createRequire } from 'node:module'
+import { loadOptionalPeer } from './optional-peer.ts'
 
 export interface ILogger {
 	level: string
@@ -307,21 +307,7 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 
 type PinoFactory = (options: Record<string, unknown>) => Logger
 
-/**
- * Resolve the peer without loading it first, so a broken installation
- * (present but unloadable, e.g. a missing nested dependency) surfaces as
- * the real error instead of silently degrading to the fallback.
- */
-const loadPinoPeer = (): PinoFactory | undefined => {
-	const requireFrom = createRequire(import.meta.url)
-	try {
-		requireFrom.resolve('pino')
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code === 'MODULE_NOT_FOUND') return undefined
-		throw error
-	}
-	return requireFrom('pino') as PinoFactory
-}
+const loadPinoPeer = (): PinoFactory | undefined => loadOptionalPeer<PinoFactory>('pino')
 
 /**
  * Deferred because building pino at module evaluation cost ~10 MB of RSS in every

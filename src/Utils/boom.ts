@@ -11,7 +11,7 @@
  * adding the dependency.
  */
 
-import { createRequire } from 'node:module'
+import { loadOptionalPeer } from './optional-peer.ts'
 
 /** Extra error data carried beside the formatted response. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -239,19 +239,7 @@ interface BoomPeerModule {
 	isBoom: (obj: unknown, statusCode?: number) => obj is Boom
 }
 
-const loadBoomPeer = (): BoomPeerModule | undefined => {
-	const requireFrom = createRequire(import.meta.url)
-	try {
-		requireFrom.resolve('@hapi/boom')
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code === 'MODULE_NOT_FOUND') return undefined
-		throw error
-	}
-	// Resolved above, so a failure here is a broken installation (e.g. a
-	// missing nested dependency), not an absent peer. Let it throw rather
-	// than silently downgrading every error in the process.
-	return requireFrom('@hapi/boom') as BoomPeerModule
-}
+const loadBoomPeer = (): BoomPeerModule | undefined => loadOptionalPeer<BoomPeerModule>('@hapi/boom')
 
 const peer = loadBoomPeer()
 
