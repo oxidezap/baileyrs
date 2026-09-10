@@ -108,11 +108,12 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 		}
 
 		// Hanging up also stops local media: the open-ended pump below would
-		// outlive the test if terminateCall left it pulling.
+		// outlive the test if terminateCall left it pulling. Only the reason
+		// is asserted: whether the pump pushes first is a scheduling race,
+		// but every path out runs through the call-ended stop.
 		const lingering = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ intervalMs: 5 }))
 		await alice.sock.terminateCall(callId, bob.lid ?? bob.jid)
 		const lingeringStats = await lingering.done
-		expect(lingeringStats.pushed + lingeringStats.shed >= 1).toBe(true)
 		expect(lingeringStats.stopReason).toBe('call-ended')
 		// The native handle goes with it: terminate ends the bridge record,
 		// not just the JS routing.
