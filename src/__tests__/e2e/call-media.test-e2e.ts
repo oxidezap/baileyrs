@@ -109,7 +109,8 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		await destroyTestClient(bob)
 	})
 
-	test('answer, relay, audio both ways, hangup', async () => {		const aliceFrames: CallAudioFrame[] = []
+	test('answer, relay, audio both ways, hangup', async () => {
+		const aliceFrames: CallAudioFrame[] = []
 		const bobFrames: CallAudioFrame[] = []
 		const aliceAudio: CallAudioSink = frame => aliceFrames.push(frame)
 		const bobAudio: CallAudioSink = frame => bobFrames.push(frame)
