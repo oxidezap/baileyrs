@@ -1,5 +1,4 @@
-import type { ChildLoggerOptions, Logger, pino as PinoFactory } from 'pino'
-import { createRequire } from 'node:module'
+import { loadOptionalPeer } from './optional-peer.ts'
 
 export interface ILogger {
 	level: string
@@ -9,6 +8,43 @@ export interface ILogger {
 	info(obj: unknown, msg?: string): void
 	warn(obj: unknown, msg?: string): void
 	error(obj: unknown, msg?: string): void
+}
+
+/** Options accepted by `child()`. The fallback honors `level` and `msgPrefix`;
+ * anything else is accepted for signature compatibility and ignored there. */
+export interface ChildLoggerOptions {
+	level?: string
+	msgPrefix?: string
+	[option: string]: unknown
+}
+
+/**
+ * The full logger surface behind the default export. Structural so both the
+ * peer logger and the local fallback satisfy it; deliberately free of any
+ * `pino` import so consumers typecheck with or without the peer installed.
+ */
+export interface Logger {
+	level: string
+	child(bindings: Record<string, unknown>, options?: ChildLoggerOptions): Logger
+	trace(...args: unknown[]): void
+	debug(...args: unknown[]): void
+	info(...args: unknown[]): void
+	warn(...args: unknown[]): void
+	error(...args: unknown[]): void
+	fatal(...args: unknown[]): void
+	silent(...args: unknown[]): void
+	flush(callback?: () => void): void
+	bindings(): Record<string, unknown>
+	/** Replace the bindings carried on every line from here on. */
+	setBindings(bindings: Record<string, unknown>): void
+	/** Numeric value of the current level. Mirrors the peer. */
+	readonly levelVal: number
+	/** Prefix prepended to every message. Mirrors the peer. */
+	readonly msgPrefix: string | undefined
+	/** Callback run on creation of a child. Assignable, like the peer. */
+	onChild: (child: Logger) => void
+	levels: { values: Record<string, number>; labels: Record<number, string> }
+	isLevelEnabled(level: string): boolean
 }
 
 const DEFAULT_LEVEL = 'info'
@@ -31,6 +67,310 @@ const REDACTED_PATHS = [
 	'*.secretKey'
 ]
 
+const FALLBACK_LEVEL_VALUES: Record<string, number> = {
+	trace: 10,
+	debug: 20,
+	info: 30,
+	warn: 40,
+	error: 50,
+	fatal: 60,
+	silent: Infinity
+}
+
+const FALLBACK_LEVEL_LABELS: Record<number, string> = Object.fromEntries(
+	Object.entries(FALLBACK_LEVEL_VALUES).map(([name, value]) => [value, name])
+)
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+	typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const CIRCULAR_SENTINEL = '[Circular]'
+const UNSERIALIZABLE_SENTINEL = '[Unserializable]'
+
+const readProperty = (holder: Record<string, unknown>, key: string): unknown => {
+	try {
+		return holder[key]
+	} catch {
+		return UNSERIALIZABLE_SENTINEL
+	}
+}
+
+/** An Error as plain data: type, message and stack survive serialization. */
+const errorToRecord = (error: Error): Record<string, unknown> => {
+	const record: Record<string, unknown> = { type: error.name, message: error.message }
+	if (typeof error.stack === 'string') record.stack = error.stack
+	const fields = error as unknown as Record<string, unknown>
+	for (const key of Object.keys(error)) record[key] = readProperty(fields, key)
+	if ('cause' in error) record.cause = readProperty(fields, 'cause')
+	return record
+}
+
+/**
+ * Deep-clone a logged value into JSON-safe data. Circular references become
+ * `[Circular]`, `BigInt` its string form, `Error` a record carrying message
+ * and stack. Never throws: logging must not crash the process it observes.
+ */
+const cloneForLog = (value: unknown, seen = new Set<object>()): unknown => {
+	try {
+		if (typeof value === 'bigint') return String(value)
+		if (value instanceof Error) return cloneForLog(errorToRecord(value), seen)
+		if (Array.isArray(value)) {
+			if (seen.has(value)) return CIRCULAR_SENTINEL
+			seen.add(value)
+			const copy = value.map(entry => cloneForLog(entry, seen))
+			seen.delete(value)
+			return copy
+		}
+		if (isPlainObject(value)) {
+			if (seen.has(value)) return CIRCULAR_SENTINEL
+			seen.add(value)
+			const copy: Record<string, unknown> = {}
+			for (const key of Object.keys(value)) copy[key] = cloneForLog(readProperty(value, key), seen)
+			seen.delete(value)
+			return copy
+		}
+		return value
+	} catch {
+		return UNSERIALIZABLE_SENTINEL
+	}
+}
+
+const safeStringify = (value: unknown): string => JSON.stringify(cloneForLog(value)) ?? UNSERIALIZABLE_SENTINEL
+
+const censorPath = (root: Record<string, unknown>, path: string): void => {
+	if (path.startsWith('*.')) {
+		const key = path.slice(2)
+		for (const value of Object.values(root)) {
+			if (isPlainObject(value) && key in value) value[key] = '[REDACTED]'
+		}
+		if (key in root) root[key] = '[REDACTED]'
+		return
+	}
+	const segments = path.split('.')
+	let current: unknown = root
+	for (let index = 0; index < segments.length - 1; index++) {
+		if (!isPlainObject(current)) return
+		current = current[segments[index]!]
+	}
+	if (isPlainObject(current)) {
+		const leaf = segments[segments.length - 1]!
+		if (leaf in current) current[leaf] = '[REDACTED]'
+	}
+}
+
+const redactForFallback = (value: unknown): unknown => {
+	const copy = cloneForLog(value)
+	if (isPlainObject(copy)) {
+		for (const path of REDACTED_PATHS) censorPath(copy, path)
+	} else if (Array.isArray(copy)) {
+		// Arrays skip the per-call object branch downstream and land under
+		// `data`, so redact each element the same way. Without this a
+		// `[{ privateKey }]` payload leaks while `{ privateKey }` does not.
+		for (const entry of copy) {
+			if (isPlainObject(entry)) for (const path of REDACTED_PATHS) censorPath(entry, path)
+		}
+	}
+	return copy
+}
+
+/**
+ * Minimal `%s`/`%d`/`%i`/`%f`/`%j`/`%o`/`%O` interpolation for the fallback,
+ * mirroring the peer's printf-style messages without adding a dependency.
+ * Leftover arguments are appended rather than dropped so no detail is lost.
+ */
+const formatFallbackMessage = (message: string, args: unknown[]): string => {
+	let index = 0
+	const formatted = message.replace(/%[sdifjoO%]/g, match => {
+		if (match === '%%') return '%'
+		if (index >= args.length) return match
+		const arg = args[index++]
+		switch (match) {
+			case '%s':
+				return String(arg)
+			case '%d':
+			case '%i':
+			case '%f':
+				return String(Number(arg))
+			default:
+				return safeStringify(arg)
+		}
+	})
+	const rest = args.slice(index).map(entry => (typeof entry === 'string' ? entry : safeStringify(entry)))
+	return rest.length > 0 ? `${formatted} ${rest.join(' ')}` : formatted
+}
+
+const levelValue = (level: string, fallback: number): number => FALLBACK_LEVEL_VALUES[level] ?? fallback
+
+/**
+ * Whether a log call at `method` emits under `currentLevel`. Unknown
+ * requested levels are disabled, matching the peer: without the check a
+ * misspelled level maps to Infinity and wrongly enables guarded work.
+ */
+export const isFallbackLevelEnabled = (method: string, currentLevel: string): boolean => {
+	if (currentLevel === 'silent') return false
+	const want = FALLBACK_LEVEL_VALUES[method]
+	if (want === undefined) return false
+	return want >= levelValue(currentLevel, 30)
+}
+
+export interface FallbackLineInput {
+	method: string
+	currentLevel: string
+	bindings: Record<string, unknown>
+	msgPrefix?: string
+	args: unknown[]
+}
+
+/**
+ * Render one fallback log line, or `undefined` when the level disables it.
+ * Pure so tests can exercise redaction, Error handling and formatting
+ * without hiding the `pino` peer. Never throws.
+ */
+export const formatFallbackLine = ({
+	method,
+	currentLevel,
+	bindings,
+	msgPrefix,
+	args
+}: FallbackLineInput): string | undefined => {
+	if (!isFallbackLevelEnabled(method, currentLevel)) return undefined
+	let logged: unknown
+	let message: string | undefined
+	const [first, second, ...rest] = args
+	if (typeof first === 'string') {
+		message = formatFallbackMessage(first, second === undefined ? rest : [second, ...rest])
+	} else if (args.length > 0) {
+		logged = redactForFallback(first)
+		if (typeof second === 'string') message = formatFallbackMessage(second, rest)
+		else if (second !== undefined) logged = [logged, cloneForLog(second), ...rest.map(entry => cloneForLog(entry))]
+	}
+	if (msgPrefix) message = `${msgPrefix}${message ?? ''}`
+	const entry: Record<string, unknown> = {
+		level: levelValue(method, 30),
+		time: new Date().toJSON(),
+		...(redactForFallback(bindings) as Record<string, unknown>)
+	}
+	if (isPlainObject(logged)) Object.assign(entry, logged)
+	else if (logged !== undefined) entry.data = logged
+	if (message !== undefined) entry.msg = message
+	try {
+		return JSON.stringify(entry)
+	} catch {
+		return JSON.stringify({ level: entry.level, time: entry.time, msg: UNSERIALIZABLE_SENTINEL })
+	}
+}
+
+interface FallbackState {
+	level: string
+	msgPrefix?: string
+	onChild: (child: Logger) => void
+	bindings: Record<string, unknown>
+}
+
+/** Stdout is process-global, so pending-write tracking is too. */
+let fallbackPendingWrites = 0
+const fallbackFlushWaiters: Array<() => void> = []
+
+const noteFallbackDelivered = (): void => {
+	fallbackPendingWrites--
+	if (fallbackPendingWrites === 0) {
+		for (const resume of fallbackFlushWaiters.splice(0, fallbackFlushWaiters.length)) resume()
+	}
+}
+
+const writeFallbackLine = (line: string): void => {
+	fallbackPendingWrites++
+	let settled = false
+	const delivered = (): void => {
+		if (settled) return
+		settled = true
+		noteFallbackDelivered()
+	}
+	try {
+		process.stdout.write(`${line}\n`, delivered)
+	} catch {
+		delivered()
+	}
+}
+
+/**
+ * Console-backed logger used only when `pino` is not installed. Emits one
+ * JSON line per call with the same `level`/`time`/`msg` shape operators
+ * already parse, redacts the same credential paths from both per-call
+ * objects and child bindings, serializes `Error` values with their message
+ * and stack, and honors `level` and `child` bindings so level-gated code
+ * keeps working. A documented step down from the peer, never a crash.
+ */
+const createFallbackLogger = (state: FallbackState): Logger => {
+	const write = (method: string, args: unknown[]): void => {
+		const line = formatFallbackLine({
+			method,
+			currentLevel: state.level,
+			bindings: state.bindings,
+			msgPrefix: state.msgPrefix,
+			args
+		})
+		if (line !== undefined) writeFallbackLine(line)
+	}
+
+	const logger: Logger = {
+		get level() {
+			return state.level
+		},
+		set level(next: string) {
+			state.level = next
+		},
+		get levelVal() {
+			return levelValue(state.level, 30)
+		},
+		get msgPrefix() {
+			return state.msgPrefix
+		},
+		get onChild() {
+			return state.onChild
+		},
+		set onChild(callback: (child: Logger) => void) {
+			state.onChild = callback
+		},
+		child: (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger => {
+			const created = createFallbackLogger({
+				level: options?.level ?? state.level,
+				msgPrefix:
+					`${state.msgPrefix ?? ''}${typeof options?.msgPrefix === 'string' ? options.msgPrefix : ''}` || undefined,
+				onChild: state.onChild,
+				bindings: { ...state.bindings, ...extra }
+			})
+			state.onChild(created)
+			return created
+		},
+		trace: (...args: unknown[]) => write('trace', args),
+		debug: (...args: unknown[]) => write('debug', args),
+		info: (...args: unknown[]) => write('info', args),
+		warn: (...args: unknown[]) => write('warn', args),
+		error: (...args: unknown[]) => write('error', args),
+		fatal: (...args: unknown[]) => write('fatal', args),
+		silent: () => {},
+		flush: (callback?: () => void) => {
+			// Drain-aware: when stdout is a pipe, earlier lines may still be
+			// queued, and exiting from the callback would lose them.
+			if (!callback) return
+			if (fallbackPendingWrites === 0) callback()
+			else fallbackFlushWaiters.push(callback)
+		},
+		bindings: () => ({ ...state.bindings }),
+		setBindings: (extra: Record<string, unknown>) => {
+			Object.assign(state.bindings, extra)
+		},
+		levels: { values: { ...FALLBACK_LEVEL_VALUES }, labels: { ...FALLBACK_LEVEL_LABELS } },
+		isLevelEnabled: (level: string) => isFallbackLevelEnabled(level, state.level)
+	}
+	return logger
+}
+
+type PinoFactory = (options: Record<string, unknown>) => Logger
+
+const loadPinoPeer = (): PinoFactory | undefined => loadOptionalPeer<PinoFactory>('pino')
+
 /**
  * Deferred because building pino at module evaluation cost ~10 MB of RSS in every
  * importing process: ~4.5 MB for pino's module graph, the rest for the Date/ICU
@@ -45,30 +385,32 @@ let rootLogger: Logger | undefined
 
 const resolveRootLogger = (): Logger => {
 	if (!rootLogger) {
-		const requireFrom = createRequire(import.meta.url)
-		const pino = requireFrom('pino') as typeof PinoFactory
-		rootLogger = pino({
-			name: 'baileyrs',
-			level: process.env.BAILEYRS_LOG_LEVEL || DEFAULT_LEVEL,
-			timestamp: () => `,"time":"${new Date().toJSON()}"`,
-			redact: { paths: REDACTED_PATHS, censor: '[REDACTED]' }
-		})
+		const configuredLevel = process.env.BAILEYRS_LOG_LEVEL || DEFAULT_LEVEL
+		const peer = loadPinoPeer()
+		rootLogger = peer
+			? peer({
+					name: 'baileyrs',
+					level: configuredLevel,
+					timestamp: () => `,"time":"${new Date().toJSON()}"`,
+					redact: { paths: REDACTED_PATHS, censor: '[REDACTED]' }
+				})
+			: createFallbackLogger({ level: configuredLevel, onChild: () => {}, bindings: { name: 'baileyrs' } })
 	}
 	return rootLogger
 }
 
 /**
- * Stands in for the pino logger without building it.
+ * Stands in for the built logger without building it.
  *
  * A Proxy rather than a hand-written shim, because the default export is public
- * API (`@oxidezap/baileyrs/logger`) and must keep pino's whole surface — `fatal`,
+ * API (`@oxidezap/baileyrs/logger`) and must keep the whole surface — `fatal`,
  * `silent`, `flush`, `bindings`, `levels` — not just the six members ILogger
  * declares. Members are cached so a hot logging path costs a map lookup instead
  * of a fresh bound function per call.
  *
  * `child()` and reading `level` are answered without resolving, which is what
  * lets `DEFAULT_CONNECTION_CONFIG.logger` and `logger.level === 'trace'` guards
- * work while pino stays unbuilt until something actually logs.
+ * work while the underlying logger stays unbuilt until something actually logs.
  *
  * A child defers to its *parent* rather than to the root, so a level assigned to
  * the parent before either has resolved still reaches it — pino children inherit
@@ -86,6 +428,7 @@ const createDeferredLogger = (
 ): Logger => {
 	let resolved: Logger | undefined
 	let pendingLevel: string | undefined
+	let pendingOnChild: ((child: Logger) => void) | undefined
 	const members = new Map<PropertyKey, unknown>()
 
 	const resolve = (): Logger => {
@@ -93,6 +436,7 @@ const createDeferredLogger = (
 			const source = parent ? parent.resolve() : resolveRootLogger()
 			resolved = bindings ? source.child(bindings, childOptions) : source
 			if (pendingLevel !== undefined) resolved.level = pendingLevel
+			if (pendingOnChild !== undefined) resolved.onChild = pendingOnChild
 		}
 		return resolved
 	}
@@ -108,13 +452,14 @@ const createDeferredLogger = (
 	const child = (extra: Record<string, unknown>, options?: ChildLoggerOptions): Logger =>
 		createDeferredLogger(extra, self, options)
 
-	// Typed as pino's Logger, not ILogger: narrowing would reject `logger.fatal(...)`
-	// at compile time even though the proxy forwards it.
+	// Typed as the full Logger, not ILogger: narrowing would reject
+	// `logger.fatal(...)` at compile time even though the proxy forwards it.
 	const target = {} as Logger
 	return new Proxy(target, {
 		get(_target, property) {
 			if (property === 'child') return child
 			if (property === 'level' && !resolved) return peekLevel()
+			if (property === 'onChild' && !resolved && pendingOnChild !== undefined) return pendingOnChild
 			const cached = members.get(property)
 			if (cached !== undefined) return cached
 			const logger = resolve()
@@ -129,8 +474,14 @@ const createDeferredLogger = (
 				pendingLevel = value as string
 				return true
 			}
+			if (property === 'onChild' && !resolved) {
+				// Stored like `level`: assigning a hook must not build the
+				// logger the hook observes.
+				pendingOnChild = value as (child: Logger) => void
+				return true
+			}
 			;(resolve() as unknown as Record<PropertyKey, unknown>)[property] = value
-			// Whole cache, not just this key: pino swaps its log methods for noops
+			// Whole cache, not just this key: the peer swaps its log methods for noops
 			// when `level` changes, so a cached `info` would stay silent forever.
 			members.clear()
 			return true

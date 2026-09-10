@@ -31,6 +31,7 @@ Rust owns protocol parsing, Signal/session state, operational retries, media enc
 - Preserve client ownership and teardown ordering. Never free a WASM client while operations use it. Transient retries report `connecting`; terminal `close` is once-only. Do not add a competing reconnect loop.
 - Native binary auth and upstream JSON auth need different loaders. Preserve migration paths and `bridge-` rows in backups. Keep per-key ordering, required byte snapshots, durability barriers, and honest flush errors.
 - Never expose real credentials, session keys, QR data, or auth folders. Keep mock TLS/certificate bypasses out of production defaults.
+- Keep optional dependencies peer-only with a local fallback (`src/Utils/boom.ts`, `src/Utils/logger.ts` are the pattern) and keep published `.d.ts` free of bare imports of them. The declaration audit checks mutual assignability, so a fallback type must match the peer member for member.
 
 ## Verification
 
@@ -61,3 +62,10 @@ Report passed, failed, skipped, and blocked checks. For documentation-only chang
 - Keep PRs scoped, with compatibility evidence and performance measurements when applicable. Use English titles and bodies. Commit or publish only when requested; never include trailers or tool signatures.
 - PR titles become squash commit titles. Follow [.github/workflows/release.yml](.github/workflows/release.yml) and [release-please-config.json](release-please-config.json). With the current configuration, `feat`, `fix`, `perf`, `deps`, and `refactor` can generate a release PR. Use `fix(deps): ...` for runtime upgrades intended for release; keep documentation-only changes as `docs`.
 - Let release-please manage versions and release notes unless asked otherwise. Preserve publication of the exact CI-verified build. Do not ship preview URLs as runtime dependency pins.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

@@ -82,13 +82,12 @@
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts"
   },
   "dependencies": {
-    "@hapi/boom": "^10.0.1",
     "@oxidezap/whatsapp-rust-bridge": "0.21.4",
-    "long": "^5.3.2",
-    "pino": "^10.3.1"
+    "long": "^5.3.2"
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
+    "@hapi/boom": "^10.0.1",
     "@types/node": "^26.1.1",
     "baileys": "7.0.0-rc14",
     "jimp": "^1.6.0",
@@ -96,6 +95,7 @@
     "music-metadata": "^11.14.0",
     "oxfmt": "^0.66.0",
     "oxlint": "1.81.0",
+    "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
     "pkg-pr-new": "^0.0.88",
     "protobufjs": "^8.8.0",
@@ -104,13 +104,18 @@
     "typescript-compat-auditor": "npm:typescript@6.0.3"
   },
   "peerDependencies": {
+    "@hapi/boom": "^9.1.0 || ^10.0.0",
     "audio-decode": "^2.1.3",
     "jimp": "^1.6.0",
     "link-preview-js": "^3.0.0",
     "music-metadata": "^11.14.0",
+    "pino": "^9.0.0 || ^10.0.0",
     "sharp": "*"
   },
   "peerDependenciesMeta": {
+    "@hapi/boom": {
+      "optional": true
+    },
     "audio-decode": {
       "optional": true
     },
@@ -121,6 +126,9 @@
       "optional": true
     },
     "music-metadata": {
+      "optional": true
+    },
+    "pino": {
       "optional": true
     },
     "sharp": {
