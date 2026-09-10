@@ -1,4 +1,5 @@
 import type { JsHttpClientConfig, JsTransportCallbacks, JsTransportHandle } from '@oxidezap/whatsapp-rust-bridge'
+import { DEFAULT_ORIGIN } from '../Defaults/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 
 interface TransportConfig {
@@ -6,6 +7,23 @@ interface TransportConfig {
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
+}
+
+let defaultNodeDispatcher: unknown
+
+const getDefaultDispatcher = async (): Promise<unknown> => {
+	if (defaultNodeDispatcher !== undefined) return defaultNodeDispatcher
+	try {
+		// Node 22+ enables experimental WebSocket-over-HTTP/2 by default.
+		// web.whatsapp.com does not support RFC 8441, so HTTP/2 handshakes
+		// fail immediately with 400. Use an undici Agent with allowH2: false
+		// unless the caller supplied their own dispatcher.
+		const undici = await import('undici')
+		defaultNodeDispatcher = new undici.Agent({ allowH2: false })
+	} catch {
+		defaultNodeDispatcher = null
+	}
+	return defaultNodeDispatcher
 }
 
 /**
@@ -42,13 +60,23 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 	const abortControllers = new WeakMap<WebSocket, AbortController>()
 
 	return {
-		connect(h: JsTransportHandle) {
+		async connect(h: JsTransportHandle) {
 			handle = h
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
 
 			disconnectTarget = ws
 
-			const newWs = new WebSocket(url)
+			const wsOptions: Record<string, unknown> = {}
+			if (typeof process !== 'undefined' && process.versions?.node) {
+				const dispatcher = config.options?.dispatcher ?? (await getDefaultDispatcher())
+				if (dispatcher) wsOptions.dispatcher = dispatcher
+				wsOptions.headers = {
+					Origin: DEFAULT_ORIGIN,
+					...(config.options?.headers as Record<string, string> | undefined)
+				}
+			}
+
+			const newWs = Object.keys(wsOptions).length > 0 ? new WebSocket(url, wsOptions as never) : new WebSocket(url)
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 

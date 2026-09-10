@@ -254,6 +254,12 @@ const CASES: readonly BoundaryCase[] = [
 		parameter: 'audioFormat',
 		source: 'Socket/calls.ts:acceptCall:audioFormat',
 		call: (s, v) => s.acceptCall('NEVER-RANG', off(v))
+	},
+	{
+		method: 'requestCallKeyframe',
+		parameter: 'urgency',
+		source: 'Socket/calls.ts:requestCallKeyframe:urgency',
+		call: (s, v) => s.requestCallKeyframe('NEVER-RANG', off(v))
 	}
 ]
 
@@ -459,7 +465,8 @@ const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 	// `undefined`, not `null`: omitting the format takes the bridge default,
 	// and the two are different values to `includes`.
 	'Socket/calls.ts:dialCall:audioFormat': ['mlow', 'opus', undefined],
-	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', undefined]
+	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', undefined],
+	'Socket/calls.ts:requestCallKeyframe:urgency': ['coalesced', 'immediate']
 }
 
 /** The same values as reported by the guard itself, for the pin below. */

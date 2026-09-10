@@ -313,6 +313,14 @@ const CASES: DomainCase[] = [
 		call: (sock, value) => sock.acceptCall('NEVER-RANG', arg(value)),
 		source: 'calls.ts:acceptCall:audioFormat',
 		defaulted: true
+	},
+	{
+		label: 'requestCallKeyframe',
+		parameter: 'urgency',
+		values: ['coalesced', 'immediate'],
+		call: (sock, value) => sock.requestCallKeyframe('NEVER-RANG', arg(value)),
+		source: 'calls.ts:requestCallKeyframe:urgency',
+		defaulted: true
 	}
 ]
 
@@ -332,6 +340,10 @@ const EXEMPT: Record<string, string> = {
 		'a module-internal helper defaulting to stopped, with literals at the abort and router call sites',
 	'calls.ts:<module>:audioFormat':
 		'the bridge-contract interface restatement, not a parameter; dialCall and acceptCall validate it',
+	'calls.ts:<module>:urgency':
+		'the bridge-contract interface restatement, not a parameter; requestCallKeyframe validates it',
+	'calls.ts:checkVideoDiagnosticField:field':
+		'a module-internal helper, called with a literal for each of the three diagnostic fields',
 	'internals.ts:upsertMessage:type': 'published on the event bus, so the value comes back to the caller unchanged'
 }
 

@@ -38,7 +38,7 @@ import {
 	type CallMediaRouter
 } from '../Socket/calls.ts'
 import type { SocketContext } from '../Socket/types.ts'
-import type { CallAudioFrame, CallAudioPacketSource, CallMediaEvent } from '../Types/Call.ts'
+import type { CallAudioFrame, CallAudioPacketSource, CallMediaEvent, CallVideoFrame } from '../Types/Call.ts'
 import { expect } from './expect.ts'
 
 const scriptedSource = (packets: Uint8Array[]): CallAudioPacketSource => {
@@ -548,6 +548,52 @@ describe('call media router', () => {
 		expect(Array.from(seen[0]!.data)).toEqual([0x90])
 	})
 
+	it('routes video access units to the right call sink only', () => {
+		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
+		const first: CallVideoFrame[] = []
+		const second: CallVideoFrame[] = []
+		const off = router.addVideoSink('CALL-1', f => first.push(f))
+		router.addVideoSink('CALL-2', f => second.push(f))
+		const videoFrame = (callId: string): CallVideoFrame => ({
+			callId,
+			data: new Uint8Array([0, 0, 0, 1, 0x65]),
+			keyframe: true,
+			orientation: 0,
+			timestamp: 90000
+		})
+		router.routeVideoFrame(videoFrame('CALL-1'))
+		router.routeVideoFrame(videoFrame('CALL-2'))
+		off()
+		router.routeVideoFrame(videoFrame('CALL-1'))
+		expect(first).toHaveLength(1)
+		expect(first[0]!.keyframe).toBe(true)
+		expect(second).toHaveLength(1)
+	})
+
+	it('drops video frames with bad orientation or timestamp', () => {
+		const failures: unknown[] = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: () => undefined,
+			reportError: err => failures.push(err)
+		})
+		const received: CallVideoFrame[] = []
+		router.addVideoSink('CALL-1', f => received.push(f))
+		const good: CallVideoFrame = {
+			callId: 'CALL-1',
+			data: new Uint8Array([0, 0, 0, 1, 0x41]),
+			keyframe: false,
+			orientation: 3,
+			timestamp: 180000
+		}
+		for (const override of [{ orientation: 4 }, { orientation: -1 }, { timestamp: -1 }, { timestamp: 4294967296 }]) {
+			router.routeVideoFrame({ ...good, ...override } as CallVideoFrame)
+		}
+		expect(received).toHaveLength(0)
+		expect(failures).toHaveLength(4)
+		router.routeVideoFrame(good)
+		expect(received).toHaveLength(1)
+	})
+
 	it('a throwing sink neither breaks the other sinks nor escapes to the bridge', () => {
 		const failures: unknown[] = []
 		const router = makeCallMediaRouter({
@@ -862,7 +908,15 @@ describe('call audio socket methods', () => {
 				codecSwitches: 0
 			}),
 			getActiveCalls: () => [{ callId: 'CALL-1', peerJid: '5511999999999@s.whatsapp.net' }],
-			setRelayTransportProvider: () => undefined
+			setRelayTransportProvider: () => undefined,
+			acceptCallVideo: async () => undefined,
+			callPushVideo: () => true,
+			startCallVideo: async () => undefined,
+			stopCallVideo: async () => undefined,
+			resumeCallVideo: async () => undefined,
+			retryCallVideoUpgrade: async () => undefined,
+			getCallVideoDiagnostics: () => ({ selfState: 0, peerState: 0, upgradeTimeoutMs: 0 }),
+			requestCallKeyframe: () => undefined
 		}) as CallAudioBridgeClient
 
 	it('drives the bridge operations with validated arguments', async () => {
@@ -882,6 +936,36 @@ describe('call audio socket methods', () => {
 				close: () => undefined
 			})
 		})
+	})
+
+	it('drives the video operations with validated arguments', async () => {
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), nullRouter())
+		await methods.startCallVideo('CALL-1')
+		await methods.acceptCallVideo('CALL-1')
+		await methods.resumeCallVideo('CALL-1')
+		await methods.retryCallVideoUpgrade('CALL-1')
+		await methods.stopCallVideo('CALL-1')
+		expect(await methods.pushCallVideo('CALL-1', new Uint8Array([0, 0, 0, 1, 0x65]))).toBe(true)
+		const diagnostics = await methods.getCallVideoDiagnostics('CALL-1')
+		expect(diagnostics).toEqual({ selfState: 0, peerState: 0, upgradeTimeoutMs: 0 })
+		await methods.requestCallKeyframe('CALL-1', 'immediate')
+
+		const seen: Uint8Array[] = []
+		const writerMethods = makeCallAudioMethods(
+			stubCtx({
+				callPushVideo: (_callId: string, data: Uint8Array) => {
+					seen.push(data)
+					return true
+				}
+			}),
+			nullRouter()
+		)
+		const writer = await writerMethods.openCallVideoWriter('CALL-1')
+		const accessUnit = new Uint8Array([0, 0, 0, 1, 0x65])
+		expect(writer.tryWrite(accessUnit)).toBe(true)
+		expect(seen[0]).toBe(accessUnit)
+		writer.close()
+		expect(writer.tryWrite(accessUnit)).toBe(false)
 	})
 
 	it('rejects bad arguments before reaching the bridge', async () => {

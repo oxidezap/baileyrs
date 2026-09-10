@@ -1,23 +1,30 @@
 /**
- * Voice calls with real audio: dial or answer a call, stream microphone or
- * file audio through ffmpeg, play the peer back through ffplay.
+ * Voice and video calls with real media: dial or answer a call, stream
+ * microphone or file audio through ffmpeg, play the peer back through ffplay,
+ * and upgrade to H.264 video with a camera or test pattern.
  *
  * This mirrors examples/voip-cli in the whatsapp-rust repo in behavior —
- * dial/accept a real call, encoded packets both ways, mute, stats, hangup —
- * adapted to what JavaScript can do. There is no MLOW encoder here, so audio
- * travels as Opus, the in-profile escape the bridge accepts under the `opus`
- * promise: ffmpeg encodes a file or microphone to 16 kHz mono Opus, a small
- * Ogg demuxer splits the stream back into packets for pushing, and received
- * packets are wrapped in Ogg pages for ffplay on stdin. The library only
+ * dial/accept a real call, encoded packets both ways, mute, stats, hangup,
+ * plus the video path (start/accept/resume keyed on `v`) — adapted to what
+ * JavaScript can do. There is no MLOW encoder here, so audio travels as Opus,
+ * the in-profile escape the bridge accepts under the `opus` promise: ffmpeg
+ * encodes a file or microphone to 16 kHz mono Opus, a small Ogg demuxer splits
+ * the stream back into packets for pushing, and received packets are wrapped
+ * in Ogg pages for ffplay on stdin. Video is the same shape over Annex-B
+ * access units: ffmpeg encodes a camera, file or test pattern to baseline
+ * H.264, a splitter hands one AU per push to `pushCallVideo`, and peer AUs
+ * fan out to a second ffplay window or a raw `.h264` file. The library only
  * transports the opaque packets, exactly like voip-cli's ffmpeg video path,
  * and the relay itself is reached over UDP from Node — no WebRTC, no browser
  * needed.
  *
  * Usage:
- *   node Example/call.ts dial <peer-jid> [--audio-file path | --mic [device]] [--auth dir] [--socket url]
- *   node Example/call.ts listen [--accept] [--audio-file path | --mic [device]] [--auth dir] [--socket url]
+ *   node Example/call.ts dial <peer-jid> [--audio-file path | --mic [device]] [--auth dir] [--socket url] [--video [camera|testsrc|file|url]]
+ *   node Example/call.ts listen [--accept] [--video ...] [...]
  *
- * During a call: `m` mute/unmute, `s` print media stats, `q` hang up and quit.
+ * During a call: `m` mute/unmute, `s` print media stats, `v` toggle video
+ * (start upgrade / accept the peer's request / stop), `k` ask the peer for a
+ * keyframe, `d` print video diagnostics, `q` hang up and quit.
  * A dialed call exits after it ends; listen keeps serving the next ring.
  *
  * Requires ffmpeg and ffplay on PATH (checked at startup with a clear error)
@@ -27,7 +34,9 @@
  * --audio-file or --mic nothing is pushed and the call stays quiet.
  *
  * Against the Bartender mock, point --socket at it the way the e2e suite
- * does; SOCKET_URL is honored too.
+ * does; SOCKET_URL is honored too. With no --socket the production default
+ * applies — the socket fix for Node's HTTP/2 WebSocket default plus an
+ * explicit Origin header is what makes that path connect at all.
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
@@ -45,13 +54,17 @@ const usage = (): never => {
 	console.error(
 		[
 			'usage:',
-			'  node Example/call.ts dial <peer-jid> [--audio-file path | --mic [device]] [--auth dir] [--socket url]',
-			'  node Example/call.ts listen [--accept] [--audio-file path | --mic [device]] [--auth dir] [--socket url]',
+			'  node Example/call.ts dial <peer-jid> [--audio-file path | --mic [device]] [--auth dir] [--socket url] [--video [camera|testsrc|file|url]]',
+			'  node Example/call.ts listen [--accept] [--audio-file path | --mic [device]] [--auth dir] [--socket url] [--video ...]',
+			'',
+			'--video without a value means the camera (mirroring voip-cli, where',
+			'video implies accept too). --video testsrc sends the ffmpeg pattern,',
+			'--video <file-or-url> plays that through the camera pipe.',
 			'',
 			'--danger-skip-cert-verify is testing-only (Bartender mock with a',
 			'self-signed cert). Never use it against production.',
 			'',
-			'keys during a call: m mute, s stats, q hang up'
+			'keys during a call: m mute, s stats, v video toggle, k keyframe, d video diagnostics, q hang up'
 		].join('\n')
 	)
 	process.exit(2)
@@ -214,6 +227,8 @@ interface CallExampleArgs {
 	accept: boolean
 	audioFile?: string
 	mic?: string
+	/** Camera/file/pattern source for outgoing video; undefined means audio-only. */
+	video?: string
 	authDir: string
 	socketUrl: string | undefined
 	dangerSkipCertVerify: boolean
@@ -246,12 +261,16 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		console.error('pick one audio input: --audio-file or --mic')
 		process.exit(2)
 	}
+	// --video with no value means the camera, and video implies accept: there
+	// is no reason to request video while rejecting every call.
+	const video = getOptional('--video', 'camera')
 	return {
 		command,
 		peer,
-		accept: command === 'listen' && argv.includes('--accept'),
+		accept: (command === 'listen' && argv.includes('--accept')) || video !== undefined,
 		audioFile,
 		mic,
+		video,
 		authDir: get('--auth') ?? './call-auth',
 		// No mock fallback: without --socket or SOCKET_URL the socket keeps
 		// its production WhatsApp Web default, so an ordinary run places a
@@ -280,6 +299,48 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 	return ffmpeg
 }
 
+/** ffmpeg turns a camera, file/URL or test pattern into baseline H.264 on stdout. */
+const spawnVideoEncoder = (source: string): ChildProcess => {
+	const input: string[] =
+		source === 'testsrc'
+			? ['-re', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=20']
+			: source.includes('://') || source.includes('.')
+				? ['-re', '-i', source]
+				: process.platform === 'darwin'
+					? ['-f', 'avfoundation', '-i', source === 'camera' ? '0' : source]
+					: process.platform === 'win32'
+						? ['-f', 'dshow', '-i', `video=${source === 'camera' ? 'default' : source}`]
+						: ['-f', 'v4l2', '-i', source === 'camera' ? '/dev/video0' : source]
+	const ffmpeg = spawn(
+		'ffmpeg',
+		[
+			...input,
+			'-vf',
+			'scale=1280:720',
+			'-r',
+			'20',
+			'-c:v',
+			'libx264',
+			'-profile:v',
+			'baseline',
+			'-level',
+			'3.1',
+			'-b:v',
+			'1980k',
+			'-x264-params',
+			'keyint=60',
+			'-f',
+			'h264',
+			'-aud',
+			'1',
+			'pipe:1'
+		],
+		{ stdio: ['ignore', 'pipe', 'inherit'] }
+	)
+	ffmpeg.on('error', err => console.error('ffmpeg (video) failed to start:', (err as Error).message))
+	return ffmpeg
+}
+
 /** ffplay renders muxed Ogg Opus fed on stdin. Returns a writer for pages. */
 const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 	const ffplay = spawn('ffplay', ['-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-i', 'pipe:0'], {
@@ -289,6 +350,52 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 	return {
 		write: page => {
 			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(page)
+		},
+		stop: () => {
+			ffplay.stdin?.end()
+		}
+	}
+}
+
+// ── H.264 framing: ffmpeg speaks raw Annex-B, the bridge speaks access units ──
+
+/** Split a raw Annex-B byte stream into access units on AUD boundaries (NAL type 9). */
+export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[] } => {
+	let buffered = new Uint8Array(0)
+	return {
+		push(bytes: Uint8Array): Uint8Array[] {
+			const merged = new Uint8Array(buffered.length + bytes.length)
+			merged.set(buffered)
+			merged.set(bytes, buffered.length)
+			buffered = merged
+			const units: Uint8Array[] = []
+			const starts: number[] = []
+			for (let i = 0; i + 4 <= buffered.length; i++) {
+				if (buffered[i] === 0 && buffered[i + 1] === 0 && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
+					starts.push(i)
+				}
+			}
+			if (starts.length < 2) return units
+			for (let n = 0; n + 1 < starts.length; n++) {
+				units.push(buffered.slice(starts[n]!, starts[n + 1]!))
+			}
+			buffered = buffered.slice(starts[starts.length - 1]!)
+			return units
+		}
+	}
+}
+
+/** ffplay renders raw H.264 fed on stdin. One window per call, like audio. */
+const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => {
+	const ffplay = spawn(
+		'ffplay',
+		['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-f', 'h264', '-framerate', '20'],
+		{ stdio: ['pipe', 'ignore', 'inherit'] }
+	)
+	ffplay.on('error', err => console.error('ffplay (video) failed to start:', (err as Error).message))
+	return {
+		write: unit => {
+			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(unit)
 		},
 		stop: () => {
 			ffplay.stdin?.end()
@@ -417,7 +524,31 @@ const main = async (): Promise<void> => {
 		muxFrame = data => player.write(mux.page(data))
 		stopPlaying = () => player.stop()
 	}
+	// Peer video goes to its own ffplay window, minted with the call like
+	// audio playback — never into the audio Ogg stream.
+	let stopVideoSink: (() => void) | undefined
+	let stopVideoPlayer: (() => void) | undefined
+	const startVideoPlayback = (): void => {
+		const player = spawnVideoPlayer()
+		stopVideoSink = sock.onCallVideo(liveCallId!, frame => {
+			if (frame.callId !== liveCallId) return
+			console.log(`video: ${frame.data.length}B keyframe=${frame.keyframe} orientation=${frame.orientation}`)
+			player.write(frame.data)
+		})
+		stopVideoPlayer = () => player.stop()
+	}
+	const stopVideoPlayback = (): void => {
+		stopVideoSink?.()
+		stopVideoSink = undefined
+		stopVideoPlayer?.()
+		stopVideoPlayer = undefined
+		muxFrameVideo = undefined
+	}
 	let encoder: ChildProcess | null = null
+	let videoEncoder: ChildProcess | null = null
+	let outboundVideoShed = 0
+	const UNIT = [0, 0, 0, 1]
+	void UNIT
 
 	// The encoder runs only while a call is live: a file input exhausts, and
 	// starting it at launch would spend the audio before anyone answers.
@@ -460,6 +591,41 @@ const main = async (): Promise<void> => {
 		encoder = null
 	}
 
+	// Outgoing video, started once per call when --video is set: ffmpeg
+	// emits raw Annex-B, the splitter hands one AU per push to the bridge,
+	// and the same child-scoping rules as audio apply.
+	const ensureVideoEncoder = (): void => {
+		if (videoEncoder || args.video === undefined || !liveCallId) return
+		const child = spawnVideoEncoder(args.video)
+		videoEncoder = child
+		const splitter = splitVideoAccessUnits()
+		const callForChild = liveCallId
+		child.stdout?.on('data', (chunk: Buffer) => {
+			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
+			for (const unit of splitter.push(new Uint8Array(chunk))) {
+				void sock
+					.pushCallVideo(liveCallId, unit)
+					.then(accepted => {
+						if (!accepted) {
+							outboundVideoShed++
+							if (outboundVideoShed % 50 === 1)
+								console.log(`shed ${outboundVideoShed} video access units under backpressure`)
+						}
+					})
+					.catch(err => console.error('video push failed:', (err as Error).message))
+			}
+		})
+		child.on('exit', code => {
+			console.log(`ffmpeg (video) exited (${code})`)
+			if (videoEncoder === child) videoEncoder = null
+		})
+	}
+
+	const stopVideoEncoder = (): void => {
+		videoEncoder?.kill()
+		videoEncoder = null
+	}
+
 	const onFrame = (frame: CallAudioFrame): void => {
 		if (frame.codec !== 'opus') {
 			console.error(`dropping peer packet with unsupported codec ${frame.codec}`)
@@ -484,6 +650,8 @@ const main = async (): Promise<void> => {
 		// Stopped before the hangup lands: a new ring answered while endCall
 		// is in flight must find a clear slot, not the dying capture.
 		stopEncoder()
+		stopVideoEncoder()
+		stopVideoPlayback()
 		try {
 			const end = await sock.endCall(id)
 			console.log('hangup:', end.outcome)
@@ -495,6 +663,10 @@ const main = async (): Promise<void> => {
 	sock.ev.on('call.media', event => {
 		if (event.kind === 'relay-allocated') console.log('relay up for', event.callId)
 		if (event.kind === 'audio-codec-switched') console.log(`codec ${event.from} -> ${event.to}`)
+		if (event.kind === 'video-upgrade-requested')
+			console.log(`peer asks for video on ${event.callId} (state=${event.state ?? 'n/a'}); press v to accept`)
+		if (event.kind === 'video-state-changed' && event.callId === liveCallId)
+			console.log(`video state -> ${event.state ?? 'n/a'}`)
 		if (event.kind === 'ended' && event.callId === liveCallId) {
 			console.log('peer ended the call')
 			void hangup().then(() => {
@@ -518,6 +690,13 @@ const main = async (): Promise<void> => {
 			stopSink = sock.onCallAudio(id, onFrame)
 			ensureEncoder()
 			startPlayback()
+			if (args.video !== undefined) {
+				// A video offer accepted straight into video, mirroring
+				// voip-cli where answering with --video starts the plane.
+				await sock.acceptCallVideo(id).catch(err => console.error('accept video failed:', (err as Error).message))
+				startVideoPlayback()
+				ensureVideoEncoder()
+			}
 			console.log('answered', id)
 		} finally {
 			accepting = false
@@ -543,6 +722,12 @@ const main = async (): Promise<void> => {
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
 		startPlayback()
+		if (args.video !== undefined) {
+			await sock.retryCallVideoUpgrade(id).catch(err => console.error('video upgrade failed:', (err as Error).message))
+			await sock.startCallVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
+			startVideoPlayback()
+			ensureVideoEncoder()
+		}
 		console.log('dialed', id, '- waiting for answer (q hangs up)')
 	} else {
 		console.log(args.accept ? 'listening (answering every ring)' : 'listening (rejecting every ring)')
@@ -569,10 +754,39 @@ const main = async (): Promise<void> => {
 				.getCallMediaStats(liveCallId)
 				.then((stats: CallMediaStats) =>
 					console.log(
-						`decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} sink-dropped=${stats.audioSinkDropped}`
+						`decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} sink-dropped=${stats.audioSinkDropped} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 					)
 				)
 				.catch(err => console.error('stats failed:', (err as Error).message))
+		}
+		if (key?.name === 'v' && liveCallId) {
+			const id = liveCallId
+			void sock
+				.retryCallVideoUpgrade(id)
+				.then(() => sock.startCallVideo(id))
+				.then(() => {
+					startVideoPlayback()
+					ensureVideoEncoder()
+					console.log('video started')
+				})
+				.catch(err => console.error('video start failed:', (err as Error).message))
+		}
+		if (key?.name === 'k' && liveCallId) {
+			const id = liveCallId
+			void sock
+				.requestCallKeyframe(id, 'immediate')
+				.then(() => console.log('keyframe requested'))
+				.catch(err => console.error('keyframe request failed:', (err as Error).message))
+		}
+		if (key?.name === 'd' && liveCallId) {
+			sock
+				.getCallVideoDiagnostics(liveCallId)
+				.then(diagnostics =>
+					console.log(
+						`self=${diagnostics.selfState} peer=${diagnostics.peerState} upgrade-timeout=${diagnostics.upgradeTimeoutMs}ms`
+					)
+				)
+				.catch(err => console.error('video diagnostics failed:', (err as Error).message))
 		}
 	})
 }

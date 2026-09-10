@@ -26,7 +26,7 @@ import {
 } from '@oxidezap/whatsapp-rust-bridge'
 
 import { asCallAudioClient, type CallAudioBridgeClient } from '../Socket/calls.ts'
-import type { CallAudioFrame, CallMediaEvent } from '../Types/Call.ts'
+import type { CallAudioFrame, CallMediaEvent, CallVideoFrame } from '../Types/Call.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
 
@@ -88,7 +88,15 @@ const offlineAudioClient = async (): Promise<CallAudioBridgeClient> => {
 		'setCallMuted',
 		'getCallMediaStats',
 		'getActiveCalls',
-		'setRelayTransportProvider'
+		'setRelayTransportProvider',
+		'acceptCallVideo',
+		'callPushVideo',
+		'startCallVideo',
+		'stopCallVideo',
+		'resumeCallVideo',
+		'retryCallVideoUpgrade',
+		'getCallVideoDiagnostics',
+		'requestCallKeyframe'
 	] as const) {
 		expect(typeof (client as unknown as Record<string, unknown>)[method]).toBe('function')
 	}
@@ -158,6 +166,39 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 		}
 	})
 
+	it('video operations name an unknown call id offline', async () => {
+		const client = await offlineAudioClient()
+		try {
+			for (const call of [
+				client.startCallVideo('NEVER-LIVE'),
+				client.stopCallVideo('NEVER-LIVE'),
+				client.acceptCallVideo('NEVER-LIVE'),
+				client.resumeCallVideo('NEVER-LIVE'),
+				client.retryCallVideoUpgrade('NEVER-LIVE')
+			]) {
+				const error = await rejection(call)
+				expect(error.kind).toBe('invalid-argument')
+				expect(error.field).toBe('callId')
+			}
+
+			const push = syncRejection(() => client.callPushVideo('NEVER-LIVE', new Uint8Array([0, 0, 0, 1, 0x65])))
+			expect(push.kind).toBe('invalid-argument')
+			expect(push.field).toBe('callId')
+
+			const diagnostics = syncRejection(() => client.getCallVideoDiagnostics('NEVER-LIVE'))
+			expect(diagnostics.kind).toBe('invalid-argument')
+			expect(diagnostics.field).toBe('callId')
+
+			// requestCallKeyframe reports an unknown id the same way, so a
+			// lost frame during teardown still surfaces instead of vanishing.
+			const keyframe = syncRejection(() => client.requestCallKeyframe('NEVER-LIVE', 'immediate'))
+			expect(keyframe.kind).toBe('invalid-argument')
+			expect(keyframe.field).toBe('callId')
+		} finally {
+			;(client as unknown as { free(): void }).free()
+		}
+	})
+
 	it('the relay provider names a missing constructor', async () => {
 		const client = await offlineAudioClient()
 		try {
@@ -172,12 +213,14 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 	it('the media sinks install on the callbacks object without disturbing signaling', async () => {
 		const audioFrames: CallAudioFrame[] = []
 		const mediaEvents: CallMediaEvent[] = []
+		const videoFrames: CallVideoFrame[] = []
 		const callbacks = {
 			onEvent: () => undefined
 		}
 		Object.assign(callbacks, {
 			onCallAudio: (frame: CallAudioFrame) => audioFrames.push(frame),
-			onCallEvent: (event: CallMediaEvent) => mediaEvents.push(event)
+			onCallEvent: (event: CallMediaEvent) => mediaEvents.push(event),
+			onCallVideo: (frame: CallVideoFrame) => videoFrames.push(frame)
 		})
 		const client = await createWhatsAppClient(
 			deadTransport(),
@@ -190,6 +233,7 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 			expect(typeof client.disconnect).toBe('function')
 			expect(audioFrames).toEqual([])
 			expect(mediaEvents).toEqual([])
+			expect(videoFrames).toEqual([])
 		} finally {
 			try {
 				await client.disconnect()

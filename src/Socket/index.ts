@@ -26,6 +26,7 @@ import type {
 	AuthenticationCreds,
 	CallAudioFrame,
 	CallMediaEvent,
+	CallVideoFrame,
 	ConnectionState,
 	Contact,
 	ReachoutTimelockState,
@@ -502,6 +503,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// both the release bridge and the preview.
 	Object.assign(eventHandlers, {
 		onCallAudio: (frame: CallAudioFrame) => callMedia.routeAudioFrame(frame),
+		onCallVideo: (frame: CallVideoFrame) => callMedia.routeVideoFrame(frame),
 		onCallEvent: (event: CallMediaEvent) => callMedia.routeMediaEvent(event)
 	})
 

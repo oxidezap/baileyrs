@@ -100,6 +100,8 @@ export type CallMediaEventKind =
 	| 'media-setup-failed'
 	| 'audio-codec-switched'
 	| 'audio-codec-source-fixed'
+	| 'video-upgrade-requested'
+	| 'video-state-changed'
 	| 'ended'
 
 export type CallMediaEvent = {
@@ -117,6 +119,61 @@ export type CallMediaEvent = {
 	sending?: string
 	/** `audio-codec-source-fixed`: what the peer says it speaks. */
 	peerExpects?: string
+	/** `ended`: the call's final media counters, so forensics needs no follow-up read. */
+	stats?: CallMediaStats
+	/** `video-state-changed`, `video-upgrade-requested`: the wire number. */
+	state?: number
+}
+
+/**
+ * One encoded video access unit for a live call: an Annex-B H.264 payload with
+ * its keyframe flag, clockwise rotation (0=0, 1=270, 2=180, 3=90 deg) and
+ * 90 kHz RTP timestamp.
+ */
+export type CallVideoFrame = {
+	callId: string
+	data: Uint8Array
+	keyframe: boolean
+	orientation: number
+	timestamp: number
+}
+
+/**
+ * The core's direction-local video negotiation state for one live call.
+ * `selfState` and `peerState` are the wire numbers from VideoState;
+ * `upgradeTimeoutMs` is the remaining window before a pending request expires.
+ */
+export type CallVideoDiagnostics = {
+	selfState: number
+	peerState: number
+	upgradeTimeoutMs: number
+}
+
+/**
+ * How hard to ask the peer for a video keyframe. `coalesced` folds into an
+ * existing in-flight request; `immediate` asks right away.
+ */
+export type CallKeyframeUrgency = 'coalesced' | 'immediate'
+
+/**
+ * Per-access-unit sink for one live call's peer video. Runs synchronously per
+ * access unit; a returned promise is not observed.
+ */
+export type CallVideoSink = (frame: CallVideoFrame) => void
+
+/**
+ * An acquired-once encoded video writer for one live call. For camera pipelines
+ * that push H.264 access units directly: resolve the client once, then send
+ * synchronously with no per-packet async hop.
+ */
+export type CallVideoWriter = {
+	/**
+	 * Queue one H.264 access unit. True means accepted locally, false means
+	 * shed under backpressure or closed.
+	 */
+	tryWrite(packet: Uint8Array): boolean
+	/** Invalidate the writer without ending the call. */
+	close(): void
 }
 
 /**
