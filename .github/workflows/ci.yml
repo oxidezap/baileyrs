@@ -171,8 +171,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # --ignore-scripts skips `prepare`, and `tsc && oxlint` reads `src`, never
-      # `lib`. This job used to spend a build on output it never opened.
+      # --ignore-scripts skips `prepare`, so lint builds `lib` itself before
+      # the example typecheck reads it. `tsc && oxlint` still only read `src`.
       - run: npm ci --ignore-scripts
 
       - run: npm run lint

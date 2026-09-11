@@ -67,7 +67,7 @@
     "example": "node ./Example/example.ts",
     "format": "oxfmt src Example",
     "format:check": "oxfmt --check src Example",
-    "lint": "tsc && tsc -p tsconfig.example.json && oxlint",
+    "lint": "npm run build --silent && tsc && tsc -p tsconfig.example.json && oxlint",
     "lint:fix": "oxlint --fix && oxfmt src Example",
     "typecheck:example": "tsc -p tsconfig.example.json",
     "prepack": "npm run build && node scripts/check-pack.ts",

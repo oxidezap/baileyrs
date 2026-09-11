@@ -2,14 +2,15 @@
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"noEmit": true,
-		"types": ["node"],
+		// The base config roots sources at src/, which would reject the
+		// example file outright.
 		"rootDir": ".",
-		// The example runs against the built package in lib/, which does not
-		// exist when lint runs. Map it back to source so the gate checks the
-		// current tree instead of a stale build (or nothing at all on CI).
-		"paths": {
-			"../lib/index.js": ["./src/index.ts"]
-		}
+		// Without this the node builtins stay untyped in this program and
+		// every child-process callback falls back to implicit any.
+		"types": ["node"]
 	},
+	// The example runs against the built package, so lint builds lib first
+	// (see the lint script). That keeps this gate on the same declarations
+	// consumers compile against, instead of a parallel source view.
 	"include": ["Example/call.ts"]
 }
