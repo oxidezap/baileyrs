@@ -308,9 +308,32 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 				? ['-f', 'dshow', '-i', `audio=${args.mic ?? 'default'}`]
 				: ['-f', 'alsa', '-i', args.mic ?? 'default']
 	const input: string[] = args.audioFile !== undefined ? ['-re', '-i', args.audioFile] : micInput
-	const ffmpeg = spawn('ffmpeg', [...input, '-ac', '1', '-ar', '16000', '-c:a', 'libopus', '-f', 'opus', 'pipe:1'], {
-		stdio: ['ignore', 'pipe', 'inherit']
-	})
+	const ffmpeg = spawn(
+		'ffmpeg',
+		[
+			...input,
+			'-ac',
+			'1',
+			'-ar',
+			'16000',
+			'-c:a',
+			'libopus',
+			'-b:a',
+			'24k',
+			'-application',
+			'voip',
+			'-frame_duration',
+			'60',
+			'-vbr',
+			'on',
+			'-f',
+			'opus',
+			'pipe:1'
+		],
+		{
+			stdio: ['ignore', 'pipe', 'inherit']
+		}
+	)
 	ffmpeg.on('error', err => console.error('ffmpeg failed to start:', (err as Error).message))
 	return ffmpeg
 }
@@ -843,10 +866,13 @@ const main = async (): Promise<void> => {
 			return
 		}
 		try {
-			// Opus frames arrive in the MLOW escape: restore the RFC TOC
-			// before muxing, or ffplay hears noise. The push direction needs
-			// no counterpart. The engine packetizes in flight.
-			muxFrame?.(depacketizeOpusFromMlow(frame.data))
+			// Native Opus frames can be fed directly to the Ogg muxer.
+			// If an MLOW in-profile escape TOC is present, restore the RFC TOC first.
+			const data =
+				frame.data.length > 0 && ((frame.data[0] ?? 0) & 0xc0) === 0xc0
+					? depacketizeOpusFromMlow(frame.data)
+					: frame.data
+			muxFrame?.(data)
 		} catch (err) {
 			console.error('dropping an unmuxable peer packet:', (err as Error).message)
 		}
