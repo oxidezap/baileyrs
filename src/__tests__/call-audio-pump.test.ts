@@ -1215,6 +1215,16 @@ describe('call audio socket methods', () => {
 		expect(stopped).toBe(true)
 	})
 
+	it('endCall converts the bridge Map result to a plain object', async () => {
+		// Seen live: the bridge types a plain-object union but hands back a
+		// Map, which reads every outcome as undefined downstream.
+		const methods = makeCallAudioMethods(
+			stubCtx({ endCall: async () => new Map([['outcome', 'already-ended']]) }),
+			nullRouter()
+		)
+		expect(await methods.endCall('CALL-1')).toEqual({ outcome: 'already-ended' })
+	})
+
 	it('endCall forgets the call through the hook on success only', async () => {
 		const forgotten: string[] = []
 		const withHooks = (client: object): ReturnType<typeof makeCallAudioMethods> =>

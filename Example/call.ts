@@ -487,6 +487,34 @@ const main = async (): Promise<void> => {
 			console.log(`relay channel to ${params.address}:${params.port}`)
 			const socket = dgram.createSocket('udp4')
 			liveRelays.add(socket)
+			// Reachability ping on the same socket the Allocate leaves from,
+			// so the verdict covers the real NAT mapping, not a fresh one.
+			// A STUN binding request the relay answers proves UDP flows both
+			// ways; silence here followed by relay-allocate-timed-out means
+			// the network drops it, not the engine. The reply is consumed,
+			// never forwarded: its transaction id matches nothing the core
+			// sent. Skipped for non-IP literals, which answer nothing.
+			const pingTxn = Buffer.alloc(12)
+			for (let i = 0; i < pingTxn.length; i++) pingTxn[i] = Math.floor(Math.random() * 256)
+			let pingSettled = false
+			const isPingReply = (message: Buffer): boolean =>
+				message.length >= 20 &&
+				message.readUInt16BE(0) === 0x0101 &&
+				message.readUInt32BE(4) === 0x2112a442 &&
+				message.subarray(8, 20).equals(pingTxn)
+			const pingTimer = setTimeout(() => {
+				if (pingSettled) return
+				pingSettled = true
+				console.log(
+					`no STUN reply from relay ${params.address}:${params.port} within 2s; if allocate times out next, UDP to the relay is blocked on this network`
+				)
+			}, 2000)
+			pingTimer.unref()
+			const ping = Buffer.alloc(20)
+			ping.writeUInt16BE(0x0001, 0)
+			ping.writeUInt16BE(0, 2)
+			ping.writeUInt32BE(0x2112a442, 4)
+			pingTxn.copy(ping, 8)
 			await new Promise<void>((resolve, reject) => {
 				socket.once('error', reject)
 				socket.bind(0, () => {
@@ -510,6 +538,12 @@ const main = async (): Promise<void> => {
 				}
 			}
 			socket.on('message', (message: Buffer) => {
+				if (!pingSettled && isPingReply(message)) {
+					pingSettled = true
+					clearTimeout(pingTimer)
+					console.log(`relay STUN reachable at ${params.address}:${params.port}`)
+					return
+				}
 				if (!opened) {
 					opened = true
 					events.onOpen()
@@ -524,9 +558,14 @@ const main = async (): Promise<void> => {
 					events.onOpen()
 				}
 			})
+			socket.send(ping, params.port, params.address, err => {
+				if (err) console.error(`relay STUN ping to ${params.address}:${params.port} failed:`, err.message)
+			})
 			return {
 				send: data => {
-					socket.send(data, params.port, params.address)
+					socket.send(data, params.port, params.address, err => {
+						if (err) console.error(`relay send to ${params.address}:${params.port} failed:`, err.message)
+					})
 				},
 				close: async () => {
 					liveRelays.delete(socket)

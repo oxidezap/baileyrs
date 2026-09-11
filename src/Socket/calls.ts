@@ -198,6 +198,17 @@ const assertPushFormat = (
 	}
 }
 
+/**
+ * The bridge types its hangup result as a plain object but hands back a Map
+ * at runtime, which reads every `outcome` as undefined. Plain objects pass
+ * through untouched; anything else stays exactly what it was for the
+ * outcome checks below to report.
+ */
+export const normalizeCallEndResult = (raw: unknown): CallEndResult => {
+	if (raw instanceof Map) return Object.fromEntries(raw) as CallEndResult
+	return raw as CallEndResult
+}
+
 const assertVideoPacket = (method: string, data: Uint8Array): void => {
 	if (!(data instanceof Uint8Array) || data.length === 0) {
 		throw new Boom(`${method}: data must be a non-empty Uint8Array (one Annex-B H.264 access unit)`, {
@@ -1156,10 +1167,9 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {
-			const outcome = (await (endCall as (this: unknown, id: string) => Promise<CallEndResult>).call(
-				client,
-				callId
-			)) as CallEndResult
+			const outcome = normalizeCallEndResult(
+				await (endCall as (this: unknown, id: string) => Promise<CallEndResult>).call(client, callId)
+			) as CallEndResult
 			if (outcome?.outcome === 'local-only') return false
 			const notified =
 				outcome?.outcome === 'peer-notified' ||
@@ -1254,7 +1264,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		/** End a live call. The local side is down whatever comes back. */
 		endCall: (callId: string): Promise<CallEndResult> => {
 			assertCallId('endCall', callId)
-			return withAudioClient('endCall', client => client.endCall(callId))
+			return withAudioClient('endCall', client => client.endCall(callId).then(normalizeCallEndResult))
 				.then(result => {
 					// Resolving means the local side is down whatever the
 					// outcome, so the socket forgets the call too. A rejection
