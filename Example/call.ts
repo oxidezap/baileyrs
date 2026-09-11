@@ -852,6 +852,16 @@ const main = async (): Promise<void> => {
 		}
 		const filled = Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined))
 		console.log(`media ${event.kind} on ${event.callId}`, Object.keys(filled).length > 0 ? JSON.stringify(filled) : '')
+		// Proven by pcap against a working native call: production relays
+		// take the allocate inside the DTLS+SCTP DataChannel tunnel and
+		// drop the cleartext allocate this UDP pipe sends, while answering
+		// consent pings. A timeout here with ping/pong flowing is that gap,
+		// not the network, and only the tunnel (bridge lane) closes it.
+		if (event.kind === 'relay-allocate-timed-out') {
+			console.log(
+				'media never came up: the allocate went unanswered. Production relays expect it inside the DTLS+SCTP tunnel; this pipe has none.'
+			)
+		}
 		if (event.kind === 'audio-codec-switched') console.log(`codec ${event.from} -> ${event.to}`)
 		if (event.kind === 'video-upgrade-requested')
 			console.log(`peer asks for video on ${event.callId} (state=${event.state ?? 'n/a'}); press v to accept`)
