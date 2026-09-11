@@ -499,9 +499,17 @@ const main = async (): Promise<void> => {
 				if (total === 1 || total % 10 === 0) console.log(`relay ${direction} ${name} x${total}`)
 				// Shape only, never values: a tokenless or integrity-less
 				// allocate is one the relay drops silently, which reads
-				// exactly like a network failure without this line.
+				// exactly like a network failure without this line. The
+				// endpoint check beside it catches the allocate naming a
+				// different relay than the channel talks to.
 				if (direction === 'out' && name === 'allocate request' && total === 1) {
-					console.log('allocate shape:', JSON.stringify(describeStunAllocate(message)))
+					const shape = describeStunAllocate(message)
+					console.log('allocate shape:', JSON.stringify(shape))
+					if (shape && (shape.endpointIp !== params.address || shape.endpointPort !== params.port)) {
+						console.log(
+							`allocate endpoint mismatch: names ${shape.endpointIp ?? 'n/a'}:${shape.endpointPort ?? 'n/a'} but the channel talks to ${params.address}:${params.port}`
+						)
+					}
 				}
 			}
 			// Reachability ping on the same socket the Allocate leaves from,

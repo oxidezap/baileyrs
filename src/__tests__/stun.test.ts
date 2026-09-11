@@ -78,6 +78,27 @@ describe('describeStunAllocate', () => {
 		})
 	})
 
+	it('decodes the endpoint named inside the allocate', () => {
+		// 0x0016 value for 57.144.137.57:3478: `00 01`, port ^ 0x2112,
+		// address ^ 0x2112a442.
+		const endpoint = [0x00, 0x01, 0x2c, 0x84, 0x18, 0x82, 0x2d, 0x7b]
+		const packet = new Uint8Array(20 + 12)
+		packet[0] = 0x00
+		packet[1] = 0x03
+		packet[4] = 0x21
+		packet[5] = 0x12
+		packet[6] = 0xa4
+		packet[7] = 0x42
+		packet[20] = 0x00
+		packet[21] = 0x16
+		packet[22] = 0x00
+		packet[23] = 0x08
+		packet.set(endpoint, 24)
+		const shape = describeStunAllocate(packet)
+		expect(shape?.endpointIp).toBe('57.144.137.57')
+		expect(shape?.endpointPort).toBe(3478)
+	})
+
 	it('ignores non-allocate packets', () => {
 		const binding = new Uint8Array(20)
 		binding[0] = 0x00
