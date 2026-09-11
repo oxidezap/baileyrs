@@ -57,7 +57,9 @@ import {
 	useMultiFileAuthState,
 	type CallAudioBuffer,
 	type CallAudioFrame,
+	type CallAudioWriter,
 	type CallMediaStats,
+	type CallVideoWriter,
 	type WACallEvent
 } from '../lib/index.js'
 
@@ -176,13 +178,46 @@ export const demuxOggOpus = (): { push(bytes: Uint8Array): Uint8Array[] } => {
 	}
 }
 
+/**
+ * Calculate the number of audio samples in an Opus packet at 48 kHz (RFC 6716 Section 3.2.5).
+ * WhatsApp voice call packets carry 60 ms frames (2880 samples @ 48 kHz). ffmpeg typically emits
+ * 20 ms frames (960 samples @ 48 kHz). Accurate granule positions prevent ffplay desync, stutter, and cuts.
+ */
+export const getOpusSamples48k = (packet: Uint8Array): number => {
+	if (packet.length === 0) return 960
+	const toc = packet[0]!
+	const config = toc >> 3
+	const frameCountCode = toc & 3
+	let frameDurationSamples: number
+	if (config >= 16) {
+		// CELT: configurations 16-31
+		const match = config & 3
+		frameDurationSamples = match === 0 ? 120 : match === 1 ? 240 : match === 2 ? 480 : 960
+	} else if (config >= 12) {
+		// Hybrid: configurations 12-15
+		frameDurationSamples = (config & 1) === 0 ? 480 : 960
+	} else {
+		// SILK: configurations 0-11
+		const match = config & 3
+		frameDurationSamples = match === 0 ? 480 : match === 1 ? 960 : match === 2 ? 1920 : 2880
+	}
+	let frameCount: number
+	if (frameCountCode === 0) {
+		frameCount = 1
+	} else if (frameCountCode === 1 || frameCountCode === 2) {
+		frameCount = 2
+	} else {
+		if (packet.length < 2) return frameDurationSamples
+		frameCount = packet[1]! & 0x3f
+	}
+	return frameCount * frameDurationSamples
+}
+
 /** Wrap bare Opus packets in Ogg pages for ffplay's stdin. */
 export const muxOggOpus = (): { headerPages(): Uint8Array[]; page(packet: Uint8Array): Uint8Array } => {
 	const serial = (Math.random() * 0xffffffff) >>> 0
 	let sequence = 0
-	// Samples at 48 kHz; ffmpeg emits 20 ms frames, 960 samples each. Only the
-	// displayed clock reads this, never the audio, so a wrong guess here
-	// skews time, not sound.
+	// Samples at 48 kHz, incremented by the exact duration of each Opus packet.
 	let granule = 0
 	const framePage = (packet: Uint8Array, granulepos: number, flags: number): Uint8Array => {
 		const segments: number[] = []
@@ -226,7 +261,7 @@ export const muxOggOpus = (): { headerPages(): Uint8Array[]; page(packet: Uint8A
 			return [first, second]
 		},
 		page(packet: Uint8Array): Uint8Array {
-			granule += 960
+			granule += getOpusSamples48k(packet)
 			return framePage(packet, granule, 0x00)
 		}
 	}
@@ -307,7 +342,10 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 			: process.platform === 'win32'
 				? ['-f', 'dshow', '-i', `audio=${args.mic ?? 'default'}`]
 				: ['-f', 'alsa', '-i', args.mic ?? 'default']
-	const input: string[] = args.audioFile !== undefined ? ['-re', '-i', args.audioFile] : micInput
+	const input: string[] =
+		args.audioFile !== undefined
+			? ['-re', '-i', args.audioFile]
+			: ['-fflags', 'nobuffer', '-flags', 'low_delay', ...micInput]
 	const ffmpeg = spawn(
 		'ffmpeg',
 		[
@@ -326,6 +364,10 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 			'60',
 			'-vbr',
 			'on',
+			'-page_duration',
+			'60000',
+			'-flush_packets',
+			'1',
 			'-f',
 			'opus',
 			'pipe:1'
@@ -382,16 +424,46 @@ const spawnVideoEncoder = (source: string): ChildProcess => {
 
 /** ffplay renders muxed Ogg Opus fed on stdin. Returns a writer for pages. */
 const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
-	const ffplay = spawn('ffplay', ['-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-i', 'pipe:0'], {
-		stdio: ['pipe', 'ignore', 'inherit']
-	})
+	const ffplay = spawn(
+		'ffplay',
+		[
+			'-hide_banner',
+			'-loglevel',
+			'error',
+			'-nodisp',
+			'-autoexit',
+			'-probesize',
+			'32',
+			'-analyzeduration',
+			'0',
+			'-sync',
+			'ext',
+			'-fflags',
+			'nobuffer+fastseek+flush_packets',
+			'-flags',
+			'low_delay',
+			'-f',
+			'ogg',
+			'-i',
+			'pipe:0'
+		],
+		{
+			stdio: ['pipe', 'ignore', 'inherit']
+		}
+	)
 	ffplay.on('error', err => console.error('ffplay failed to start:', (err as Error).message))
 	return {
 		write: page => {
 			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(page)
 		},
 		stop: () => {
-			ffplay.stdin?.end()
+			try {
+				ffplay.stdin?.end()
+				ffplay.stdin?.destroy()
+			} catch {
+				// ignore
+			}
+			ffplay.kill('SIGKILL')
 		}
 	}
 }
@@ -429,7 +501,25 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => {
 	const ffplay = spawn(
 		'ffplay',
-		['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-f', 'h264', '-framerate', '20'],
+		[
+			'-hide_banner',
+			'-loglevel',
+			'error',
+			'-probesize',
+			'32',
+			'-analyzeduration',
+			'0',
+			'-fflags',
+			'nobuffer+fastseek+flush_packets',
+			'-flags',
+			'low_delay',
+			'-i',
+			'pipe:0',
+			'-f',
+			'h264',
+			'-framerate',
+			'20'
+		],
 		{ stdio: ['pipe', 'ignore', 'inherit'] }
 	)
 	ffplay.on('error', err => console.error('ffplay (video) failed to start:', (err as Error).message))
@@ -438,7 +528,13 @@ const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => 
 			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(unit)
 		},
 		stop: () => {
-			ffplay.stdin?.end()
+			try {
+				ffplay.stdin?.end()
+				ffplay.stdin?.destroy()
+			} catch {
+				// ignore
+			}
+			ffplay.kill('SIGKILL')
 		}
 	}
 }
@@ -712,7 +808,9 @@ const main = async (): Promise<void> => {
 		stopVideoPlayer = undefined
 	}
 	let encoder: ChildProcess | null = null
+	let audioWriter: CallAudioWriter | null = null
 	let videoEncoder: ChildProcess | null = null
+	let videoWriter: CallVideoWriter | null = null
 	let outboundVideoShed = 0
 	// The mlow outbound path: no MLOW encoder exists here, so an mlow call
 	// pushes the silence token the core accepts under both promises. A pump,
@@ -725,7 +823,19 @@ const main = async (): Promise<void> => {
 	// anyone answers, and pushing Opus grammar into an mlow call dies in the
 	// engine and sheds forever. That mixup is what the mlow path above is for.
 	const ensureEncoder = (): void => {
-		if (encoder || audioFormat !== 'opus' || (!args.audioFile && args.mic === undefined)) return
+		if (encoder || audioFormat !== 'opus' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
+		const callForChild = liveCallId
+		void sock
+			.openCallAudioWriter(callForChild)
+			.then(writer => {
+				if (liveCallId === callForChild && encoder === child) {
+					audioWriter = writer
+				} else {
+					writer.close()
+				}
+			})
+			.catch(err => console.error('failed to open sync audio writer:', (err as Error).message))
+
 		const child = spawnOpusEncoder(args)
 		encoder = child
 		// Per-child demux and call id: a killed child can still flush
@@ -734,7 +844,6 @@ const main = async (): Promise<void> => {
 		// would corrupt it, and pushed to the new call id they would land
 		// on the wrong call. Both are captured here and checked per chunk.
 		const stream = demuxOggOpus()
-		const callForChild = liveCallId
 		// Backoff state: pushing into a full queue is a wasted crossing,
 		// so after a run of sheds the producer drops at the source for a
 		// beat instead of hammering. Acceptances reset the run.
@@ -744,24 +853,41 @@ const main = async (): Promise<void> => {
 			if (child !== encoder || callForChild !== liveCallId || !liveCallId) return
 			if (Date.now() < quietUntil) return
 			for (const packet of stream.push(new Uint8Array(chunk))) {
-				void sock
-					.pushCallAudio(liveCallId, packet)
-					.then(accepted => {
-						if (!accepted) {
-							shed++
-							consecutiveSheds++
-							if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
-							if (consecutiveSheds === 20) {
-								quietUntil = Date.now() + 500
-								console.log(
-									`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
-								)
-							}
-						} else {
-							consecutiveSheds = 0
+				if (audioWriter) {
+					const accepted = audioWriter.tryWrite(packet)
+					if (!accepted) {
+						shed++
+						consecutiveSheds++
+						if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
+						if (consecutiveSheds === 20) {
+							quietUntil = Date.now() + 500
+							console.log(
+								`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
+							)
 						}
-					})
-					.catch(err => console.error('push failed:', (err as Error).message))
+					} else {
+						consecutiveSheds = 0
+					}
+				} else {
+					void sock
+						.pushCallAudio(liveCallId, packet)
+						.then(accepted => {
+							if (!accepted) {
+								shed++
+								consecutiveSheds++
+								if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
+								if (consecutiveSheds === 20) {
+									quietUntil = Date.now() + 500
+									console.log(
+										`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
+									)
+								}
+							} else {
+								consecutiveSheds = 0
+							}
+						})
+						.catch(err => console.error('push failed:', (err as Error).message))
+				}
 			}
 		})
 		child?.on('exit', code => {
@@ -769,13 +895,30 @@ const main = async (): Promise<void> => {
 			// Only the current child clears the slot: a hangup followed by
 			// a new call installs a replacement first, and the old child's
 			// delayed exit must not untrack it.
-			if (encoder === child) encoder = null
+			if (encoder === child) {
+				encoder = null
+				audioWriter?.close()
+				audioWriter = null
+			}
 		})
 	}
 
 	const stopEncoder = (): void => {
-		encoder?.kill()
-		encoder = null
+		try {
+			audioWriter?.close()
+		} catch {
+			// ignore
+		}
+		audioWriter = null
+		if (encoder) {
+			try {
+				encoder.stdout?.destroy()
+				encoder.kill('SIGKILL')
+			} catch {
+				// ignore
+			}
+			encoder = null
+		}
 	}
 
 	// Mlow outbound: silence at voice cadence through the library pump, with
@@ -816,34 +959,71 @@ const main = async (): Promise<void> => {
 	// and the same child-scoping rules as audio apply.
 	const ensureVideoEncoder = (): void => {
 		if (videoEncoder || args.video === undefined || !liveCallId) return
+		const callForChild = liveCallId
+		void sock
+			.openCallVideoWriter(callForChild)
+			.then(writer => {
+				if (liveCallId === callForChild && videoEncoder === child) {
+					videoWriter = writer
+				} else {
+					writer.close()
+				}
+			})
+			.catch(err => console.error('failed to open sync video writer:', (err as Error).message))
+
 		const child = spawnVideoEncoder(args.video)
 		videoEncoder = child
 		const splitter = splitVideoAccessUnits()
-		const callForChild = liveCallId
 		child.stdout?.on('data', (chunk: Buffer) => {
 			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
 			for (const unit of splitter.push(new Uint8Array(chunk))) {
-				void sock
-					.pushCallVideo(liveCallId, unit)
-					.then(accepted => {
-						if (!accepted) {
-							outboundVideoShed++
-							if (outboundVideoShed % 50 === 1)
-								console.log(`shed ${outboundVideoShed} video access units under backpressure`)
-						}
-					})
-					.catch(err => console.error('video push failed:', (err as Error).message))
+				if (videoWriter) {
+					const accepted = videoWriter.tryWrite(unit)
+					if (!accepted) {
+						outboundVideoShed++
+						if (outboundVideoShed % 50 === 1)
+							console.log(`shed ${outboundVideoShed} video access units under backpressure`)
+					}
+				} else {
+					void sock
+						.pushCallVideo(liveCallId, unit)
+						.then(accepted => {
+							if (!accepted) {
+								outboundVideoShed++
+								if (outboundVideoShed % 50 === 1)
+									console.log(`shed ${outboundVideoShed} video access units under backpressure`)
+							}
+						})
+						.catch(err => console.error('video push failed:', (err as Error).message))
+				}
 			}
 		})
 		child.on('exit', code => {
 			console.log(`ffmpeg (video) exited (${code})`)
-			if (videoEncoder === child) videoEncoder = null
+			if (videoEncoder === child) {
+				videoEncoder = null
+				videoWriter?.close()
+				videoWriter = null
+			}
 		})
 	}
 
 	const stopVideoEncoder = (): void => {
-		videoEncoder?.kill()
-		videoEncoder = null
+		try {
+			videoWriter?.close()
+		} catch {
+			// ignore
+		}
+		videoWriter = null
+		if (videoEncoder) {
+			try {
+				videoEncoder.stdout?.destroy()
+				videoEncoder.kill('SIGKILL')
+			} catch {
+				// ignore
+			}
+			videoEncoder = null
+		}
 	}
 
 	const onFrame = (frame: CallAudioFrame): void => {
@@ -1038,6 +1218,11 @@ const main = async (): Promise<void> => {
 			}
 		}
 		liveRelays.clear()
+		stopEncoder()
+		stopSilencePump()
+		stopVideoEncoder()
+		stopVideoPlayback()
+		stopPlaying?.()
 		void hangup()
 			.catch(() => undefined)
 			.then(() => sock.end(undefined).catch(() => undefined))
