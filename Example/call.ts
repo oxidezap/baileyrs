@@ -47,6 +47,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import process from 'node:process'
 import readline from 'node:readline'
 import {
+	classifyStunPacket,
 	depacketizeOpusFromMlow,
 	fetchLatestWaWebVersion,
 	makeSilenceCallAudioSource,
@@ -487,6 +488,15 @@ const main = async (): Promise<void> => {
 			console.log(`relay channel to ${params.address}:${params.port}`)
 			const socket = dgram.createSocket('udp4')
 			liveRelays.add(socket)
+			const stunOut = new Map<string, number>()
+			const stunIn = new Map<string, number>()
+			const traceStun = (direction: string, counts: Map<string, number>, message: Uint8Array): void => {
+				const name = classifyStunPacket(message)
+				if (name === undefined) return
+				const total = (counts.get(name) ?? 0) + 1
+				counts.set(name, total)
+				if (total === 1 || total % 10 === 0) console.log(`relay ${direction} ${name} x${total}`)
+			}
 			// Reachability ping on the same socket the Allocate leaves from,
 			// so the verdict covers the real NAT mapping, not a fresh one.
 			// A STUN binding request the relay answers proves UDP flows both
@@ -544,6 +554,7 @@ const main = async (): Promise<void> => {
 					console.log(`relay STUN reachable at ${params.address}:${params.port}`)
 					return
 				}
+				traceStun('in', stunIn, message)
 				if (!opened) {
 					opened = true
 					events.onOpen()
@@ -563,6 +574,7 @@ const main = async (): Promise<void> => {
 			})
 			return {
 				send: data => {
+					traceStun('out', stunOut, data)
 					socket.send(data, params.port, params.address, err => {
 						if (err) console.error(`relay send to ${params.address}:${params.port} failed:`, err.message)
 					})
