@@ -90,6 +90,29 @@ describe('splitVideoAccessUnits', () => {
 		expect(units[0]).toEqual(au1)
 		expect(units[1]).toEqual(au2)
 	})
+
+	it('splits Annex-B stream incrementally across multiple chunk pushes', () => {
+		const splitter = splitVideoAccessUnits()
+		const au1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42])
+		const au2 = new Uint8Array([0, 0, 0, 1, 9, 0x20, 0, 0, 0, 1, 0x41, 0x9a])
+		const au3 = new Uint8Array([0, 0, 0, 1, 9, 0x30])
+
+		const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+			const res = new Uint8Array(a.length + b.length)
+			res.set(a)
+			res.set(b, a.length)
+			return res
+		}
+
+		expect(splitter.push(au1.subarray(0, 6)).length).toBe(0)
+		const r2 = splitter.push(concat(au1.subarray(6), au2.subarray(0, 5)))
+		expect(r2.length).toBe(1)
+		expect(r2[0]).toEqual(au1)
+
+		const r3 = splitter.push(concat(au2.subarray(5), au3))
+		expect(r3.length).toBe(1)
+		expect(r3[0]).toEqual(au2)
+	})
 })
 
 describe('orientationFilter', () => {

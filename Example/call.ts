@@ -574,20 +574,40 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 
 // ── H.264 framing: ffmpeg speaks raw Annex-B, the bridge speaks access units ──
 
+/** Maximum buffered bytes before dropping runaway data (matches wacore H264_MAX_AU_BYTES). */
+const MAX_VIDEO_AU_BUFFER = 4 * 1024 * 1024
+
 /** Split a raw Annex-B byte stream into access units on AUD boundaries (NAL type 9). */
 export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[] } => {
-	// Same ArrayBuffer/ArrayBufferLike annotation as the Ogg demuxer above.
 	let buffered: Uint8Array = new Uint8Array(0)
+	let scanPos = 0
+	let audStarts: number[] = []
 	let seenAud = false
+
 	return {
 		push(bytes: Uint8Array): Uint8Array[] {
-			const merged = new Uint8Array(buffered.length + bytes.length)
-			merged.set(buffered)
-			merged.set(bytes, buffered.length)
-			buffered = merged
-			const units: Uint8Array[] = []
-			const starts: number[] = []
-			for (let i = 0; i + 3 <= buffered.length; i++) {
+			if (bytes.length === 0) return []
+			const prevLen = buffered.length
+			if (prevLen === 0) {
+				buffered = bytes
+				scanPos = 0
+			} else {
+				const merged = new Uint8Array(prevLen + bytes.length)
+				merged.set(buffered)
+				merged.set(bytes, prevLen)
+				buffered = merged
+				scanPos = Math.max(0, prevLen - 3)
+			}
+
+			if (buffered.length > MAX_VIDEO_AU_BUFFER) {
+				buffered = new Uint8Array(0)
+				scanPos = 0
+				audStarts = []
+				seenAud = false
+				return []
+			}
+
+			for (let i = scanPos; i + 3 <= buffered.length; i++) {
 				if (buffered[i] === 0 && buffered[i + 1] === 0) {
 					let nalPos = -1
 					if (i + 4 <= buffered.length && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
@@ -601,24 +621,31 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 						const nalType = buffered[nalPos]! & 0x1f
 						if (nalType === 9) {
 							seenAud = true
-							starts.push(i)
+							audStarts.push(i)
 						}
 					}
 				}
 			}
+
+			const units: Uint8Array[] = []
 			if (seenAud) {
-				if (starts.length < 2) {
-					if (starts.length === 1 && starts[0]! > 0) {
-						buffered = buffered.slice(starts[0]!)
+				if (audStarts.length === 1 && audStarts[0]! > 0) {
+					const offset = audStarts[0]!
+					buffered = buffered.slice(offset)
+					audStarts[0] = 0
+				}
+				if (audStarts.length >= 2) {
+					for (let n = 0; n + 1 < audStarts.length; n++) {
+						units.push(buffered.slice(audStarts[n]!, audStarts[n + 1]!))
 					}
-					return units
+					const lastStart = audStarts[audStarts.length - 1]!
+					buffered = buffered.slice(lastStart)
+					audStarts = [0]
+					scanPos = 1
 				}
-				for (let n = 0; n + 1 < starts.length; n++) {
-					units.push(buffered.slice(starts[n]!, starts[n + 1]!))
-				}
-				buffered = buffered.slice(starts[starts.length - 1]!)
 				return units
 			}
+
 			// Fallback if no AUD is present: split on start codes
 			const allStarts: number[] = []
 			for (let i = 0; i + 4 <= buffered.length; i++) {
@@ -631,6 +658,7 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 				units.push(buffered.slice(allStarts[n]!, allStarts[n + 1]!))
 			}
 			buffered = buffered.slice(allStarts[allStarts.length - 1]!)
+			scanPos = 0
 			return units
 		}
 	}
