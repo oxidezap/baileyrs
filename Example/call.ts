@@ -477,130 +477,169 @@ const main = async (): Promise<void> => {
 	// UDP pipe to the relay: the core builds every datagram, this only ships
 	// bytes. Same shape as the e2e helper, inlined so the example stands alone.
 	const dgram = await import('node:dgram')
-	// Every open relay socket, so a crash-time shutdown can close what the
-	// bridge client no longer drives. An open UDP handle alone keeps the
-	// process alive past any hangup.
-	const liveRelays = new Set<{ close(): void }>()
-	await sock.setRelayTransportProvider({
-		async createRelayConnection(params, events) {
-			// Host and port only, never credentials: this line tells the
-			// next transcript which relay the allocate went to, which is
-			// what a relay-allocate-timed-out needs after it.
-			console.log(`relay channel to ${params.address}:${params.port}`)
-			const socket = dgram.createSocket('udp4')
-			liveRelays.add(socket)
-			const stunOut = new Map<string, number>()
-			const stunIn = new Map<string, number>()
-			const traceStun = (direction: string, counts: Map<string, number>, message: Uint8Array): void => {
-				const name = classifyStunPacket(message)
-				if (name === undefined) return
-				const total = (counts.get(name) ?? 0) + 1
-				counts.set(name, total)
-				if (total === 1 || total % 10 === 0) console.log(`relay ${direction} ${name} x${total}`)
-				// Shape only, never values: a tokenless or integrity-less
-				// allocate is one the relay drops silently, which reads
-				// exactly like a network failure without this line. The
-				// endpoint check beside it catches the allocate naming a
-				// different relay than the channel talks to.
-				if (direction === 'out' && name === 'allocate request' && total === 1) {
-					const shape = describeStunAllocate(message)
-					console.log('allocate shape:', JSON.stringify(shape))
-					if (shape && (shape.endpointIp !== params.address || shape.endpointPort !== params.port)) {
-						console.log(
-							`allocate endpoint mismatch: names ${shape.endpointIp ?? 'n/a'}:${shape.endpointPort ?? 'n/a'} but the channel talks to ${params.address}:${params.port}`
-						)
+	// Every open relay socket or DataChannel handle, so a crash-time shutdown
+	// can close what the bridge client no longer drives.
+	const liveRelays = new Set<{ close(): unknown }>()
+
+	// For production WhatsApp Web calls, relays require WebRTC DataChannel (SCTP-over-DTLS-over-UDP).
+	// For local test mock, plain UDP cleartext allocate is accepted.
+	let rtcProvider: Parameters<typeof sock.setRelayTransportProvider>[0] | undefined
+	if (!args.socketUrl && !args.dangerSkipCertVerify) {
+		try {
+			const { RTCPeerConnection } = await import('werift')
+			const bridge = (await import('@oxidezap/whatsapp-rust-bridge')) as {
+				createRtcRelayTransportProvider?: (
+					fingerprint?: string,
+					options?: { RTCPeerConnection?: unknown }
+				) => Parameters<typeof sock.setRelayTransportProvider>[0]
+				RELAY_DTLS_FINGERPRINT?: string
+			}
+			if (typeof bridge.createRtcRelayTransportProvider === 'function') {
+				const baseRtc = bridge.createRtcRelayTransportProvider(bridge.RELAY_DTLS_FINGERPRINT, { RTCPeerConnection })
+				rtcProvider = {
+					async createRelayConnection(params, events) {
+						console.log(`relay channel (WebRTC DataChannel DTLS+SCTP tunnel) to ${params.address}:${params.port}`)
+						const handle = await baseRtc.createRelayConnection(params, events)
+						liveRelays.add(handle)
+						return {
+							send: (data: Uint8Array) => handle.send(data),
+							close: async () => {
+								liveRelays.delete(handle)
+								await handle.close()
+							}
+						}
 					}
 				}
 			}
-			// Reachability ping on the same socket the Allocate leaves from,
-			// so the verdict covers the real NAT mapping, not a fresh one.
-			// A STUN binding request the relay answers proves UDP flows both
-			// ways; silence here followed by relay-allocate-timed-out means
-			// the network drops it, not the engine. The reply is consumed,
-			// never forwarded: its transaction id matches nothing the core
-			// sent. Skipped for non-IP literals, which answer nothing.
-			const pingTxn = Buffer.alloc(12)
-			for (let i = 0; i < pingTxn.length; i++) pingTxn[i] = Math.floor(Math.random() * 256)
-			let pingSettled = false
-			const isPingReply = (message: Buffer): boolean =>
-				message.length >= 20 &&
-				message.readUInt16BE(0) === 0x0101 &&
-				message.readUInt32BE(4) === 0x2112a442 &&
-				message.subarray(8, 20).equals(pingTxn)
-			const pingTimer = setTimeout(() => {
-				if (pingSettled) return
-				pingSettled = true
-				console.log(
-					`no STUN reply from relay ${params.address}:${params.port} within 2s; if allocate times out next, UDP to the relay is blocked on this network`
-				)
-			}, 2000)
-			pingTimer.unref()
-			const ping = Buffer.alloc(20)
-			ping.writeUInt16BE(0x0001, 0)
-			ping.writeUInt16BE(0, 2)
-			ping.writeUInt32BE(0x2112a442, 4)
-			pingTxn.copy(ping, 8)
-			await new Promise<void>((resolve, reject) => {
-				socket.once('error', reject)
-				socket.bind(0, () => {
-					// Off on success: a leftover one-shot would swallow the
-					// first operational error as a no-op reject instead of
-					// reporting the relay closed.
-					socket.off('error', reject)
-					resolve()
-				})
-			})
-			let opened = false
-			let finished = false
-			const finish = (reason?: string): void => {
-				if (finished) return
-				finished = true
-				liveRelays.delete(socket)
-				try {
-					events.onClose(reason)
-				} catch {
-					// The bridge is already gone; nothing left to tell.
-				}
-			}
-			socket.on('message', (message: Buffer) => {
-				if (!pingSettled && isPingReply(message)) {
-					pingSettled = true
-					clearTimeout(pingTimer)
-					console.log(`relay STUN reachable at ${params.address}:${params.port}`)
-					return
-				}
-				traceStun('in', stunIn, message)
-				if (!opened) {
-					opened = true
-					events.onOpen()
-				}
-				events.onPacket(new Uint8Array(message))
-			})
-			socket.on('error', () => finish('udp socket error'))
-			socket.on('close', () => finish())
-			queueMicrotask(() => {
-				if (!opened) {
-					opened = true
-					events.onOpen()
-				}
-			})
-			socket.send(ping, params.port, params.address, err => {
-				if (err) console.error(`relay STUN ping to ${params.address}:${params.port} failed:`, err.message)
-			})
-			return {
-				send: data => {
-					traceStun('out', stunOut, data)
-					socket.send(data, params.port, params.address, err => {
-						if (err) console.error(`relay send to ${params.address}:${params.port} failed:`, err.message)
-					})
-				},
-				close: async () => {
-					liveRelays.delete(socket)
-					socket.close()
-				}
-			}
+		} catch (err) {
+			console.warn('werift WebRTC provider not available, falling back to raw UDP:', (err as Error).message)
 		}
-	})
+	}
+
+	if (rtcProvider) {
+		await sock.setRelayTransportProvider(rtcProvider)
+	} else {
+		await sock.setRelayTransportProvider({
+			async createRelayConnection(params, events) {
+				// Host and port only, never credentials: this line tells the
+				// next transcript which relay the allocate went to, which is
+				// what a relay-allocate-timed-out needs after it.
+				console.log(`relay channel (cleartext UDP fallback) to ${params.address}:${params.port}`)
+				const socket = dgram.createSocket('udp4')
+				liveRelays.add(socket)
+				const stunOut = new Map<string, number>()
+				const stunIn = new Map<string, number>()
+				const traceStun = (direction: string, counts: Map<string, number>, message: Uint8Array): void => {
+					const name = classifyStunPacket(message)
+					if (name === undefined) return
+					const total = (counts.get(name) ?? 0) + 1
+					counts.set(name, total)
+					if (total === 1 || total % 10 === 0) console.log(`relay ${direction} ${name} x${total}`)
+					// Shape only, never values: a tokenless or integrity-less
+					// allocate is one the relay drops silently, which reads
+					// exactly like a network failure without this line. The
+					// endpoint check beside it catches the allocate naming a
+					// different relay than the channel talks to.
+					if (direction === 'out' && name === 'allocate request' && total === 1) {
+						const shape = describeStunAllocate(message)
+						console.log('allocate shape:', JSON.stringify(shape))
+						if (shape && (shape.endpointIp !== params.address || shape.endpointPort !== params.port)) {
+							console.log(
+								`allocate endpoint mismatch: names ${shape.endpointIp ?? 'n/a'}:${shape.endpointPort ?? 'n/a'} but the channel talks to ${params.address}:${params.port}`
+							)
+						}
+					}
+				}
+				// Reachability ping on the same socket the Allocate leaves from,
+				// so the verdict covers the real NAT mapping, not a fresh one.
+				// A STUN binding request the relay answers proves UDP flows both
+				// ways; silence here followed by relay-allocate-timed-out means
+				// the network drops it, not the engine. The reply is consumed,
+				// never forwarded: its transaction id matches nothing the core
+				// sent. Skipped for non-IP literals, which answer nothing.
+				const pingTxn = Buffer.alloc(12)
+				for (let i = 0; i < pingTxn.length; i++) pingTxn[i] = Math.floor(Math.random() * 256)
+				let pingSettled = false
+				const isPingReply = (message: Buffer): boolean =>
+					message.length >= 20 &&
+					message.readUInt16BE(0) === 0x0101 &&
+					message.readUInt32BE(4) === 0x2112a442 &&
+					message.subarray(8, 20).equals(pingTxn)
+				const pingTimer = setTimeout(() => {
+					if (pingSettled) return
+					pingSettled = true
+					console.log(
+						`no STUN reply from relay ${params.address}:${params.port} within 2s; if allocate times out next, UDP to the relay is blocked on this network`
+					)
+				}, 2000)
+				pingTimer.unref()
+				const ping = Buffer.alloc(20)
+				ping.writeUInt16BE(0x0001, 0)
+				ping.writeUInt16BE(0, 2)
+				ping.writeUInt32BE(0x2112a442, 4)
+				pingTxn.copy(ping, 8)
+				await new Promise<void>((resolve, reject) => {
+					socket.once('error', reject)
+					socket.bind(0, () => {
+						// Off on success: a leftover one-shot would swallow the
+						// first operational error as a no-op reject instead of
+						// reporting the relay closed.
+						socket.off('error', reject)
+						resolve()
+					})
+				})
+				let opened = false
+				let finished = false
+				const finish = (reason?: string): void => {
+					if (finished) return
+					finished = true
+					liveRelays.delete(socket)
+					try {
+						events.onClose(reason)
+					} catch {
+						// The bridge is already gone; nothing left to tell.
+					}
+				}
+				socket.on('message', (message: Buffer) => {
+					if (!pingSettled && isPingReply(message)) {
+						pingSettled = true
+						clearTimeout(pingTimer)
+						console.log(`relay STUN reachable at ${params.address}:${params.port}`)
+						return
+					}
+					traceStun('in', stunIn, message)
+					if (!opened) {
+						opened = true
+						events.onOpen()
+					}
+					events.onPacket(new Uint8Array(message))
+				})
+				socket.on('error', () => finish('udp socket error'))
+				socket.on('close', () => finish())
+				queueMicrotask(() => {
+					if (!opened) {
+						opened = true
+						events.onOpen()
+					}
+				})
+				socket.send(ping, params.port, params.address, err => {
+					if (err) console.error(`relay STUN ping to ${params.address}:${params.port} failed:`, err.message)
+				})
+				return {
+					send: data => {
+						traceStun('out', stunOut, data)
+						socket.send(data, params.port, params.address, err => {
+							if (err) console.error(`relay send to ${params.address}:${params.port} failed:`, err.message)
+						})
+					},
+					close: async () => {
+						liveRelays.delete(socket)
+						socket.close()
+					}
+				}
+			}
+		})
+	}
 
 	await connected
 	console.log('connected as', sock.user?.id)
@@ -858,9 +897,13 @@ const main = async (): Promise<void> => {
 		// consent pings. A timeout here with ping/pong flowing is that gap,
 		// not the network, and only the tunnel (bridge lane) closes it.
 		if (event.kind === 'relay-allocate-timed-out') {
-			console.log(
-				'media never came up: the allocate went unanswered. Production relays expect it inside the DTLS+SCTP tunnel; this pipe has none.'
-			)
+			if (rtcProvider) {
+				console.log('media never came up: the allocate went unanswered inside the DTLS+SCTP tunnel.')
+			} else {
+				console.log(
+					'media never came up: the allocate went unanswered. Production relays expect it inside the DTLS+SCTP tunnel; this pipe has none.'
+				)
+			}
 		}
 		if (event.kind === 'audio-codec-switched') console.log(`codec ${event.from} -> ${event.to}`)
 		if (event.kind === 'video-upgrade-requested')
