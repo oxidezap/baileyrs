@@ -48,6 +48,7 @@ import process from 'node:process'
 import readline from 'node:readline'
 import {
 	classifyStunPacket,
+	depacketizeOpusFromMlow,
 	describeStunAllocate,
 	fetchLatestWaWebVersion,
 	makeSilenceCallAudioSource,
@@ -213,7 +214,10 @@ export const getOpusSamples48k = (packet: Uint8Array): number => {
 }
 
 /** Wrap bare Opus packets in Ogg pages for ffplay's stdin. */
-export const muxOggOpus = (): { headerPages(): Uint8Array[]; page(packet: Uint8Array): Uint8Array } => {
+export const muxOggOpus = (): {
+	headerPages(): Uint8Array[]
+	page(packet: Uint8Array, gapSamples48k?: number): Uint8Array
+} => {
 	const serial = (Math.random() * 0xffffffff) >>> 0
 	let sequence = 0
 	// Samples at 48 kHz, incremented by the exact duration of each Opus packet.
@@ -259,8 +263,8 @@ export const muxOggOpus = (): { headerPages(): Uint8Array[]; page(packet: Uint8A
 			const second = framePage(tags, 0, 0x00)
 			return [first, second]
 		},
-		page(packet: Uint8Array): Uint8Array {
-			granule += getOpusSamples48k(packet)
+		page(packet: Uint8Array, gapSamples48k = 0): Uint8Array {
+			granule += gapSamples48k + getOpusSamples48k(packet)
 			return framePage(packet, granule, 0x00)
 		}
 	}
@@ -421,27 +425,113 @@ const spawnVideoEncoder = (source: string): ChildProcess => {
 	return ffmpeg
 }
 
+const seqDiff = (a: number, b: number): number => {
+	const diff = (a - b) & 0xffff
+	return diff > 0x7fff ? diff - 0x10000 : diff
+}
+
+interface AudioJitterBufferOptions {
+	preRoll: number
+	maxDelay: number
+	onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
+}
+
+/**
+ * Playout jitter buffer and RTP sequence reorderer.
+ * Smooths out network inter-arrival jitter, re-orders datagrams delivered out-of-order,
+ * and advances the timeline when packets are lost so Ogg Opus PLC can interpolate cleanly.
+ */
+class AudioJitterBuffer {
+	private readonly preRoll: number
+	private readonly maxDelay: number
+	private readonly onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
+	private readonly buffer: CallAudioFrame[] = []
+	private expectedSeq: number | null = null
+	private primed = false
+
+	constructor(options: AudioJitterBufferOptions) {
+		this.preRoll = options.preRoll
+		this.maxDelay = options.maxDelay
+		this.onPacket = options.onPacket
+	}
+
+	push(frame: CallAudioFrame): void {
+		const seq = frame.sequenceNumber
+		if (this.expectedSeq === null) {
+			this.expectedSeq = seq
+		}
+
+		const diff = seqDiff(seq, this.expectedSeq)
+		if (diff < 0) {
+			// Stale packet that arrived after playback window passed
+			return
+		}
+
+		// Insert sorted by sequence number
+		let insertIdx = this.buffer.length
+		for (let i = 0; i < this.buffer.length; i++) {
+			const d = seqDiff(this.buffer[i]!.sequenceNumber, seq)
+			if (d === 0) return // duplicate packet
+			if (d > 0) {
+				insertIdx = i
+				break
+			}
+		}
+		this.buffer.splice(insertIdx, 0, frame)
+
+		if (!this.primed) {
+			if (this.buffer.length >= this.preRoll) {
+				this.primed = true
+				this.drain()
+			}
+			return
+		}
+
+		this.drain()
+	}
+
+	private drain(): void {
+		while (this.buffer.length > 0) {
+			const next = this.buffer[0]!
+			const diff = seqDiff(next.sequenceNumber, this.expectedSeq!)
+
+			if (diff === 0) {
+				this.buffer.shift()
+				this.expectedSeq = (this.expectedSeq! + 1) & 0xffff
+				this.onPacket(next, 0)
+			} else if (diff > 0) {
+				// Packet missing (loss or late arrival). If buffer depth reaches maxDelay,
+				// do not stall playout any longer: advance past the lost packets.
+				if (this.buffer.length >= this.maxDelay) {
+					const lostCount = diff
+					const gapSamples = lostCount * 2880
+					this.buffer.shift()
+					this.expectedSeq = (next.sequenceNumber + 1) & 0xffff
+					this.onPacket(next, gapSamples)
+				} else {
+					break
+				}
+			} else {
+				this.buffer.shift()
+			}
+		}
+	}
+
+	flush(): void {
+		while (this.buffer.length > 0) {
+			const frame = this.buffer.shift()!
+			this.onPacket(frame, 0)
+		}
+		this.expectedSeq = null
+		this.primed = false
+	}
+}
+
 /** ffplay renders muxed Ogg Opus fed on stdin. Returns a writer for pages. */
 const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 	const ffplay = spawn(
 		'ffplay',
-		[
-			'-hide_banner',
-			'-loglevel',
-			'error',
-			'-nodisp',
-			'-autoexit',
-			'-probesize',
-			'32',
-			'-analyzeduration',
-			'0',
-			'-sync',
-			'audio',
-			'-f',
-			'ogg',
-			'-i',
-			'pipe:0'
-		],
+		['-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-sync', 'audio', '-f', 'ogg', '-i', 'pipe:0'],
 		{
 			stdio: ['pipe', 'ignore', 'inherit']
 		}
@@ -774,39 +864,38 @@ const main = async (): Promise<void> => {
 	// Playback is per call, not per process: hangup stops the player, and the
 	// next ring mints a fresh Ogg stream rather than writing into a dead
 	// stdin with stale sequence state.
-	let muxFrame: ((data: Uint8Array) => void) | undefined
+	let pushAudioFrame: ((frame: CallAudioFrame) => void) | undefined
 	let stopPlaying: (() => void) | undefined
 	const startPlayback = (): void => {
 		const mux = muxOggOpus()
 		const player = spawnOpusPlayer()
 		for (const page of mux.headerPages()) player.write(page)
 
-		// Pre-roll a tiny 2-packet (120 ms) jitter buffer before streaming to ffplay stdin.
-		// Network jitter of 10-30 ms is normal over internet UDP/SCTP tunnels; having
-		// 2 frames of headroom prevents audio buffer underruns (stutter/cuts) while
-		// remaining completely imperceptible in delay (<150 ms total).
-		const JITTER_BUFFER_PRE_ROLL = 2
-		const buffer: Uint8Array[] = []
-		let primed = false
-
-		muxFrame = data => {
-			if (!primed) {
-				buffer.push(data)
-				if (buffer.length >= JITTER_BUFFER_PRE_ROLL) {
-					primed = true
-					for (const packet of buffer) {
-						player.write(mux.page(packet))
+		const jitterBuffer = new AudioJitterBuffer({
+			preRoll: 5,
+			maxDelay: 8,
+			onPacket: (frame, gapSamples) => {
+				let data = frame.data
+				if (data.length > 0 && ((data[0] ?? 0) & 0xc0) === 0xc0) {
+					try {
+						data = depacketizeOpusFromMlow(data)
+					} catch {
+						// ignore
 					}
-					buffer.length = 0
 				}
-				return
+				if (data.length <= 1 && data[0] === 0x90) {
+					player.write(mux.page(new Uint8Array(0), gapSamples + 2880))
+					return
+				}
+				player.write(mux.page(data, gapSamples))
 			}
-			player.write(mux.page(data))
-		}
+		})
+
+		pushAudioFrame = frame => jitterBuffer.push(frame)
 		stopPlaying = () => {
+			jitterBuffer.flush()
 			player.stop()
-			muxFrame = undefined
-			buffer.length = 0
+			pushAudioFrame = undefined
 		}
 	}
 	// Peer video goes to its own ffplay window, minted with the call like
@@ -1067,8 +1156,8 @@ const main = async (): Promise<void> => {
 			return
 		}
 		try {
-			// Native Opus frames are fed directly to the Ogg muxer.
-			muxFrame?.(frame.data)
+			// Native Opus frames are routed through the playout jitter buffer.
+			pushAudioFrame?.(frame)
 		} catch (err) {
 			console.error('dropping an unmuxable peer packet:', (err as Error).message)
 		}
@@ -1082,7 +1171,7 @@ const main = async (): Promise<void> => {
 		stopSink = undefined
 		stopPlaying?.()
 		stopPlaying = undefined
-		muxFrame = undefined
+		pushAudioFrame = undefined
 		// Stopped before the hangup lands: a new ring answered while endCall
 		// is in flight must find a clear slot, not the dying capture.
 		stopEncoder()
