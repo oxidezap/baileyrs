@@ -48,6 +48,7 @@ import process from 'node:process'
 import readline from 'node:readline'
 import {
 	classifyStunPacket,
+	describeStunAllocate,
 	depacketizeOpusFromMlow,
 	fetchLatestWaWebVersion,
 	makeSilenceCallAudioSource,
@@ -496,6 +497,12 @@ const main = async (): Promise<void> => {
 				const total = (counts.get(name) ?? 0) + 1
 				counts.set(name, total)
 				if (total === 1 || total % 10 === 0) console.log(`relay ${direction} ${name} x${total}`)
+				// Shape only, never values: a tokenless or integrity-less
+				// allocate is one the relay drops silently, which reads
+				// exactly like a network failure without this line.
+				if (direction === 'out' && name === 'allocate request' && total === 1) {
+					console.log('allocate shape:', JSON.stringify(describeStunAllocate(message)))
+				}
 			}
 			// Reachability ping on the same socket the Allocate leaves from,
 			// so the verdict covers the real NAT mapping, not a fresh one.
