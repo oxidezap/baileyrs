@@ -902,16 +902,31 @@ const main = async (): Promise<void> => {
 	// audio playback — never into the audio Ogg stream.
 	let stopVideoSink: (() => void) | undefined
 	let stopVideoPlayer: (() => void) | undefined
+	let hasSeenInboundKeyframe = false
+	let videoActive = false
+	let pendingPeerVideoUpgrade = false
 	const startVideoPlayback = (): void => {
+		if (stopVideoSink) return
+		hasSeenInboundKeyframe = false
 		const player = spawnVideoPlayer()
+		const currentCallId = liveCallId
 		stopVideoSink = sock.onCallVideo(liveCallId!, frame => {
 			if (frame.callId !== liveCallId) return
+			if (frame.keyframe) {
+				hasSeenInboundKeyframe = true
+			} else if (!hasSeenInboundKeyframe && currentCallId) {
+				void sock.requestCallKeyframe(currentCallId, 'immediate').catch(() => {})
+			}
 			console.log(`video: ${frame.data.length}B keyframe=${frame.keyframe} orientation=${frame.orientation}`)
 			player.write(frame.data)
 		})
 		stopVideoPlayer = () => player.stop()
+		if (currentCallId) {
+			void sock.requestCallKeyframe(currentCallId, 'immediate').catch(() => {})
+		}
 	}
 	const stopVideoPlayback = (): void => {
+		hasSeenInboundKeyframe = false
 		stopVideoSink?.()
 		stopVideoSink = undefined
 		stopVideoPlayer?.()
@@ -1064,11 +1079,13 @@ const main = async (): Promise<void> => {
 		silencePump = null
 	}
 
-	// Outgoing video, started once per call when --video is set: ffmpeg
-	// emits raw Annex-B, the splitter hands one AU per push to the bridge,
-	// and the same child-scoping rules as audio apply.
+	// Outgoing video, started once per call when --video is set or when
+	// upgraded via 'v': ffmpeg emits raw Annex-B, the splitter hands one
+	// AU per push to the bridge, and the same child-scoping rules as audio apply.
 	const ensureVideoEncoder = (): void => {
-		if (videoEncoder || args.video === undefined || !liveCallId) return
+		if (videoEncoder || !liveCallId) return
+		const source = args.video ?? 'camera'
+		args.video = source
 		const callForChild = liveCallId
 		void sock
 			.openCallVideoWriter(callForChild)
@@ -1081,7 +1098,7 @@ const main = async (): Promise<void> => {
 			})
 			.catch(err => console.error('failed to open sync video writer:', (err as Error).message))
 
-		const child = spawnVideoEncoder(args.video)
+		const child = spawnVideoEncoder(source)
 		videoEncoder = child
 		const splitter = splitVideoAccessUnits()
 		child.stdout?.on('data', (chunk: Buffer) => {
@@ -1136,6 +1153,36 @@ const main = async (): Promise<void> => {
 		}
 	}
 
+	const acceptOrStartVideo = async (id: string): Promise<void> => {
+		if (pendingPeerVideoUpgrade) {
+			pendingPeerVideoUpgrade = false
+			try {
+				await sock.acceptCallVideo(id)
+				videoActive = true
+				startVideoPlayback()
+				ensureVideoEncoder()
+				console.log('🎥 peer video upgrade accepted')
+				return
+			} catch (err) {
+				console.warn('acceptCallVideo failed, falling back to startCallVideo:', (err as Error).message)
+			}
+		}
+		await sock.retryCallVideoUpgrade(id).catch(() => {})
+		await sock.startCallVideo(id)
+		videoActive = true
+		startVideoPlayback()
+		ensureVideoEncoder()
+		console.log('🎥 video started')
+	}
+
+	const stopVideo = async (id: string): Promise<void> => {
+		videoActive = false
+		stopVideoEncoder()
+		stopVideoPlayback()
+		await sock.stopCallVideo(id).catch(err => console.error('stop video failed:', (err as Error).message))
+		console.log('🎥 video stopped (downgraded to voice)')
+	}
+
 	const onFrame = (frame: CallAudioFrame): void => {
 		// Play what was negotiated, not what the example encodes: an mlow
 		// call delivers mlow grammar, and muxing that as Opus plays noise.
@@ -1167,6 +1214,8 @@ const main = async (): Promise<void> => {
 		if (!liveCallId) return
 		const id = liveCallId
 		liveCallId = undefined
+		videoActive = false
+		pendingPeerVideoUpgrade = false
 		stopSink?.()
 		stopSink = undefined
 		stopPlaying?.()
@@ -1217,10 +1266,25 @@ const main = async (): Promise<void> => {
 			}
 		}
 		if (event.kind === 'audio-codec-switched') console.log(`codec ${event.from} -> ${event.to}`)
-		if (event.kind === 'video-upgrade-requested')
-			console.log(`peer asks for video on ${event.callId} (state=${event.state ?? 'n/a'}); press v to accept`)
-		if (event.kind === 'video-state-changed' && event.callId === liveCallId)
+		if (event.kind === 'video-upgrade-requested') {
+			pendingPeerVideoUpgrade = true
+			console.log(`🎥 peer asks for video on ${event.callId} (state=${event.state ?? 'n/a'}); press v to accept`)
+			if (args.video !== undefined && liveCallId === event.callId && !videoActive) {
+				console.log('auto-accepting peer video upgrade request (--video is set)...')
+				void acceptOrStartVideo(liveCallId).catch(err =>
+					console.error('auto-accept video failed:', (err as Error).message)
+				)
+			}
+		}
+		if (event.kind === 'video-state-changed' && event.callId === liveCallId) {
 			console.log(`video state -> ${event.state ?? 'n/a'}`)
+			if (event.state === 0 && videoActive) {
+				videoActive = false
+				stopVideoEncoder()
+				stopVideoPlayback()
+				console.log('🎥 video stopped by peer (downgraded to voice)')
+			}
+		}
 		if (event.kind === 'ended' && event.callId === liveCallId) {
 			console.log('peer ended the call')
 			void hangup().then(() => {
@@ -1255,12 +1319,9 @@ const main = async (): Promise<void> => {
 			if (format === 'opus') ensureEncoder()
 			else ensureSilencePump(id)
 			startPlayback()
-			if (args.video !== undefined) {
-				// A video offer accepted straight into video, mirroring
-				// voip-cli where answering with --video starts the plane.
-				await sock.acceptCallVideo(id).catch(err => console.error('accept video failed:', (err as Error).message))
-				startVideoPlayback()
-				ensureVideoEncoder()
+			if (args.video !== undefined || call.isVideo) {
+				console.log('enabling video for answered call...')
+				await acceptOrStartVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
 			}
 			console.log('answered', id, `with ${format}`)
 		} finally {
@@ -1294,10 +1355,7 @@ const main = async (): Promise<void> => {
 		ensureEncoder()
 		startPlayback()
 		if (args.video !== undefined) {
-			await sock.retryCallVideoUpgrade(id).catch(err => console.error('video upgrade failed:', (err as Error).message))
-			await sock.startCallVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
-			startVideoPlayback()
-			ensureVideoEncoder()
+			await acceptOrStartVideo(id).catch(err => console.error('video upgrade failed:', (err as Error).message))
 		}
 		console.log('dialed', id, '- waiting for answer (q hangs up)')
 	} else {
@@ -1368,15 +1426,11 @@ const main = async (): Promise<void> => {
 		}
 		if (key?.name === 'v' && liveCallId) {
 			const id = liveCallId
-			void sock
-				.retryCallVideoUpgrade(id)
-				.then(() => sock.startCallVideo(id))
-				.then(() => {
-					startVideoPlayback()
-					ensureVideoEncoder()
-					console.log('video started')
-				})
-				.catch(err => console.error('video start failed:', (err as Error).message))
+			if (videoActive) {
+				void stopVideo(id)
+			} else {
+				void acceptOrStartVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
+			}
 		}
 		if (key?.name === 'k' && liveCallId) {
 			const id = liveCallId
