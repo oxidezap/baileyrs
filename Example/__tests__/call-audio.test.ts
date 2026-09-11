@@ -75,7 +75,9 @@ describe('muxOggOpus', () => {
 describe('splitVideoAccessUnits', () => {
 	it('splits Annex-B stream on AUD boundaries', () => {
 		const splitter = splitVideoAccessUnits()
-		const au1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0xce, 0, 0, 0, 1, 0x65, 0x88])
+		const au1 = new Uint8Array([
+			0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0xce, 0, 0, 0, 1, 0x65, 0x88
+		])
 		const au2 = new Uint8Array([0, 0, 0, 1, 9, 0x20, 0, 0, 0, 1, 0x41, 0x9a])
 		const au3 = new Uint8Array([0, 0, 0, 1, 9, 0x30])
 		const merged = new Uint8Array(au1.length + au2.length + au3.length)
