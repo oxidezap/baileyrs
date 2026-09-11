@@ -807,12 +807,20 @@ const main = async (): Promise<void> => {
 			const bridge = (await import('@oxidezap/whatsapp-rust-bridge')) as {
 				createRtcRelayTransportProvider?: (
 					fingerprint?: string,
-					options?: { RTCPeerConnection?: unknown }
+					options?: {
+						RTCPeerConnection?: unknown
+						maxBufferedAmount?: number
+						onPacketsDropped?: (count: number) => void
+					}
 				) => Parameters<typeof sock.setRelayTransportProvider>[0]
 				RELAY_DTLS_FINGERPRINT?: string
 			}
 			if (typeof bridge.createRtcRelayTransportProvider === 'function') {
-				const baseRtc = bridge.createRtcRelayTransportProvider(bridge.RELAY_DTLS_FINGERPRINT, { RTCPeerConnection })
+				const baseRtc = bridge.createRtcRelayTransportProvider(bridge.RELAY_DTLS_FINGERPRINT, {
+					RTCPeerConnection,
+					maxBufferedAmount: 256 * 1024,
+					onPacketsDropped: count => console.warn(`relay dropped ${count} packets under buffer pressure`)
+				})
 				rtcProvider = {
 					async createRelayConnection(params, events) {
 						console.log(`relay channel (WebRTC DataChannel DTLS+SCTP tunnel) to ${params.address}:${params.port}`)
@@ -1252,11 +1260,16 @@ const main = async (): Promise<void> => {
 		videoEncoder = child
 		const splitter = splitVideoAccessUnits()
 		let outboundAuCount = 0
+		let seenFirstKeyframe = false
 		child.stdout?.on('data', (chunk: Buffer) => {
 			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
 			for (const unit of splitter.push(new Uint8Array(chunk))) {
-				outboundAuCount++
 				const isKeyframe = auHasKeyframe(unit)
+				if (!seenFirstKeyframe) {
+					if (!isKeyframe) continue
+					seenFirstKeyframe = true
+				}
+				outboundAuCount++
 				if (outboundAuCount % 30 === 1 || isKeyframe) {
 					console.log(`🎥 OUT video: AU #${outboundAuCount} (${unit.length}B, keyframe=${isKeyframe})`)
 				}
