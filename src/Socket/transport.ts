@@ -27,7 +27,8 @@ const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => u
 	) as undefined | ((name: string) => unknown)
 	if (typeof builtin === 'function') {
 		try {
-			return (builtin.call(process, 'undici') as { Agent: new (options: unknown) => unknown }) ?? undefined
+			const mod = builtin.call(process, 'undici') as { Agent?: new (options: unknown) => unknown } | undefined
+			if (mod?.Agent) return mod as { Agent: new (options: unknown) => unknown }
 		} catch {
 			// Fall through to the npm copy below.
 		}
