@@ -3,7 +3,13 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"types": ["node"],
-		"rootDir": "."
+		"rootDir": ".",
+		// The example runs against the built package in lib/, which does not
+		// exist when lint runs. Map it back to source so the gate checks the
+		// current tree instead of a stale build (or nothing at all on CI).
+		"paths": {
+			"../lib/index.js": ["./src/index.ts"]
+		}
 	},
 	"include": ["Example/call.ts"]
 }
