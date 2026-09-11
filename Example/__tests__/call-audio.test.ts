@@ -73,17 +73,19 @@ describe('muxOggOpus', () => {
 })
 
 describe('splitVideoAccessUnits', () => {
-	it('splits Annex-B stream on start codes', () => {
+	it('splits Annex-B stream on AUD boundaries', () => {
 		const splitter = splitVideoAccessUnits()
-		const aud1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42])
-		const aud2 = new Uint8Array([0, 0, 0, 1, 9, 0x20])
-		const merged = new Uint8Array(aud1.length + aud2.length)
-		merged.set(aud1)
-		merged.set(aud2, aud1.length)
+		const au1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 0xce, 0, 0, 0, 1, 0x65, 0x88])
+		const au2 = new Uint8Array([0, 0, 0, 1, 9, 0x20, 0, 0, 0, 1, 0x41, 0x9a])
+		const au3 = new Uint8Array([0, 0, 0, 1, 9, 0x30])
+		const merged = new Uint8Array(au1.length + au2.length + au3.length)
+		merged.set(au1)
+		merged.set(au2, au1.length)
+		merged.set(au3, au1.length + au2.length)
 
 		const units = splitter.push(merged)
 		expect(units.length).toBe(2)
-		expect(units[0]).toEqual(new Uint8Array([0, 0, 0, 1, 9, 0x10]))
-		expect(units[1]).toEqual(new Uint8Array([0, 0, 0, 1, 0x67, 0x42]))
+		expect(units[0]).toEqual(au1)
+		expect(units[1]).toEqual(au2)
 	})
 })

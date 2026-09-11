@@ -68,8 +68,8 @@ import type { SocketContext } from './types.ts'
  * the preview client satisfies this interface at runtime.
  */
 export interface CallAudioBridgeClient {
-	acceptCall(callId: string, audioFormat: CallAudioFormat): Promise<string>
-	dialCall(peer: string, audioFormat: CallAudioFormat): Promise<string>
+	acceptCall(callId: string, audioFormat: CallAudioFormat, withVideo?: boolean): Promise<string>
+	dialCall(peer: string, audioFormat: CallAudioFormat, withVideo?: boolean): Promise<string>
 	callPushAudio(callId: string, data: Uint8Array): boolean
 	endCall(callId: string): Promise<CallEndResult>
 	setCallMuted(callId: string, muted: boolean): Promise<void>
@@ -1218,7 +1218,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * Dial a peer with encoded audio. Returns the new call id; the handle
 		 * stays dormant until the server acks the offer with a relay.
 		 */
-		dialCall: async (peerJid: string, audioFormat?: CallAudioFormat): Promise<string> => {
+		dialCall: async (peerJid: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string> => {
 			if (typeof peerJid !== 'string' || peerJid.length === 0) {
 				throw new Boom('dialCall: peerJid must be a non-empty string', { statusCode: 400 })
 			}
@@ -1227,7 +1227,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			// format as required with no default, so an omitted promise would
 			// fail there instead of meaning mlow.
 			const format = audioFormat ?? 'mlow'
-			const callId = await withAudioClient('dialCall', client => client.dialCall(peerJid, format))
+			const callId = await withAudioClient('dialCall', client => client.dialCall(peerJid, format, withVideo))
 			media.setAudioFormat(callId, format)
 			return callId
 		},
@@ -1236,11 +1236,11 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * `call` event; the bridge holds it until it is answered, superseded,
 		 * or missed.
 		 */
-		acceptCall: async (callId: string, audioFormat?: CallAudioFormat): Promise<string> => {
+		acceptCall: async (callId: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string> => {
 			assertCallId('acceptCall', callId)
 			assertArgumentDomain('acceptCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
 			const format = audioFormat ?? 'mlow'
-			const liveId = await withAudioClient('acceptCall', client => client.acceptCall(callId, format))
+			const liveId = await withAudioClient('acceptCall', client => client.acceptCall(callId, format, withVideo))
 			media.setAudioFormat(liveId, format)
 			return liveId
 		},

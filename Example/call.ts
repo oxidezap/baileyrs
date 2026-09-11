@@ -576,6 +576,7 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[] } => {
 	// Same ArrayBuffer/ArrayBufferLike annotation as the Ogg demuxer above.
 	let buffered: Uint8Array = new Uint8Array(0)
+	let seenAud = false
 	return {
 		push(bytes: Uint8Array): Uint8Array[] {
 			const merged = new Uint8Array(buffered.length + bytes.length)
@@ -584,16 +585,50 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 			buffered = merged
 			const units: Uint8Array[] = []
 			const starts: number[] = []
-			for (let i = 0; i + 4 <= buffered.length; i++) {
-				if (buffered[i] === 0 && buffered[i + 1] === 0 && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
-					starts.push(i)
+			for (let i = 0; i + 3 <= buffered.length; i++) {
+				if (buffered[i] === 0 && buffered[i + 1] === 0) {
+					let nalPos = -1
+					if (i + 4 <= buffered.length && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
+						nalPos = i + 4
+					} else if (buffered[i + 2] === 1) {
+						if (i === 0 || buffered[i - 1] !== 0) {
+							nalPos = i + 3
+						}
+					}
+					if (nalPos >= 0 && nalPos < buffered.length) {
+						const nalType = buffered[nalPos]! & 0x1f
+						if (nalType === 9) {
+							seenAud = true
+							starts.push(i)
+						}
+					}
 				}
 			}
-			if (starts.length < 2) return units
-			for (let n = 0; n + 1 < starts.length; n++) {
-				units.push(buffered.slice(starts[n]!, starts[n + 1]!))
+			if (seenAud) {
+				if (starts.length < 2) {
+					if (starts.length === 1 && starts[0]! > 0) {
+						buffered = buffered.slice(starts[0]!)
+					}
+					return units
+				}
+				for (let n = 0; n + 1 < starts.length; n++) {
+					units.push(buffered.slice(starts[n]!, starts[n + 1]!))
+				}
+				buffered = buffered.slice(starts[starts.length - 1]!)
+				return units
 			}
-			buffered = buffered.slice(starts[starts.length - 1]!)
+			// Fallback if no AUD is present: split on start codes
+			const allStarts: number[] = []
+			for (let i = 0; i + 4 <= buffered.length; i++) {
+				if (buffered[i] === 0 && buffered[i + 1] === 0 && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
+					allStarts.push(i)
+				}
+			}
+			if (allStarts.length < 2) return units
+			for (let n = 0; n + 1 < allStarts.length; n++) {
+				units.push(buffered.slice(allStarts[n]!, allStarts[n + 1]!))
+			}
+			buffered = buffered.slice(allStarts[allStarts.length - 1]!)
 			return units
 		}
 	}
@@ -1344,7 +1379,8 @@ const main = async (): Promise<void> => {
 			// captain's real call negotiated Mlow while this pushed Opus, so
 			// every packet died in the engine and the queue shed forever.
 			const format = negotiatedAudioFormat(call.audio)
-			const id = await sock.acceptCall(call.id, format)
+			const withVideo = (args.video !== undefined || call.isVideo) === true
+			const id = await sock.acceptCall(call.id, format, withVideo)
 			liveCallId = id
 			muted = false
 			mlowHeard = 0
@@ -1358,9 +1394,11 @@ const main = async (): Promise<void> => {
 			if (format === 'opus') ensureEncoder()
 			else ensureSilencePump(id)
 			startPlayback()
-			if (args.video !== undefined || call.isVideo) {
-				console.log('enabling video for answered call...')
-				await acceptOrStartVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
+			if (withVideo) {
+				videoActive = true
+				startVideoPlayback()
+				ensureVideoEncoder()
+				console.log('🎥 video started with call accept')
 			}
 			console.log('answered', id, `with ${format}`)
 		} finally {
@@ -1386,15 +1424,19 @@ const main = async (): Promise<void> => {
 		// is the only grammar ffmpeg encodes here. The peer negotiates
 		// against it and the bridge reports a mismatch instead of noise.
 		audioFormat = 'opus'
-		const id = await sock.dialCall(args.peer!, 'opus')
+		const withVideo = args.video !== undefined
+		const id = await sock.dialCall(args.peer!, 'opus', withVideo)
 		liveCallId = id
 		mlowHeard = 0
 		mismatched = 0
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
 		startPlayback()
-		if (args.video !== undefined) {
-			await acceptOrStartVideo(id).catch(err => console.error('video upgrade failed:', (err as Error).message))
+		if (withVideo) {
+			videoActive = true
+			startVideoPlayback()
+			ensureVideoEncoder()
+			console.log('🎥 video started with call dial')
 		}
 		console.log('dialed', id, '- waiting for answer (q hangs up)')
 	} else {
