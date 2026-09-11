@@ -400,19 +400,36 @@ const spawnVideoEncoder = (source: string): ChildProcess => {
 		[
 			...input,
 			'-vf',
-			'scale=1280:720',
+			'scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=20,format=yuv420p',
 			'-r',
 			'20',
 			'-c:v',
 			'libx264',
 			'-profile:v',
 			'baseline',
-			'-level',
+			'-level:v',
 			'3.1',
+			'-pix_fmt',
+			'yuv420p',
+			'-preset',
+			'veryfast',
+			'-tune',
+			'zerolatency',
+			'-g',
+			'60',
+			'-keyint_min',
+			'60',
+			'-sc_threshold',
+			'0',
 			'-b:v',
 			'1980k',
+			'-maxrate',
+			'1980k',
+			'-bufsize',
+			'495k',
 			'-x264-params',
-			'keyint=60',
+			'repeat-headers=1:sliced-threads=0:threads=1',
+			'-an',
 			'-f',
 			'h264',
 			'-aud',
@@ -590,20 +607,31 @@ const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => 
 			'-hide_banner',
 			'-loglevel',
 			'error',
+			'-window_title',
+			'WhatsApp Video Call',
+			'-avioflags',
+			'direct',
+			'-fflags',
+			'nobuffer',
+			'-flags',
+			'low_delay',
 			'-probesize',
 			'32',
 			'-analyzeduration',
 			'0',
-			'-fflags',
-			'nobuffer+fastseek+flush_packets',
-			'-flags',
-			'low_delay',
-			'-i',
-			'pipe:0',
+			'-fpsprobesize',
+			'0',
+			'-max_delay',
+			'0',
+			'-framedrop',
+			'-use_wallclock_as_timestamps',
+			'1',
 			'-f',
 			'h264',
 			'-framerate',
-			'20'
+			'20',
+			'-i',
+			'pipe:0'
 		],
 		{ stdio: ['pipe', 'ignore', 'inherit'] }
 	)
@@ -914,8 +942,11 @@ const main = async (): Promise<void> => {
 			if (frame.callId !== liveCallId) return
 			if (frame.keyframe) {
 				hasSeenInboundKeyframe = true
-			} else if (!hasSeenInboundKeyframe && currentCallId) {
-				void sock.requestCallKeyframe(currentCallId, 'immediate').catch(() => {})
+			} else if (!hasSeenInboundKeyframe) {
+				if (currentCallId) {
+					void sock.requestCallKeyframe(currentCallId, 'immediate').catch(() => {})
+				}
+				return
 			}
 			console.log(`video: ${frame.data.length}B keyframe=${frame.keyframe} orientation=${frame.orientation}`)
 			player.write(frame.data)
