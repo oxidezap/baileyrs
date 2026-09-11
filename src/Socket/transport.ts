@@ -7,23 +7,67 @@ interface TransportConfig {
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
+	/** Test-only opt-out of TLS verification, forwarded to the WS agent below. */
+	dangerSkipCertChainVerify?: boolean
 }
 
 let defaultNodeDispatcher: unknown
 
-const getDefaultDispatcher = async (): Promise<unknown> => {
-	if (defaultNodeDispatcher !== undefined) return defaultNodeDispatcher
+/**
+ * Resolve the undici module the runtime itself ships, never an npm copy. A
+ * dispatcher built from a different undici major than the global WebSocket
+ * breaks connections outright (seen as TLS errors and hangs on Node 24 with
+ * an 8.x Agent), so the transitive `import('undici')` is only a fallback
+ * for runtimes without `getBuiltinModule`, and a missing module means no
+ * dispatcher rather than a wrong one.
+ */
+const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => unknown } | undefined> => {
+	const builtin = (
+		typeof process !== 'undefined' ? (process as unknown as Record<string, unknown>).getBuiltinModule : undefined
+	) as undefined | ((name: string) => unknown)
+	if (typeof builtin === 'function') {
+		try {
+			return (builtin.call(process, 'undici') as { Agent: new (options: unknown) => unknown }) ?? undefined
+		} catch {
+			// Fall through to the npm copy below.
+		}
+	}
+	try {
+		const undici = (await import('undici')) as unknown as { Agent: new (options: unknown) => unknown }
+		return undici.Agent ? undici : undefined
+	} catch {
+		return undefined
+	}
+}
+
+const getDefaultDispatcher = async (insecure: boolean): Promise<unknown> => {
+	if (defaultNodeDispatcher !== undefined && !insecure) return defaultNodeDispatcher
 	try {
 		// Node 22+ enables experimental WebSocket-over-HTTP/2 by default.
 		// web.whatsapp.com does not support RFC 8441, so HTTP/2 handshakes
-		// fail immediately with 400. Use an undici Agent with allowH2: false
+		// fail immediately with 400. Use an Agent with allowH2: false
 		// unless the caller supplied their own dispatcher.
-		const undici = await import('undici')
-		defaultNodeDispatcher = new undici.Agent({ allowH2: false })
+		const undici = await loadRuntimeUndici()
+		if (!undici) {
+			if (!insecure) defaultNodeDispatcher = null
+			return null
+		}
+		// An undici Agent ignores NODE_TLS_REJECT_UNAUTHORIZED, which the
+		// plain WebSocket path honoured: without this, pointing a socket at
+		// a self-signed mock breaks the moment a dispatcher is set.
+		const agent = new undici.Agent({
+			allowH2: false,
+			...(insecure ? { connect: { rejectUnauthorized: false } } : {})
+		})
+		// The insecure shape depends on the caller, so only the shared
+		// secure one is cached: caching it would hand one test's opt-out
+		// to every later socket in the process.
+		if (!insecure) defaultNodeDispatcher = agent
+		return agent
 	} catch {
-		defaultNodeDispatcher = null
+		if (!insecure) defaultNodeDispatcher = null
+		return null
 	}
-	return defaultNodeDispatcher
 }
 
 /**
@@ -68,7 +112,11 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 
 			const wsOptions: Record<string, unknown> = {}
 			if (typeof process !== 'undefined' && process.versions?.node) {
-				const dispatcher = config.options?.dispatcher ?? (await getDefaultDispatcher())
+				// Test-only paths (self-signed mock, NODE_TLS_REJECT_UNAUTHORIZED)
+				// need the opt-out on the agent itself; callers keep passing
+				// their own dispatcher first.
+				const insecure = config.dangerSkipCertChainVerify === true || process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0'
+				const dispatcher = config.options?.dispatcher ?? (await getDefaultDispatcher(insecure))
 				if (dispatcher) wsOptions.dispatcher = dispatcher
 				wsOptions.headers = {
 					Origin: DEFAULT_ORIGIN,
