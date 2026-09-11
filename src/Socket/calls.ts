@@ -170,11 +170,14 @@ const assertCallId = (method: string, callId: string): void => {
 	}
 }
 
-const assertAudioPacket = (method: string, data: Uint8Array): void => {
+const assertNonEmptyPacket = (method: string, data: Uint8Array, detail?: string): void => {
 	if (!(data instanceof Uint8Array) || data.length === 0) {
-		throw new Boom(`${method}: data must be a non-empty Uint8Array`, { statusCode: 400 })
+		const suffix = detail ? ` (${detail})` : ''
+		throw new Boom(`${method}: data must be a non-empty Uint8Array${suffix}`, { statusCode: 400 })
 	}
 }
+
+const assertAudioPacket = (method: string, data: Uint8Array): void => assertNonEmptyPacket(method, data)
 
 /**
  * Fail a declared-format push against the call's negotiated promise. Only a
@@ -209,13 +212,8 @@ export const normalizeCallEndResult = (raw: unknown): CallEndResult => {
 	return raw as CallEndResult
 }
 
-const assertVideoPacket = (method: string, data: Uint8Array): void => {
-	if (!(data instanceof Uint8Array) || data.length === 0) {
-		throw new Boom(`${method}: data must be a non-empty Uint8Array (one Annex-B H.264 access unit)`, {
-			statusCode: 400
-		})
-	}
-}
+const assertVideoPacket = (method: string, data: Uint8Array): void =>
+	assertNonEmptyPacket(method, data, 'one Annex-B H.264 access unit')
 
 /**
  * Sleep between source packets without keeping the process alive for a call
@@ -250,72 +248,54 @@ const STAT_FIELDS = [
 	'codecSwitches'
 ] as const satisfies readonly (keyof CallMediaStats)[]
 
+const normalizeNumericRecord = <T extends Record<string, number>>(
+	method: string,
+	entityName: string,
+	raw: unknown,
+	requiredFields: readonly (keyof T)[],
+	optionalFields: readonly (keyof T)[] = []
+): T => {
+	if (typeof raw !== 'object' || raw === null) {
+		throw new Boom(`${method}: bridge returned no ${entityName} object`, { statusCode: 500 })
+	}
+	const record = raw as Record<string, unknown>
+	const result = {} as Record<string, number>
+	for (const field of requiredFields as readonly string[]) {
+		const value = record[field]
+		if (typeof value !== 'number' || !Number.isFinite(value)) {
+			throw new Boom(`${method}: bridge ${entityName} field ${field} is not a number`, { statusCode: 500 })
+		}
+		result[field] = value
+	}
+	for (const field of optionalFields as readonly string[]) {
+		const value = record[field]
+		if (value === undefined) continue
+		if (typeof value !== 'number' || !Number.isFinite(value)) {
+			throw new Boom(`${method}: bridge ${entityName} field ${field} is not a number`, { statusCode: 500 })
+		}
+		result[field] = value
+	}
+	return result as T
+}
+
+const VIDEO_DIAGNOSTIC_FIELDS = ['selfState', 'peerState', 'upgradeTimeoutMs'] as const
+
 /** Read the core's direction-local video state and timeout contract. Numeric
  * states only: a bridge shape advertising anything else fails rather than
  * forwarding it into the typed diagnostics. */
-const normalizeCallVideoDiagnostics = (method: string, raw: unknown): CallVideoDiagnostics => {
-	if (typeof raw !== 'object' || raw === null) {
-		throw new Boom(`${method}: bridge returned no video diagnostics object`, { statusCode: 500 })
-	}
-	const record = raw as Record<string, unknown>
-	const checkVideoDiagnosticField = (field: 'selfState' | 'peerState' | 'upgradeTimeoutMs'): number => {
-		const value = record[field]
-		if (typeof value !== 'number' || !Number.isFinite(value)) {
-			throw new Boom(`${method}: bridge video diagnostics field ${field} is not a number`, { statusCode: 500 })
-		}
-		return value
-	}
-	return {
-		selfState: checkVideoDiagnosticField('selfState'),
-		peerState: checkVideoDiagnosticField('peerState'),
-		upgradeTimeoutMs: checkVideoDiagnosticField('upgradeTimeoutMs')
-	}
-}
+const normalizeCallVideoDiagnostics = (method: string, raw: unknown): CallVideoDiagnostics =>
+	normalizeNumericRecord<CallVideoDiagnostics>(method, 'video diagnostics', raw, VIDEO_DIAGNOSTIC_FIELDS)
 
 /** Reject a stats object the bridge shaped unexpectedly instead of forwarding NaNs. */
-const normalizeCallMediaStats = (method: string, raw: unknown): CallMediaStats => {
-	if (typeof raw !== 'object' || raw === null) {
-		throw new Boom(`${method}: bridge returned no media stats object`, { statusCode: 500 })
-	}
-	const record = raw as Record<string, unknown>
-	const stats = {} as Record<string, number>
-	for (const field of STAT_FIELDS) {
-		const value = record[field]
-		if (typeof value !== 'number' || !Number.isFinite(value)) {
-			throw new Boom(`${method}: bridge media stats field ${field} is not a number`, { statusCode: 500 })
-		}
-		stats[field] = value
-	}
-	return stats as CallMediaStats
-}
+const normalizeCallMediaStats = (method: string, raw: unknown): CallMediaStats =>
+	normalizeNumericRecord<CallMediaStats>(method, 'media stats', raw, STAT_FIELDS)
 
 const BUFFER_FIELDS = ['outboundQueued', 'outboundCapacity', 'inboundQueued', 'inboundCapacity'] as const
 const OPTIONAL_BUFFER_FIELDS = ['videoOutboundQueued', 'videoInboundQueued'] as const
 
 /** Same strictness as the stats above: required depths numeric, video depths numeric when present. */
-const normalizeCallAudioBuffer = (method: string, raw: unknown): CallAudioBuffer => {
-	if (typeof raw !== 'object' || raw === null) {
-		throw new Boom(`${method}: bridge returned no audio buffer object`, { statusCode: 500 })
-	}
-	const record = raw as Record<string, unknown>
-	const buffer = {} as Record<string, number>
-	for (const field of BUFFER_FIELDS) {
-		const value = record[field]
-		if (typeof value !== 'number' || !Number.isFinite(value)) {
-			throw new Boom(`${method}: bridge audio buffer field ${field} is not a number`, { statusCode: 500 })
-		}
-		buffer[field] = value
-	}
-	for (const field of OPTIONAL_BUFFER_FIELDS) {
-		const value = record[field]
-		if (value === undefined) continue
-		if (typeof value !== 'number' || !Number.isFinite(value)) {
-			throw new Boom(`${method}: bridge audio buffer field ${field} is not a number`, { statusCode: 500 })
-		}
-		buffer[field] = value
-	}
-	return buffer as CallAudioBuffer
-}
+const normalizeCallAudioBuffer = (method: string, raw: unknown): CallAudioBuffer =>
+	normalizeNumericRecord<CallAudioBuffer>(method, 'audio buffer', raw, BUFFER_FIELDS, OPTIONAL_BUFFER_FIELDS)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Media router: bridge callbacks in, per-call sinks and socket events out
@@ -366,17 +346,18 @@ export interface CallMediaRouter {
 	drainAll(): Promise<void>
 }
 
+const isIntegerInRange = (value: unknown, min: number, max: number): boolean =>
+	typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+
 const isVideoFrame = (frame: unknown): frame is CallVideoFrame => {
 	if (typeof frame !== 'object' || frame === null) return false
 	const record = frame as Record<string, unknown>
-	const inRange = (value: unknown, min: number, max: number): boolean =>
-		typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
 	return (
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
 		typeof record.keyframe === 'boolean' &&
-		inRange(record.orientation, 0, 3) &&
-		inRange(record.timestamp, 0, 4294967295)
+		isIntegerInRange(record.orientation, 0, 3) &&
+		isIntegerInRange(record.timestamp, 0, 4294967295)
 	)
 }
 
@@ -387,15 +368,13 @@ const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 	// object must not reach typed sinks with undefined fields. The RTP
 	// metadata must be finite integers in protocol range — NaN, Infinity and
 	// out-of-range values are malformed, not audio.
-	const inRange = (value: unknown, min: number, max: number): boolean =>
-		typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
 	return (
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
 		(record.codec === 'mlow' || record.codec === 'opus') &&
-		inRange(record.payloadType, 0, 127) &&
-		inRange(record.sequenceNumber, 0, 65535) &&
-		inRange(record.timestamp, 0, 4294967295) &&
+		isIntegerInRange(record.payloadType, 0, 127) &&
+		isIntegerInRange(record.sequenceNumber, 0, 65535) &&
+		isIntegerInRange(record.timestamp, 0, 4294967295) &&
 		typeof record.marker === 'boolean'
 	)
 }
@@ -444,8 +423,63 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 }
 
 export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRouterDeps): CallMediaRouter => {
-	const sinks = new Map<string, Set<CallAudioSink>>()
-	const videoSinks = new Map<string, Set<CallVideoSink>>()
+	const makeSinkRegistry = <TFrame extends { callId: string }>(
+		mediaName: string,
+		isFrame: (frame: unknown) => frame is TFrame
+	) => {
+		const sinks = new Map<string, Set<(frame: TFrame) => void>>()
+		return {
+			add(callId: string, sink: (frame: TFrame) => void): () => void {
+				let set = sinks.get(callId)
+				if (!set) {
+					set = new Set()
+					sinks.set(callId, set)
+				}
+				set.add(sink)
+				return () => {
+					const live = sinks.get(callId)
+					if (!live) return
+					live.delete(sink)
+					if (live.size === 0) sinks.delete(callId)
+				}
+			},
+			route(frame: unknown): void {
+				if (!isFrame(frame)) {
+					reportError(
+						new Error(`bridge delivered a malformed call ${mediaName} frame`),
+						`call ${mediaName} frame dropped`
+					)
+					return
+				}
+				const live = sinks.get(frame.callId)
+				if (!live) return
+				// The frame object is handed through, never re-wrapped: the bridge
+				// already copied the encoded bytes out of linear memory once, so
+				// what arrives here is an owned buffer, not a borrowed view. It is
+				// shared between the call's sinks — do not modify it; copy only
+				// to mutate or hand ownership elsewhere.
+				// Snapshot: a sink may register another sink while handling a frame,
+				// and a live Set iterator would visit the newcomer in this same loop.
+				const snapshot = Array.from(live)
+				for (const sink of snapshot) {
+					try {
+						sink(frame)
+					} catch (err) {
+						reportError(err, `call ${mediaName} sink for ${frame.callId}`)
+					}
+				}
+			},
+			delete(callId: string): void {
+				sinks.delete(callId)
+			},
+			clear(): void {
+				sinks.clear()
+			}
+		}
+	}
+
+	const audioSinks = makeSinkRegistry<CallAudioFrame>('audio', isAudioFrame)
+	const videoSinks = makeSinkRegistry<CallVideoFrame>('video', isVideoFrame)
 	const pumps = new Map<string, Set<TrackedCallPump>>()
 	// The audio promise per live call, recorded on accept/dial: the bridge
 	// takes the format once and every later push is opaque bytes, so this is
@@ -500,7 +534,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				settleEntry(entry)
 			}
 		}
-		sinks.delete(callId)
+		audioSinks.delete(callId)
 		videoSinks.delete(callId)
 		audioFormats.delete(callId)
 	}
@@ -522,7 +556,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				settleEntry(entry)
 			}
 		}
-		sinks.clear()
+		audioSinks.clear()
 		videoSinks.clear()
 		audioFormats.clear()
 	}
@@ -534,75 +568,10 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		getAudioFormat(callId) {
 			return audioFormats.get(callId)
 		},
-		addAudioSink(callId, sink) {
-			let set = sinks.get(callId)
-			if (!set) {
-				set = new Set()
-				sinks.set(callId, set)
-			}
-			set.add(sink)
-			return () => {
-				const live = sinks.get(callId)
-				if (!live) return
-				live.delete(sink)
-				if (live.size === 0) sinks.delete(callId)
-			}
-		},
-		addVideoSink(callId, sink) {
-			let set = videoSinks.get(callId)
-			if (!set) {
-				set = new Set()
-				videoSinks.set(callId, set)
-			}
-			set.add(sink)
-			return () => {
-				const live = videoSinks.get(callId)
-				if (!live) return
-				live.delete(sink)
-				if (live.size === 0) videoSinks.delete(callId)
-			}
-		},
-		routeAudioFrame(frame) {
-			if (!isAudioFrame(frame)) {
-				reportError(new Error('bridge delivered a malformed call audio frame'), 'call audio frame dropped')
-				return
-			}
-			const live = sinks.get(frame.callId)
-			if (!live) return
-			// The frame object is handed through, never re-wrapped: the bridge
-			// already copied the encoded bytes out of linear memory once, so
-			// what arrives here is an owned buffer, not a borrowed view. It is
-			// shared between the call's sinks — do not modify it; copy only
-			// to mutate or hand ownership elsewhere.
-			// Snapshot: a sink may register another sink while handling a frame,
-			// and a live Set iterator would visit the newcomer in this same loop.
-			const snapshot = Array.from(live)
-			for (const sink of snapshot) {
-				try {
-					sink(frame)
-				} catch (err) {
-					reportError(err, `call audio sink for ${frame.callId}`)
-				}
-			}
-		},
-		routeVideoFrame(frame) {
-			if (!isVideoFrame(frame)) {
-				reportError(new Error('bridge delivered a malformed call video frame'), 'call video frame dropped')
-				return
-			}
-			const live = videoSinks.get(frame.callId)
-			if (!live) return
-			// Same ownership contract as audio: one owned buffer per access
-			// unit, shared between the call's sinks, snapshotted iteration.
-			const snapshot = Array.from(live)
-			for (const sink of snapshot) {
-				try {
-					sink(frame)
-				} catch (err) {
-					reportError(err, `call video sink for ${frame.callId}`)
-				}
-			}
-		},
+		addAudioSink: audioSinks.add,
+		addVideoSink: videoSinks.add,
+		routeAudioFrame: audioSinks.route,
+		routeVideoFrame: videoSinks.route,
 		routeMediaEvent(event) {
 			if (!isMediaEvent(event)) {
 				reportError(new Error('bridge delivered a malformed call media event'), 'call media event dropped')
@@ -1196,6 +1165,54 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		operation: (client: CallAudioBridgeClient) => T | Promise<T>
 	): Promise<T> => ctx.withClient(client => operation(asCallAudioClient(client, bridgeMethod)))
 
+	const openWriter = async <TWriter>(
+		method: string,
+		callId: string,
+		requiredClientMethod: keyof CallAudioBridgeClient,
+		buildWriter: (client: CallAudioBridgeClient, isClosed: () => boolean, close: () => void) => TWriter
+	): Promise<TWriter> => {
+		assertCallId(method, callId)
+		const client = await ctx.withClient(c => asCallAudioClient(c, requiredClientMethod))
+		// Same admission race as the pump: a writer registered after the
+		// teardown drain would push into a closing client.
+		if (ctx.isClosing?.() ?? false) {
+			throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+		}
+		let closed = false
+		const invalidate = (): void => {
+			closed = true
+		}
+		media.trackPump(callId, invalidate)
+		const close = (): void => {
+			if (closed) return
+			closed = true
+			media.untrackPump(callId, invalidate)
+		}
+		return buildWriter(client, () => closed, close)
+	}
+
+	const callAudioMethod = (
+		method: keyof CallAudioBridgeClient,
+		callId: string,
+		action: (client: CallAudioBridgeClient) => Promise<void> | void
+	): Promise<void> => {
+		assertCallId(method, callId)
+		return withAudioClient(method, action)
+	}
+
+	const registerSink = <TSink extends Function>(
+		method: string,
+		callId: string,
+		sink: TSink,
+		add: (callId: string, sink: TSink) => () => void
+	): (() => void) => {
+		assertCallId(method, callId)
+		if (typeof sink !== 'function') {
+			throw new Boom(`${method}: sink must be a function`, { statusCode: 400 })
+		}
+		return add(callId, sink)
+	}
+
 	return {
 		/**
 		 * Dial a peer with encoded audio. Returns the new call id; the handle
@@ -1275,74 +1292,41 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 				.finally(() => media.stopCall(callId))
 		},
 		/**
+
 		 * Acquire a sync writer for one live call, for encoders and capture
 		 * paths that push outside the pump. The client resolves once here;
 		 * every `tryWrite` after that is a synchronous bridge call with no
 		 * async hop. Invalidated by `close`, by `ended`, and by teardown —
 		 * ahead of the client being freed, on the same tracking pumps use.
 		 */
-		openCallAudioWriter: async (callId: string): Promise<CallAudioWriter> => {
-			assertCallId('openCallAudioWriter', callId)
-			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
-			// Same admission race as the pump: a writer registered after the
-			// teardown drain would push into a closing client.
-			if (ctx.isClosing?.() ?? false) {
-				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
-			}
-			let closed = false
-			const invalidate = (): void => {
-				closed = true
-			}
-			media.trackPump(callId, invalidate)
-			return {
+		openCallAudioWriter: (callId: string): Promise<CallAudioWriter> =>
+			openWriter('openCallAudioWriter', callId, 'callPushAudio', (client, isClosed, close) => ({
 				tryWrite: (packet, audioFormat) => {
 					assertAudioPacket('tryWrite', packet)
 					assertArgumentDomain('tryWrite', 'audioFormat', audioFormat, AUDIO_FORMATS)
 					assertPushFormat('tryWrite', media, callId, audioFormat)
-					if (closed) return false
+					if (isClosed()) return false
 					return client.callPushAudio(callId, packet)
 				},
-				close: () => {
-					if (closed) return
-					closed = true
-					media.untrackPump(callId, invalidate)
-				}
-			}
-		},
+				close
+			})),
 		/**
 		 * Acquire a sync writer for H.264 access units, same contract as the
 		 * audio writer: client resolved once, synchronous pushes after that,
 		 * invalidated by close, `ended` and teardown.
 		 */
-		openCallVideoWriter: async (callId: string): Promise<CallVideoWriter> => {
-			assertCallId('openCallVideoWriter', callId)
-			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushVideo'))
-			if (ctx.isClosing?.() ?? false) {
-				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
-			}
-			let closed = false
-			const invalidate = (): void => {
-				closed = true
-			}
-			media.trackPump(callId, invalidate)
-			return {
+		openCallVideoWriter: (callId: string): Promise<CallVideoWriter> =>
+			openWriter('openCallVideoWriter', callId, 'callPushVideo', (client, isClosed, close) => ({
 				tryWrite: packet => {
 					assertVideoPacket('tryWrite', packet)
-					if (closed) return false
+					if (isClosed()) return false
 					return client.callPushVideo(callId, packet)
 				},
-				close: () => {
-					if (closed) return
-					closed = true
-					media.untrackPump(callId, invalidate)
-				}
-			}
-		},
+				close
+			})),
 		/** Mute or unmute the mic on a live call. */
-		setCallMuted: (callId: string, muted: boolean): Promise<void> => {
-			assertCallId('setCallMuted', callId)
-			return withAudioClient('setCallMuted', client => client.setCallMuted(callId, muted))
-		},
+		setCallMuted: (callId: string, muted: boolean): Promise<void> =>
+			callAudioMethod('setCallMuted', callId, client => client.setCallMuted(callId, muted)),
 		/** Media counters for one call; readable after the call ends. */
 		getCallMediaStats: (callId: string): Promise<CallMediaStats> => {
 			assertCallId('getCallMediaStats', callId)
@@ -1379,36 +1363,26 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * endpoints and offers the upgrade to the peer. Pure encoded H.264
 		 * Annex-B — the bridge never touches pixels.
 		 */
-		startCallVideo: (callId: string): Promise<void> => {
-			assertCallId('startCallVideo', callId)
-			return withAudioClient('startCallVideo', client => client.startCallVideo(callId))
-		},
+		startCallVideo: (callId: string): Promise<void> =>
+			callAudioMethod('startCallVideo', callId, client => client.startCallVideo(callId)),
 		/** Stop our video direction. Audio is untouched; idempotent. */
-		stopCallVideo: (callId: string): Promise<void> => {
-			assertCallId('stopCallVideo', callId)
-			return withAudioClient('stopCallVideo', client => client.stopCallVideo(callId))
-		},
+		stopCallVideo: (callId: string): Promise<void> =>
+			callAudioMethod('stopCallVideo', callId, client => client.stopCallVideo(callId)),
 		/**
 		 * Accept the peer's video upgrade request: attaches the endpoints
 		 * and answers the handshake. The request token never crosses to JS.
 		 */
-		acceptCallVideo: (callId: string): Promise<void> => {
-			assertCallId('acceptCallVideo', callId)
-			return withAudioClient('acceptCallVideo', client => client.acceptCallVideo(callId))
-		},
+		acceptCallVideo: (callId: string): Promise<void> =>
+			callAudioMethod('acceptCallVideo', callId, client => client.acceptCallVideo(callId)),
 		/** Re-add our stopped video direction without a second handshake. */
-		resumeCallVideo: (callId: string): Promise<void> => {
-			assertCallId('resumeCallVideo', callId)
-			return withAudioClient('resumeCallVideo', client => client.resumeCallVideo(callId))
-		},
+		resumeCallVideo: (callId: string): Promise<void> =>
+			callAudioMethod('resumeCallVideo', callId, client => client.resumeCallVideo(callId)),
 		/**
 		 * Re-emit the video upgrade request for a live call. Arms the
 		 * direction-local timeout and leaves the endpoints attached.
 		 */
-		retryCallVideoUpgrade: (callId: string): Promise<void> => {
-			assertCallId('retryCallVideoUpgrade', callId)
-			return withAudioClient('retryCallVideoUpgrade', client => client.retryCallVideoUpgrade(callId))
-		},
+		retryCallVideoUpgrade: (callId: string): Promise<void> =>
+			callAudioMethod('retryCallVideoUpgrade', callId, client => client.retryCallVideoUpgrade(callId)),
 		/** Read the core's direction-local video state and timeout contract. */
 		getCallVideoDiagnostics: (callId: string): Promise<CallVideoDiagnostics> => {
 			assertCallId('getCallVideoDiagnostics', callId)
@@ -1456,26 +1430,16 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * bridge, so there is no capability probe and no 501 — on a bridge
 		 * without the audio domain the sink simply never fires.
 		 */
-		onCallAudio: (callId: string, sink: CallAudioSink): (() => void) => {
-			assertCallId('onCallAudio', callId)
-			if (typeof sink !== 'function') {
-				throw new Boom('onCallAudio: sink must be a function', { statusCode: 400 })
-			}
-			return media.addAudioSink(callId, sink)
-		},
+		onCallAudio: (callId: string, sink: CallAudioSink): (() => void) =>
+			registerSink('onCallAudio', callId, sink, media.addAudioSink),
 		/**
 		 * Register a per-call video sink. Access units arrive through the
 		 * bridge pump under the same synchronous contract as audio; the
 		 * returned function unregisters the sink, and `ended` plus teardown
 		 * unregister it automatically.
 		 */
-		onCallVideo: (callId: string, sink: CallVideoSink): (() => void) => {
-			assertCallId('onCallVideo', callId)
-			if (typeof sink !== 'function') {
-				throw new Boom('onCallVideo: sink must be a function', { statusCode: 400 })
-			}
-			return media.addVideoSink(callId, sink)
-		},
+		onCallVideo: (callId: string, sink: CallVideoSink): (() => void) =>
+			registerSink('onCallVideo', callId, sink, media.addVideoSink),
 		/**
 		 * Run a packet source into a live call until it is spent, aborted, or
 		 * the call ends. Resolves the client once, then pushes directly; the
