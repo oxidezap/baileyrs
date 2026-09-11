@@ -49,7 +49,6 @@ import readline from 'node:readline'
 import {
 	classifyStunPacket,
 	describeStunAllocate,
-	depacketizeOpusFromMlow,
 	fetchLatestWaWebVersion,
 	makeSilenceCallAudioSource,
 	makeWASocket,
@@ -437,11 +436,7 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 			'-analyzeduration',
 			'0',
 			'-sync',
-			'ext',
-			'-fflags',
-			'nobuffer+fastseek+flush_packets',
-			'-flags',
-			'low_delay',
+			'audio',
 			'-f',
 			'ogg',
 			'-i',
@@ -785,8 +780,34 @@ const main = async (): Promise<void> => {
 		const mux = muxOggOpus()
 		const player = spawnOpusPlayer()
 		for (const page of mux.headerPages()) player.write(page)
-		muxFrame = data => player.write(mux.page(data))
-		stopPlaying = () => player.stop()
+
+		// Pre-roll a tiny 2-packet (120 ms) jitter buffer before streaming to ffplay stdin.
+		// Network jitter of 10-30 ms is normal over internet UDP/SCTP tunnels; having
+		// 2 frames of headroom prevents audio buffer underruns (stutter/cuts) while
+		// remaining completely imperceptible in delay (<150 ms total).
+		const JITTER_BUFFER_PRE_ROLL = 2
+		const buffer: Uint8Array[] = []
+		let primed = false
+
+		muxFrame = data => {
+			if (!primed) {
+				buffer.push(data)
+				if (buffer.length >= JITTER_BUFFER_PRE_ROLL) {
+					primed = true
+					for (const packet of buffer) {
+						player.write(mux.page(packet))
+					}
+					buffer.length = 0
+				}
+				return
+			}
+			player.write(mux.page(data))
+		}
+		stopPlaying = () => {
+			player.stop()
+			muxFrame = undefined
+			buffer.length = 0
+		}
 	}
 	// Peer video goes to its own ffplay window, minted with the call like
 	// audio playback — never into the audio Ogg stream.
@@ -1046,13 +1067,8 @@ const main = async (): Promise<void> => {
 			return
 		}
 		try {
-			// Native Opus frames can be fed directly to the Ogg muxer.
-			// If an MLOW in-profile escape TOC is present, restore the RFC TOC first.
-			const data =
-				frame.data.length > 0 && ((frame.data[0] ?? 0) & 0xc0) === 0xc0
-					? depacketizeOpusFromMlow(frame.data)
-					: frame.data
-			muxFrame?.(data)
+			// Native Opus frames are fed directly to the Ogg muxer.
+			muxFrame?.(frame.data)
 		} catch (err) {
 			console.error('dropping an unmuxable peer packet:', (err as Error).message)
 		}
