@@ -1010,19 +1010,23 @@ const main = async (): Promise<void> => {
 			if (Date.now() < quietUntil) return
 			for (const packet of stream.push(new Uint8Array(chunk))) {
 				if (audioWriter) {
-					const accepted = audioWriter.tryWrite(packet)
-					if (!accepted) {
-						shed++
-						consecutiveSheds++
-						if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
-						if (consecutiveSheds === 20) {
-							quietUntil = Date.now() + 500
-							console.log(
-								`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
-							)
+					try {
+						const accepted = audioWriter.tryWrite(packet)
+						if (!accepted) {
+							shed++
+							consecutiveSheds++
+							if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
+							if (consecutiveSheds === 20) {
+								quietUntil = Date.now() + 500
+								console.log(
+									`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
+								)
+							}
+						} else {
+							consecutiveSheds = 0
 						}
-					} else {
-						consecutiveSheds = 0
+					} catch (err) {
+						console.error('audio push error:', (err as Error).message)
 					}
 				} else {
 					void sock
@@ -1136,11 +1140,15 @@ const main = async (): Promise<void> => {
 			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
 			for (const unit of splitter.push(new Uint8Array(chunk))) {
 				if (videoWriter) {
-					const accepted = videoWriter.tryWrite(unit)
-					if (!accepted) {
-						outboundVideoShed++
-						if (outboundVideoShed % 50 === 1)
-							console.log(`shed ${outboundVideoShed} video access units under backpressure`)
+					try {
+						const accepted = videoWriter.tryWrite(unit)
+						if (!accepted) {
+							outboundVideoShed++
+							if (outboundVideoShed % 50 === 1)
+								console.log(`shed ${outboundVideoShed} video access units under backpressure`)
+						}
+					} catch (err) {
+						console.error('video push error:', (err as Error).message)
 					}
 				} else {
 					void sock
