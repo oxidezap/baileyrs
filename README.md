@@ -395,9 +395,11 @@ A few behaviors that differ from upstream — almost always to your advantage:
   stock Opus decoder. A push declaring its grammar
   (`pushCallAudio(callId, bytes, 'opus')`) is checked against the promise the
   call negotiated and fails fast on a mixup instead of shedding forever; the
-  same check guards `openCallAudioWriter` writes, `startCallAudioPump` sources
+  same check guards   `openCallAudioWriter` writes, `startCallAudioPump` sources
   via its `audioFormat` option, and `getCallAudioFormat(callId)` reads the
-  tracked promise back. Lifecycle
+  tracked promise back. `getCallAudioBuffer(callId)` reads queued packets
+  per direction with capacities, which tells a full queue with no relay
+  apart from congestion. Lifecycle
   steps (`relay-allocated`, …, `ended`) ride the `call.media` event, and
   `sock.endCall` / `setCallMuted` / `getCallMediaStats` / `getActiveCalls`
   round out the surface. There is no watermark readout: the bridge names the

@@ -53,6 +53,7 @@ import {
 	makeWASocket,
 	negotiatedAudioFormat,
 	useMultiFileAuthState,
+	type CallAudioBuffer,
 	type CallAudioFrame,
 	type CallMediaStats,
 	type WACallEvent
@@ -595,15 +596,30 @@ const main = async (): Promise<void> => {
 		// on the wrong call. Both are captured here and checked per chunk.
 		const stream = demuxOggOpus()
 		const callForChild = liveCallId
+		// Backoff state: pushing into a full queue is a wasted crossing,
+		// so after a run of sheds the producer drops at the source for a
+		// beat instead of hammering. Acceptances reset the run.
+		let consecutiveSheds = 0
+		let quietUntil = 0
 		child?.stdout?.on('data', (chunk: Buffer) => {
 			if (child !== encoder || callForChild !== liveCallId || !liveCallId) return
+			if (Date.now() < quietUntil) return
 			for (const packet of stream.push(new Uint8Array(chunk))) {
 				void sock
 					.pushCallAudio(liveCallId, packet)
 					.then(accepted => {
 						if (!accepted) {
 							shed++
+							consecutiveSheds++
 							if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
+							if (consecutiveSheds === 20) {
+								quietUntil = Date.now() + 500
+								console.log(
+									`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
+								)
+							}
+						} else {
+							consecutiveSheds = 0
 						}
 					})
 					.catch(err => console.error('push failed:', (err as Error).message))
@@ -737,14 +753,28 @@ const main = async (): Promise<void> => {
 		stopVideoPlayback()
 		try {
 			const end = await sock.endCall(id)
-			console.log('hangup:', end.outcome)
+			console.log('hangup:', JSON.stringify(end))
 		} catch (err) {
 			console.error('hangup failed:', (err as Error).message)
 		}
 	}
 
 	sock.ev.on('call.media', event => {
-		if (event.kind === 'relay-allocated') console.log('relay up for', event.callId)
+		// Every lifecycle event is logged, not just the happy ones: a call
+		// whose media never comes up says so here (relay-allocate-failed
+		// with a code, media-setup-failed with a detail), and the absence
+		// of any relay line at all means the plane never started.
+		const detail = {
+			code: event.code,
+			detail: event.detail,
+			from: event.from,
+			to: event.to,
+			sending: event.sending,
+			peerExpects: event.peerExpects,
+			state: event.state
+		}
+		const filled = Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined))
+		console.log(`media ${event.kind} on ${event.callId}`, Object.keys(filled).length > 0 ? JSON.stringify(filled) : '')
 		if (event.kind === 'audio-codec-switched') console.log(`codec ${event.from} -> ${event.to}`)
 		if (event.kind === 'video-upgrade-requested')
 			console.log(`peer asks for video on ${event.callId} (state=${event.state ?? 'n/a'}); press v to accept`)
@@ -850,11 +880,11 @@ const main = async (): Promise<void> => {
 			)
 		}
 		if (key?.name === 's' && liveCallId) {
-			sock
-				.getCallMediaStats(liveCallId)
-				.then((stats: CallMediaStats) =>
+			const id = liveCallId
+			void Promise.all([sock.getCallMediaStats(id), sock.getCallAudioBuffer(id)])
+				.then(([stats, buffer]: [CallMediaStats, CallAudioBuffer]) =>
 					console.log(
-						`format=${audioFormat} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} mlow-heard=${mlowHeard} mismatched=${mismatched} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+						`format=${audioFormat} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} mlow-heard=${mlowHeard} mismatched=${mismatched} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 					)
 				)
 				.catch(err => console.error('stats failed:', (err as Error).message))

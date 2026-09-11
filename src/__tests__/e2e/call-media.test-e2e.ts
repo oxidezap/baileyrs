@@ -191,6 +191,12 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			expect(aliceStats.audioFramesDelivered > 0).toBe(true)
 			expect(aliceStats.rtpReceived > 0).toBe(true)
 
+			// Queue depths are readable mid-call: capacities above zero
+			// prove the bridge owns both queues on this call.
+			const buffer = await bob.sock.getCallAudioBuffer(bobCallId)
+			expect(buffer.outboundCapacity > 0).toBe(true)
+			expect(buffer.inboundCapacity > 0).toBe(true)
+
 			// The mock suppresses the bare-LID terminate leg as
 			// accepted_elsewhere and routes the device-addressed one, so a
 			// partial notification is the honest answer here. local-only

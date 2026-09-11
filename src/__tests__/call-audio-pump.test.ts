@@ -910,6 +910,12 @@ describe('call audio socket methods', () => {
 				codecSwitches: 0
 			}),
 			getActiveCalls: () => [{ callId: 'CALL-1', peerJid: '5511999999999@s.whatsapp.net' }],
+			getCallAudioBuffer: () => ({
+				outboundQueued: 3,
+				outboundCapacity: 50,
+				inboundQueued: 0,
+				inboundCapacity: 50
+			}),
 			setRelayTransportProvider: () => undefined,
 			acceptCallVideo: async () => undefined,
 			callPushVideo: () => true,
@@ -931,6 +937,13 @@ describe('call audio socket methods', () => {
 		const stats = await methods.getCallMediaStats('CALL-1')
 		expect(stats.rtpReceived).toBe(10)
 		expect(stats.audioSinkDropped).toBe(0)
+		const buffer = await methods.getCallAudioBuffer('CALL-1')
+		expect(buffer).toEqual({
+			outboundQueued: 3,
+			outboundCapacity: 50,
+			inboundQueued: 0,
+			inboundCapacity: 50
+		})
 		expect(await methods.getActiveCalls()).toEqual([{ callId: 'CALL-1', peerJid: '5511999999999@s.whatsapp.net' }])
 		await methods.setRelayTransportProvider({
 			createRelayConnection: async () => ({
@@ -1133,6 +1146,58 @@ describe('call audio socket methods', () => {
 			nullRouter()
 		)
 		await expect(methods.getCallMediaStats('CALL-1')).rejects.toThrow(/rtpReceived/)
+	})
+
+	it('reads queue depths and keeps video depths optional', async () => {
+		const full = makeCallAudioMethods(
+			stubCtx({
+				getCallAudioBuffer: () => ({
+					outboundQueued: 50,
+					outboundCapacity: 50,
+					inboundQueued: 1,
+					inboundCapacity: 50,
+					videoOutboundQueued: 2,
+					videoInboundQueued: 0
+				})
+			}),
+			nullRouter()
+		)
+		expect(await full.getCallAudioBuffer('CALL-1')).toEqual({
+			outboundQueued: 50,
+			outboundCapacity: 50,
+			inboundQueued: 1,
+			inboundCapacity: 50,
+			videoOutboundQueued: 2,
+			videoInboundQueued: 0
+		})
+		const badRequired = makeCallAudioMethods(
+			stubCtx({
+				getCallAudioBuffer: () => ({
+					outboundQueued: 'many',
+					outboundCapacity: 50,
+					inboundQueued: 0,
+					inboundCapacity: 50
+				})
+			}),
+			nullRouter()
+		)
+		await expect(badRequired.getCallAudioBuffer('CALL-1')).rejects.toThrow(/outboundQueued/)
+		const badVideo = makeCallAudioMethods(
+			stubCtx({
+				getCallAudioBuffer: () => ({
+					outboundQueued: 0,
+					outboundCapacity: 50,
+					inboundQueued: 0,
+					inboundCapacity: 50,
+					videoOutboundQueued: 'two'
+				})
+			}),
+			nullRouter()
+		)
+		await expect(badVideo.getCallAudioBuffer('CALL-1')).rejects.toThrow(/videoOutboundQueued/)
+		// Like getCallMediaStats, this reads synchronously up to the bridge:
+		// a bad id throws instead of rejecting.
+		expect(() => full.getCallAudioBuffer('')).toThrow(/callId/)
 	})
 
 	it('endCall stops the call pumps even when the bridge reports already-ended', async () => {

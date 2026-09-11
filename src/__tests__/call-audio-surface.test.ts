@@ -87,6 +87,7 @@ const offlineAudioClient = async (): Promise<CallAudioBridgeClient> => {
 		'endCall',
 		'setCallMuted',
 		'getCallMediaStats',
+		'getCallAudioBuffer',
 		'getActiveCalls',
 		'setRelayTransportProvider',
 		'acceptCallVideo',

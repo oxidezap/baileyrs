@@ -221,6 +221,22 @@ export type CallMediaStats = {
 }
 
 /**
+ * Bridge pump depths for one call: packets queued per direction with the
+ * capacity behind each. Counts, not milliseconds. The pacing signal the
+ * shed count alone cannot give: a full outbound queue with no relay means
+ * the media plane never came up, while a draining one means congestion.
+ * Video depths ride along only when video is up.
+ */
+export type CallAudioBuffer = {
+	outboundQueued: number
+	outboundCapacity: number
+	inboundQueued: number
+	inboundCapacity: number
+	videoOutboundQueued?: number
+	videoInboundQueued?: number
+}
+
+/**
  * A pull source of encoded audio packets for one live call. `next()` resolves
  * with the next packet to push, or `null` when the source is spent — the pump
  * then stops, leaving the call itself up.

@@ -32,6 +32,7 @@ import {
 } from '@oxidezap/whatsapp-rust-bridge'
 import type {
 	ActiveCall,
+	CallAudioBuffer,
 	CallAudioFormat,
 	CallAudioFrame,
 	CallAudioPacketSource,
@@ -73,6 +74,7 @@ export interface CallAudioBridgeClient {
 	endCall(callId: string): Promise<CallEndResult>
 	setCallMuted(callId: string, muted: boolean): Promise<void>
 	getCallMediaStats(callId: string): CallMediaStats
+	getCallAudioBuffer(callId: string): CallAudioBuffer
 	getActiveCalls(): ActiveCall[]
 	setRelayTransportProvider(provider: CallRelayTransportProvider): void
 	acceptCallVideo(callId: string): Promise<void>
@@ -274,6 +276,34 @@ const normalizeCallMediaStats = (method: string, raw: unknown): CallMediaStats =
 		stats[field] = value
 	}
 	return stats as CallMediaStats
+}
+
+const BUFFER_FIELDS = ['outboundQueued', 'outboundCapacity', 'inboundQueued', 'inboundCapacity'] as const
+const OPTIONAL_BUFFER_FIELDS = ['videoOutboundQueued', 'videoInboundQueued'] as const
+
+/** Same strictness as the stats above: required depths numeric, video depths numeric when present. */
+const normalizeCallAudioBuffer = (method: string, raw: unknown): CallAudioBuffer => {
+	if (typeof raw !== 'object' || raw === null) {
+		throw new Boom(`${method}: bridge returned no audio buffer object`, { statusCode: 500 })
+	}
+	const record = raw as Record<string, unknown>
+	const buffer = {} as Record<string, number>
+	for (const field of BUFFER_FIELDS) {
+		const value = record[field]
+		if (typeof value !== 'number' || !Number.isFinite(value)) {
+			throw new Boom(`${method}: bridge audio buffer field ${field} is not a number`, { statusCode: 500 })
+		}
+		buffer[field] = value
+	}
+	for (const field of OPTIONAL_BUFFER_FIELDS) {
+		const value = record[field]
+		if (value === undefined) continue
+		if (typeof value !== 'number' || !Number.isFinite(value)) {
+			throw new Boom(`${method}: bridge audio buffer field ${field} is not a number`, { statusCode: 500 })
+		}
+		buffer[field] = value
+	}
+	return buffer as CallAudioBuffer
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1308,6 +1338,18 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			assertCallId('getCallMediaStats', callId)
 			return withAudioClient('getCallMediaStats', client =>
 				normalizeCallMediaStats('getCallMediaStats', client.getCallMediaStats(callId))
+			)
+		},
+		/**
+		 * Bridge pump depths for one call: queued packets per direction with
+		 * capacities. The readout the shed count alone cannot give — a full
+		 * outbound queue with no relay-allocated event means the media plane
+		 * never came up, not congestion.
+		 */
+		getCallAudioBuffer: (callId: string): Promise<CallAudioBuffer> => {
+			assertCallId('getCallAudioBuffer', callId)
+			return withAudioClient('getCallAudioBuffer', client =>
+				normalizeCallAudioBuffer('getCallAudioBuffer', client.getCallAudioBuffer(callId))
 			)
 		},
 		/**
