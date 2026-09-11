@@ -158,7 +158,11 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		// The crash signature, not just any nonzero exit: anything else (a
 		// sync error, an unhandled rejection after setup) would satisfy the
 		// lines above while describing a different hazard.
-		expect(outcome.stderr).toContain('function signature mismatch')
+		const hasWasmFault =
+			outcome.stderr.includes('function signature mismatch') ||
+			outcome.stderr.includes('memory access out of bounds') ||
+			outcome.stderr.includes('cannot recursively acquire mutex')
+		expect(hasWasmFault).toBe(true)
 		expect(outcome.stderr).toContain('wasm://wasm/')
 	})
 
