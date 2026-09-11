@@ -475,9 +475,18 @@ const main = async (): Promise<void> => {
 	// UDP pipe to the relay: the core builds every datagram, this only ships
 	// bytes. Same shape as the e2e helper, inlined so the example stands alone.
 	const dgram = await import('node:dgram')
+	// Every open relay socket, so a crash-time shutdown can close what the
+	// bridge client no longer drives. An open UDP handle alone keeps the
+	// process alive past any hangup.
+	const liveRelays = new Set<{ close(): void }>()
 	await sock.setRelayTransportProvider({
 		async createRelayConnection(params, events) {
+			// Host and port only, never credentials: this line tells the
+			// next transcript which relay the allocate went to, which is
+			// what a relay-allocate-timed-out needs after it.
+			console.log(`relay channel to ${params.address}:${params.port}`)
 			const socket = dgram.createSocket('udp4')
+			liveRelays.add(socket)
 			await new Promise<void>((resolve, reject) => {
 				socket.once('error', reject)
 				socket.bind(0, () => {
@@ -493,6 +502,7 @@ const main = async (): Promise<void> => {
 			const finish = (reason?: string): void => {
 				if (finished) return
 				finished = true
+				liveRelays.delete(socket)
 				try {
 					events.onClose(reason)
 				} catch {
@@ -519,6 +529,7 @@ const main = async (): Promise<void> => {
 					socket.send(data, params.port, params.address)
 				},
 				close: async () => {
+					liveRelays.delete(socket)
 					socket.close()
 				}
 			}
@@ -753,7 +764,7 @@ const main = async (): Promise<void> => {
 		stopVideoPlayback()
 		try {
 			const end = await sock.endCall(id)
-			console.log('hangup:', JSON.stringify(end))
+			console.log('hangup:', end)
 		} catch (err) {
 			console.error('hangup failed:', (err as Error).message)
 		}
@@ -865,7 +876,38 @@ const main = async (): Promise<void> => {
 
 	readline.emitKeypressEvents(process.stdin)
 	if (process.stdin.isTTY) process.stdin.setRawMode(true)
-	process.stdin.on('keypress', (_chunk, key: { name?: string } | undefined) => {
+	// Raw mode swallows SIGINT: Ctrl+C arrives here as a keypress, not a
+	// signal, so without this branch the process outlives every crash and
+	// no keyboard interrupt reaches it. Relay sockets are tracked for the
+	// same reason: an open UDP handle keeps the loop alive on its own.
+	let shuttingDown = false
+	const shutdown = (exitCode: number): void => {
+		if (shuttingDown) return
+		shuttingDown = true
+		if (process.stdin.isTTY) process.stdin.setRawMode(false)
+		for (const relay of liveRelays) {
+			try {
+				relay.close()
+			} catch {
+				// Already gone; the loop is what matters.
+			}
+		}
+		liveRelays.clear()
+		void hangup()
+			.catch(() => undefined)
+			.then(() => sock.end(undefined).catch(() => undefined))
+			.then(() => process.exit(exitCode))
+		// Never strand: a wedged hangup must not hold the exit open.
+		setTimeout(() => process.exit(exitCode), 3000).unref()
+	}
+	process.on('SIGINT', () => shutdown(130))
+	process.stdin.on('keypress', (_chunk, key: { name?: string; sequence?: string; ctrl?: boolean } | undefined) => {
+		// Ctrl+C never becomes SIGINT in raw mode; it arrives as a keypress
+		// and takes the same shutdown as the signal.
+		if (key?.sequence === '\x03' || (key?.name === 'c' && key?.ctrl)) {
+			shutdown(130)
+			return
+		}
 		if (key?.name === 'q') {
 			void hangup().then(async () => {
 				await sock.end(undefined).catch(err => console.error('socket close failed:', (err as Error).message))
