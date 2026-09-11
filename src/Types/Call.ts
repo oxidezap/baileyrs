@@ -307,9 +307,11 @@ export type CallAudioWriter = {
 	 * shed under backpressure, or the writer is closed. Never retains the
 	 * caller buffer: the bridge copies it synchronously. Never allocates per
 	 * call: the answer is the primitive. A malformed packet throws instead of
-	 * answering false, and so does a call the bridge no longer holds.
+	 * answering false, and so does a call the bridge no longer holds. The
+	 * optional promise declares the packet's grammar and is checked against
+	 * the call's negotiated format, like `pushCallAudio`.
 	 */
-	tryWrite(packet: Uint8Array): boolean
+	tryWrite(packet: Uint8Array, audioFormat?: CallAudioFormat): boolean
 	/**
 	 * Invalidate the writer. Idempotent, and does not end the call. Ended
 	 * calls and socket teardown invalidate it automatically.

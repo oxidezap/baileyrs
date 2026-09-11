@@ -380,13 +380,24 @@ A few behaviors that differ from upstream — almost always to your advantage:
   value. Install `music-metadata` if you want durations computed.
 - **Voice calls ride the bridge calls preview, not the release bridge.**
   `sock.dialCall(peerJid)` / `sock.acceptCall(callId)` open an encoded-audio
-  call (`'mlow'` by default, `'opus'` for the in-profile escape);
+  call (`'mlow'` by default, `'opus'` for the in-profile escape); answer with
+  the offer's promise. `negotiatedAudioFormat(call.audio)` reads it, and `mlow`
+  in the list means mlow, anything else keeps opus.
   `sock.pushCallAudio(callId, bytes)` queues one packet and resolves `false`
   when the engine shed it under backpressure — that is the normal
-  loss-tolerant answer, not an error. The peer's encoded packets arrive through
+  loss-tolerant answer, not an error. Pass ffmpeg-shaped Opus straight
+  through: the engine rewrites to the MLOW escape in flight, so
+  pre-packetizing corrupts the TOC. The peer's encoded packets arrive through
   per-call `sock.onCallAudio(callId, sink)` sinks. Each frame carries one owned
   encoded packet, valid after the callback returns and shared with the call's
-  other sinks, so decode synchronously and never modify the bytes. Lifecycle
+  other sinks, so decode synchronously and never modify the bytes. An `opus`
+  frame carries the escape: run it through `depacketizeOpusFromMlow` before a
+  stock Opus decoder. A push declaring its grammar
+  (`pushCallAudio(callId, bytes, 'opus')`) is checked against the promise the
+  call negotiated and fails fast on a mixup instead of shedding forever; the
+  same check guards `openCallAudioWriter` writes, `startCallAudioPump` sources
+  via its `audioFormat` option, and `getCallAudioFormat(callId)` reads the
+  tracked promise back. Lifecycle
   steps (`relay-allocated`, …, `ended`) ride the `call.media` event, and
   `sock.endCall` / `setCallMuted` / `getCallMediaStats` / `getActiveCalls`
   round out the surface. There is no watermark readout: the bridge names the

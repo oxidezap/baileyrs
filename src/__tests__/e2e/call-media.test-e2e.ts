@@ -14,15 +14,16 @@
  * relay-allocated wait, which is the honest signal, not a hang: every wait
  * below carries an explicit timeout.
  *
- * Video has no test here on purpose. The bridge preview exposes no video
- * operations and drops video engine events, and nothing in this repo can
- * place a video offer, so there is no video path to drive yet.
+ * Audio only, both promises: mlow silence both ways, then one real opus
+ * packet under the opus promise with the escape round-tripped. Video has no
+ * test here. Nothing in this repo can place a video offer yet, but the
+ * bridge operations it would use are pinned in call-audio-surface.test.ts.
  */
 
 import { after, before, describe, test } from 'node:test'
 
 import type { CallAudioFrame, CallAudioSink, CallMediaStats } from '../../index.ts'
-import { makeSilenceCallAudioSource } from '../../index.ts'
+import { depacketizeOpusFromMlow, makeSilenceCallAudioSource } from '../../index.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { makeUdpRelayProvider } from './udp-relay-provider.ts'
@@ -136,6 +137,12 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 
 		const bobCallId = await bob.sock.acceptCall(callId, 'mlow')
 		expect(bobCallId).toBe(callId)
+		// The negotiated promise is tracked from accept/dial: both sides
+		// read mlow, and a push declaring opus fails here. That fail-fast
+		// that replaced the captain's silent shed.
+		expect(bob.sock.getCallAudioFormat(bobCallId)).toBe('mlow')
+		expect(alice.sock.getCallAudioFormat(callId)).toBe('mlow')
+		await expect(alice.sock.pushCallAudio(callId, SID, 'opus')).rejects.toThrow(/negotiated mlow/)
 		const stopAliceSink = alice.sock.onCallAudio(callId, aliceAudio)
 		const stopBobSink = bob.sock.onCallAudio(bobCallId, bobAudio)
 		try {
@@ -220,5 +227,65 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const pump = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ packets: 3, intervalMs: 5 }))
 		expect(await pump.done).toEqual({ pushed: 3, shed: 0, stopReason: 'source-ended' })
 		await alice.sock.endCall(callId)
+	})
+
+	test('the opus promise carries packets both ways', async t => {
+		const { readFile } = await import('node:fs/promises')
+		// One ffmpeg-encoded Opus voice packet, committed: no encoder in
+		// the package, and generating one needs ffmpeg outside it.
+		const opusPacket = new Uint8Array(await readFile(new URL('../fixtures/opus-voice-packet.bin', import.meta.url)))
+		const frames: CallAudioFrame[] = []
+		const stopSink = { current: undefined as (() => void) | undefined }
+		try {
+			const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
+			const aliceRelay = waitForMedia(alice.sock, 'relay-allocated', 60_000)
+			const bobRelay = waitForMedia(bob.sock, 'relay-allocated', 60_000)
+			const bobEnded = waitForMedia(bob.sock, 'ended', 30_000)
+			const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'opus')
+			expect(alice.sock.getCallAudioFormat(callId)).toBe('opus')
+			await bobOffer
+			let bobCallId: string
+			try {
+				bobCallId = await bob.sock.acceptCall(callId, 'opus')
+			} catch (err) {
+				// The mock speaks whatever its loopback negotiates: if it only
+				// names the other codec, the bridge fails naming audioFormat
+				// instead of taking the call into a silent shed. That clean
+				// refusal IS the opus-path proof on such a mock.
+				aliceRelay.cancel()
+				bobRelay.cancel()
+				bobEnded.cancel()
+				expect((err as Error).message).toContain('audioFormat')
+				await alice.sock.endCall(callId).catch(() => undefined)
+				return
+			}
+			expect(bob.sock.getCallAudioFormat(bobCallId)).toBe('opus')
+			stopSink.current = bob.sock.onCallAudio(bobCallId, frame => frames.push(frame))
+			try {
+				await aliceRelay.promise
+				await bobRelay.promise
+			} catch {
+				aliceRelay.cancel()
+				bobRelay.cancel()
+				bobEnded.cancel()
+				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
+				return
+			}
+			// Straight through, never pre-packetized: the engine rewrites to
+			// the MLOW escape in flight, and the frame arrives carrying it.
+			// Depacketizing restores the exact pushed bytes.
+			expect(await alice.sock.pushCallAudio(callId, opusPacket, 'opus')).toBe(true)
+			const received = await waitForFrames(frames, 1, 30_000, 'opus alice->bob')
+			expect(received[0]!.codec).toBe('opus')
+			expect(depacketizeOpusFromMlow(received[0]!.data)).toEqual(opusPacket)
+			const end = await alice.sock.endCall(callId)
+			expect(end.outcome !== 'local-only').toBe(true)
+			await bobEnded.promise
+			aliceRelay.cancel()
+			bobRelay.cancel()
+			bobEnded.cancel()
+		} finally {
+			stopSink.current?.()
+		}
 	})
 })

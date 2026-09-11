@@ -6,10 +6,13 @@
 import { describe, it } from 'node:test'
 
 import {
+	depacketizeOpusFromMlow,
 	makeFileCallAudioSource,
 	makeSilenceCallAudioSource,
 	MLOW_SILENCE_PACKET,
+	negotiatedAudioFormat,
 	openFilePacketReader,
+	packetizeOpusForMlow,
 	startCallAudioPump
 } from '../index.ts'
 import { expect } from './expect.ts'
@@ -21,5 +24,11 @@ describe('call audio root exports', () => {
 		expect(typeof openFilePacketReader).toBe('function')
 		expect(typeof startCallAudioPump).toBe('function')
 		expect(MLOW_SILENCE_PACKET).toEqual(new Uint8Array([0x90]))
+	})
+
+	it('exposes the format decision and the opus escape helpers', () => {
+		expect(typeof negotiatedAudioFormat).toBe('function')
+		expect(typeof packetizeOpusForMlow).toBe('function')
+		expect(typeof depacketizeOpusFromMlow).toBe('function')
 	})
 })

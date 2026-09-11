@@ -6,11 +6,15 @@
  * This mirrors examples/voip-cli in the whatsapp-rust repo in behavior —
  * dial/accept a real call, encoded packets both ways, mute, stats, hangup,
  * plus the video path (start/accept/resume keyed on `v`) — adapted to what
- * JavaScript can do. There is no MLOW encoder here, so audio travels as Opus,
- * the in-profile escape the bridge accepts under the `opus` promise: ffmpeg
- * encodes a file or microphone to 16 kHz mono Opus, a small Ogg demuxer splits
- * the stream back into packets for pushing, and received packets are wrapped
- * in Ogg pages for ffplay on stdin. Video is the same shape over Annex-B
+ * JavaScript can do. Audio follows the negotiated promise, read off the offer
+ * with `negotiatedAudioFormat`: an `opus` call is the full ffmpeg path (a
+ * file or microphone encoded to 16 kHz mono Opus, a small Ogg demuxer splits
+ * the stream back into packets for pushing straight through. The engine
+ * rewrites them to the MLOW escape in flight, and received opus packets
+ * are depacketized back to RFC Opus before wrapping in Ogg pages for
+ * ffplay on stdin. There is no MLOW encoder here, so an
+ * `mlow` call pushes MLOW silence while the peer is logged, not played.
+ * Video is the same shape over Annex-B access units: ffmpeg encodes a camera,
  * access units: ffmpeg encodes a camera, file or test pattern to baseline
  * H.264, a splitter hands one AU per push to `pushCallVideo`, and peer AUs
  * fan out to a second ffplay window or a raw `.h264` file. The library only
@@ -43,8 +47,11 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import process from 'node:process'
 import readline from 'node:readline'
 import {
+	depacketizeOpusFromMlow,
 	fetchLatestWaWebVersion,
+	makeSilenceCallAudioSource,
 	makeWASocket,
+	negotiatedAudioFormat,
 	useMultiFileAuthState,
 	type CallAudioFrame,
 	type CallMediaStats,
@@ -119,7 +126,9 @@ const startsWithBytes = (data: Uint8Array, magic: number[]): boolean => {
 
 /** Split an Ogg Opus byte stream into bare Opus packets, skipping the OpusHead/OpusTags headers. */
 export const demuxOggOpus = (): { push(bytes: Uint8Array): Uint8Array[] } => {
-	let buffered = new Uint8Array(0)
+	// Annotated, not inferred: `new Uint8Array(0)` infers the ArrayBuffer
+	// flavor, which then refuses the ArrayBufferLike chunks `push` delivers.
+	let buffered: Uint8Array = new Uint8Array(0)
 	let pending: Uint8Array = new Uint8Array(0)
 	return {
 		push(bytes: Uint8Array): Uint8Array[] {
@@ -252,8 +261,11 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		const value = argv[index + 1]
 		return value === undefined || value.startsWith('--') ? fallback : value
 	}
-	const command = argv[0]
-	if (command !== 'dial' && command !== 'listen') usage()
+	const rawCommand = argv[0]
+	// Positive check, not a cast: narrowing `string` by exclusion keeps it
+	// `string`, so the command is built only from the two accepted spellings
+	// and anything else prints usage, which never returns.
+	const command = rawCommand === 'dial' || rawCommand === 'listen' ? rawCommand : usage()
 	const peer = command === 'dial' ? argv[1] : undefined
 	if (command === 'dial' && (!peer || peer.startsWith('--'))) usage()
 	const audioFile = get('--audio-file')
@@ -362,7 +374,8 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 
 /** Split a raw Annex-B byte stream into access units on AUD boundaries (NAL type 9). */
 export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[] } => {
-	let buffered = new Uint8Array(0)
+	// Same ArrayBuffer/ArrayBufferLike annotation as the Ogg demuxer above.
+	let buffered: Uint8Array = new Uint8Array(0)
 	return {
 		push(bytes: Uint8Array): Uint8Array[] {
 			const merged = new Uint8Array(buffered.length + bytes.length)
@@ -523,6 +536,10 @@ const main = async (): Promise<void> => {
 	// names it, `opus` otherwise). Outbound encoding and inbound playback both
 	// follow it: pushing the wrong grammar sheds forever and plays nothing.
 	let audioFormat: 'mlow' | 'opus' = 'opus'
+	// Inbound counters for the mlow path, which has no playback: reported on
+	// `s` and sampled in the log so a quiet peer is visible, not silent.
+	let mlowHeard = 0
+	let mismatched = 0
 	// Playback is per call, not per process: hangup stops the player, and the
 	// next ring mints a fresh Ogg stream rather than writing into a dead
 	// stdin with stale sequence state.
@@ -557,11 +574,18 @@ const main = async (): Promise<void> => {
 	let encoder: ChildProcess | null = null
 	let videoEncoder: ChildProcess | null = null
 	let outboundVideoShed = 0
+	// The mlow outbound path: no MLOW encoder exists here, so an mlow call
+	// pushes the silence token the core accepts under both promises. A pump,
+	// not a bare interval, so backpressure sheds with counts and hangup stops
+	// it with the call. Null unless an mlow call is live.
+	let silencePump: { stop(): void; done: Promise<unknown> } | null = null
 
-	// The encoder runs only while a call is live: a file input exhausts, and
-	// starting it at launch would spend the audio before anyone answers.
+	// The Opus encoder runs only on opus calls while a call is live: a file
+	// input exhausts, starting it at launch would spend the audio before
+	// anyone answers, and pushing Opus grammar into an mlow call dies in the
+	// engine and sheds forever. That mixup is what the mlow path above is for.
 	const ensureEncoder = (): void => {
-		if (encoder || (!args.audioFile && args.mic === undefined)) return
+		if (encoder || audioFormat !== 'opus' || (!args.audioFile && args.mic === undefined)) return
 		const child = spawnOpusEncoder(args)
 		encoder = child
 		// Per-child demux and call id: a killed child can still flush
@@ -597,6 +621,39 @@ const main = async (): Promise<void> => {
 	const stopEncoder = (): void => {
 		encoder?.kill()
 		encoder = null
+	}
+
+	// Mlow outbound: silence at voice cadence through the library pump, with
+	// the grammar declared on the pump so a wiring mistake fails fast in the
+	// library instead of shedding silently in the engine.
+	const ensureSilencePump = (callId: string): void => {
+		if (silencePump || audioFormat !== 'mlow') return
+		let mlowShed = 0
+		sock
+			.startCallAudioPump(callId, makeSilenceCallAudioSource(), {
+				audioFormat: 'mlow',
+				onShed: total => {
+					mlowShed = total
+					if (mlowShed % 50 === 1) console.log(`shed ${mlowShed} mlow silence packets under backpressure`)
+				}
+			})
+			.then(pump => {
+				if (callId !== liveCallId) {
+					pump.stop()
+					return
+				}
+				silencePump = pump
+				void pump.done.then(
+					stats => console.log(`mlow silence pump ended: ${JSON.stringify(stats)}`),
+					err => console.error('mlow silence pump failed:', (err as Error).message)
+				)
+			})
+			.catch(err => console.error('mlow silence pump failed to start:', (err as Error).message))
+	}
+
+	const stopSilencePump = (): void => {
+		silencePump?.stop()
+		silencePump = null
 	}
 
 	// Outgoing video, started once per call when --video is set: ffmpeg
@@ -637,17 +694,27 @@ const main = async (): Promise<void> => {
 	const onFrame = (frame: CallAudioFrame): void => {
 		// Play what was negotiated, not what the example encodes: an mlow
 		// call delivers mlow grammar, and muxing that as Opus plays noise.
-		// Mlow decode has no ffmpeg path here, so it is logged, not played.
+		// Mlow decode has no ffmpeg path here, so it is counted and logged,
+		// not played. Per-packet logging would drown the session.
 		if (frame.codec !== audioFormat) {
-			console.error(`dropping peer packet outside the negotiated ${audioFormat} promise (codec=${frame.codec})`)
+			mismatched++
+			if (mismatched % 50 === 1)
+				console.error(
+					`dropping peer packet outside the negotiated ${audioFormat} promise (codec=${frame.codec}, total=${mismatched})`
+				)
 			return
 		}
 		if (frame.codec !== 'opus') {
-			console.error(`dropping peer mlow packet: no mlow decoder in this example`)
+			mlowHeard++
+			if (mlowHeard % 50 === 1)
+				console.log(`heard ${mlowHeard} mlow peer packets (no mlow decoder here, counted not played)`)
 			return
 		}
 		try {
-			muxFrame?.(frame.data)
+			// Opus frames arrive in the MLOW escape: restore the RFC TOC
+			// before muxing, or ffplay hears noise. The push direction needs
+			// no counterpart. The engine packetizes in flight.
+			muxFrame?.(depacketizeOpusFromMlow(frame.data))
 		} catch (err) {
 			console.error('dropping an unmuxable peer packet:', (err as Error).message)
 		}
@@ -665,6 +732,7 @@ const main = async (): Promise<void> => {
 		// Stopped before the hangup lands: a new ring answered while endCall
 		// is in flight must find a clear slot, not the dying capture.
 		stopEncoder()
+		stopSilencePump()
 		stopVideoEncoder()
 		stopVideoPlayback()
 		try {
@@ -701,18 +769,20 @@ const main = async (): Promise<void> => {
 			// Accept with the offered profile, not a hardcoded one: the
 			// captain's real call negotiated Mlow while this pushed Opus, so
 			// every packet died in the engine and the queue shed forever.
-			// An explicit `mlow` in the offer names means mlow; anything else
-			// (including no audio list at all) keeps the opus promise ffmpeg
-			// actually encodes.
-			const offered = call.audio ?? []
-			const format = offered.includes('mlow') ? 'mlow' : ('opus' as const)
+			const format = negotiatedAudioFormat(call.audio)
 			const id = await sock.acceptCall(call.id, format)
 			liveCallId = id
 			muted = false
+			mlowHeard = 0
+			mismatched = 0
 			stopSink?.()
 			audioFormat = format
 			stopSink = sock.onCallAudio(id, onFrame)
-			ensureEncoder()
+			// Outbound follows the promise: opus runs the ffmpeg encoder,
+			// mlow runs the silence pump. Never both. The encoder gate
+			// refuses mlow calls, and the pump declares mlow up front.
+			if (format === 'opus') ensureEncoder()
+			else ensureSilencePump(id)
 			startPlayback()
 			if (args.video !== undefined) {
 				// A video offer accepted straight into video, mirroring
@@ -747,6 +817,8 @@ const main = async (): Promise<void> => {
 		audioFormat = 'opus'
 		const id = await sock.dialCall(args.peer!, 'opus')
 		liveCallId = id
+		mlowHeard = 0
+		mismatched = 0
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
 		startPlayback()
@@ -782,7 +854,7 @@ const main = async (): Promise<void> => {
 				.getCallMediaStats(liveCallId)
 				.then((stats: CallMediaStats) =>
 					console.log(
-						`format=${audioFormat} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+						`format=${audioFormat} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} mlow-heard=${mlowHeard} mismatched=${mismatched} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 					)
 				)
 				.catch(err => console.error('stats failed:', (err as Error).message))

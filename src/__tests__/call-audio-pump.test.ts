@@ -19,13 +19,14 @@
  * with these shapes — is `call-audio-surface.test.ts`.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import {
 	asCallAudioClient,
+	depacketizeOpusFromMlow,
 	endMediaCallIfPresent,
 	makeCallAudioMethods,
 	makeCallMediaRouter,
@@ -33,6 +34,7 @@ import {
 	makeSilenceCallAudioSource,
 	MLOW_SILENCE_PACKET,
 	openFilePacketReader,
+	packetizeOpusForMlow,
 	startCallAudioPump,
 	type CallAudioBridgeClient,
 	type CallMediaRouter
@@ -936,6 +938,69 @@ describe('call audio socket methods', () => {
 				close: () => undefined
 			})
 		})
+	})
+
+	it('tracks the negotiated promise per call and fails wrong-grammar pushes fast', async () => {
+		// The captain's real call negotiated mlow while the producer pushed
+		// opus: every packet died in the engine and the queue shed forever.
+		// A push declaring its grammar is checked against the promise the
+		// call negotiated, so the mixup throws here instead of shedding.
+		const router = nullRouter()
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		expect(methods.getCallAudioFormat('CALL-9')).toBe(undefined)
+		expect(await methods.acceptCall('CALL-9', 'mlow')).toBe('CALL-9')
+		expect(methods.getCallAudioFormat('CALL-9')).toBe('mlow')
+		expect(await methods.pushCallAudio('CALL-9', new Uint8Array([0x90]), 'mlow')).toBe(true)
+		expect(await methods.pushCallAudio('CALL-9', new Uint8Array([0x90]))).toBe(true)
+		await expect(methods.pushCallAudio('CALL-9', new Uint8Array([0x90]), 'opus')).rejects.toThrow(/negotiated mlow/)
+		// A call never negotiated here is the bridge's to report, not this
+		// layer's to guess about: the declaration passes through.
+		expect(await methods.pushCallAudio('NEVER-NEGOTIATED', new Uint8Array([0x90]), 'opus')).toBe(true)
+		const writer = await methods.openCallAudioWriter('CALL-9')
+		expect(writer.tryWrite(new Uint8Array([0x90]), 'mlow')).toBe(true)
+		expect(() => writer.tryWrite(new Uint8Array([0x90]), 'opus')).toThrow(/negotiated mlow/)
+		writer.close()
+		await methods.endCall('CALL-9')
+		expect(methods.getCallAudioFormat('CALL-9')).toBe(undefined)
+	})
+
+	it('dial records its promise and the router forgets it on ended', async () => {
+		const router = nullRouter()
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		expect(await methods.dialCall('5511999999999@s.whatsapp.net', 'opus')).toBe('CALL-NEW')
+		expect(methods.getCallAudioFormat('CALL-NEW')).toBe('opus')
+		router.routeMediaEvent({ callId: 'CALL-NEW', kind: 'ended' })
+		expect(methods.getCallAudioFormat('CALL-NEW')).toBe(undefined)
+	})
+
+	it('a pump declaring the wrong grammar fails before the first pull', async () => {
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), nullRouter())
+		await methods.acceptCall('CALL-9', 'mlow')
+		await expect(
+			methods.startCallAudioPump('CALL-9', scriptedSource([new Uint8Array([0x90])]), { audioFormat: 'opus' })
+		).rejects.toThrow(/negotiated mlow/)
+		await expect(
+			methods.startCallAudioPump('CALL-9', scriptedSource([new Uint8Array([0x90])]), {
+				audioFormat: 'g729' as 'mlow'
+			})
+		).rejects.toThrow(/audioFormat/)
+		const pump = await methods.startCallAudioPump('CALL-9', scriptedSource([new Uint8Array([0x90])]), {
+			audioFormat: 'mlow'
+		})
+		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
+	})
+
+	it('the opus escape round-trips a real opus packet', async () => {
+		// The fixture is one ffmpeg-encoded Opus voice packet: packetizing
+		// rewrites its TOC to the MLOW escape, and depacketizing restores
+		// the exact bytes, which is what the example feeds ffplay.
+		const packet = new Uint8Array(await readFile(new URL('./fixtures/opus-voice-packet.bin', import.meta.url)))
+		const escaped = packetizeOpusForMlow(packet)
+		expect(escaped.length).toBe(packet.length)
+		expect(escaped[0]).not.toBe(packet[0])
+		expect(depacketizeOpusFromMlow(escaped)).toEqual(packet)
+		expect(() => packetizeOpusForMlow(new Uint8Array(0))).toThrow(/non-empty/)
+		expect(() => depacketizeOpusFromMlow(new Uint8Array(0))).toThrow(/non-empty/)
 	})
 
 	it('drives the video operations with validated arguments', async () => {

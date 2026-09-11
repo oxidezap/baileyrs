@@ -315,6 +315,14 @@ const CASES: DomainCase[] = [
 		defaulted: true
 	},
 	{
+		label: 'pushCallAudio',
+		parameter: 'audioFormat',
+		values: ['mlow', 'opus', undefined],
+		call: (sock, value) => sock.pushCallAudio('NEVER-RANG', new Uint8Array([0x90]), arg(value)),
+		source: 'calls.ts:pushCallAudio:audioFormat',
+		defaulted: true
+	},
+	{
 		label: 'requestCallKeyframe',
 		parameter: 'urgency',
 		values: ['coalesced', 'immediate'],
@@ -340,6 +348,12 @@ const EXEMPT: Record<string, string> = {
 		'a module-internal helper defaulting to stopped, with literals at the abort and router call sites',
 	'calls.ts:<module>:audioFormat':
 		'the bridge-contract interface restatement, not a parameter; dialCall and acceptCall validate it',
+	'calls.ts:stop:format':
+		'the format bookkeeping on the CallMediaRouter interface (setAudioFormat), attributed by the scan to the nearest preceding opener; only acceptCall and dialCall record, both validating the domain first',
+	'calls.ts:assertPushFormat:audioFormat':
+		'a module-internal helper; both call sites (pushCallAudio, tryWrite) validate the domain before calling',
+	'calls.ts:close:audioFormat':
+		'the audioFormat option field on CallAudioPumpOptions, attributed by the scan to the nearest preceding opener; startCallAudioPump validates it before the first pull',
 	'calls.ts:<module>:urgency':
 		'the bridge-contract interface restatement, not a parameter; requestCallKeyframe validates it',
 	'calls.ts:checkVideoDiagnosticField:field':

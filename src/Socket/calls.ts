@@ -19,11 +19,17 @@
  * rather than treating as an error. The bridge exposes no watermark readout
  * (its docs name the `false` return as the pacing signal in place of one),
  * so pacing sources read the shed count and the `audioSinkDropped` /
- * `inboundPipeDropped` stats counters instead.
+ * `inboundPipeDropped` stats counters instead. Format mixups never reach that
+ * queue: the promise each call negotiated is tracked from accept/dial, and a
+ * push declaring the other grammar fails fast instead of shedding forever.
  */
 
 import { Boom } from '../Utils/boom.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
+import {
+	depacketizeOpusFromMlow as bridgeDepacketizeOpusFromMlow,
+	packetizeOpusForMlow as bridgePacketizeOpusForMlow
+} from '@oxidezap/whatsapp-rust-bridge'
 import type {
 	ActiveCall,
 	CallAudioFormat,
@@ -109,6 +115,38 @@ const AUDIO_FORMATS = ['mlow', 'opus', undefined] as const
 const KEYFRAME_URGENCIES = ['coalesced', 'immediate'] as const
 
 /**
+ * Read the audio promise off an offer's codec list: an explicit `mlow` names
+ * mlow, anything else (`opus`, another codec, an empty list, no list at all)
+ * keeps the opus promise, the only grammar with a JS-side encoder. Pure so
+ * callers (and the example) share one decision instead of re-deriving it.
+ */
+export const negotiatedAudioFormat = (audio: readonly string[] | undefined): CallAudioFormat =>
+	(audio ?? []).includes('mlow') ? 'mlow' : 'opus'
+
+/**
+ * Rewrite one RFC Opus packet to the MLOW escape the engine carries, for
+ * hosts that queue packets outside `pushCallAudio` (custom transports,
+ * offline fixtures). Ordinary pushes must NOT use this: the engine rewrites
+ * Opus packets in flight on opus calls, so a pre-packetized packet would be
+ * rewritten twice and corrupt the TOC.
+ */
+export const packetizeOpusForMlow = (data: Uint8Array): Uint8Array => {
+	assertAudioPacket('packetizeOpusForMlow', data)
+	return bridgePacketizeOpusForMlow(data)
+}
+
+/**
+ * Restore the RFC TOC on one received `opus` frame, which carries the MLOW
+ * escape on the wire. Hand the result, not the raw frame, to a stock Opus
+ * decoder. Mlow frames are already plain codec payloads and must not pass
+ * through here.
+ */
+export const depacketizeOpusFromMlow = (data: Uint8Array): Uint8Array => {
+	assertAudioPacket('depacketizeOpusFromMlow', data)
+	return bridgeDepacketizeOpusFromMlow(data)
+}
+
+/**
  * Narrow a bridge client to the audio domain. A release bridge (or any build
  * without `client-calls-audio`) fails here with a 501 naming the capability,
  * rather than throwing `not a function` off the first call.
@@ -133,6 +171,28 @@ const assertCallId = (method: string, callId: string): void => {
 const assertAudioPacket = (method: string, data: Uint8Array): void => {
 	if (!(data instanceof Uint8Array) || data.length === 0) {
 		throw new Boom(`${method}: data must be a non-empty Uint8Array`, { statusCode: 400 })
+	}
+}
+
+/**
+ * Fail a declared-format push against the call's negotiated promise. Only a
+ * declared format is checked. An omitted one passes through, and a call
+ * with no tracked format (never negotiated here, already ended) is the
+ * bridge's to report, not this layer's to guess about.
+ */
+const assertPushFormat = (
+	method: string,
+	media: Pick<CallMediaRouter, 'getAudioFormat'>,
+	callId: string,
+	audioFormat: CallAudioFormat | undefined
+): void => {
+	if (audioFormat === undefined) return
+	const negotiated = media.getAudioFormat(callId)
+	if (negotiated !== undefined && negotiated !== audioFormat) {
+		throw new Boom(
+			`${method}: packet declares ${audioFormat} but call ${callId} negotiated ${negotiated}. Pushing it would shed forever in the engine`,
+			{ statusCode: 400 }
+		)
 	}
 }
 
@@ -235,6 +295,14 @@ export interface CallMediaRouter {
 	addAudioSink(callId: string, sink: CallAudioSink): () => void
 	/** Register a per-call video sink; the returned function unregisters it. */
 	addVideoSink(callId: string, sink: CallVideoSink): () => void
+	/**
+	 * Remember the audio promise a call negotiated (recorded on accept/dial
+	 * success). Push validation reads it; `undefined` means the call was
+	 * never negotiated through this socket or already ended.
+	 */
+	setAudioFormat(callId: string, format: CallAudioFormat): void
+	/** The promise recorded above, if the call is still tracked. */
+	getAudioFormat(callId: string): CallAudioFormat | undefined
 	/** Bridge `onCallAudio` entry point. Never throws: a throw here would stop the bridge pump. */
 	routeAudioFrame(frame: CallAudioFrame): void
 	/** Bridge `onCallVideo` entry point. Never throws, same contract as audio. */
@@ -338,6 +406,11 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	const sinks = new Map<string, Set<CallAudioSink>>()
 	const videoSinks = new Map<string, Set<CallVideoSink>>()
 	const pumps = new Map<string, Set<TrackedCallPump>>()
+	// The audio promise per live call, recorded on accept/dial: the bridge
+	// takes the format once and every later push is opaque bytes, so this is
+	// the only JS-side record of which grammar a call speaks. Cleared with
+	// the sinks below. An ended call negotiates nothing.
+	const audioFormats = new Map<string, CallAudioFormat>()
 	// Pumps stopped but whose `done` has not settled: `drainAll` waits for
 	// these, so ending a call and then the socket cannot strand source
 	// cleanup behind a teardown that already resolved. Entries leave when
@@ -388,6 +461,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		}
 		sinks.delete(callId)
 		videoSinks.delete(callId)
+		audioFormats.delete(callId)
 	}
 
 	const stopCall = (callId: string): void => stopCallWith(callId, 'call-ended')
@@ -409,9 +483,16 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		}
 		sinks.clear()
 		videoSinks.clear()
+		audioFormats.clear()
 	}
 
 	return {
+		setAudioFormat(callId, format) {
+			audioFormats.set(callId, format)
+		},
+		getAudioFormat(callId) {
+			return audioFormats.get(callId)
+		},
 		addAudioSink(callId, sink) {
 			let set = sinks.get(callId)
 			if (!set) {
@@ -763,6 +844,13 @@ export interface CallAudioPumpOptions {
 	/** Called per shed packet with the running shed total. */
 	onShed?: (shedTotal: number) => void
 	/**
+	 * Declares the grammar the source emits. The socket pump checks it
+	 * against the call's negotiated promise before the first pull, so a
+	 * wrong-grammar source fails fast instead of pushing packets the engine
+	 * sheds forever. Omitted means the caller takes responsibility.
+	 */
+	audioFormat?: CallAudioFormat
+	/**
 	 * Pull pacing. Defaults to `{ mode: 'source' }`: pull as fast as the
 	 * source yields. Pair `{ mode: 'clock' }` with an unpaced source
 	 * (`intervalMs: 0`) — pacing twice just adds the two cadences together.
@@ -1081,7 +1169,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			// Normalized, not passed through: the pinned bridge takes the
 			// format as required with no default, so an omitted promise would
 			// fail there instead of meaning mlow.
-			return withAudioClient('dialCall', client => client.dialCall(peerJid, audioFormat ?? 'mlow'))
+			const format = audioFormat ?? 'mlow'
+			const callId = await withAudioClient('dialCall', client => client.dialCall(peerJid, format))
+			media.setAudioFormat(callId, format)
+			return callId
 		},
 		/**
 		 * Answer a ringing call with encoded audio. The offer arrives on the
@@ -1091,16 +1182,33 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		acceptCall: async (callId: string, audioFormat?: CallAudioFormat): Promise<string> => {
 			assertCallId('acceptCall', callId)
 			assertArgumentDomain('acceptCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
-			return withAudioClient('acceptCall', client => client.acceptCall(callId, audioFormat ?? 'mlow'))
+			const format = audioFormat ?? 'mlow'
+			const liveId = await withAudioClient('acceptCall', client => client.acceptCall(callId, format))
+			media.setAudioFormat(liveId, format)
+			return liveId
 		},
 		/**
 		 * Push one encoded packet toward the peer. Resolves `true` when the
 		 * packet entered the engine queue, `false` when it was shed under
 		 * backpressure — the normal loss-tolerant answer, not an error.
+		 *
+		 * Pass ffmpeg-shaped packets straight through: on opus calls the
+		 * engine rewrites Opus to the MLOW escape in flight, so
+		 * pre-packetizing would rewrite twice and corrupt the TOC. A packet
+		 * the escape cannot carry rejects naming `data` instead of queueing.
+		 *
+		 * The optional promise declares which grammar the packet carries. The
+		 * bytes are opaque, so the declaration is checked against the format
+		 * the call negotiated (recorded on accept/dial), not against the
+		 * payload: a wrong-grammar push fails here with a 400 instead of
+		 * dying silently in the engine and shedding forever. Omitted means
+		 * the caller takes responsibility, as before.
 		 */
-		pushCallAudio: async (callId: string, data: Uint8Array): Promise<boolean> => {
+		pushCallAudio: async (callId: string, data: Uint8Array, audioFormat?: CallAudioFormat): Promise<boolean> => {
 			assertCallId('pushCallAudio', callId)
 			assertAudioPacket('pushCallAudio', data)
+			assertArgumentDomain('pushCallAudio', 'audioFormat', audioFormat, AUDIO_FORMATS)
+			assertPushFormat('pushCallAudio', media, callId, audioFormat)
 			return withAudioClient('callPushAudio', client => client.callPushAudio(callId, data))
 		},
 		/**
@@ -1147,8 +1255,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			}
 			media.trackPump(callId, invalidate)
 			return {
-				tryWrite: packet => {
+				tryWrite: (packet, audioFormat) => {
 					assertAudioPacket('tryWrite', packet)
+					assertArgumentDomain('tryWrite', 'audioFormat', audioFormat, AUDIO_FORMATS)
+					assertPushFormat('tryWrite', media, callId, audioFormat)
 					if (closed) return false
 					return client.callPushAudio(callId, packet)
 				},
@@ -1199,6 +1309,16 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			return withAudioClient('getCallMediaStats', client =>
 				normalizeCallMediaStats('getCallMediaStats', client.getCallMediaStats(callId))
 			)
+		},
+		/**
+		 * The audio promise a call negotiated, recorded on accept/dial
+		 * success. `undefined` means the call was never negotiated through
+		 * this socket or already ended. Pure registration read: it never
+		 * reaches the bridge, so there is no capability probe and no 501.
+		 */
+		getCallAudioFormat: (callId: string): CallAudioFormat | undefined => {
+			assertCallId('getCallAudioFormat', callId)
+			return media.getAudioFormat(callId)
 		},
 		/** Every call the bridge currently holds a handle for. */
 		getActiveCalls: (): Promise<ActiveCall[]> => withAudioClient('getActiveCalls', client => client.getActiveCalls()),
@@ -1308,7 +1428,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * Run a packet source into a live call until it is spent, aborted, or
 		 * the call ends. Resolves the client once, then pushes directly; the
 		 * pump stops with the call on `ended` or socket teardown. The source
-		 * is a `next()` object or any async iterable of packets.
+		 * is a `next()` object or any async iterable of packets. A declared
+		 * `options.audioFormat` is checked against the negotiated promise up
+		 * front, so a wrong-grammar source fails here instead of shedding
+		 * forever once the pulls start.
 		 */
 		startCallAudioPump: async (
 			callId: string,
@@ -1317,6 +1440,8 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		): Promise<CallAudioPump> => {
 			assertCallId('startCallAudioPump', callId)
 			const packets = asCallAudioPacketSource('startCallAudioPump', source)
+			assertArgumentDomain('startCallAudioPump', 'audioFormat', options.audioFormat, AUDIO_FORMATS)
+			assertPushFormat('startCallAudioPump', media, callId, options.audioFormat)
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
 			// Rechecked after admission: teardown may have started — and its
 			// drain snapshotted — while the client promise was in flight. What
