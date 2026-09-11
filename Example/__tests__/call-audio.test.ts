@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import { expect } from '../../src/__tests__/expect.ts'
-import { getOpusSamples48k, muxOggOpus, splitVideoAccessUnits } from '../call.ts'
+import { auHasKeyframe, getOpusSamples48k, muxOggOpus, orientationFilter, splitVideoAccessUnits } from '../call.ts'
 
 describe('getOpusSamples48k', () => {
 	it('calculates SILK WB 60ms frames (2880 samples at 48kHz)', () => {
@@ -89,5 +89,31 @@ describe('splitVideoAccessUnits', () => {
 		expect(units.length).toBe(2)
 		expect(units[0]).toEqual(au1)
 		expect(units[1]).toEqual(au2)
+	})
+})
+
+describe('orientationFilter', () => {
+	it('maps WhatsApp orientation 0..3 to ffplay video filters', () => {
+		expect(orientationFilter(0)).toBe(null)
+		expect(orientationFilter(1)).toBe('transpose=cclock')
+		expect(orientationFilter(2)).toBe('hflip,vflip')
+		expect(orientationFilter(3)).toBe('transpose=clock')
+		expect(orientationFilter(5)).toBe('transpose=cclock')
+	})
+})
+
+describe('auHasKeyframe', () => {
+	it('detects IDR, SPS, and non-keyframe NALs', () => {
+		// IDR slice (type 5): 0x65 & 0x1f = 5
+		const idrAu = new Uint8Array([0, 0, 0, 1, 0x65, 0x88, 0x10])
+		expect(auHasKeyframe(idrAu)).toBe(true)
+
+		// SPS (type 7): 0x67 & 0x1f = 7
+		const spsAu = new Uint8Array([0, 0, 0, 1, 0x67, 0x42, 0x00])
+		expect(auHasKeyframe(spsAu)).toBe(true)
+
+		// Non-IDR slice (type 1): 0x41 & 0x1f = 1
+		const nonKeyAu = new Uint8Array([0, 0, 0, 1, 0x41, 0x9a])
+		expect(auHasKeyframe(nonKeyAu)).toBe(false)
 	})
 })

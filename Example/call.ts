@@ -387,7 +387,7 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 const spawnVideoEncoder = (source: string): ChildProcess => {
 	const input: string[] =
 		source === 'testsrc'
-			? ['-re', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=20']
+			? ['-re', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=15']
 			: source.includes('://') || source.includes('.')
 				? ['-re', '-i', source]
 				: process.platform === 'darwin'
@@ -400,9 +400,11 @@ const spawnVideoEncoder = (source: string): ChildProcess => {
 		[
 			...input,
 			'-vf',
-			'scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=20,format=yuv420p',
+			'scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=15,format=yuv420p,setparams=range=limited:color_primaries=unknown:color_trc=unknown:colorspace=unknown',
 			'-r',
-			'20',
+			'15',
+			'-fps_mode',
+			'cfr',
 			'-c:v',
 			'libx264',
 			'-profile:v',
@@ -416,9 +418,9 @@ const spawnVideoEncoder = (source: string): ChildProcess => {
 			'-tune',
 			'zerolatency',
 			'-g',
-			'60',
+			'45',
 			'-keyint_min',
-			'60',
+			'45',
 			'-sc_threshold',
 			'0',
 			'-b:v',
@@ -429,11 +431,11 @@ const spawnVideoEncoder = (source: string): ChildProcess => {
 			'495k',
 			'-x264-params',
 			'repeat-headers=1:sliced-threads=0:threads=1',
+			'-bsf:v',
+			'h264_metadata=aud=insert',
 			'-an',
 			'-f',
 			'h264',
-			'-aud',
-			'1',
 			'pipe:1'
 		],
 		{ stdio: ['ignore', 'pipe', 'inherit'] }
@@ -634,8 +636,49 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 	}
 }
 
+/** Map WhatsApp device orientation (0..=3) to an ffplay video filter string. */
+export const orientationFilter = (orientation: number): string | null => {
+	switch (orientation & 0x03) {
+		case 0:
+			return null
+		case 1:
+			return 'transpose=cclock'
+		case 2:
+			return 'hflip,vflip'
+		case 3:
+			return 'transpose=clock'
+		default:
+			return null
+	}
+}
+
+/** True when the AU carries an IDR slice or parameter set (SPS/PPS). */
+export const auHasKeyframe = (au: Uint8Array): boolean => {
+	for (let i = 0; i + 3 <= au.length; i++) {
+		if (au[i] === 0 && au[i + 1] === 0) {
+			let nalPos = -1
+			if (i + 4 <= au.length && au[i + 2] === 0 && au[i + 3] === 1) {
+				nalPos = i + 4
+			} else if (au[i + 2] === 1) {
+				if (i === 0 || au[i - 1] !== 0) {
+					nalPos = i + 3
+				}
+			}
+			if (nalPos >= 0 && nalPos < au.length) {
+				const nalType = au[nalPos]! & 0x1f
+				if (nalType === 5 || nalType === 7 || nalType === 8) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 /** ffplay renders raw H.264 fed on stdin. One window per call, like audio. */
-const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => {
+const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; stop(): void } => {
+	const filter = orientationFilter(orientation)
+	const vfArgs = filter ? ['-vf', filter] : []
 	const ffplay = spawn(
 		'ffplay',
 		[
@@ -664,7 +707,8 @@ const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => 
 			'-f',
 			'h264',
 			'-framerate',
-			'20',
+			'15',
+			...vfArgs,
 			'-i',
 			'pipe:0'
 		],
@@ -673,7 +717,13 @@ const spawnVideoPlayer = (): { write(unit: Uint8Array): void; stop(): void } => 
 	ffplay.on('error', err => console.error('ffplay (video) failed to start:', (err as Error).message))
 	return {
 		write: unit => {
-			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(unit)
+			if (ffplay.stdin && !ffplay.stdin.destroyed) {
+				try {
+					ffplay.stdin.write(unit)
+				} catch {
+					// ignore
+				}
+			}
 		},
 		stop: () => {
 			try {
@@ -968,25 +1018,55 @@ const main = async (): Promise<void> => {
 	let hasSeenInboundKeyframe = false
 	let videoActive = false
 	let pendingPeerVideoUpgrade = false
+	let player: { write(unit: Uint8Array): void; stop(): void } | null = null
+	let playerOrientation: number | null = null
+	let pendingOrientation: number | null = null
+	let inboundFrameCount = 0
+
 	const startVideoPlayback = (): void => {
 		if (stopVideoSink) return
 		hasSeenInboundKeyframe = false
-		const player = spawnVideoPlayer()
+		player = null
+		playerOrientation = null
+		pendingOrientation = null
+		inboundFrameCount = 0
 		const currentCallId = liveCallId
 		stopVideoSink = sock.onCallVideo(liveCallId!, frame => {
 			if (frame.callId !== liveCallId) return
+			inboundFrameCount++
+			const orientation = frame.orientation & 0x03
+			if (playerOrientation !== null && orientation !== playerOrientation) {
+				console.log(`🎥 peer camera orientation changed to ${orientation * 90}° — correcting preview`)
+				pendingOrientation = orientation
+			}
 			if (frame.keyframe) {
 				hasSeenInboundKeyframe = true
+				if (pendingOrientation !== null) {
+					player?.stop()
+					player = spawnVideoPlayer(pendingOrientation)
+					playerOrientation = pendingOrientation
+					pendingOrientation = null
+				}
 			} else if (!hasSeenInboundKeyframe) {
-				if (currentCallId) {
+				if (currentCallId && inboundFrameCount % 15 === 1) {
 					void sock.requestCallKeyframe(currentCallId, 'immediate').catch(() => {})
 				}
 				return
 			}
-			console.log(`video: ${frame.data.length}B keyframe=${frame.keyframe} orientation=${frame.orientation}`)
+			if (!player) {
+				player = spawnVideoPlayer(orientation)
+				playerOrientation = orientation
+				pendingOrientation = null
+			}
+			if (inboundFrameCount % 30 === 1 || frame.keyframe) {
+				console.log(`video: ${frame.data.length}B keyframe=${frame.keyframe} orientation=${frame.orientation}`)
+			}
 			player.write(frame.data)
 		})
-		stopVideoPlayer = () => player.stop()
+		stopVideoPlayer = () => {
+			player?.stop()
+			player = null
+		}
 		if (currentCallId) {
 			void sock.requestCallKeyframe(currentCallId, 'immediate').catch(() => {})
 		}
@@ -1171,9 +1251,15 @@ const main = async (): Promise<void> => {
 		const child = spawnVideoEncoder(source)
 		videoEncoder = child
 		const splitter = splitVideoAccessUnits()
+		let outboundAuCount = 0
 		child.stdout?.on('data', (chunk: Buffer) => {
 			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
 			for (const unit of splitter.push(new Uint8Array(chunk))) {
+				outboundAuCount++
+				const isKeyframe = auHasKeyframe(unit)
+				if (outboundAuCount % 30 === 1 || isKeyframe) {
+					console.log(`🎥 OUT video: AU #${outboundAuCount} (${unit.length}B, keyframe=${isKeyframe})`)
+				}
 				if (videoWriter) {
 					try {
 						const accepted = videoWriter.tryWrite(unit)
