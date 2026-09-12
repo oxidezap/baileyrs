@@ -61,7 +61,7 @@ import {
 } from '../lib/index.js'
 import { createRtcTunnelRelayProvider, isProductionRelayMode } from './rtc-tunnel-relay.ts'
 
-type MlowAudioDecoder = {
+export type MlowAudioDecoder = {
 	decode(packet: Uint8Array, payloadType?: number): Float32Array
 	reset(): void
 	free(): void
@@ -69,11 +69,14 @@ type MlowAudioDecoder = {
 
 type MlowAudioDecoderConstructor = new () => MlowAudioDecoder
 
-const mlowAudioDecoderConstructor = (): MlowAudioDecoderConstructor => {
+export const createMlowAudioDecoder = (): MlowAudioDecoder => {
 	const constructor = (bridge as unknown as { MlowAudioDecoder?: MlowAudioDecoderConstructor }).MlowAudioDecoder
 	if (constructor === undefined) throw new Error('installed bridge does not expose MlowAudioDecoder')
-	return constructor
+	return new constructor()
 }
+
+export const decodeMlowAudioFrame = (decoder: MlowAudioDecoder, frame: CallAudioFrame): Float32Array =>
+	decoder.decode(frame.data, frame.payloadType)
 
 const usage = (): never => {
 	console.error(
@@ -502,7 +505,7 @@ interface AudioJitterBufferOptions {
  * Smooths out network inter-arrival jitter, re-orders datagrams delivered out-of-order,
  * and advances the timeline when packets are lost so Ogg Opus PLC can interpolate cleanly.
  */
-class AudioJitterBuffer {
+export class AudioJitterBuffer {
 	private readonly preRoll: number
 	private readonly maxDelay: number
 	private readonly onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
@@ -578,11 +581,8 @@ class AudioJitterBuffer {
 		}
 	}
 
-	flush(): void {
-		while (this.buffer.length > 0) {
-			const frame = this.buffer.shift()!
-			this.onPacket(frame, 0)
-		}
+	clear(): void {
+		this.buffer.length = 0
 		this.expectedSeq = null
 		this.primed = false
 	}
@@ -1039,7 +1039,7 @@ const main = async (): Promise<void> => {
 	let pushAudioFrame: ((frame: CallAudioFrame) => void) | undefined
 	let stopPlaying: (() => void) | undefined
 	const startPlayback = (): void => {
-		const decoder = new (mlowAudioDecoderConstructor())()
+		const decoder = createMlowAudioDecoder()
 		let mode: 'mlow' | 'opus' = 'opus'
 		let mux = muxOggOpus()
 		let player: { write(data: Uint8Array): void; stop(): void } = spawnOpusPlayer()
@@ -1070,7 +1070,7 @@ const main = async (): Promise<void> => {
 					switchMode('mlow')
 					for (let missing = 0; missing < gapSamples / 2880; missing++)
 						decoder.decode(new Uint8Array(), frame.payloadType)
-					const pcm = decoder.decode(frame.data, frame.payloadType)
+					const pcm = decodeMlowAudioFrame(decoder, frame)
 					player.write(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength))
 					return
 				}
@@ -1087,7 +1087,7 @@ const main = async (): Promise<void> => {
 
 		pushAudioFrame = frame => jitterBuffer.push(frame)
 		stopPlaying = () => {
-			jitterBuffer.flush()
+			jitterBuffer.clear()
 			player.stop()
 			decoder.free()
 			pushAudioFrame = undefined
@@ -1165,12 +1165,7 @@ const main = async (): Promise<void> => {
 	let videoEncoder: ChildProcess | null = null
 	let videoWriter: CallVideoWriter | null = null
 	let outboundVideoShed = 0
-	// The mlow outbound path: no MLOW encoder exists here, so an mlow call
-	// pushes the silence token the core accepts under both promises. A pump,
-	// not a bare interval, so backpressure sheds with counts and hangup stops
-	// it with the call. Null unless an mlow call is live.
-
-	// The Opus encoder runs only on opus calls while a call is live: a file
+	// The Opus encoder runs only on `opus-mlow` calls while a call is live: a file
 	// input exhausts, starting it at launch would spend the audio before
 	// anyone answers, and pushing Opus grammar into an mlow call dies in the
 	// engine and sheds forever. That mixup is what the mlow path above is for.
@@ -1513,10 +1508,9 @@ const main = async (): Promise<void> => {
 		}
 		accepting = true
 		try {
-			// For this ffmpeg example, the application source format is opus.
-			// The peer may send native Opus or MLOW (asymmetric escape).
+			// The ffmpeg source is CELT Opus that the bridge rewrites through MLOW.
 			const withVideo = (args.video !== undefined || call.isVideo) === true
-			const id = await sock.acceptCall(call.id, 'opus', withVideo)
+			const id = await sock.acceptCall(call.id, 'opus-mlow', withVideo)
 			liveCallId = id
 			muted = false
 			inboundAudioFrames = 0
@@ -1552,7 +1546,7 @@ const main = async (): Promise<void> => {
 	})
 
 	if (args.command === 'dial') {
-		// Outbound dials promise opus: opus is the grammar ffmpeg encodes here.
+		// Both dial and accept promise the CELT Opus source that the bridge rewrites.
 		sourceFormat = 'opus-mlow'
 		const withVideo = args.video !== undefined
 		const id = await sock.dialCall(args.peer!, 'opus-mlow', withVideo)

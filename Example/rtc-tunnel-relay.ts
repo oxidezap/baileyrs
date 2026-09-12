@@ -113,7 +113,7 @@ export const createRtcTunnelRelayProvider = async (
 				}
 			}
 
-			if (liveRelays) {
+			if (!closed && liveRelays) {
 				liveRelays.add(bridgeHandle)
 			}
 

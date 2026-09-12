@@ -279,4 +279,23 @@ describe('rtc-tunnel relay provider', () => {
 
 		expect(udpCalled).toBe(false)
 	})
+
+	it('does not retain a relay that closes before initialization returns', async () => {
+		const liveRelays = new Set<{ close(): unknown }>()
+		let closeReason: string | undefined
+		const tunnelProvider: RelayTransportProvider = {
+			createRelayConnection: async (_params, events) => {
+				events.onOpen()
+				events.onClose('immediate-close')
+				return { send: () => {}, close: () => {} }
+			}
+		}
+		const provider = await createRtcTunnelRelayProvider({ tunnelProvider, liveRelays })
+		await provider.createRelayConnection(
+			{ address: '1.2.3.4', port: 1234, iceUfrag: 'u', icePwd: 'p' },
+			{ onOpen: () => {}, onPacket: () => {}, onClose: reason => (closeReason = reason) }
+		)
+		expect(closeReason).toBe('immediate-close')
+		expect(liveRelays.size).toBe(0)
+	})
 })

@@ -3,6 +3,7 @@ import type { CallAudioFrame } from '../../src/Types/Call.ts'
 import { expect } from '../../src/__tests__/expect.ts'
 import {
 	auHasKeyframe,
+	AudioJitterBuffer,
 	getOpusConfig,
 	getOpusSamples48k,
 	type InboundAudioRouterState,
@@ -10,6 +11,8 @@ import {
 	muxOggOpus,
 	orientationFilter,
 	processInboundCallAudioFrame,
+	createMlowAudioDecoder,
+	decodeMlowAudioFrame,
 	splitVideoAccessUnits
 } from '../call.ts'
 
@@ -40,6 +43,36 @@ describe('getOpusSamples48k', () => {
 
 	it('falls back safely on empty packet', () => {
 		expect(getOpusSamples48k(new Uint8Array(0))).toBe(960)
+	})
+})
+
+describe('AudioJitterBuffer', () => {
+	it('clears queued frames without playing them', () => {
+		const played: number[] = []
+		const buffer = new AudioJitterBuffer({
+			preRoll: 3,
+			maxDelay: 8,
+			onPacket: frame => played.push(frame.sequenceNumber)
+		})
+		const frame = (sequenceNumber: number): CallAudioFrame => ({
+			callId: 'call-1',
+			codec: 'mlow',
+			format: 'mlow',
+			data: new Uint8Array([0x90]),
+			payloadType: 120,
+			sequenceNumber,
+			timestamp: sequenceNumber * 2880,
+			marker: false
+		})
+
+		buffer.push(frame(1))
+		buffer.push(frame(2))
+		buffer.clear()
+		buffer.push(frame(10))
+		buffer.push(frame(11))
+		buffer.push(frame(12))
+
+		expect(played).toEqual([10, 11, 12])
 	})
 })
 
@@ -211,6 +244,24 @@ describe('isOpusCeltOnly and getOpusConfig', () => {
 })
 
 describe('processInboundCallAudioFrame', () => {
+	it('decodes a real MLOW silence frame and frees the stateful decoder', () => {
+		const decoder = createMlowAudioDecoder()
+		const pcm = decodeMlowAudioFrame(decoder, {
+			callId: 'call-1',
+			codec: 'mlow',
+			format: 'mlow',
+			data: new Uint8Array([0x90]),
+			payloadType: 120,
+			sequenceNumber: 1,
+			timestamp: 0,
+			marker: false
+		})
+		expect(pcm instanceof Float32Array).toBe(true)
+		expect(pcm.length > 0).toBe(true)
+		decoder.reset()
+		decoder.free()
+	})
+
 	it('dispatches inbound opus frames with their actual format', () => {
 		const state: InboundAudioRouterState = {}
 		const dispatched: CallAudioFrame[] = []

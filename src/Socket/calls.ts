@@ -120,7 +120,7 @@ const KEYFRAME_URGENCIES = ['coalesced', 'immediate'] as const
  * Rewrite one RFC Opus packet to the MLOW escape the engine carries, for
  * hosts that queue packets outside `pushCallAudio` (custom transports,
  * offline fixtures). Ordinary pushes must NOT use this: the engine rewrites
- * Opus packets in flight on opus calls, so a pre-packetized packet would be
+ * Opus packets in flight on `opus-mlow` calls, so a pre-packetized packet would be
  * rewritten twice and corrupt the TOC.
  */
 export const packetizeOpusForMlow = (data: Uint8Array): Uint8Array => {
@@ -1236,7 +1236,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 * packet entered the engine queue, `false` when it was shed under
 		 * backpressure — the normal loss-tolerant answer, not an error.
 		 *
-		 * Pass ffmpeg-shaped packets straight through: on opus calls the
+		 * Pass ffmpeg-shaped packets straight through: on `opus-mlow` calls the
 		 * engine rewrites Opus to the MLOW escape in flight, so
 		 * pre-packetizing would rewrite twice and corrupt the TOC. A packet
 		 * the escape cannot carry rejects naming `data` instead of queueing.

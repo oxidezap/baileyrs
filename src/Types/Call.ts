@@ -89,8 +89,8 @@ export type CallAudioFrame = {
 
 /**
  * Lifecycle and media diagnostics for one live call. Only the encoded-audio
- * 1:1 subset crosses in this slice; group, video, reaction and RTCP events
- * belong to later slices.
+ * 1:1 subset crosses in this slice; group, reaction and RTCP events belong to
+ * later slices.
  */
 export type CallMediaEventKind =
 	| 'relay-allocated'
