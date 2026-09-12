@@ -60,20 +60,29 @@ export const createRtcTunnelRelayProvider = async (
 
 			const wrappedEvents: CallRelayConnectionEvents = {
 				onOpen() {
-					events.onOpen()
+					if (closed) return
+					try {
+						events.onOpen()
+					} catch {
+						// Bridge client may already be torn down
+					}
 				},
 				onPacket(data) {
-					events.onPacket(data)
+					if (closed) return
+					try {
+						events.onPacket(data)
+					} catch {
+						// Bridge client may already be torn down
+					}
 				},
 				onClose(reason) {
-					if (!closed) {
-						closed = true
-						if (bridgeHandle && liveRelays) {
-							liveRelays.delete(bridgeHandle)
-						}
-						if (handle) {
-							logNonZeroStats(handle)
-						}
+					if (closed) return
+					closed = true
+					if (bridgeHandle && liveRelays) {
+						liveRelays.delete(bridgeHandle)
+					}
+					if (handle) {
+						logNonZeroStats(handle)
 					}
 					try {
 						events.onClose(reason)
@@ -98,7 +107,7 @@ export const createRtcTunnelRelayProvider = async (
 
 			bridgeHandle = {
 				send(data: Uint8Array) {
-					handle?.send(data)
+					if (!closed) handle?.send(data)
 				},
 				close() {
 					if (closed) return

@@ -102,14 +102,13 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 	let ws: WebSocket | undefined
 	let handle: JsTransportHandle | undefined
 	let disconnectTarget: WebSocket | undefined
+	let connectionGeneration = 0
 	const abortControllers = new WeakMap<WebSocket, AbortController>()
 
 	return {
 		async connect(h: JsTransportHandle) {
-			handle = h
+			const generation = ++connectionGeneration
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
-
-			disconnectTarget = ws
 
 			const wsOptions: Record<string, unknown> = {}
 			if (typeof process !== 'undefined' && process.versions?.node) {
@@ -118,12 +117,13 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 				// their own dispatcher first.
 				const insecure = config.dangerSkipCertChainVerify === true || process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0'
 				const dispatcher = config.options?.dispatcher ?? (await getDefaultDispatcher(insecure))
+				if (generation !== connectionGeneration) throw new Error('WebSocket connection superseded')
 				if (dispatcher) wsOptions.dispatcher = dispatcher
-				wsOptions.headers = {
-					Origin: DEFAULT_ORIGIN,
-					...(config.options?.headers as Record<string, string> | undefined)
-				}
+				wsOptions.headers = { Origin: DEFAULT_ORIGIN }
 			}
+			if (generation !== connectionGeneration) throw new Error('WebSocket connection superseded')
+			handle = h
+			disconnectTarget = ws
 
 			const newWs = Object.keys(wsOptions).length > 0 ? new WebSocket(url, wsOptions as never) : new WebSocket(url)
 			newWs.binaryType = 'arraybuffer'
@@ -212,6 +212,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			}
 		},
 		async disconnect() {
+			connectionGeneration++
 			const toClose = disconnectTarget ?? ws
 			if (toClose === ws) ws = undefined
 			disconnectTarget = undefined

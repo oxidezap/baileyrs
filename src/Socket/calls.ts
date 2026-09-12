@@ -166,6 +166,12 @@ const assertCallId = (method: string, callId: string): void => {
 	}
 }
 
+const assertOptionalBoolean = (method: string, name: string, value: unknown): void => {
+	if (value !== undefined && typeof value !== 'boolean') {
+		throw new Boom(`${method}: ${name} must be a boolean`, { statusCode: 400 })
+	}
+}
+
 const assertNonEmptyPacket = (method: string, data: Uint8Array, detail?: string): void => {
 	if (!(data instanceof Uint8Array) || data.length === 0) {
 		const suffix = detail ? ` (${detail})` : ''
@@ -275,7 +281,7 @@ const normalizeNumericRecord = <T extends Record<string, number>>(
 	const result = {} as Record<string, number>
 	for (const field of requiredFields as readonly string[]) {
 		const value = record[field]
-		if (typeof value !== 'number' || !Number.isFinite(value)) {
+		if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
 			throw new Boom(`${method}: bridge ${entityName} field ${field} is not a number`, { statusCode: 500 })
 		}
 		result[field] = value
@@ -283,7 +289,7 @@ const normalizeNumericRecord = <T extends Record<string, number>>(
 	for (const field of optionalFields as readonly string[]) {
 		const value = record[field]
 		if (value === undefined) continue
-		if (typeof value !== 'number' || !Number.isFinite(value)) {
+		if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
 			throw new Boom(`${method}: bridge ${entityName} field ${field} is not a number`, { statusCode: 500 })
 		}
 		result[field] = value
@@ -376,6 +382,7 @@ const isVideoFrame = (frame: unknown): frame is CallVideoFrame => {
 	return (
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
+		record.data.length > 0 &&
 		typeof record.keyframe === 'boolean' &&
 		isIntegerInRange(record.orientation, 0, 3) &&
 		isIntegerInRange(record.timestamp, 0, 4294967295)
@@ -392,6 +399,7 @@ const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 	return (
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
+		record.data.length > 0 &&
 		(record.codec === 'mlow' || record.codec === 'opus') &&
 		(record.format === 'mlow' || record.format === 'opus' || record.format === 'opus-mlow') &&
 		isIntegerInRange(record.payloadType, 0, 127) &&
@@ -446,7 +454,13 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 		case 'video-state-changed':
 			return optionalFiniteNumber(record.state)
 		default:
-			return true
+			if (record.stats === undefined) return true
+			try {
+				normalizeCallMediaStats('call media event', record.stats)
+				return true
+			} catch {
+				return false
+			}
 	}
 }
 
@@ -516,6 +530,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	// the sinks below. An ended call negotiates nothing.
 	const sourceFormats = new Map<string, CallAudioFormat>()
 	const pcmCalls = new Set<string>()
+	const terminalCalls = new Set<string>()
 	// Pumps stopped but whose `done` has not settled: `drainAll` waits for
 	// these, so ending a call and then the socket cannot strand source
 	// cleanup behind a teardown that already resolved. Entries leave when
@@ -593,14 +608,17 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		videoSinks.clear()
 		sourceFormats.clear()
 		pcmCalls.clear()
+		terminalCalls.clear()
 	}
 
 	return {
 		setSourceFormat(callId, format) {
+			if (terminalCalls.has(callId)) return
 			if (pcmCalls.has(callId)) throw new Boom(`call ${callId} already uses PCM audio`, { statusCode: 409 })
 			sourceFormats.set(callId, format)
 		},
 		setPcmSource(callId) {
+			if (terminalCalls.has(callId)) return
 			if (sourceFormats.has(callId)) throw new Boom(`call ${callId} already uses encoded audio`, { statusCode: 409 })
 			pcmCalls.add(callId)
 		},
@@ -623,7 +641,10 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				reportError(new Error('bridge delivered a malformed call media event'), 'call media event dropped')
 				return
 			}
-			if (event.kind === 'ended') stopCall(event.callId)
+			if (event.kind === 'ended') {
+				terminalCalls.add(event.callId)
+				stopCall(event.callId)
+			}
 			// Guarded like every other dispatch into consumer code: a throwing
 			// `call.media` listener must not propagate through the bridge's
 			// `onCallEvent` callback, which answers a throw by stopping its
@@ -1266,6 +1287,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 				throw new Boom('dialCall: peerJid must be a non-empty string', { statusCode: 400 })
 			}
 			assertArgumentDomain('dialCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
+			assertOptionalBoolean('dialCall', 'withVideo', withVideo)
 			// Normalized, not passed through: the pinned bridge takes the
 			// format as required with no default, so an omitted promise would
 			// fail there instead of meaning mlow.
@@ -1278,6 +1300,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			if (typeof peerJid !== 'string' || peerJid.length === 0) {
 				throw new Boom('dialCallPcm: peerJid must be a non-empty string', { statusCode: 400 })
 			}
+			assertOptionalBoolean('dialCallPcm', 'withVideo', withVideo)
 			const callId = await withAudioClient('dialCallPcm', client => client.dialCallPcm(peerJid, withVideo))
 			media.setPcmSource(callId)
 			return callId
@@ -1290,6 +1313,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		acceptCall: async (callId: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string> => {
 			assertCallId('acceptCall', callId)
 			assertArgumentDomain('acceptCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
+			assertOptionalBoolean('acceptCall', 'withVideo', withVideo)
 			const format = audioFormat ?? 'mlow'
 			const liveId = await withAudioClient('acceptCall', client => client.acceptCall(callId, format, withVideo))
 			media.setSourceFormat(liveId, format)
@@ -1297,6 +1321,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		},
 		acceptCallPcm: async (callId: string, withVideo?: boolean): Promise<string> => {
 			assertCallId('acceptCallPcm', callId)
+			assertOptionalBoolean('acceptCallPcm', 'withVideo', withVideo)
 			const liveId = await withAudioClient('acceptCallPcm', client => client.acceptCallPcm(callId, withVideo))
 			media.setPcmSource(liveId)
 			return liveId
@@ -1400,8 +1425,11 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 				close
 			})),
 		/** Mute or unmute the mic on a live call. */
-		setCallMuted: (callId: string, muted: boolean): Promise<void> =>
-			callAudioMethod('setCallMuted', callId, client => client.setCallMuted(callId, muted)),
+		setCallMuted: (callId: string, muted: boolean): Promise<void> => {
+			assertCallId('setCallMuted', callId)
+			assertOptionalBoolean('setCallMuted', 'muted', muted)
+			return callAudioMethod('setCallMuted', callId, client => client.setCallMuted(callId, muted))
+		},
 		/** Media counters for one call; readable after the call ends. */
 		getCallMediaStats: (callId: string): Promise<CallMediaStats> => {
 			assertCallId('getCallMediaStats', callId)
