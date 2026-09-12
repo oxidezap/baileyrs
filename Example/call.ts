@@ -404,27 +404,46 @@ export const splitPcm16Frames = (
 	frameSamples = 960
 ): { push(bytes: Uint8Array): Int16Array[]; flush(): Int16Array[] } => {
 	if (!Number.isInteger(frameSamples) || frameSamples <= 0) throw new Error('frameSamples must be a positive integer')
-	let pending = new Uint8Array(0)
-	const take = (): Int16Array[] => {
-		const frameBytes = frameSamples * 2
-		const frames: Int16Array[] = []
-		while (pending.length >= frameBytes) {
-			const bytes = pending.slice(0, frameBytes)
-			pending = pending.slice(frameBytes)
-			frames.push(new Int16Array(bytes.buffer, bytes.byteOffset, frameSamples))
-		}
-		return frames
-	}
+	const frameBytes = frameSamples * 2
+	const scratch = new Uint8Array(frameBytes)
+	let pendingLength = 0
 	return {
 		push(bytes) {
-			const merged = new Uint8Array(pending.length + bytes.length)
-			merged.set(pending)
-			merged.set(bytes, pending.length)
-			pending = merged
-			return take()
+			const frames: Int16Array[] = []
+			let offset = 0
+			if (pendingLength > 0) {
+				const copied = Math.min(frameBytes - pendingLength, bytes.length)
+				scratch.set(bytes.subarray(0, copied), pendingLength)
+				pendingLength += copied
+				offset = copied
+				if (pendingLength < frameBytes) return frames
+				const completed = new Int16Array(frameSamples)
+				new Uint8Array(completed.buffer).set(scratch)
+				frames.push(completed)
+				pendingLength = 0
+			}
+
+			while (offset + frameBytes <= bytes.length) {
+				const byteOffset = bytes.byteOffset + offset
+				if (byteOffset % Int16Array.BYTES_PER_ELEMENT === 0) {
+					frames.push(new Int16Array(bytes.buffer, byteOffset, frameSamples))
+				} else {
+					const copied = new Int16Array(frameSamples)
+					new Uint8Array(copied.buffer).set(bytes.subarray(offset, offset + frameBytes))
+					frames.push(copied)
+				}
+				offset += frameBytes
+			}
+
+			if (offset < bytes.length) {
+				const remaining = bytes.length - offset
+				scratch.set(bytes.subarray(offset), 0)
+				pendingLength = remaining
+			}
+			return frames
 		},
 		flush() {
-			if (pending.length !== 0) throw new Error('PCM16 input ended with a partial frame')
+			if (pendingLength !== 0) throw new Error('PCM16 input ended with a partial frame')
 			return []
 		}
 	}
