@@ -13,6 +13,7 @@ import {
 	processInboundCallAudioFrame,
 	createMlowAudioDecoder,
 	decodeMlowAudioFrame,
+	getMlowFrameDurationMs,
 	splitVideoAccessUnits
 } from '../call.ts'
 
@@ -73,6 +74,15 @@ describe('AudioJitterBuffer', () => {
 		buffer.push(frame(12))
 
 		expect(played).toEqual([10, 11, 12])
+	})
+})
+
+describe('getMlowFrameDurationMs', () => {
+	it('maps the MLOW TOC duration field', () => {
+		expect(getMlowFrameDurationMs(0x00)).toBe(10)
+		expect(getMlowFrameDurationMs(0x01)).toBe(20)
+		expect(getMlowFrameDurationMs(0x02)).toBe(60)
+		expect(getMlowFrameDurationMs(0x03)).toBe(120)
 	})
 })
 

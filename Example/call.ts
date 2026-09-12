@@ -52,10 +52,8 @@ import {
 	fetchLatestWaWebVersion,
 	makeWASocket,
 	useMultiFileAuthState,
-	type CallAudioBuffer,
 	type CallAudioFrame,
 	type CallAudioWriter,
-	type CallMediaStats,
 	type CallVideoWriter,
 	type WACallEvent
 } from '../lib/index.js'
@@ -617,7 +615,19 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
 	const ffplay = spawn(
 		'ffplay',
-		['-hide_banner', '-loglevel', 'warning', '-nodisp', '-f', 'f32le', '-ar', '16000', '-ac', '1', 'pipe:0'],
+		[
+			'-hide_banner',
+			'-loglevel',
+			'warning',
+			'-nodisp',
+			'-f',
+			'f32le',
+			'-ch_layout',
+			'mono',
+			'-sample_rate',
+			'16000',
+			'pipe:0'
+		],
 		{ stdio: ['pipe', 'ignore', 'inherit'] }
 	)
 	ffplay.on('error', err => console.error('ffplay PCM failed to start:', (err as Error).message))
@@ -638,6 +648,10 @@ const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
 		}
 	}
 }
+
+const MLOW_FRAME_DURATIONS_MS = [10, 20, 60, 120] as const
+
+export const getMlowFrameDurationMs = (toc: number): number => MLOW_FRAME_DURATIONS_MS[toc & 0x03]!
 
 // ── H.264 framing: ffmpeg speaks raw Annex-B, the bridge speaks access units ──
 
@@ -1033,6 +1047,10 @@ const main = async (): Promise<void> => {
 	let sourceFormat: 'mlow' | 'opus' | 'opus-mlow' = 'opus-mlow'
 	let peerCodec: 'mlow' | 'opus' | undefined
 	let inboundAudioFrames = 0
+	let inboundMlowFrames = 0
+	let outboundGenerated = 0
+	let outboundAccepted = 0
+	let outboundPushErrors = 0
 	// Playback is per call, not per process: hangup stops the player, and the
 	// next ring mints a fresh Ogg stream rather than writing into a dead
 	// stdin with stale sequence state.
@@ -1213,6 +1231,7 @@ const main = async (): Promise<void> => {
 					child.kill('SIGKILL')
 					return
 				}
+				outboundGenerated++
 				if (audioWriter) {
 					try {
 						const accepted = audioWriter.tryWrite(packet)
@@ -1227,9 +1246,11 @@ const main = async (): Promise<void> => {
 								)
 							}
 						} else {
+							outboundAccepted++
 							consecutiveSheds = 0
 						}
 					} catch (err) {
+						outboundPushErrors++
 						console.error('audio push error:', (err as Error).message)
 					}
 				} else {
@@ -1247,10 +1268,14 @@ const main = async (): Promise<void> => {
 									)
 								}
 							} else {
+								outboundAccepted++
 								consecutiveSheds = 0
 							}
 						})
-						.catch(err => console.error('push failed:', (err as Error).message))
+						.catch(err => {
+							outboundPushErrors++
+							console.error('push failed:', (err as Error).message)
+						})
 				}
 			}
 		})
@@ -1406,10 +1431,30 @@ const main = async (): Promise<void> => {
 
 	const onFrame = (frame: CallAudioFrame): void => {
 		inboundAudioFrames++
+		if (frame.codec === 'mlow') {
+			inboundMlowFrames++
+			if (inboundMlowFrames <= 20) {
+				const toc = frame.data[0] ?? 0
+				console.log(
+					`inbound mlow #${inboundMlowFrames} seq=${frame.sequenceNumber} ts=${frame.timestamp} pt=${frame.payloadType} format=${frame.format} len=${frame.data.length} toc=0x${toc.toString(16).padStart(2, '0')} duration-ms=${getMlowFrameDurationMs(toc)}`
+				)
+			}
+		}
 		const routerState: InboundAudioRouterState = { peerCodec }
 		processInboundCallAudioFrame(frame, routerState, pushAudioFrame)
 		peerCodec = routerState.peerCodec
 		if (inboundAudioFrames === 1) console.log(`inbound audio ${frame.codec} pt=${frame.payloadType}`)
+	}
+
+	const logCallStats = async (id: string, label: string): Promise<void> => {
+		try {
+			const [stats, buffer] = await Promise.all([sock.getCallMediaStats(id), sock.getCallAudioBuffer(id)])
+			console.log(
+				`${label} stats source=${sourceFormat} peer-codec=${peerCodec ?? 'none'} generated=${outboundGenerated} accepted=${outboundAccepted} shed-at-push=${shed} push-errors=${outboundPushErrors} no-encoder=${stats.outboundFramesWithoutEncoder} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} inbound=${inboundAudioFrames} mlow-inbound=${inboundMlowFrames} sink-dropped=${stats.audioSinkDropped} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+			)
+		} catch (err) {
+			console.error(`${label} stats failed:`, (err as Error).message)
+		}
 	}
 
 	const hangup = async (): Promise<void> => {
@@ -1429,6 +1474,7 @@ const main = async (): Promise<void> => {
 		stopEncoder()
 		stopVideoEncoder()
 		stopVideoPlayback()
+		await logCallStats(id, 'final')
 		try {
 			const end = await sock.endCall(id)
 			console.log('hangup:', end)
@@ -1514,6 +1560,11 @@ const main = async (): Promise<void> => {
 			liveCallId = id
 			muted = false
 			inboundAudioFrames = 0
+			inboundMlowFrames = 0
+			outboundGenerated = 0
+			outboundAccepted = 0
+			outboundPushErrors = 0
+			shed = 0
 			peerCodec = undefined
 			stopSink?.()
 			sourceFormat = 'opus-mlow'
@@ -1552,6 +1603,11 @@ const main = async (): Promise<void> => {
 		const id = await sock.dialCall(args.peer!, 'opus-mlow', withVideo)
 		liveCallId = id
 		inboundAudioFrames = 0
+		inboundMlowFrames = 0
+		outboundGenerated = 0
+		outboundAccepted = 0
+		outboundPushErrors = 0
+		shed = 0
 		peerCodec = undefined
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
@@ -1619,14 +1675,7 @@ const main = async (): Promise<void> => {
 			)
 		}
 		if (key?.name === 's' && liveCallId) {
-			const id = liveCallId
-			void Promise.all([sock.getCallMediaStats(id), sock.getCallAudioBuffer(id)])
-				.then(([stats, buffer]: [CallMediaStats, CallAudioBuffer]) =>
-					console.log(
-						`source=${sourceFormat} peer-codec=${peerCodec ?? 'none'} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} inbound=${inboundAudioFrames} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
-					)
-				)
-				.catch(err => console.error('stats failed:', (err as Error).message))
+			void logCallStats(liveCallId, 'live')
 		}
 		if (key?.name === 'v' && liveCallId) {
 			const id = liveCallId
