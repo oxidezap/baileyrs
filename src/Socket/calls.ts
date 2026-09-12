@@ -42,6 +42,9 @@ import type {
 	CallAudioStopReason,
 	CallAudioTiming,
 	CallAudioWriter,
+	CallPcmFrame,
+	CallPcmSink,
+	CallPcmWriter,
 	CallEndResult,
 	CallKeyframeUrgency,
 	CallMediaEvent,
@@ -70,7 +73,10 @@ import type { SocketContext } from './types.ts'
 export interface CallAudioBridgeClient {
 	acceptCall(callId: string, audioFormat: CallAudioFormat, withVideo?: boolean): Promise<string>
 	dialCall(peer: string, audioFormat: CallAudioFormat, withVideo?: boolean): Promise<string>
+	acceptCallPcm(callId: string, withVideo?: boolean): Promise<string>
+	dialCallPcm(peer: string, withVideo?: boolean): Promise<string>
 	callPushAudio(callId: string, data: Uint8Array): boolean
+	callPushPcm16(callId: string, samples: Int16Array): boolean
 	endCall(callId: string): Promise<CallEndResult>
 	setCallMuted(callId: string, muted: boolean): Promise<void>
 	getCallMediaStats(callId: string): CallMediaStats
@@ -168,6 +174,24 @@ const assertNonEmptyPacket = (method: string, data: Uint8Array, detail?: string)
 }
 
 const assertAudioPacket = (method: string, data: Uint8Array): void => assertNonEmptyPacket(method, data)
+
+const assertPcmSamples = (method: string, samples: Int16Array): void => {
+	if (!(samples instanceof Int16Array) || samples.length !== 960) {
+		throw new Boom(`${method}: samples must be a 960-sample Int16Array`, { statusCode: 400 })
+	}
+}
+
+const assertSourceMode = (
+	method: string,
+	media: Pick<CallMediaRouter, 'getSourceMode'>,
+	callId: string,
+	kind: string
+): void => {
+	const actualMode = media.getSourceMode(callId)
+	if (actualMode !== undefined && actualMode !== kind) {
+		throw new Boom(`${method}: call ${callId} uses ${actualMode} audio`, { statusCode: 409 })
+	}
+}
 
 /**
  * Fail a declared-format push against the call's negotiated promise. Only a
@@ -303,6 +327,8 @@ interface TrackedCallPump {
 export interface CallMediaRouter {
 	/** Register a per-call audio sink; the returned function unregisters it. */
 	addAudioSink(callId: string, sink: CallAudioSink): () => void
+	/** Register a per-call decoded PCM sink; the returned function unregisters it. */
+	addPcmSink(callId: string, sink: CallPcmSink): () => void
 	/** Register a per-call video sink; the returned function unregisters it. */
 	addVideoSink(callId: string, sink: CallVideoSink): () => void
 	/**
@@ -311,10 +337,16 @@ export interface CallMediaRouter {
 	 * never negotiated through this socket or already ended.
 	 */
 	setSourceFormat(callId: string, format: CallAudioFormat): void
+	/** Record that a call uses the core's decoded PCM path. */
+	setPcmSource(callId: string): void
+	/** Return the media mode negotiated for a call. */
+	getSourceMode(callId: string): 'encoded' | 'pcm' | undefined
 	/** The local source format recorded above, if the call is still tracked. */
 	getSourceFormat(callId: string): CallAudioFormat | undefined
 	/** Bridge `onCallAudio` entry point. Never throws: a throw here would stop the bridge pump. */
 	routeAudioFrame(frame: CallAudioFrame): void
+	/** Bridge `onCallPcm` entry point. Never throws. */
+	routePcmFrame(frame: CallPcmFrame): void
 	/** Bridge `onCallVideo` entry point. Never throws, same contract as audio. */
 	routeVideoFrame(frame: CallVideoFrame): void
 	/** Bridge `onCallEvent` entry point. Emits `call.media`; `ended` also stops the call. */
@@ -367,6 +399,12 @@ const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 		isIntegerInRange(record.timestamp, 0, 4294967295) &&
 		typeof record.marker === 'boolean'
 	)
+}
+
+const isPcmFrame = (frame: unknown): frame is CallPcmFrame => {
+	if (typeof frame !== 'object' || frame === null) return false
+	const record = frame as Record<string, unknown>
+	return typeof record.callId === 'string' && record.data instanceof Int16Array && record.data.length > 0
 }
 
 const MEDIA_EVENT_KINDS: readonly CallMediaEvent['kind'][] = [
@@ -469,6 +507,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	}
 
 	const audioSinks = makeSinkRegistry<CallAudioFrame>('audio', isAudioFrame)
+	const pcmSinks = makeSinkRegistry<CallPcmFrame>('PCM', isPcmFrame)
 	const videoSinks = makeSinkRegistry<CallVideoFrame>('video', isVideoFrame)
 	const pumps = new Map<string, Set<TrackedCallPump>>()
 	// The audio promise per live call, recorded on accept/dial: the bridge
@@ -476,6 +515,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	// the only JS-side record of which grammar a call speaks. Cleared with
 	// the sinks below. An ended call negotiates nothing.
 	const sourceFormats = new Map<string, CallAudioFormat>()
+	const pcmCalls = new Set<string>()
 	// Pumps stopped but whose `done` has not settled: `drainAll` waits for
 	// these, so ending a call and then the socket cannot strand source
 	// cleanup behind a teardown that already resolved. Entries leave when
@@ -525,8 +565,10 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			}
 		}
 		audioSinks.delete(callId)
+		pcmSinks.delete(callId)
 		videoSinks.delete(callId)
 		sourceFormats.delete(callId)
+		pcmCalls.delete(callId)
 	}
 
 	const stopCall = (callId: string): void => stopCallWith(callId, 'call-ended')
@@ -547,20 +589,34 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			}
 		}
 		audioSinks.clear()
+		pcmSinks.clear()
 		videoSinks.clear()
 		sourceFormats.clear()
+		pcmCalls.clear()
 	}
 
 	return {
 		setSourceFormat(callId, format) {
+			if (pcmCalls.has(callId)) throw new Boom(`call ${callId} already uses PCM audio`, { statusCode: 409 })
 			sourceFormats.set(callId, format)
+		},
+		setPcmSource(callId) {
+			if (sourceFormats.has(callId)) throw new Boom(`call ${callId} already uses encoded audio`, { statusCode: 409 })
+			pcmCalls.add(callId)
+		},
+		getSourceMode(callId) {
+			if (pcmCalls.has(callId)) return 'pcm'
+			if (sourceFormats.has(callId)) return 'encoded'
+			return undefined
 		},
 		getSourceFormat(callId) {
 			return sourceFormats.get(callId)
 		},
 		addAudioSink: audioSinks.add,
+		addPcmSink: pcmSinks.add,
 		addVideoSink: videoSinks.add,
 		routeAudioFrame: audioSinks.route,
+		routePcmFrame: pcmSinks.route,
 		routeVideoFrame: videoSinks.route,
 		routeMediaEvent(event) {
 			if (!isMediaEvent(event)) {
@@ -1218,6 +1274,14 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			media.setSourceFormat(callId, format)
 			return callId
 		},
+		dialCallPcm: async (peerJid: string, withVideo?: boolean): Promise<string> => {
+			if (typeof peerJid !== 'string' || peerJid.length === 0) {
+				throw new Boom('dialCallPcm: peerJid must be a non-empty string', { statusCode: 400 })
+			}
+			const callId = await withAudioClient('dialCallPcm', client => client.dialCallPcm(peerJid, withVideo))
+			media.setPcmSource(callId)
+			return callId
+		},
 		/**
 		 * Answer a ringing call with encoded audio. The offer arrives on the
 		 * `call` event; the bridge holds it until it is answered, superseded,
@@ -1229,6 +1293,12 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			const format = audioFormat ?? 'mlow'
 			const liveId = await withAudioClient('acceptCall', client => client.acceptCall(callId, format, withVideo))
 			media.setSourceFormat(liveId, format)
+			return liveId
+		},
+		acceptCallPcm: async (callId: string, withVideo?: boolean): Promise<string> => {
+			assertCallId('acceptCallPcm', callId)
+			const liveId = await withAudioClient('acceptCallPcm', client => client.acceptCallPcm(callId, withVideo))
+			media.setPcmSource(liveId)
 			return liveId
 		},
 		/**
@@ -1251,9 +1321,16 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		pushCallAudio: async (callId: string, data: Uint8Array, audioFormat?: CallAudioFormat): Promise<boolean> => {
 			assertCallId('pushCallAudio', callId)
 			assertAudioPacket('pushCallAudio', data)
+			assertSourceMode('pushCallAudio', media, callId, 'encoded')
 			assertArgumentDomain('pushCallAudio', 'audioFormat', audioFormat, AUDIO_FORMATS)
 			assertPushFormat('pushCallAudio', media, callId, audioFormat)
 			return withAudioClient('callPushAudio', client => client.callPushAudio(callId, data))
+		},
+		pushCallPcm: async (callId: string, samples: Int16Array): Promise<boolean> => {
+			assertCallId('pushCallPcm', callId)
+			assertPcmSamples('pushCallPcm', samples)
+			assertSourceMode('pushCallPcm', media, callId, 'pcm')
+			return withAudioClient('callPushPcm16', client => client.callPushPcm16(callId, samples))
 		},
 		/**
 		 * Push one encoded H.264 Annex-B access unit toward the peer.
@@ -1290,10 +1367,21 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			openWriter('openCallAudioWriter', callId, 'callPushAudio', (client, isClosed, close) => ({
 				tryWrite: (packet, audioFormat) => {
 					assertAudioPacket('tryWrite', packet)
+					assertSourceMode('tryWrite', media, callId, 'encoded')
 					assertArgumentDomain('tryWrite', 'audioFormat', audioFormat, AUDIO_FORMATS)
 					assertPushFormat('tryWrite', media, callId, audioFormat)
 					if (isClosed()) return false
 					return client.callPushAudio(callId, packet)
+				},
+				close
+			})),
+		openCallPcmWriter: (callId: string): Promise<CallPcmWriter> =>
+			openWriter('openCallPcmWriter', callId, 'callPushPcm16', (client, isClosed, close) => ({
+				tryWrite: samples => {
+					assertPcmSamples('tryWrite', samples)
+					assertSourceMode('tryWrite', media, callId, 'pcm')
+					if (isClosed()) return false
+					return client.callPushPcm16(callId, samples)
 				},
 				close
 			})),
@@ -1418,6 +1506,8 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 */
 		onCallAudio: (callId: string, sink: CallAudioSink): (() => void) =>
 			registerSink('onCallAudio', callId, sink, media.addAudioSink),
+		onCallPcm: (callId: string, sink: CallPcmSink): (() => void) =>
+			registerSink('onCallPcm', callId, sink, media.addPcmSink),
 		/**
 		 * Register a per-call video sink. Access units arrive through the
 		 * bridge pump under the same synchronous contract as audio; the

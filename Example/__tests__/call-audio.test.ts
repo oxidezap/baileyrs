@@ -14,8 +14,24 @@ import {
 	createMlowAudioDecoder,
 	decodeMlowAudioFrame,
 	getMlowFrameDurationMs,
-	splitVideoAccessUnits
+	splitVideoAccessUnits,
+	splitPcm16Frames
 } from '../call.ts'
+
+describe('splitPcm16Frames', () => {
+	it('keeps arbitrary byte chunks until 960-sample frames are complete', () => {
+		const splitter = splitPcm16Frames()
+		const bytes = new Uint8Array(1920)
+		for (let index = 0; index < bytes.length; index++) bytes[index] = index & 0xff
+		expect(splitter.push(bytes.subarray(0, 1))).toEqual([])
+		expect(splitter.push(bytes.subarray(1, 1001))).toHaveLength(0)
+		const frames = splitter.push(bytes.subarray(1001))
+		expect(frames).toHaveLength(1)
+		expect(frames[0]!.length).toBe(960)
+		expect(frames[0]![0]).toBe(0x0100)
+		expect(splitter.flush()).toEqual([])
+	})
+})
 
 describe('getOpusSamples48k', () => {
 	it('calculates SILK WB 60ms frames (2880 samples at 48kHz)', () => {

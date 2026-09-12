@@ -378,8 +378,19 @@ A few behaviors that differ from upstream — almost always to your advantage:
   other media peers (`sharp`, `jimp`, `audio-decode`, `link-preview-js`).
   Without it, audio messages still send — they just carry no `seconds`
   value. Install `music-metadata` if you want durations computed.
-- **Voice calls ride the bridge calls preview, not the release bridge.**
-  `sock.dialCall(peerJid, audioFormat)` / `sock.acceptCall(callId, audioFormat)` open an encoded-audio
+- **Voice calls use the bridge calls preview, not the release bridge.**
+  The normal path is decoded mono 16 kHz PCM. `sock.dialCallPcm(peerJid)` and
+  `sock.acceptCallPcm(callId)` negotiate PCM. `sock.pushCallPcm(callId,
+  samples)` queues one 960-sample `Int16Array`, and
+  `sock.onCallPcm(callId, sink)` receives decoded frames. Use
+  `sock.openCallPcmWriter(callId)` when the capture loop already owns its
+  timing. A call opened in PCM mode cannot receive encoded pushes, and an
+  encoded call cannot receive PCM pushes.
+  The Example uses this path for microphone and file capture. The core owns
+  Opus, MLOW, jitter handling, concealment, and playout timing.
+  Encoded methods remain available for applications that need packet-level
+  media. `sock.dialCall(peerJid, audioFormat)` /
+  `sock.acceptCall(callId, audioFormat)` open an encoded-audio
   call (`'mlow'` by default, `'opus'` for native Opus, or `'opus-mlow'` for
   CELT Opus that the bridge rewrites to MLOW); specify the local application's
    source format promise.

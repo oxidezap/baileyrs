@@ -87,6 +87,12 @@ export type CallAudioFrame = {
 	marker: boolean
 }
 
+/** One decoded mono 16 kHz signed 16-bit PCM frame from a live call. */
+export type CallPcmFrame = {
+	callId: string
+	data: Int16Array
+}
+
 /**
  * Lifecycle and media diagnostics for one live call. Only the encoded-audio
  * 1:1 subset crosses in this slice; group, reaction and RTCP events belong to
@@ -284,6 +290,9 @@ export type EncodedPacketReader = {
  */
 export type CallAudioSink = (frame: CallAudioFrame) => void
 
+/** Per-frame sink for decoded mono 16 kHz signed 16-bit call audio. */
+export type CallPcmSink = (frame: CallPcmFrame) => void
+
 /** What one `startCallAudioPump` run moved. */
 export type CallAudioPumpStats = {
 	/** Packets the engine queue accepted. */
@@ -331,5 +340,13 @@ export type CallAudioWriter = {
 	 * Invalidate the writer. Idempotent, and does not end the call. Ended
 	 * calls and socket teardown invalidate it automatically.
 	 */
+	close(): void
+}
+
+/** Synchronous writer for 960-sample PCM16 call frames. */
+export type CallPcmWriter = {
+	/** Queue one 20 ms PCM16 frame. False means backpressure or a closed writer. */
+	tryWrite(samples: Int16Array): boolean
+	/** Invalidate the writer without ending the call. */
 	close(): void
 }

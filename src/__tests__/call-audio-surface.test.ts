@@ -26,7 +26,7 @@ import {
 } from '@oxidezap/whatsapp-rust-bridge'
 
 import { asCallAudioClient, type CallAudioBridgeClient } from '../Socket/calls.ts'
-import type { CallAudioFrame, CallMediaEvent, CallVideoFrame } from '../Types/Call.ts'
+import type { CallAudioFrame, CallMediaEvent, CallPcmFrame, CallVideoFrame } from '../Types/Call.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
 
@@ -83,7 +83,10 @@ const offlineAudioClient = async (): Promise<CallAudioBridgeClient> => {
 	for (const method of [
 		'acceptCall',
 		'dialCall',
+		'acceptCallPcm',
+		'dialCallPcm',
 		'callPushAudio',
+		'callPushPcm16',
 		'endCall',
 		'setCallMuted',
 		'getCallMediaStats',
@@ -148,6 +151,14 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 			const empty = syncRejection(() => client.callPushAudio('NEVER-LIVE', new Uint8Array(0)))
 			expect(empty.kind).toBe('invalid-argument')
 			expect(empty.field).toBe('data')
+
+			const pcm = syncRejection(() => client.callPushPcm16('NEVER-LIVE', new Int16Array(960)))
+			expect(pcm.kind).toBe('invalid-argument')
+			expect(pcm.field).toBe('callId')
+
+			const shortPcm = syncRejection(() => client.callPushPcm16('NEVER-LIVE', new Int16Array(1)))
+			expect(shortPcm.kind).toBe('invalid-argument')
+			expect(shortPcm.field).toBe('samples')
 
 			const stats = syncRejection(() => client.getCallMediaStats('NEVER-LIVE'))
 			expect(stats.kind).toBe('invalid-argument')
@@ -215,13 +226,15 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 		const audioFrames: CallAudioFrame[] = []
 		const mediaEvents: CallMediaEvent[] = []
 		const videoFrames: CallVideoFrame[] = []
+		const pcmFrames: CallPcmFrame[] = []
 		const callbacks = {
 			onEvent: () => undefined
 		}
 		Object.assign(callbacks, {
 			onCallAudio: (frame: CallAudioFrame) => audioFrames.push(frame),
 			onCallEvent: (event: CallMediaEvent) => mediaEvents.push(event),
-			onCallVideo: (frame: CallVideoFrame) => videoFrames.push(frame)
+			onCallVideo: (frame: CallVideoFrame) => videoFrames.push(frame),
+			onCallPcm: (frame: CallPcmFrame) => pcmFrames.push(frame)
 		})
 		const client = await createWhatsAppClient(
 			deadTransport(),
@@ -235,6 +248,7 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 			expect(audioFrames).toEqual([])
 			expect(mediaEvents).toEqual([])
 			expect(videoFrames).toEqual([])
+			expect(pcmFrames).toEqual([])
 		} finally {
 			try {
 				await client.disconnect()

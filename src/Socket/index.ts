@@ -25,6 +25,7 @@ import type {
 	BinaryNode,
 	AuthenticationCreds,
 	CallAudioFrame,
+	CallPcmFrame,
 	CallMediaEvent,
 	CallVideoFrame,
 	ConnectionState,
@@ -503,6 +504,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// both the release bridge and the preview.
 	Object.assign(eventHandlers, {
 		onCallAudio: (frame: CallAudioFrame) => callMedia.routeAudioFrame(frame),
+		onCallPcm: (frame: CallPcmFrame) => callMedia.routePcmFrame(frame),
 		onCallVideo: (frame: CallVideoFrame) => callMedia.routeVideoFrame(frame),
 		onCallEvent: (event: CallMediaEvent) => callMedia.routeMediaEvent(event)
 	})

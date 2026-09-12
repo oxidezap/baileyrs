@@ -83,7 +83,7 @@
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts"
   },
   "dependencies": {
-    "@oxidezap/whatsapp-rust-bridge": "https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@115",
+    "@oxidezap/whatsapp-rust-bridge": "https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@bb8e4ab",
     "long": "^5.3.2"
   },
   "devDependencies": {

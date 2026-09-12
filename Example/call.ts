@@ -1,17 +1,14 @@
 /**
  * Voice and video calls with real media: dial or answer a call, stream
- * microphone or file audio through ffmpeg, play the peer back through ffplay,
+ * microphone or file PCM audio through ffmpeg, play the peer back through ffplay,
  * and upgrade to H.264 video with a camera or test pattern.
  *
  * This mirrors examples/voip-cli in the whatsapp-rust repo in behavior —
- * dial/accept a real call, encoded packets both ways, mute, stats, hangup,
- * plus the video path (start/accept/resume keyed on `v`) — adapted to what
- * JavaScript can do. The application encodes 16 kHz mono Opus via ffmpeg
- * (with -application lowdelay to guarantee CELT-only packets suitable for the
- * bridge MLOW escape), a small Ogg demuxer splits the stream into packets for
- * pushing straight through. The bridge rewrites them to MLOW on an
- * `opus-mlow` source. Inbound MLOW uses the bridge's stateful Rust decoder;
- * native and escaped Opus use the existing Ogg playback path.
+ * dial/accept a real call, decoded PCM both ways, mute, stats, hangup, plus
+ * the video path (start/accept/resume keyed on `v`) adapted to what JavaScript
+ * can do. The default audio path uses 16 kHz mono signed PCM. The core owns
+ * codec work and playout timing. The encoded packet API remains available for
+ * applications that need it.
  * Video is the same shape over Annex-B access units: ffmpeg encodes a camera,
  * access units: ffmpeg encodes a camera, file or test pattern to baseline
  * H.264, a splitter hands one AU per push to `pushCallVideo`, and peer AUs
@@ -47,13 +44,13 @@ import readline from 'node:readline'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import {
 	classifyStunPacket,
-	depacketizeOpusFromMlow,
 	describeStunAllocate,
 	fetchLatestWaWebVersion,
 	makeWASocket,
 	useMultiFileAuthState,
 	type CallAudioFrame,
-	type CallAudioWriter,
+	type CallPcmFrame,
+	type CallPcmWriter,
 	type CallVideoWriter,
 	type WACallEvent
 } from '../lib/index.js'
@@ -377,8 +374,8 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 	}
 }
 
-/** ffmpeg turns a file or microphone into 16 kHz mono Opus on stdout. */
-const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
+/** ffmpeg turns a file or microphone into 16 kHz mono signed PCM on stdout. */
+const spawnPcmEncoder = (args: CallExampleArgs): ChildProcess | null => {
 	if (!args.audioFile && args.mic === undefined) return null
 	// Capture devices are OS-specific; only Linux names one here, the rest
 	// pass their own ffmpeg device through --mic.
@@ -394,36 +391,43 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 			: ['-fflags', 'nobuffer', '-flags', 'low_delay', ...micInput]
 	const ffmpeg = spawn(
 		'ffmpeg',
-		[
-			...input,
-			'-ac',
-			'1',
-			'-ar',
-			'16000',
-			'-c:a',
-			'libopus',
-			'-b:a',
-			'24k',
-			'-application',
-			'lowdelay',
-			'-frame_duration',
-			'60',
-			'-vbr',
-			'on',
-			'-page_duration',
-			'60000',
-			'-flush_packets',
-			'1',
-			'-f',
-			'opus',
-			'pipe:1'
-		],
+		[...input, '-ac', '1', '-ar', '16000', '-flush_packets', '1', '-f', 's16le', 'pipe:1'],
 		{
 			stdio: ['ignore', 'pipe', 'inherit']
 		}
 	)
 	ffmpeg.on('error', err => console.error('ffmpeg failed to start:', (err as Error).message))
 	return ffmpeg
+}
+
+export const splitPcm16Frames = (
+	frameSamples = 960
+): { push(bytes: Uint8Array): Int16Array[]; flush(): Int16Array[] } => {
+	if (!Number.isInteger(frameSamples) || frameSamples <= 0) throw new Error('frameSamples must be a positive integer')
+	let pending = new Uint8Array(0)
+	const take = (): Int16Array[] => {
+		const frameBytes = frameSamples * 2
+		const frames: Int16Array[] = []
+		while (pending.length >= frameBytes) {
+			const bytes = pending.slice(0, frameBytes)
+			pending = pending.slice(frameBytes)
+			frames.push(new Int16Array(bytes.buffer, bytes.byteOffset, frameSamples))
+		}
+		return frames
+	}
+	return {
+		push(bytes) {
+			const merged = new Uint8Array(pending.length + bytes.length)
+			merged.set(pending)
+			merged.set(bytes, pending.length)
+			pending = merged
+			return take()
+		},
+		flush() {
+			if (pending.length !== 0) throw new Error('PCM16 input ended with a partial frame')
+			return []
+		}
+	}
 }
 
 /** ffmpeg turns a camera, file/URL or test pattern into baseline H.264 on stdout. */
@@ -586,32 +590,6 @@ export class AudioJitterBuffer {
 	}
 }
 
-/** ffplay renders muxed Ogg Opus fed on stdin. Returns a writer for pages. */
-const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
-	const ffplay = spawn(
-		'ffplay',
-		['-hide_banner', '-loglevel', 'error', '-nodisp', '-autoexit', '-sync', 'audio', '-f', 'ogg', '-i', 'pipe:0'],
-		{
-			stdio: ['pipe', 'ignore', 'inherit']
-		}
-	)
-	ffplay.on('error', err => console.error('ffplay failed to start:', (err as Error).message))
-	return {
-		write: page => {
-			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(page)
-		},
-		stop: () => {
-			try {
-				ffplay.stdin?.end()
-				ffplay.stdin?.destroy()
-			} catch {
-				// ignore
-			}
-			ffplay.kill('SIGKILL')
-		}
-	}
-}
-
 const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
 	const ffplay = spawn(
 		'ffplay',
@@ -621,7 +599,7 @@ const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
 			'warning',
 			'-nodisp',
 			'-f',
-			'f32le',
+			's16le',
 			'-ch_layout',
 			'mono',
 			'-sample_rate',
@@ -1040,76 +1018,25 @@ const main = async (): Promise<void> => {
 
 	let liveCallId: string | undefined
 	let accepting = false
-	let stopSink: (() => void) | undefined
+	let stopPcmSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
-	// The application's outbound audio source promise ('opus' for the ffmpeg path).
-	let sourceFormat: 'mlow' | 'opus' | 'opus-mlow' = 'opus-mlow'
-	let peerCodec: 'mlow' | 'opus' | undefined
-	let inboundAudioFrames = 0
-	let inboundMlowFrames = 0
+	// The application's outbound audio source promise.
+	let sourceFormat: 'pcm' | 'mlow' | 'opus' | 'opus-mlow' = 'pcm'
+	let inboundPcmFrames = 0
 	let outboundGenerated = 0
 	let outboundAccepted = 0
 	let outboundPushErrors = 0
-	// Playback is per call, not per process: hangup stops the player, and the
-	// next ring mints a fresh Ogg stream rather than writing into a dead
-	// stdin with stale sequence state.
-	let pushAudioFrame: ((frame: CallAudioFrame) => void) | undefined
-	let stopPlaying: (() => void) | undefined
-	const startPlayback = (): void => {
-		const decoder = createMlowAudioDecoder()
-		let mode: 'mlow' | 'opus' = 'opus'
-		let mux = muxOggOpus()
-		let player: { write(data: Uint8Array): void; stop(): void } = spawnOpusPlayer()
-		for (const page of mux.headerPages()) player.write(page)
-		const switchMode = (next: 'mlow' | 'opus'): void => {
-			if (mode === next) return
-			player.stop()
-			mode = next
-			if (next === 'mlow') {
-				decoder.reset()
-				player = spawnPcmPlayer()
-				console.log('audio playback switched opus -> mlow')
-				console.log('audio playback started pcm-f32le/16000/mono')
-			} else {
-				decoder.reset()
-				mux = muxOggOpus()
-				player = spawnOpusPlayer()
-				for (const page of mux.headerPages()) player.write(page)
-				console.log('audio playback switched mlow -> opus')
-			}
-		}
-
-		const jitterBuffer = new AudioJitterBuffer({
-			preRoll: 5,
-			maxDelay: 8,
-			onPacket: (frame, gapSamples) => {
-				if (frame.codec === 'mlow') {
-					switchMode('mlow')
-					for (let missing = 0; missing < gapSamples / 2880; missing++)
-						decoder.decode(new Uint8Array(), frame.payloadType)
-					const pcm = decodeMlowAudioFrame(decoder, frame)
-					player.write(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength))
-					return
-				}
-				switchMode('opus')
-				let data = frame.data
-				if (frame.format === 'opus-mlow') data = depacketizeOpusFromMlow(data)
-				if (data.length <= 1 && data[0] === 0x90) {
-					player.write(mux.page(new Uint8Array(0), gapSamples + 2880))
-					return
-				}
-				player.write(mux.page(data, gapSamples))
-			}
+	let pcmPlayer: { write(data: Uint8Array): void; stop(): void } | undefined
+	const startPcmPlayback = (): void => {
+		pcmPlayer = spawnPcmPlayer()
+		stopPcmSink?.()
+		stopPcmSink = sock.onCallPcm(liveCallId!, (frame: CallPcmFrame) => {
+			if (frame.callId !== liveCallId) return
+			inboundPcmFrames++
+			if (inboundPcmFrames === 1) console.log('inbound audio pcm16/16000/mono')
+			pcmPlayer?.write(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength))
 		})
-
-		pushAudioFrame = frame => jitterBuffer.push(frame)
-		stopPlaying = () => {
-			jitterBuffer.clear()
-			player.stop()
-			decoder.free()
-			pushAudioFrame = undefined
-		}
 	}
 	// Peer video goes to its own ffplay window, minted with the call like
 	// audio playback — never into the audio Ogg stream.
@@ -1179,19 +1106,17 @@ const main = async (): Promise<void> => {
 		stopVideoPlayer = undefined
 	}
 	let encoder: ChildProcess | null = null
-	let audioWriter: CallAudioWriter | null = null
+	let audioWriter: CallPcmWriter | null = null
 	let videoEncoder: ChildProcess | null = null
 	let videoWriter: CallVideoWriter | null = null
 	let outboundVideoShed = 0
-	// The Opus encoder runs only on `opus-mlow` calls while a call is live: a file
-	// input exhausts, starting it at launch would spend the audio before
-	// anyone answers, and pushing Opus grammar into an mlow call dies in the
-	// engine and sheds forever. That mixup is what the mlow path above is for.
+	// The PCM encoder starts only after a call is live. Starting it before an
+	// answer would consume file input before the media handle exists.
 	const ensureEncoder = (): void => {
-		if (encoder || sourceFormat !== 'opus-mlow' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
+		if (encoder || sourceFormat !== 'pcm' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
 		const callForChild = liveCallId
 		void sock
-			.openCallAudioWriter(callForChild)
+			.openCallPcmWriter(callForChild)
 			.then(writer => {
 				if (liveCallId === callForChild && encoder === child) {
 					audioWriter = writer
@@ -1201,53 +1126,21 @@ const main = async (): Promise<void> => {
 			})
 			.catch(err => console.error('failed to open sync audio writer:', (err as Error).message))
 
-		const child = spawnOpusEncoder(args)
+		const child = spawnPcmEncoder(args)
 		encoder = child
-		// Per-child demux and call id: a killed child can still flush
-		// buffered stdout after its replacement started, and those stale
-		// bytes belong to the old stream — parsed with the new demux they
-		// would corrupt it, and pushed to the new call id they would land
-		// on the wrong call. Both are captured here and checked per chunk.
-		const stream = demuxOggOpus()
-		let invalidSourceReported = false
-		// Backoff state: pushing into a full queue is a wasted crossing,
-		// so after a run of sheds the producer drops at the source for a
-		// beat instead of hammering. Acceptances reset the run.
-		let consecutiveSheds = 0
-		let quietUntil = 0
+		const stream = splitPcm16Frames()
 		child?.stdout?.on('data', (chunk: Buffer) => {
 			if (child !== encoder || callForChild !== liveCallId || !liveCallId) return
-			if (Date.now() < quietUntil) return
 			for (const packet of stream.push(new Uint8Array(chunk))) {
-				if (!isOpusCeltOnly(packet)) {
-					const config = getOpusConfig(packet)
-					if (!invalidSourceReported) {
-						invalidSourceReported = true
-						console.error(
-							`audio source produced non-CELT Opus (config=${config}, len=${packet.length}); stopping because opus-mlow accepts CELT-only packets`
-						)
-					}
-					child.stdout?.destroy()
-					child.kill('SIGKILL')
-					return
-				}
 				outboundGenerated++
 				if (audioWriter) {
 					try {
 						const accepted = audioWriter.tryWrite(packet)
 						if (!accepted) {
 							shed++
-							consecutiveSheds++
 							if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
-							if (consecutiveSheds === 20) {
-								quietUntil = Date.now() + 500
-								console.log(
-									`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
-								)
-							}
 						} else {
 							outboundAccepted++
-							consecutiveSheds = 0
 						}
 					} catch (err) {
 						outboundPushErrors++
@@ -1255,21 +1148,13 @@ const main = async (): Promise<void> => {
 					}
 				} else {
 					void sock
-						.pushCallAudio(liveCallId, packet, 'opus-mlow')
+						.pushCallPcm(liveCallId, packet)
 						.then(accepted => {
 							if (!accepted) {
 								shed++
-								consecutiveSheds++
 								if (shed % 50 === 1) console.log(`shed ${shed} packets under backpressure`)
-								if (consecutiveSheds === 20) {
-									quietUntil = Date.now() + 500
-									console.log(
-										`engine still full after 20 sheds (${shed} total); pausing pushes 500ms and dropping at the source`
-									)
-								}
 							} else {
 								outboundAccepted++
-								consecutiveSheds = 0
 							}
 						})
 						.catch(err => {
@@ -1429,28 +1314,11 @@ const main = async (): Promise<void> => {
 		console.log('🎥 video stopped (downgraded to voice)')
 	}
 
-	const onFrame = (frame: CallAudioFrame): void => {
-		inboundAudioFrames++
-		if (frame.codec === 'mlow') {
-			inboundMlowFrames++
-			if (inboundMlowFrames <= 20) {
-				const toc = frame.data[0] ?? 0
-				console.log(
-					`inbound mlow #${inboundMlowFrames} seq=${frame.sequenceNumber} ts=${frame.timestamp} pt=${frame.payloadType} format=${frame.format} len=${frame.data.length} toc=0x${toc.toString(16).padStart(2, '0')} duration-ms=${getMlowFrameDurationMs(toc)}`
-				)
-			}
-		}
-		const routerState: InboundAudioRouterState = { peerCodec }
-		processInboundCallAudioFrame(frame, routerState, pushAudioFrame)
-		peerCodec = routerState.peerCodec
-		if (inboundAudioFrames === 1) console.log(`inbound audio ${frame.codec} pt=${frame.payloadType}`)
-	}
-
 	const logCallStats = async (id: string, label: string): Promise<void> => {
 		try {
 			const [stats, buffer] = await Promise.all([sock.getCallMediaStats(id), sock.getCallAudioBuffer(id)])
 			console.log(
-				`${label} stats source=${sourceFormat} peer-codec=${peerCodec ?? 'none'} generated=${outboundGenerated} accepted=${outboundAccepted} shed-at-push=${shed} push-errors=${outboundPushErrors} no-encoder=${stats.outboundFramesWithoutEncoder} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} inbound=${inboundAudioFrames} mlow-inbound=${inboundMlowFrames} sink-dropped=${stats.audioSinkDropped} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+				`${label} stats source=${sourceFormat} generated=${outboundGenerated} accepted=${outboundAccepted} shed-at-push=${shed} push-errors=${outboundPushErrors} no-encoder=${stats.outboundFramesWithoutEncoder} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} inbound-pcm=${inboundPcmFrames} sink-dropped=${stats.audioSinkDropped} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 			)
 		} catch (err) {
 			console.error(`${label} stats failed:`, (err as Error).message)
@@ -1463,12 +1331,10 @@ const main = async (): Promise<void> => {
 		liveCallId = undefined
 		videoActive = false
 		pendingPeerVideoUpgrade = false
-		peerCodec = undefined
-		stopSink?.()
-		stopSink = undefined
-		stopPlaying?.()
-		stopPlaying = undefined
-		pushAudioFrame = undefined
+		stopPcmSink?.()
+		stopPcmSink = undefined
+		pcmPlayer?.stop()
+		pcmPlayer = undefined
 		// Stopped before the hangup lands: a new ring answered while endCall
 		// is in flight must find a clear slot, not the dying capture.
 		stopEncoder()
@@ -1554,30 +1420,25 @@ const main = async (): Promise<void> => {
 		}
 		accepting = true
 		try {
-			// The ffmpeg source is CELT Opus that the bridge rewrites through MLOW.
 			const withVideo = (args.video !== undefined || call.isVideo) === true
-			const id = await sock.acceptCall(call.id, 'opus-mlow', withVideo)
+			const id = await sock.acceptCallPcm(call.id, withVideo)
 			liveCallId = id
 			muted = false
-			inboundAudioFrames = 0
-			inboundMlowFrames = 0
+			inboundPcmFrames = 0
 			outboundGenerated = 0
 			outboundAccepted = 0
 			outboundPushErrors = 0
 			shed = 0
-			peerCodec = undefined
-			stopSink?.()
-			sourceFormat = 'opus-mlow'
-			stopSink = sock.onCallAudio(id, onFrame)
+			sourceFormat = 'pcm'
 			ensureEncoder()
-			startPlayback()
+			startPcmPlayback()
 			if (withVideo) {
 				videoActive = true
 				startVideoPlayback()
 				ensureVideoEncoder()
 				console.log('🎥 video started with call accept')
 			}
-			console.log('answered', id, 'with opus-mlow')
+			console.log('answered', id, 'with pcm16')
 		} finally {
 			accepting = false
 		}
@@ -1597,28 +1458,24 @@ const main = async (): Promise<void> => {
 	})
 
 	if (args.command === 'dial') {
-		// Both dial and accept promise the CELT Opus source that the bridge rewrites.
-		sourceFormat = 'opus-mlow'
+		sourceFormat = 'pcm'
 		const withVideo = args.video !== undefined
-		const id = await sock.dialCall(args.peer!, 'opus-mlow', withVideo)
+		const id = await sock.dialCallPcm(args.peer!, withVideo)
 		liveCallId = id
-		inboundAudioFrames = 0
-		inboundMlowFrames = 0
+		inboundPcmFrames = 0
 		outboundGenerated = 0
 		outboundAccepted = 0
 		outboundPushErrors = 0
 		shed = 0
-		peerCodec = undefined
-		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
-		startPlayback()
+		startPcmPlayback()
 		if (withVideo) {
 			videoActive = true
 			startVideoPlayback()
 			ensureVideoEncoder()
 			console.log('🎥 video started with call dial')
 		}
-		console.log('dialed', id, '- waiting for answer (q hangs up)')
+		console.log('dialed', id, 'with pcm16 - waiting for answer (q hangs up)')
 	} else {
 		console.log(args.accept ? 'listening (answering every ring)' : 'listening (rejecting every ring)')
 	}
@@ -1645,7 +1502,6 @@ const main = async (): Promise<void> => {
 		stopEncoder()
 		stopVideoEncoder()
 		stopVideoPlayback()
-		stopPlaying?.()
 		void hangup()
 			.catch(() => undefined)
 			.then(() => sock.end(undefined).catch(() => undefined))

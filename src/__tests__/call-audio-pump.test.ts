@@ -888,7 +888,10 @@ describe('call audio socket methods', () => {
 		({
 			acceptCall: async (callId: string) => callId,
 			dialCall: async () => 'CALL-NEW',
+			acceptCallPcm: async (callId: string) => callId,
+			dialCallPcm: async () => 'CALL-NEW-PCM',
 			callPushAudio: () => true,
+			callPushPcm16: () => true,
 			endCall: async () => ({ outcome: 'peer-notified' }),
 			setCallMuted: async () => undefined,
 			getCallMediaStats: () => ({
@@ -955,6 +958,25 @@ describe('call audio socket methods', () => {
 				close: () => undefined
 			})
 		})
+	})
+
+	it('drives PCM calls with fixed 960-sample frames', async () => {
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), nullRouter())
+		expect(await methods.dialCallPcm('5511999999999@s.whatsapp.net')).toBe('CALL-NEW-PCM')
+		expect(await methods.pushCallPcm('CALL-NEW-PCM', new Int16Array(960))).toBe(true)
+		const writer = await methods.openCallPcmWriter('CALL-NEW-PCM')
+		expect(writer.tryWrite(new Int16Array(960))).toBe(true)
+		expect(() => writer.tryWrite(new Int16Array(959))).toThrow(/960-sample/)
+		writer.close()
+	})
+
+	it('does not mix encoded and PCM call modes', async () => {
+		const router = nullRouter()
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		await methods.acceptCallPcm('CALL-PCM')
+		await expect(methods.pushCallAudio('CALL-PCM', new Uint8Array([0x90]))).rejects.toThrow(/uses pcm audio/)
+		await methods.acceptCall('CALL-ENCODED', 'mlow')
+		await expect(methods.pushCallPcm('CALL-ENCODED', new Int16Array(960))).rejects.toThrow(/uses encoded audio/)
 	})
 
 	it('tracks the negotiated promise per call and fails wrong-grammar pushes fast', async () => {
