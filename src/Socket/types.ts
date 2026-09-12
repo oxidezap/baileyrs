@@ -15,6 +15,14 @@ export interface SocketContext extends ClientOperations {
 	/** Raw stanza EventEmitter for CB: pattern compat */
 	ws: EventEmitter
 	/**
+	 * True once socket teardown owns the client. Operations admitted by
+	 * `withClient` recheck this before registering anything teardown must
+	 * drain: admission and the drain snapshot can otherwise interleave on a
+	 * microtask boundary and leave a pump pushing into a closing client.
+	 * Absent on older hand-built contexts, which read as never closing.
+	 */
+	isClosing?: () => boolean
+	/**
 	 * Where a failure goes when it has nowhere else to go: a dispatcher that
 	 * threw, a wire batch that would not decode. Also what the socket exposes
 	 * as `onUnexpectedError`, so the two are one reporter rather than two.

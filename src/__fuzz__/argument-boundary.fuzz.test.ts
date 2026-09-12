@@ -242,6 +242,43 @@ const CASES: readonly BoundaryCase[] = [
 				}),
 				off<'buffer' | 'stream'>(v)
 			)
+	},
+	{
+		method: 'dialCall',
+		parameter: 'audioFormat',
+		source: 'Socket/calls.ts:dialCall:audioFormat',
+		call: (s, v) => s.dialCall(USER, off(v))
+	},
+	{
+		method: 'acceptCall',
+		parameter: 'audioFormat',
+		source: 'Socket/calls.ts:acceptCall:audioFormat',
+		call: (s, v) => s.acceptCall('NEVER-RANG', off(v))
+	},
+	{
+		method: 'requestCallKeyframe',
+		parameter: 'urgency',
+		source: 'Socket/calls.ts:requestCallKeyframe:urgency',
+		call: (s, v) => s.requestCallKeyframe('NEVER-RANG', off(v))
+	},
+	{
+		method: 'pushCallAudio',
+		parameter: 'audioFormat',
+		source: 'Socket/calls.ts:pushCallAudio:audioFormat',
+		call: (s, v) => s.pushCallAudio('NEVER-RANG', new Uint8Array([0x90]), off(v))
+	},
+	{
+		method: 'startCallAudioPump',
+		parameter: 'audioFormat',
+		source: 'Socket/calls.ts:startCallAudioPump:audioFormat',
+		call: (s, v) =>
+			s.startCallAudioPump(
+				'NEVER-RANG',
+				(async function* () {
+					yield new Uint8Array([0x90])
+				})(),
+				{ audioFormat: off(v) }
+			)
 	}
 ]
 
@@ -443,7 +480,14 @@ const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 	'Socket/communities.ts:communityParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
 	'Socket/communities.ts:communitySettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
 	'Socket/communities.ts:communityMemberAddMode:mode': ['admin_add', 'all_member_add'],
-	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off']
+	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off'],
+	// `undefined`, not `null`: omitting the format takes the bridge default,
+	// and the two are different values to `includes`.
+	'Socket/calls.ts:dialCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:pushCallAudio:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:startCallAudioPump:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:requestCallKeyframe:urgency': ['coalesced', 'immediate']
 }
 
 /** The same values as reported by the guard itself, for the pin below. */
@@ -532,7 +576,13 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		const covered = new Set(CASES.map(testCase => testCase.source))
 		// downloadMediaMessage is a standalone helper rather than a socket method;
 		// closed-domain-arguments.test.ts drives it directly.
-		const exempt = new Set(['Utils/messages.ts:downloadMediaMessage:type'])
+		const exempt = new Set([
+			'Utils/messages.ts:downloadMediaMessage:type',
+			// tryWrite lives on the acquired audio writer, not the socket, so
+			// the socket-driven harness cannot reach it; its guard is pinned
+			// by the writer unit tests instead.
+			'Socket/calls.ts:tryWrite:audioFormat'
+		])
 		const missing = scanned.filter(entry => !covered.has(entry) && !exempt.has(entry))
 		assert.deepEqual(missing, [], `guarded parameters with no fuzz case: ${missing.join(', ')}`)
 

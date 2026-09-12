@@ -1,0 +1,16 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		// The base config roots sources at src/, which would reject the
+		// example file outright.
+		"rootDir": ".",
+		// Without this the node builtins stay untyped in this program and
+		// every child-process callback falls back to implicit any.
+		"types": ["node"]
+	},
+	// The example runs against the built package, so lint builds lib first
+	// (see the lint script). That keeps this gate on the same declarations
+	// consumers compile against, instead of a parallel source view.
+	"include": ["Example/call.ts", "Example/rtc-tunnel-relay.ts", "Example/__tests__/**/*.ts"]
+}
