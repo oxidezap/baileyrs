@@ -483,10 +483,10 @@ const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off'],
 	// `undefined`, not `null`: omitting the format takes the bridge default,
 	// and the two are different values to `includes`.
-	'Socket/calls.ts:dialCall:audioFormat': ['mlow', 'opus', undefined],
-	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', undefined],
-	'Socket/calls.ts:pushCallAudio:audioFormat': ['mlow', 'opus', undefined],
-	'Socket/calls.ts:startCallAudioPump:audioFormat': ['mlow', 'opus', undefined],
+	'Socket/calls.ts:dialCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:pushCallAudio:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls.ts:startCallAudioPump:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
 	'Socket/calls.ts:requestCallKeyframe:urgency': ['coalesced', 'immediate']
 }
 

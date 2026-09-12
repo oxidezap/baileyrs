@@ -19,9 +19,9 @@
  * rather than treating as an error. The bridge exposes no watermark readout
  * (its docs name the `false` return as the pacing signal in place of one),
  * so pacing sources read the shed count and the `audioSinkDropped` /
- * `inboundPipeDropped` stats counters instead. Format mixups never reach that
- * queue: the promise each call negotiated is tracked from accept/dial, and a
- * push declaring the other grammar fails fast instead of shedding forever.
+ * `inboundPipeDropped` stats counters instead. Source format mixups never
+ * reach that queue: the local source grammar is tracked from accept/dial, and
+ * a push declaring another source grammar fails fast instead of shedding.
  */
 
 import { Boom } from '../Utils/boom.ts'
@@ -113,17 +113,8 @@ export interface CallRelayTransportProvider {
 	): Promise<CallRelayConnectionHandle>
 }
 
-const AUDIO_FORMATS = ['mlow', 'opus', undefined] as const
+const AUDIO_FORMATS = ['mlow', 'opus', 'opus-mlow', undefined] as const
 const KEYFRAME_URGENCIES = ['coalesced', 'immediate'] as const
-
-/**
- * Read the audio promise off an offer's codec list: an explicit `mlow` names
- * mlow, anything else (`opus`, another codec, an empty list, no list at all)
- * keeps the opus promise, the only grammar with a JS-side encoder. Pure so
- * callers (and the example) share one decision instead of re-deriving it.
- */
-export const negotiatedAudioFormat = (audio: readonly string[] | undefined): CallAudioFormat =>
-	(audio ?? []).includes('mlow') ? 'mlow' : 'opus'
 
 /**
  * Rewrite one RFC Opus packet to the MLOW escape the engine carries, for
@@ -138,10 +129,9 @@ export const packetizeOpusForMlow = (data: Uint8Array): Uint8Array => {
 }
 
 /**
- * Restore the RFC TOC on one received `opus` frame, which carries the MLOW
- * escape on the wire. Hand the result, not the raw frame, to a stock Opus
- * decoder. Mlow frames are already plain codec payloads and must not pass
- * through here.
+ * Restore the RFC TOC only for received `opus` frames whose format is
+ * `opus-mlow`. Native `opus` frames stay unchanged, while `mlow` frames use
+ * the MLOW decoder.
  */
 export const depacketizeOpusFromMlow = (data: Uint8Array): Uint8Array => {
 	assertAudioPacket('depacketizeOpusFromMlow', data)
@@ -187,17 +177,16 @@ const assertAudioPacket = (method: string, data: Uint8Array): void => assertNonE
  */
 const assertPushFormat = (
 	method: string,
-	media: Pick<CallMediaRouter, 'getAudioFormat'>,
+	media: Pick<CallMediaRouter, 'getSourceFormat'>,
 	callId: string,
 	audioFormat: CallAudioFormat | undefined
 ): void => {
 	if (audioFormat === undefined) return
-	const negotiated = media.getAudioFormat(callId)
-	if (negotiated !== undefined && negotiated !== audioFormat) {
-		throw new Boom(
-			`${method}: packet declares ${audioFormat} but call ${callId} negotiated ${negotiated}. Pushing it would shed forever in the engine`,
-			{ statusCode: 400 }
-		)
+	const sourceFormat = media.getSourceFormat(callId)
+	if (sourceFormat !== undefined && sourceFormat !== audioFormat) {
+		throw new Boom(`${method}: packet declares ${audioFormat} but call ${callId} source is ${sourceFormat}`, {
+			statusCode: 400
+		})
 	}
 }
 
@@ -321,9 +310,9 @@ export interface CallMediaRouter {
 	 * success). Push validation reads it; `undefined` means the call was
 	 * never negotiated through this socket or already ended.
 	 */
-	setAudioFormat(callId: string, format: CallAudioFormat): void
-	/** The promise recorded above, if the call is still tracked. */
-	getAudioFormat(callId: string): CallAudioFormat | undefined
+	setSourceFormat(callId: string, format: CallAudioFormat): void
+	/** The local source format recorded above, if the call is still tracked. */
+	getSourceFormat(callId: string): CallAudioFormat | undefined
 	/** Bridge `onCallAudio` entry point. Never throws: a throw here would stop the bridge pump. */
 	routeAudioFrame(frame: CallAudioFrame): void
 	/** Bridge `onCallVideo` entry point. Never throws, same contract as audio. */
@@ -372,6 +361,7 @@ const isAudioFrame = (frame: unknown): frame is CallAudioFrame => {
 		typeof record.callId === 'string' &&
 		record.data instanceof Uint8Array &&
 		(record.codec === 'mlow' || record.codec === 'opus') &&
+		(record.format === 'mlow' || record.format === 'opus' || record.format === 'opus-mlow') &&
 		isIntegerInRange(record.payloadType, 0, 127) &&
 		isIntegerInRange(record.sequenceNumber, 0, 65535) &&
 		isIntegerInRange(record.timestamp, 0, 4294967295) &&
@@ -485,7 +475,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	// takes the format once and every later push is opaque bytes, so this is
 	// the only JS-side record of which grammar a call speaks. Cleared with
 	// the sinks below. An ended call negotiates nothing.
-	const audioFormats = new Map<string, CallAudioFormat>()
+	const sourceFormats = new Map<string, CallAudioFormat>()
 	// Pumps stopped but whose `done` has not settled: `drainAll` waits for
 	// these, so ending a call and then the socket cannot strand source
 	// cleanup behind a teardown that already resolved. Entries leave when
@@ -536,7 +526,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		}
 		audioSinks.delete(callId)
 		videoSinks.delete(callId)
-		audioFormats.delete(callId)
+		sourceFormats.delete(callId)
 	}
 
 	const stopCall = (callId: string): void => stopCallWith(callId, 'call-ended')
@@ -558,15 +548,15 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		}
 		audioSinks.clear()
 		videoSinks.clear()
-		audioFormats.clear()
+		sourceFormats.clear()
 	}
 
 	return {
-		setAudioFormat(callId, format) {
-			audioFormats.set(callId, format)
+		setSourceFormat(callId, format) {
+			sourceFormats.set(callId, format)
 		},
-		getAudioFormat(callId) {
-			return audioFormats.get(callId)
+		getSourceFormat(callId) {
+			return sourceFormats.get(callId)
 		},
 		addAudioSink: audioSinks.add,
 		addVideoSink: videoSinks.add,
@@ -1228,7 +1218,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			// fail there instead of meaning mlow.
 			const format = audioFormat ?? 'mlow'
 			const callId = await withAudioClient('dialCall', client => client.dialCall(peerJid, format, withVideo))
-			media.setAudioFormat(callId, format)
+			media.setSourceFormat(callId, format)
 			return callId
 		},
 		/**
@@ -1241,7 +1231,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			assertArgumentDomain('acceptCall', 'audioFormat', audioFormat, AUDIO_FORMATS)
 			const format = audioFormat ?? 'mlow'
 			const liveId = await withAudioClient('acceptCall', client => client.acceptCall(callId, format, withVideo))
-			media.setAudioFormat(liveId, format)
+			media.setSourceFormat(liveId, format)
 			return liveId
 		},
 		/**
@@ -1354,7 +1344,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 */
 		getCallAudioFormat: (callId: string): CallAudioFormat | undefined => {
 			assertCallId('getCallAudioFormat', callId)
-			return media.getAudioFormat(callId)
+			return media.getSourceFormat(callId)
 		},
 		/** Every call the bridge currently holds a handle for. */
 		getActiveCalls: (): Promise<ActiveCall[]> => withAudioClient('getActiveCalls', client => client.getActiveCalls()),
@@ -1405,8 +1395,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		/**
 		 * Install the host's relay channel constructor. The bridge implements
 		 * the core's relay transport over it and never touches WebRTC itself;
-		 * pass the bridge's own `createRtcRelayTransportProvider` result or a
-		 * custom constructor keeping the same contract.
+		 * pass the production rtc-tunnel provider or the explicit mock provider.
 		 */
 		setRelayTransportProvider: (provider: CallRelayTransportProvider): Promise<void> => {
 			if (typeof provider !== 'object' || provider === null || typeof provider.createRelayConnection !== 'function') {

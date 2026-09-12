@@ -18,7 +18,6 @@ export {
 	makeFileCallAudioSource,
 	makeSilenceCallAudioSource,
 	MLOW_SILENCE_PACKET,
-	negotiatedAudioFormat,
 	openFilePacketReader,
 	packetizeOpusForMlow,
 	startCallAudioPump

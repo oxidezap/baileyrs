@@ -89,6 +89,7 @@
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
     "@hapi/boom": "^10.0.1",
+    "@oxidezap/rtc-tunnel": "0.1.0",
     "@types/node": "^26.1.1",
     "baileys": "7.0.0-rc14",
     "jimp": "^1.6.0",
@@ -102,8 +103,7 @@
     "protobufjs": "^8.8.0",
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
-    "typescript-compat-auditor": "npm:typescript@6.0.3",
-    "werift": "^0.24.4"
+    "typescript-compat-auditor": "npm:typescript@6.0.3"
   },
   "peerDependencies": {
     "@hapi/boom": "^9.1.0 || ^10.0.0",

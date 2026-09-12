@@ -6,21 +6,19 @@
  * This mirrors examples/voip-cli in the whatsapp-rust repo in behavior —
  * dial/accept a real call, encoded packets both ways, mute, stats, hangup,
  * plus the video path (start/accept/resume keyed on `v`) — adapted to what
- * JavaScript can do. Audio follows the negotiated promise, read off the offer
- * with `negotiatedAudioFormat`: an `opus` call is the full ffmpeg path (a
- * file or microphone encoded to 16 kHz mono Opus, a small Ogg demuxer splits
- * the stream back into packets for pushing straight through. The engine
- * rewrites them to the MLOW escape in flight, and received opus packets
- * are depacketized back to RFC Opus before wrapping in Ogg pages for
- * ffplay on stdin. There is no MLOW encoder here, so an
- * `mlow` call pushes MLOW silence while the peer is logged, not played.
+ * JavaScript can do. The application encodes 16 kHz mono Opus via ffmpeg
+ * (with -application lowdelay to guarantee CELT-only packets suitable for the
+ * bridge MLOW escape), a small Ogg demuxer splits the stream into packets for
+ * pushing straight through. The bridge rewrites them to MLOW on an
+ * `opus-mlow` source. Inbound MLOW uses the bridge's stateful Rust decoder;
+ * native and escaped Opus use the existing Ogg playback path.
  * Video is the same shape over Annex-B access units: ffmpeg encodes a camera,
  * access units: ffmpeg encodes a camera, file or test pattern to baseline
  * H.264, a splitter hands one AU per push to `pushCallVideo`, and peer AUs
  * fan out to a second ffplay window or a raw `.h264` file. The library only
  * transports the opaque packets, exactly like voip-cli's ffmpeg video path,
- * and the relay itself is reached over UDP from Node — no WebRTC, no browser
- * needed.
+ * Production relay traffic uses rtc-tunnel for ICE, DTLS, SCTP, and its
+ * pre-negotiated DataChannel. The mock path keeps its explicit UDP provider.
  *
  * Usage:
  *   node Example/call.ts dial <peer-jid> [--audio-file path | --mic [device]] [--auth dir] [--socket url] [--video [camera|testsrc|file|url]]
@@ -28,7 +26,7 @@
  *
  * During a call: `m` mute/unmute, `s` print media stats, `v` toggle video
  * (start upgrade / accept the peer's request / stop), `k` ask the peer for a
- * keyframe, `d` print video diagnostics, `q` hang up and quit.
+ * keyframe, `d` video diagnostics, `q` hang up and quit.
  * A dialed call exits after it ends; listen keeps serving the next ring.
  *
  * Requires ffmpeg and ffplay on PATH (checked at startup with a clear error)
@@ -46,14 +44,13 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import process from 'node:process'
 import readline from 'node:readline'
+import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import {
 	classifyStunPacket,
 	depacketizeOpusFromMlow,
 	describeStunAllocate,
 	fetchLatestWaWebVersion,
-	makeSilenceCallAudioSource,
 	makeWASocket,
-	negotiatedAudioFormat,
 	useMultiFileAuthState,
 	type CallAudioBuffer,
 	type CallAudioFrame,
@@ -62,6 +59,21 @@ import {
 	type CallVideoWriter,
 	type WACallEvent
 } from '../lib/index.js'
+import { createRtcTunnelRelayProvider, isProductionRelayMode } from './rtc-tunnel-relay.ts'
+
+type MlowAudioDecoder = {
+	decode(packet: Uint8Array, payloadType?: number): Float32Array
+	reset(): void
+	free(): void
+}
+
+type MlowAudioDecoderConstructor = new () => MlowAudioDecoder
+
+const mlowAudioDecoderConstructor = (): MlowAudioDecoderConstructor => {
+	const constructor = (bridge as unknown as { MlowAudioDecoder?: MlowAudioDecoderConstructor }).MlowAudioDecoder
+	if (constructor === undefined) throw new Error('installed bridge does not expose MlowAudioDecoder')
+	return constructor
+}
 
 const usage = (): never => {
 	console.error(
@@ -213,6 +225,36 @@ export const getOpusSamples48k = (packet: Uint8Array): number => {
 	return frameCount * frameDurationSamples
 }
 
+/**
+ * Identify whether an RFC Opus packet is CELT-only (configs 16..31).
+ * Packets of length <= 2 are DTX comfort noise tokens accepted by the bridge MLOW escape.
+ */
+export const isOpusCeltOnly = (packet: Uint8Array): boolean => {
+	if (packet.length === 0) return false
+	if (packet.length <= 2) return true
+	const config = packet[0]! >> 3
+	return config >= 16
+}
+
+export const getOpusConfig = (packet: Uint8Array): number => {
+	if (packet.length === 0) return -1
+	return packet[0]! >> 3
+}
+
+export interface InboundAudioRouterState {
+	peerCodec?: 'mlow' | 'opus'
+}
+
+export const processInboundCallAudioFrame = (
+	frame: CallAudioFrame,
+	state: InboundAudioRouterState,
+	onFrame?: (frame: CallAudioFrame) => void
+): 'opus' | 'mlow' => {
+	state.peerCodec = frame.codec
+	onFrame?.(frame)
+	return frame.codec
+}
+
 /** Wrap bare Opus packets in Ogg pages for ffplay's stdin. */
 export const muxOggOpus = (): {
 	headerPages(): Uint8Array[]
@@ -362,7 +404,7 @@ const spawnOpusEncoder = (args: CallExampleArgs): ChildProcess | null => {
 			'-b:a',
 			'24k',
 			'-application',
-			'voip',
+			'lowdelay',
 			'-frame_duration',
 			'60',
 			'-vbr',
@@ -559,6 +601,31 @@ const spawnOpusPlayer = (): { write(page: Uint8Array): void; stop(): void } => {
 	return {
 		write: page => {
 			if (ffplay.stdin && !ffplay.stdin.destroyed) ffplay.stdin.write(page)
+		},
+		stop: () => {
+			try {
+				ffplay.stdin?.end()
+				ffplay.stdin?.destroy()
+			} catch {
+				// ignore
+			}
+			ffplay.kill('SIGKILL')
+		}
+	}
+}
+
+const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
+	const ffplay = spawn(
+		'ffplay',
+		['-hide_banner', '-loglevel', 'warning', '-nodisp', '-f', 'f32le', '-ar', '16000', '-ac', '1', 'pipe:0'],
+		{ stdio: ['pipe', 'ignore', 'inherit'] }
+	)
+	ffplay.on('error', err => console.error('ffplay PCM failed to start:', (err as Error).message))
+	return {
+		write: bytes => {
+			if (ffplay.stdin && !ffplay.stdin.destroyed) {
+				ffplay.stdin.write(bytes)
+			}
 		},
 		stop: () => {
 			try {
@@ -826,50 +893,10 @@ const main = async (): Promise<void> => {
 	// can close what the bridge client no longer drives.
 	const liveRelays = new Set<{ close(): unknown }>()
 
-	// For production WhatsApp Web calls, relays require WebRTC DataChannel (SCTP-over-DTLS-over-UDP).
+	// For production WhatsApp Web calls, relays require DTLS + SCTP + DataChannel via rtc-tunnel.
 	// For local test mock, plain UDP cleartext allocate is accepted.
-	let rtcProvider: Parameters<typeof sock.setRelayTransportProvider>[0] | undefined
-	if (!args.socketUrl && !args.dangerSkipCertVerify) {
-		try {
-			const { RTCPeerConnection } = await import('werift')
-			const bridge = (await import('@oxidezap/whatsapp-rust-bridge')) as {
-				createRtcRelayTransportProvider?: (
-					fingerprint?: string,
-					options?: {
-						RTCPeerConnection?: unknown
-						maxBufferedAmount?: number
-						onPacketsDropped?: (count: number) => void
-					}
-				) => Parameters<typeof sock.setRelayTransportProvider>[0]
-				RELAY_DTLS_FINGERPRINT?: string
-			}
-			if (typeof bridge.createRtcRelayTransportProvider === 'function') {
-				const baseRtc = bridge.createRtcRelayTransportProvider(bridge.RELAY_DTLS_FINGERPRINT, {
-					RTCPeerConnection,
-					maxBufferedAmount: 256 * 1024,
-					onPacketsDropped: count => console.warn(`relay dropped ${count} packets under buffer pressure`)
-				})
-				rtcProvider = {
-					async createRelayConnection(params, events) {
-						console.log(`relay channel (WebRTC DataChannel DTLS+SCTP tunnel) to ${params.address}:${params.port}`)
-						const handle = await baseRtc.createRelayConnection(params, events)
-						liveRelays.add(handle)
-						return {
-							send: (data: Uint8Array) => handle.send(data),
-							close: async () => {
-								liveRelays.delete(handle)
-								await handle.close()
-							}
-						}
-					}
-				}
-			}
-		} catch (err) {
-			console.warn('werift WebRTC provider not available, falling back to raw UDP:', (err as Error).message)
-		}
-	}
-
-	if (rtcProvider) {
+	if (isProductionRelayMode(args)) {
+		const rtcProvider = await createRtcTunnelRelayProvider({ liveRelays })
 		await sock.setRelayTransportProvider(rtcProvider)
 	} else {
 		await sock.setRelayTransportProvider({
@@ -877,7 +904,7 @@ const main = async (): Promise<void> => {
 				// Host and port only, never credentials: this line tells the
 				// next transcript which relay the allocate went to, which is
 				// what a relay-allocate-timed-out needs after it.
-				console.log(`relay channel (cleartext UDP fallback) to ${params.address}:${params.port}`)
+				console.log(`relay channel (mock cleartext UDP) to ${params.address}:${params.port}`)
 				const socket = dgram.createSocket('udp4')
 				liveRelays.add(socket)
 				const stunOut = new Map<string, number>()
@@ -1002,36 +1029,54 @@ const main = async (): Promise<void> => {
 	let stopSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
-	// The negotiated audio promise for the live call (`mlow` when the offer
-	// names it, `opus` otherwise). Outbound encoding and inbound playback both
-	// follow it: pushing the wrong grammar sheds forever and plays nothing.
-	let audioFormat: 'mlow' | 'opus' = 'opus'
-	// Inbound counters for the mlow path, which has no playback: reported on
-	// `s` and sampled in the log so a quiet peer is visible, not silent.
-	let mlowHeard = 0
-	let mismatched = 0
+	// The application's outbound audio source promise ('opus' for the ffmpeg path).
+	let sourceFormat: 'mlow' | 'opus' | 'opus-mlow' = 'opus-mlow'
+	let peerCodec: 'mlow' | 'opus' | undefined
+	let inboundAudioFrames = 0
 	// Playback is per call, not per process: hangup stops the player, and the
 	// next ring mints a fresh Ogg stream rather than writing into a dead
 	// stdin with stale sequence state.
 	let pushAudioFrame: ((frame: CallAudioFrame) => void) | undefined
 	let stopPlaying: (() => void) | undefined
 	const startPlayback = (): void => {
-		const mux = muxOggOpus()
-		const player = spawnOpusPlayer()
+		const decoder = new (mlowAudioDecoderConstructor())()
+		let mode: 'mlow' | 'opus' = 'opus'
+		let mux = muxOggOpus()
+		let player: { write(data: Uint8Array): void; stop(): void } = spawnOpusPlayer()
 		for (const page of mux.headerPages()) player.write(page)
+		const switchMode = (next: 'mlow' | 'opus'): void => {
+			if (mode === next) return
+			player.stop()
+			mode = next
+			if (next === 'mlow') {
+				decoder.reset()
+				player = spawnPcmPlayer()
+				console.log('audio playback switched opus -> mlow')
+				console.log('audio playback started pcm-f32le/16000/mono')
+			} else {
+				decoder.reset()
+				mux = muxOggOpus()
+				player = spawnOpusPlayer()
+				for (const page of mux.headerPages()) player.write(page)
+				console.log('audio playback switched mlow -> opus')
+			}
+		}
 
 		const jitterBuffer = new AudioJitterBuffer({
 			preRoll: 5,
 			maxDelay: 8,
 			onPacket: (frame, gapSamples) => {
-				let data = frame.data
-				if (data.length > 0 && ((data[0] ?? 0) & 0xc0) === 0xc0) {
-					try {
-						data = depacketizeOpusFromMlow(data)
-					} catch {
-						// ignore
-					}
+				if (frame.codec === 'mlow') {
+					switchMode('mlow')
+					for (let missing = 0; missing < gapSamples / 2880; missing++)
+						decoder.decode(new Uint8Array(), frame.payloadType)
+					const pcm = decoder.decode(frame.data, frame.payloadType)
+					player.write(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength))
+					return
 				}
+				switchMode('opus')
+				let data = frame.data
+				if (frame.format === 'opus-mlow') data = depacketizeOpusFromMlow(data)
 				if (data.length <= 1 && data[0] === 0x90) {
 					player.write(mux.page(new Uint8Array(0), gapSamples + 2880))
 					return
@@ -1044,6 +1089,7 @@ const main = async (): Promise<void> => {
 		stopPlaying = () => {
 			jitterBuffer.flush()
 			player.stop()
+			decoder.free()
 			pushAudioFrame = undefined
 		}
 	}
@@ -1123,14 +1169,13 @@ const main = async (): Promise<void> => {
 	// pushes the silence token the core accepts under both promises. A pump,
 	// not a bare interval, so backpressure sheds with counts and hangup stops
 	// it with the call. Null unless an mlow call is live.
-	let silencePump: { stop(): void; done: Promise<unknown> } | null = null
 
 	// The Opus encoder runs only on opus calls while a call is live: a file
 	// input exhausts, starting it at launch would spend the audio before
 	// anyone answers, and pushing Opus grammar into an mlow call dies in the
 	// engine and sheds forever. That mixup is what the mlow path above is for.
 	const ensureEncoder = (): void => {
-		if (encoder || audioFormat !== 'opus' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
+		if (encoder || sourceFormat !== 'opus-mlow' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
 		const callForChild = liveCallId
 		void sock
 			.openCallAudioWriter(callForChild)
@@ -1151,6 +1196,7 @@ const main = async (): Promise<void> => {
 		// would corrupt it, and pushed to the new call id they would land
 		// on the wrong call. Both are captured here and checked per chunk.
 		const stream = demuxOggOpus()
+		let invalidSourceReported = false
 		// Backoff state: pushing into a full queue is a wasted crossing,
 		// so after a run of sheds the producer drops at the source for a
 		// beat instead of hammering. Acceptances reset the run.
@@ -1160,6 +1206,18 @@ const main = async (): Promise<void> => {
 			if (child !== encoder || callForChild !== liveCallId || !liveCallId) return
 			if (Date.now() < quietUntil) return
 			for (const packet of stream.push(new Uint8Array(chunk))) {
+				if (!isOpusCeltOnly(packet)) {
+					const config = getOpusConfig(packet)
+					if (!invalidSourceReported) {
+						invalidSourceReported = true
+						console.error(
+							`audio source produced non-CELT Opus (config=${config}, len=${packet.length}); stopping because opus-mlow accepts CELT-only packets`
+						)
+					}
+					child.stdout?.destroy()
+					child.kill('SIGKILL')
+					return
+				}
 				if (audioWriter) {
 					try {
 						const accepted = audioWriter.tryWrite(packet)
@@ -1181,7 +1239,7 @@ const main = async (): Promise<void> => {
 					}
 				} else {
 					void sock
-						.pushCallAudio(liveCallId, packet)
+						.pushCallAudio(liveCallId, packet, 'opus-mlow')
 						.then(accepted => {
 							if (!accepted) {
 								shed++
@@ -1230,39 +1288,6 @@ const main = async (): Promise<void> => {
 			}
 			encoder = null
 		}
-	}
-
-	// Mlow outbound: silence at voice cadence through the library pump, with
-	// the grammar declared on the pump so a wiring mistake fails fast in the
-	// library instead of shedding silently in the engine.
-	const ensureSilencePump = (callId: string): void => {
-		if (silencePump || audioFormat !== 'mlow') return
-		let mlowShed = 0
-		sock
-			.startCallAudioPump(callId, makeSilenceCallAudioSource(), {
-				audioFormat: 'mlow',
-				onShed: total => {
-					mlowShed = total
-					if (mlowShed % 50 === 1) console.log(`shed ${mlowShed} mlow silence packets under backpressure`)
-				}
-			})
-			.then(pump => {
-				if (callId !== liveCallId) {
-					pump.stop()
-					return
-				}
-				silencePump = pump
-				void pump.done.then(
-					stats => console.log(`mlow silence pump ended: ${JSON.stringify(stats)}`),
-					err => console.error('mlow silence pump failed:', (err as Error).message)
-				)
-			})
-			.catch(err => console.error('mlow silence pump failed to start:', (err as Error).message))
-	}
-
-	const stopSilencePump = (): void => {
-		silencePump?.stop()
-		silencePump = null
 	}
 
 	// Outgoing video, started once per call when --video is set or when
@@ -1385,30 +1410,11 @@ const main = async (): Promise<void> => {
 	}
 
 	const onFrame = (frame: CallAudioFrame): void => {
-		// Play what was negotiated, not what the example encodes: an mlow
-		// call delivers mlow grammar, and muxing that as Opus plays noise.
-		// Mlow decode has no ffmpeg path here, so it is counted and logged,
-		// not played. Per-packet logging would drown the session.
-		if (frame.codec !== audioFormat) {
-			mismatched++
-			if (mismatched % 50 === 1)
-				console.error(
-					`dropping peer packet outside the negotiated ${audioFormat} promise (codec=${frame.codec}, total=${mismatched})`
-				)
-			return
-		}
-		if (frame.codec !== 'opus') {
-			mlowHeard++
-			if (mlowHeard % 50 === 1)
-				console.log(`heard ${mlowHeard} mlow peer packets (no mlow decoder here, counted not played)`)
-			return
-		}
-		try {
-			// Native Opus frames are routed through the playout jitter buffer.
-			pushAudioFrame?.(frame)
-		} catch (err) {
-			console.error('dropping an unmuxable peer packet:', (err as Error).message)
-		}
+		inboundAudioFrames++
+		const routerState: InboundAudioRouterState = { peerCodec }
+		processInboundCallAudioFrame(frame, routerState, pushAudioFrame)
+		peerCodec = routerState.peerCodec
+		if (inboundAudioFrames === 1) console.log(`inbound audio ${frame.codec} pt=${frame.payloadType}`)
 	}
 
 	const hangup = async (): Promise<void> => {
@@ -1417,6 +1423,7 @@ const main = async (): Promise<void> => {
 		liveCallId = undefined
 		videoActive = false
 		pendingPeerVideoUpgrade = false
+		peerCodec = undefined
 		stopSink?.()
 		stopSink = undefined
 		stopPlaying?.()
@@ -1425,7 +1432,6 @@ const main = async (): Promise<void> => {
 		// Stopped before the hangup lands: a new ring answered while endCall
 		// is in flight must find a clear slot, not the dying capture.
 		stopEncoder()
-		stopSilencePump()
 		stopVideoEncoder()
 		stopVideoPlayback()
 		try {
@@ -1458,7 +1464,7 @@ const main = async (): Promise<void> => {
 		// consent pings. A timeout here with ping/pong flowing is that gap,
 		// not the network, and only the tunnel (bridge lane) closes it.
 		if (event.kind === 'relay-allocate-timed-out') {
-			if (rtcProvider) {
+			if (isProductionRelayMode(args)) {
 				console.log('media never came up: the allocate went unanswered inside the DTLS+SCTP tunnel.')
 			} else {
 				console.log(
@@ -1466,7 +1472,12 @@ const main = async (): Promise<void> => {
 				)
 			}
 		}
-		if (event.kind === 'audio-codec-switched') console.log(`codec ${event.from} -> ${event.to}`)
+		if (event.kind === 'audio-codec-switched') {
+			console.log(`audio codec switched ${event.from ?? 'unknown'} -> ${event.to ?? 'unknown'}`)
+		}
+		if (event.kind === 'audio-codec-source-fixed') {
+			console.log(`audio source fixed sending=${event.sending ?? 'unknown'} peer=${event.peerExpects ?? 'unknown'}`)
+		}
 		if (event.kind === 'video-upgrade-requested') {
 			pendingPeerVideoUpgrade = true
 			console.log(`🎥 peer asks for video on ${event.callId} (state=${event.state ?? 'n/a'}); press v to accept`)
@@ -1502,24 +1513,18 @@ const main = async (): Promise<void> => {
 		}
 		accepting = true
 		try {
-			// Accept with the offered profile, not a hardcoded one: the
-			// captain's real call negotiated Mlow while this pushed Opus, so
-			// every packet died in the engine and the queue shed forever.
-			const format = negotiatedAudioFormat(call.audio)
+			// For this ffmpeg example, the application source format is opus.
+			// The peer may send native Opus or MLOW (asymmetric escape).
 			const withVideo = (args.video !== undefined || call.isVideo) === true
-			const id = await sock.acceptCall(call.id, format, withVideo)
+			const id = await sock.acceptCall(call.id, 'opus', withVideo)
 			liveCallId = id
 			muted = false
-			mlowHeard = 0
-			mismatched = 0
+			inboundAudioFrames = 0
+			peerCodec = undefined
 			stopSink?.()
-			audioFormat = format
+			sourceFormat = 'opus-mlow'
 			stopSink = sock.onCallAudio(id, onFrame)
-			// Outbound follows the promise: opus runs the ffmpeg encoder,
-			// mlow runs the silence pump. Never both. The encoder gate
-			// refuses mlow calls, and the pump declares mlow up front.
-			if (format === 'opus') ensureEncoder()
-			else ensureSilencePump(id)
+			ensureEncoder()
 			startPlayback()
 			if (withVideo) {
 				videoActive = true
@@ -1527,7 +1532,7 @@ const main = async (): Promise<void> => {
 				ensureVideoEncoder()
 				console.log('🎥 video started with call accept')
 			}
-			console.log('answered', id, `with ${format}`)
+			console.log('answered', id, 'with opus-mlow')
 		} finally {
 			accepting = false
 		}
@@ -1547,15 +1552,13 @@ const main = async (): Promise<void> => {
 	})
 
 	if (args.command === 'dial') {
-		// Outbound dials promise opus: there is no offer to read, and opus
-		// is the only grammar ffmpeg encodes here. The peer negotiates
-		// against it and the bridge reports a mismatch instead of noise.
-		audioFormat = 'opus'
+		// Outbound dials promise opus: opus is the grammar ffmpeg encodes here.
+		sourceFormat = 'opus-mlow'
 		const withVideo = args.video !== undefined
-		const id = await sock.dialCall(args.peer!, 'opus', withVideo)
+		const id = await sock.dialCall(args.peer!, 'opus-mlow', withVideo)
 		liveCallId = id
-		mlowHeard = 0
-		mismatched = 0
+		inboundAudioFrames = 0
+		peerCodec = undefined
 		stopSink = sock.onCallAudio(id, onFrame)
 		ensureEncoder()
 		startPlayback()
@@ -1590,7 +1593,6 @@ const main = async (): Promise<void> => {
 		}
 		liveRelays.clear()
 		stopEncoder()
-		stopSilencePump()
 		stopVideoEncoder()
 		stopVideoPlayback()
 		stopPlaying?.()
@@ -1627,7 +1629,7 @@ const main = async (): Promise<void> => {
 			void Promise.all([sock.getCallMediaStats(id), sock.getCallAudioBuffer(id)])
 				.then(([stats, buffer]: [CallMediaStats, CallAudioBuffer]) =>
 					console.log(
-						`format=${audioFormat} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} mlow-heard=${mlowHeard} mismatched=${mismatched} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+						`source=${sourceFormat} peer-codec=${peerCodec ?? 'none'} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} shed-at-push=${shed} no-encoder=${stats.outboundFramesWithoutEncoder} sink-dropped=${stats.audioSinkDropped} inbound=${inboundAudioFrames} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 					)
 				)
 				.catch(err => console.error('stats failed:', (err as Error).message))

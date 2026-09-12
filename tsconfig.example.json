@@ -12,5 +12,5 @@
 	// The example runs against the built package, so lint builds lib first
 	// (see the lint script). That keeps this gate on the same declarations
 	// consumers compile against, instead of a parallel source view.
-	"include": ["Example/call.ts", "Example/__tests__/**/*.ts"]
+	"include": ["Example/call.ts", "Example/rtc-tunnel-relay.ts", "Example/__tests__/**/*.ts"]
 }

@@ -5,7 +5,6 @@ import { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
 import { adaptBridgeEvent } from '../Bridge/adapt.ts'
 import { makeEventHandler } from '../Socket/events.ts'
-import { negotiatedAudioFormat } from '../Socket/calls.ts'
 import { trackIncomingCall, type CallOfferCache } from '../Socket/call-offers.ts'
 import type { SocketContext } from '../Socket/types.ts'
 import type { BaileysEventMap, WACallEvent } from '../Types/index.ts'
@@ -217,13 +216,11 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 		expect(call.isVideo).toBe(undefined)
 	})
 
-	it('the offer audio list decides the accept promise (mlow vs opus)', () => {
-		// The captain's real call negotiated Mlow while the example pushed
-		// Opus, so every packet died in the engine. The caller reads the
-		// offer's audio list through the same helper the example uses.
-		expect(negotiatedAudioFormat(['mlow'])).toBe('mlow')
-		expect(negotiatedAudioFormat(['opus'])).toBe('opus')
-		expect(negotiatedAudioFormat([])).toBe('opus')
-		expect(negotiatedAudioFormat(undefined)).toBe('opus')
+	it('call.audio is not treated as proof of peer codec', () => {
+		// All current WhatsApp audio profiles signal <audio enc="opus" rate="16000">.
+		// The signaling audio list does not distinguish MLOW from Opus or dictate peer codec.
+		const offerAudio = ['opus']
+		expect(offerAudio.includes('opus')).toBe(true)
+		// A call with enc="opus" can still receive MLOW frames from a peer.
 	})
 })

@@ -63,25 +63,24 @@ export type WACallEvent = {
 /**
  * Encoded-audio codec promise for a call.
  *
- * A promise about the bytes pushed through `pushCallAudio`, and what the call
- * negotiates against: answering an offer that only speaks the other codec
- * fails naming `audioFormat` so the caller can retry with the other one.
- * `opus` is the in-profile escape on the same 16 kHz clock as `mlow`, not
- * native RFC 7587 Opus. Spelled after the bridge `CallAudioFormat`.
+ * The encoded grammar supplied by the local application. `mlow` is the
+ * proprietary payload, `opus` is native 16 kHz Opus, and `opus-mlow` is CELT
+ * Opus that the bridge rewrites to the MLOW escape.
  */
-export type CallAudioFormat = 'mlow' | 'opus'
+export type CallAudioFormat = 'mlow' | 'opus' | 'opus-mlow'
 
 /**
  * One encoded audio packet for a live call, as the engine received it: the
  * codec payload plus its RTP metadata. The buffer is owned, not a borrowed
- * view — it stays valid after the callback returns — and it is shared between
- * the call's listeners, so never modify it; copy only to mutate or transfer
- * ownership. `codec` names the grammar inside the negotiated timing.
+ * view, and it is shared between the call's listeners, so never modify it.
+ * `codec` names the payload family; `format` is the actual per-frame format
+ * reported by the bridge.
  */
 export type CallAudioFrame = {
 	callId: string
 	data: Uint8Array
 	codec: 'mlow' | 'opus'
+	format: CallAudioFormat
 	payloadType: number
 	sequenceNumber: number
 	timestamp: number

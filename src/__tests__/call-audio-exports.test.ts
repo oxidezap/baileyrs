@@ -10,7 +10,6 @@ import {
 	makeFileCallAudioSource,
 	makeSilenceCallAudioSource,
 	MLOW_SILENCE_PACKET,
-	negotiatedAudioFormat,
 	openFilePacketReader,
 	packetizeOpusForMlow,
 	startCallAudioPump
@@ -26,8 +25,7 @@ describe('call audio root exports', () => {
 		expect(MLOW_SILENCE_PACKET).toEqual(new Uint8Array([0x90]))
 	})
 
-	it('exposes the format decision and the opus escape helpers', () => {
-		expect(typeof negotiatedAudioFormat).toBe('function')
+	it('exposes the opus escape helpers', () => {
 		expect(typeof packetizeOpusForMlow).toBe('function')
 		expect(typeof depacketizeOpusFromMlow).toBe('function')
 	})

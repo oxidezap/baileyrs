@@ -517,6 +517,7 @@ describe('call media router', () => {
 		callId,
 		data: new Uint8Array([0x90]),
 		codec: 'mlow',
+		format: 'mlow',
 		payloadType: 120,
 		sequenceNumber: 7,
 		timestamp: 960,
@@ -721,6 +722,7 @@ describe('call media router', () => {
 			callId: 'CALL-1',
 			data: new Uint8Array([0x90]),
 			codec: 'mlow',
+			format: 'mlow',
 			payloadType: 120,
 			sequenceNumber,
 			timestamp: 960,
@@ -775,6 +777,7 @@ describe('call media router', () => {
 			callId: 'CALL-1',
 			data: new Uint8Array([0x90]),
 			codec: 'mlow',
+			format: 'mlow',
 			payloadType: 120,
 			sequenceNumber: 1,
 			timestamp: 960,
@@ -851,6 +854,7 @@ describe('call media router', () => {
 			callId: 'CALL-1',
 			data: new Uint8Array([0x90]),
 			codec: 'mlow',
+			format: 'mlow',
 			payloadType: 120,
 			sequenceNumber,
 			timestamp: 960,
@@ -965,13 +969,13 @@ describe('call audio socket methods', () => {
 		expect(methods.getCallAudioFormat('CALL-9')).toBe('mlow')
 		expect(await methods.pushCallAudio('CALL-9', new Uint8Array([0x90]), 'mlow')).toBe(true)
 		expect(await methods.pushCallAudio('CALL-9', new Uint8Array([0x90]))).toBe(true)
-		await expect(methods.pushCallAudio('CALL-9', new Uint8Array([0x90]), 'opus')).rejects.toThrow(/negotiated mlow/)
+		await expect(methods.pushCallAudio('CALL-9', new Uint8Array([0x90]), 'opus')).rejects.toThrow(/source is mlow/)
 		// A call never negotiated here is the bridge's to report, not this
 		// layer's to guess about: the declaration passes through.
 		expect(await methods.pushCallAudio('NEVER-NEGOTIATED', new Uint8Array([0x90]), 'opus')).toBe(true)
 		const writer = await methods.openCallAudioWriter('CALL-9')
 		expect(writer.tryWrite(new Uint8Array([0x90]), 'mlow')).toBe(true)
-		expect(() => writer.tryWrite(new Uint8Array([0x90]), 'opus')).toThrow(/negotiated mlow/)
+		expect(() => writer.tryWrite(new Uint8Array([0x90]), 'opus')).toThrow(/source is mlow/)
 		writer.close()
 		await methods.endCall('CALL-9')
 		expect(methods.getCallAudioFormat('CALL-9')).toBe(undefined)
@@ -980,8 +984,8 @@ describe('call audio socket methods', () => {
 	it('dial records its promise and the router forgets it on ended', async () => {
 		const router = nullRouter()
 		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
-		expect(await methods.dialCall('5511999999999@s.whatsapp.net', 'opus')).toBe('CALL-NEW')
-		expect(methods.getCallAudioFormat('CALL-NEW')).toBe('opus')
+		expect(await methods.dialCall('5511999999999@s.whatsapp.net', 'opus-mlow')).toBe('CALL-NEW')
+		expect(methods.getCallAudioFormat('CALL-NEW')).toBe('opus-mlow')
 		router.routeMediaEvent({ callId: 'CALL-NEW', kind: 'ended' })
 		expect(methods.getCallAudioFormat('CALL-NEW')).toBe(undefined)
 	})
@@ -991,7 +995,7 @@ describe('call audio socket methods', () => {
 		await methods.acceptCall('CALL-9', 'mlow')
 		await expect(
 			methods.startCallAudioPump('CALL-9', scriptedSource([new Uint8Array([0x90])]), { audioFormat: 'opus' })
-		).rejects.toThrow(/negotiated mlow/)
+		).rejects.toThrow(/source is mlow/)
 		await expect(
 			methods.startCallAudioPump('CALL-9', scriptedSource([new Uint8Array([0x90])]), {
 				audioFormat: 'g729' as 'mlow'
@@ -1300,6 +1304,7 @@ describe('call audio socket methods', () => {
 			callId: 'CALL-1',
 			data: new Uint8Array([0x90]),
 			codec: 'mlow',
+			format: 'mlow',
 			payloadType: 120,
 			sequenceNumber: 9,
 			timestamp: 960,

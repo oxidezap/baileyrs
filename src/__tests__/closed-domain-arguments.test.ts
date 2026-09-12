@@ -349,7 +349,7 @@ const EXEMPT: Record<string, string> = {
 	'calls.ts:<module>:audioFormat':
 		'the bridge-contract interface restatement, not a parameter; dialCall and acceptCall validate it',
 	'calls.ts:stop:format':
-		'the format bookkeeping on the CallMediaRouter interface (setAudioFormat), attributed by the scan to the nearest preceding opener; only acceptCall and dialCall record, both validating the domain first',
+		'the source format bookkeeping on the CallMediaRouter interface (setSourceFormat), attributed by the scan to the nearest preceding opener; only acceptCall and dialCall record, both validating the domain first',
 	'calls.ts:assertPushFormat:audioFormat':
 		'a module-internal helper; both call sites (pushCallAudio, tryWrite) validate the domain before calling',
 	'calls.ts:close:audioFormat':

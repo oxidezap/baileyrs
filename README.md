@@ -379,25 +379,26 @@ A few behaviors that differ from upstream — almost always to your advantage:
   Without it, audio messages still send — they just carry no `seconds`
   value. Install `music-metadata` if you want durations computed.
 - **Voice calls ride the bridge calls preview, not the release bridge.**
-  `sock.dialCall(peerJid)` / `sock.acceptCall(callId)` open an encoded-audio
-  call (`'mlow'` by default, `'opus'` for the in-profile escape); answer with
-  the offer's promise. `negotiatedAudioFormat(call.audio)` reads it, and `mlow`
-  in the list means mlow, anything else keeps opus.
+  `sock.dialCall(peerJid, audioFormat)` / `sock.acceptCall(callId, audioFormat)` open an encoded-audio
+  call (`'mlow'` by default, `'opus'` for native Opus, or `'opus-mlow'` for
+  CELT Opus that the bridge rewrites to MLOW); specify the local application's
+   source format promise.
   `sock.pushCallAudio(callId, bytes)` queues one packet and resolves `false`
   when the engine shed it under backpressure — that is the normal
   loss-tolerant answer, not an error. Pass ffmpeg-shaped Opus straight
-  through: the engine rewrites to the MLOW escape in flight, so
+   through an `opus-mlow` call: the engine rewrites to the MLOW escape in flight, so
   pre-packetizing corrupts the TOC. The peer's encoded packets arrive through
   per-call `sock.onCallAudio(callId, sink)` sinks. Each frame carries one owned
-  encoded packet, valid after the callback returns and shared with the call's
-  other sinks, so decode synchronously and never modify the bytes. An `opus`
-  frame carries the escape: run it through `depacketizeOpusFromMlow` before a
-  stock Opus decoder. A push declaring its grammar
-  (`pushCallAudio(callId, bytes, 'opus')`) is checked against the promise the
-  call negotiated and fails fast on a mixup instead of shedding forever; the
-  same check guards   `openCallAudioWriter` writes, `startCallAudioPump` sources
-  via its `audioFormat` option, and `getCallAudioFormat(callId)` reads the
-  tracked promise back. `getCallAudioBuffer(callId)` reads queued packets
+   encoded packet, valid after the callback returns and shared with the call's
+   other sinks, so decode synchronously and never modify the bytes. Use the
+   frame's `format`: native `opus` stays unchanged, while `opus-mlow` goes
+   through `depacketizeOpusFromMlow`; `mlow` goes to a stateful MLOW decoder.
+   A push declaring its source grammar (`pushCallAudio(callId, bytes,
+   'opus-mlow')`) is checked against the local source promise and fails fast on
+   a mixup instead of shedding forever; the same check guards
+   `openCallAudioWriter` writes and `startCallAudioPump` sources via its
+   `audioFormat` option. `getCallAudioFormat(callId)` reads the tracked source
+   promise back. `getCallAudioBuffer(callId)` reads queued packets
   per direction with capacities, which tells a full queue with no relay
   apart from congestion. Lifecycle
   steps (`relay-allocated`, …, `ended`) ride the `call.media` event, and
