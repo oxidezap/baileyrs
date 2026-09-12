@@ -1113,9 +1113,9 @@ export interface CallAudioMethodHooks {
  * record existed and the peer was told: its own terminate stanza already went
  * out through the handle, so the caller sends nothing more. False means no
  * record, no audio domain — or a record whose peer was never notified
- * (`local-only`): the caller falls back to plain signaling so the remote side
- * still hears the hangup. `local-only` is the documented fallback, not an
- * anomaly, so it returns quietly; only a shape the bridge enum never named
+ * (`local-only` or `partly-notified`): the caller falls back to plain signaling
+ * so every remote participant can hear the hangup. These are documented
+ * fallbacks, not anomalies, so they return quietly; only a shape the bridge enum never named
  * reports, rather than trusted: failing closed would break future notified
  * outcomes, while an extra stanza is recoverable. Anything else throws, so a
  * failed hangup keeps its routing context for the retry instead of reading
@@ -1129,11 +1129,8 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 			const outcome = normalizeCallEndResult(
 				await (endCall as (this: unknown, id: string) => Promise<CallEndResult>).call(client, callId)
 			) as CallEndResult
-			if (outcome?.outcome === 'local-only') return false
-			const notified =
-				outcome?.outcome === 'peer-notified' ||
-				outcome?.outcome === 'partly-notified' ||
-				outcome?.outcome === 'already-ended'
+			if (outcome?.outcome === 'local-only' || outcome?.outcome === 'partly-notified') return false
+			const notified = outcome?.outcome === 'peer-notified' || outcome?.outcome === 'already-ended'
 			if (!notified) {
 				ctx.reportUnexpectedError(
 					new Error(`endMediaCallIfPresent: bridge reported an unrecognized end outcome for ${callId}`),

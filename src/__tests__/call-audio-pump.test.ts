@@ -1102,6 +1102,12 @@ describe('call audio socket methods', () => {
 		expect(
 			await endMediaCallIfPresent(stubCtx({ endCall: async () => ({ outcome: 'local-only', failure: 'x' }) }), 'CALL-1')
 		).toBe(false)
+		expect(
+			await endMediaCallIfPresent(
+				stubCtx({ endCall: async () => ({ outcome: 'partly-notified', notified: 1, unconfirmed: 1 }) }),
+				'CALL-1'
+			)
+		).toBe(false)
 		const localOnlyReported: unknown[] = []
 		const localOnlyCtx = {
 			withClient: async (operation: (client: never) => unknown) =>
