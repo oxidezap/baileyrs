@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/oxidezap/baileyrs/compare/v0.3.4...v0.3.5) (2026-09-13)
+
+
+### Bug Fixes
+
+* **events:** keep history contacts out of contacts.upsert ([#139](https://github.com/oxidezap/baileyrs/issues/139)) ([7a92205](https://github.com/oxidezap/baileyrs/commit/7a92205f36e50f5f59f83da2ef4abdbe543d58a0))
+
 ## [0.3.4](https://github.com/oxidezap/baileyrs/compare/v0.3.3...v0.3.4) (2026-09-10)
 
 
