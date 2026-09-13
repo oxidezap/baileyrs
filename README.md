@@ -268,6 +268,12 @@ preserved. No QR re-scan, no logged-out events.
 
 A few behaviors that differ from upstream — almost always to your advantage:
 
+- **History contacts stay on `messaging-history.set`.** During HistorySync,
+  read the `contacts` array from that event to hydrate a contact store. baileyrs
+  does not re-emit those snapshot entries through `contacts.upsert`, including
+  push-name-only syncs. Semantic updates such as `contacts.update` still emit
+  normally for inbound push names and contact changes.
+
 - **An undecryptable message tells you what it was.** The CIPHERTEXT stub
   emitted on `messages.upsert` for a message that failed to decrypt carries
   `stanzaType`: the envelope's `type` attribute as the server stamped it on the
