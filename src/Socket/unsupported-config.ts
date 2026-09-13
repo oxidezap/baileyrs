@@ -40,9 +40,9 @@ export const UNSUPPORTED_CONFIG_KEYS = [
 	'fireInitQueries',
 	// Presence is explicit here: call `sendPresenceUpdate` after `open`.
 	'markOnlineOnConnect',
-	// History sync is driven by the engine.
+	// Full-history requests are driven by the engine. The per-notification
+	// admission policy is translated by Socket/index.ts.
 	'syncFullHistory',
-	'shouldSyncHistoryMessage',
 	// Link previews are not generated on this side.
 	'generateHighQualityLinkPreview',
 	'linkPreviewImageThumbnailWidth',
@@ -103,6 +103,7 @@ export const READ_CONFIG_KEYS = [
 	'deviceProps',
 	'wantedPreKeyCount',
 	'dangerSkipCertChainVerify',
+	'shouldSyncHistoryMessage',
 	'emitOwnEvents',
 	'shouldIgnoreJid',
 	'defaultQueryTimeoutMs',

@@ -47,6 +47,7 @@ import {
 	type MediaDownloadType
 } from '../Utils/messages.ts'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
+import { makeHistorySyncAdmission } from '../Compatibility/history-sync-admission.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
@@ -543,7 +544,8 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 			// other truthy value at construction, so a `!!`/ternary-style
 			// coercion could promote a malformed opt-out into an opt-in.
 			// Absent stays strict.
-			fullConfig.dangerSkipCertChainVerify
+			fullConfig.dangerSkipCertChainVerify,
+			makeHistorySyncAdmission(fullConfig.shouldSyncHistoryMessage)
 		)
 		// `end()` can land while the client is still being built — a `sock.end()`
 		// or `await using` right after `makeWASocket()` does exactly that. When
