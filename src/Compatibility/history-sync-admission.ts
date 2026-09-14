@@ -61,11 +61,21 @@ export const resolveHistorySyncPolicy = (configured: SocketHistoryPolicy | undef
  * `{ syncType }` notification. Disabling everything also drops the initial
  * LID mappings, which destabilizes sessions — hence the warning at the call
  * site.
+ *
+ * One deliberate deviation: a probe call that throws is treated as
+ * potentially enabling rather than propagating. The probe is diagnostic-only,
+ * and a socket must never fail to build over a diagnostic — upstream lets
+ * that throw out of construction. Stateful policies still observe these
+ * calls, exactly as they do upstream.
  */
 export const isHistorySyncFullyDisabled = (shouldSyncHistoryMessage: SocketHistoryPolicy): boolean =>
-	PROCESSABLE_HISTORY_TYPES.every(
-		syncType => shouldSyncHistoryMessage({ syncType } as proto.Message.IHistorySyncNotification) === false
-	)
+	PROCESSABLE_HISTORY_TYPES.every(syncType => {
+		try {
+			return shouldSyncHistoryMessage({ syncType } as proto.Message.IHistorySyncNotification) === false
+		} catch {
+			return false
+		}
+	})
 
 /**
  * Adapt the Baileys history policy to the bridge's pre-download policy.

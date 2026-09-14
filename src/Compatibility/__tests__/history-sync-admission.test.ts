@@ -86,6 +86,14 @@ describe('history sync admission compatibility', () => {
 		expect(isHistorySyncFullyDisabled(DEFAULT_CONNECTION_CONFIG.shouldSyncHistoryMessage)).toBe(false)
 	})
 
+	test('a throwing probe call never breaks the diagnostic', () => {
+		expect(
+			isHistorySyncFullyDisabled(() => {
+				throw new Error('synthetic input unsupported')
+			})
+		).toBe(false)
+	})
+
 	test('an explicit undefined policy resolves to the default', () => {
 		expect(resolveHistorySyncPolicy(undefined)).toBe(DEFAULT_CONNECTION_CONFIG.shouldSyncHistoryMessage)
 		const custom = () => true
