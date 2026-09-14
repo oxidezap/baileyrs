@@ -141,7 +141,17 @@ export type SocketConfig = {
 	countryCode: string
 	/** @deprecated History download policy lives in the bridge. */
 	downloadHistory?: boolean
-	/** Decide whether a history notification should be processed. */
+	/**
+	 * Decide whether a history notification should be processed.
+	 *
+	 * Partial notification view: the callback receives a decoded
+	 * `HistorySyncNotification` carrying only pre-download metadata
+	 * (`syncType`, `chunkOrder`, `progress`, `fileLength` as `Long`,
+	 * `peerDataRequestSessionId`). Media and key fields stay absent rather
+	 * than synthesized, and types outside the upstream processable set are
+	 * rejected after the callback runs. `false` permanently acknowledges the
+	 * chunk — no retry — so this is not a transient load-shedding hook.
+	 */
 	shouldSyncHistoryMessage: (msg: proto.Message.IHistorySyncNotification) => boolean
 	/** @deprecated QR rendering is the caller's responsibility — listen on `connection.update` for the QR string. */
 	printQRInTerminal?: boolean
