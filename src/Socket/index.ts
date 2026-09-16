@@ -54,8 +54,7 @@ import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import {
 	makeHistorySyncAdmission,
 	resolveHistorySyncPolicy,
-	isHistorySyncFullyDisabled,
-	type HistorySyncAdmissionMetadata
+	isHistorySyncFullyDisabled
 } from '../Compatibility/history-sync-admission.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
@@ -576,18 +575,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		}
 		if (useNativeMemory) logger.debug('auth: using socket-local native memory backend')
 
-		// The history-sync admission travels as the bridge's ninth `policies`
-		// argument. The calls-audio preview pinned in package.json still
-		// declares eight parameters and drops extras at runtime, so the call
-		// is shaped to compile against both: the policy lights up once the
-		// bridge ships it, while the preview keeps engine-default admission.
-		const createClientWithPolicies = createWhatsAppClient as (
-			...args: [
-				...Parameters<typeof createWhatsAppClient>,
-				{ historySyncAdmission: (metadata: HistorySyncAdmissionMetadata) => boolean }?
-			]
-		) => ReturnType<typeof createWhatsAppClient>
-		const created = await createClientWithPolicies(
+		const created = await createWhatsAppClient(
 			makeTransport(fullConfig),
 			makeHttpClient(fullConfig),
 			eventHandlers,

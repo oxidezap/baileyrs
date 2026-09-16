@@ -1,23 +1,10 @@
+import type { HistorySyncAdmissionMetadata } from '@oxidezap/whatsapp-rust-bridge'
 import Long from 'long'
 import { DEFAULT_CONNECTION_CONFIG, PROCESSABLE_HISTORY_TYPES } from '../Defaults/index.ts'
 import { proto as protoRuntime } from '../WAProto/runtime.ts'
 import type { proto } from '../WAProto/runtime.ts'
 
-/**
- * Pre-download history-sync metadata the bridge hands to the admission
- * policy. Declared structurally here rather than imported from the bridge:
- * the calls-audio preview pinned in package.json predates the bridge
- * release that exports it, so importing the name breaks the build on this
- * branch. The shape is what the policy consumes — nothing more.
- */
-export interface HistorySyncAdmissionMetadata {
-	syncType?: number
-	chunkOrder?: number
-	progress?: number
-	fileLength?: string
-	inlinePayloadLen?: number
-	peerDataRequestSessionId?: string
-}
+export type { HistorySyncAdmissionMetadata }
 
 export type SocketHistoryPolicy = (message: proto.Message.IHistorySyncNotification) => boolean
 

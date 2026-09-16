@@ -76,13 +76,7 @@ const buildSocket = async (policy: (() => boolean) | undefined, tag: string) => 
 
 describe('history sync policy plumbing', { timeout: 60_000 }, () => {
 	it('the bridge accepts the adapter policy shape as its ninth argument', async () => {
-		// Shaped for both bridge generations: release bridges declare the
-		// ninth `policies` argument, while the pinned calls-audio preview
-		// still declares eight and drops extras at runtime.
-		const createClientWithPolicies = createWhatsAppClient as (
-			...args: [...Parameters<typeof createWhatsAppClient>, { historySyncAdmission: () => boolean }?]
-		) => ReturnType<typeof createWhatsAppClient>
-		const client = await createClientWithPolicies(
+		const client = await createWhatsAppClient(
 			deadTransport(),
 			deadHttp(),
 			null,
