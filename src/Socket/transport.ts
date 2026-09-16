@@ -21,8 +21,8 @@ interface RuntimeUndici {
 let defaultNodeDispatcher: unknown
 /**
  * Resolve the undici module backing this runtime's WebSocket. `getBuiltinModule`
- * has no `undici` ID and always misses, so the transitive `import('undici')`
- * (undici v8 via link-preview-js) is the source on every Node.
+ * has no `undici` ID and always misses, so the direct `undici` dependency is
+ * the source on every Node.
  *
  * Both the Agent and the WebSocket class come from that one module, never
  * mixed with the global WebSocket: pairing a dispatcher built from one

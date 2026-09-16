@@ -444,8 +444,10 @@ A few behaviors that differ from upstream — almost always to your advantage:
   cadences add up. Calls need a
   bridge with the `client-calls-audio` domain — a preview build, not a
   release — and without one every method above throws `501` naming it,
-  except `onCallAudio`: registering a sink is purely local, so it returns
-  normally and the sink simply never fires.
+  except the purely local registrations: the `onCallAudio`, `onCallPcm`
+  and `onCallVideo` sinks plus `getCallAudioFormat` return normally (a
+  sink simply never fires). To probe for the domain before dialing, call
+  any other method — e.g. `getActiveCalls` — and handle the `501`.
   Before dialing or accepting, install the relay provider the bridge runs
   its media transport over (`sock.setRelayTransportProvider(...)`, see
   `Example/call.ts`); without one the media setup fails fast and the call

@@ -757,20 +757,24 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 }
 
 /**
- * Show a live pairing QR on the controlling terminal only. `/dev/tty` is
- * local to the operator's session: unlike stdout/stderr it is never
- * redirected into transcripts or log collectors, so a captured log cannot
- * replay the credential. Headless runs have no controlling terminal — they
- * get instructions instead of the secret.
+ * Show a live pairing QR on the console device only. The console is local
+ * to the operator's session: unlike stdout/stderr it is never redirected
+ * into transcripts or log collectors, so a captured log cannot replay the
+ * credential (`/dev/tty` on POSIX, `CON` on Windows). Headless runs have no
+ * console — they get instructions instead of the secret.
  */
 export const showPairingQr = (qr: string): boolean => {
-	try {
-		writeFileSync('/dev/tty', `scan this QR with your phone:\n${qr}\n`)
-		return true
-	} catch {
-		console.error('pairing needed: re-run attached to a terminal to scan the QR')
-		return false
+	const text = `scan this QR with your phone:\n${qr}\n`
+	for (const device of ['/dev/tty', 'CON']) {
+		try {
+			writeFileSync(device, text)
+			return true
+		} catch {
+			// Not this platform, or no controlling terminal: try the next.
+		}
 	}
+	console.error('pairing needed: re-run attached to a terminal to scan the QR')
+	return false
 }
 
 /** Map WhatsApp device orientation (0..=3) to an ffplay video filter string. */
@@ -1473,10 +1477,43 @@ const main = async (): Promise<void> => {
 		if (event.kind === 'ended' && event.callId === liveCallId) {
 			console.log('peer ended the call')
 			void hangup().then(() => {
-				if (args.command === 'dial') process.exit(0)
+				if (args.command === 'dial') shutdown(0)
 			})
 		}
 	})
+
+	readline.emitKeypressEvents(process.stdin)
+	if (process.stdin.isTTY) process.stdin.setRawMode(true)
+	// Raw mode swallows SIGINT: Ctrl+C arrives here as a keypress, not a
+	// signal, so without this branch the process outlives every crash and
+	// no keyboard interrupt reaches it. Relay sockets are tracked for the
+	// same reason: an open UDP handle keeps the loop alive on its own.
+	// Declared before any dial/answer continuation: the fast-ended paths
+	// below exit through here so auth-store barriers and ordered
+	// WASM/transport teardown run instead of a bare process.exit.
+	let shuttingDown = false
+	const shutdown = (exitCode: number): void => {
+		if (shuttingDown) return
+		shuttingDown = true
+		if (process.stdin.isTTY) process.stdin.setRawMode(false)
+		for (const relay of liveRelays) {
+			try {
+				relay.close()
+			} catch {
+				// Already gone; the loop is what matters.
+			}
+		}
+		liveRelays.clear()
+		stopEncoder()
+		stopVideoEncoder()
+		stopVideoPlayback()
+		void hangup()
+			.catch(() => undefined)
+			.then(() => sock.end(undefined).catch(() => undefined))
+			.then(() => process.exit(exitCode))
+		// Never strand: a wedged hangup must not hold the exit open.
+		setTimeout(() => process.exit(exitCode), 3000).unref()
+	}
 
 	const answer = async (call: WACallEvent): Promise<void> => {
 		if (liveCallId !== undefined || accepting) {
@@ -1536,7 +1573,8 @@ const main = async (): Promise<void> => {
 		const id = await sock.dialCallPcm(args.peer!, withVideo)
 		if (deadCallIds.has(id)) {
 			console.log('call ended while dialing; not starting capture for', id)
-			process.exit(0)
+			shutdown(0)
+			return
 		}
 		liveCallId = id
 		inboundPcmFrames = 0
@@ -1557,35 +1595,6 @@ const main = async (): Promise<void> => {
 		console.log(args.accept ? 'listening (answering every ring)' : 'listening (rejecting every ring)')
 	}
 
-	readline.emitKeypressEvents(process.stdin)
-	if (process.stdin.isTTY) process.stdin.setRawMode(true)
-	// Raw mode swallows SIGINT: Ctrl+C arrives here as a keypress, not a
-	// signal, so without this branch the process outlives every crash and
-	// no keyboard interrupt reaches it. Relay sockets are tracked for the
-	// same reason: an open UDP handle keeps the loop alive on its own.
-	let shuttingDown = false
-	const shutdown = (exitCode: number): void => {
-		if (shuttingDown) return
-		shuttingDown = true
-		if (process.stdin.isTTY) process.stdin.setRawMode(false)
-		for (const relay of liveRelays) {
-			try {
-				relay.close()
-			} catch {
-				// Already gone; the loop is what matters.
-			}
-		}
-		liveRelays.clear()
-		stopEncoder()
-		stopVideoEncoder()
-		stopVideoPlayback()
-		void hangup()
-			.catch(() => undefined)
-			.then(() => sock.end(undefined).catch(() => undefined))
-			.then(() => process.exit(exitCode))
-		// Never strand: a wedged hangup must not hold the exit open.
-		setTimeout(() => process.exit(exitCode), 3000).unref()
-	}
 	process.on('SIGINT', () => shutdown(130))
 	process.stdin.on('keypress', (_chunk, key: { name?: string; sequence?: string; ctrl?: boolean } | undefined) => {
 		// Ctrl+C never becomes SIGINT in raw mode; it arrives as a keypress

@@ -1139,6 +1139,13 @@ export const startCallAudioPump = (
 						if (wait > 0) await Promise.race([paceDelay(wait), interruptCurrent])
 						if (stopped) break
 					}
+					// Anchored before the pull, not after: a source with
+					// nontrivial `next()` latency (file/stream readers)
+					// must not stretch every interval by its read time.
+					// The absolute schedule below advances from the
+					// previous deadline; this timestamp only anchors the
+					// first deadline and the snap-forward comparison.
+					const pullStarted = clockMs !== undefined ? Date.now() : 0
 					const packet = await Promise.race([source.next(), interruptCurrent])
 					if (stopped) break
 					if (packet === null) {
@@ -1153,11 +1160,10 @@ export const startCallAudioPump = (
 					// Async pushes race the same interrupt as pulls: a stalled
 					// push settles `done` on stop instead of hanging it, and a
 					// packet whose push loses the race counts neither way.
-					// Cadence stays in the source, never here. The deadline is
-					// anchored on the scheduled pull time, not on the push
-					// settlement: an async push slower than the clock period
-					// must not add a full extra period per packet.
-					const pullAt = clockMs !== undefined ? Date.now() : 0
+					// Cadence stays in the source, never here. The deadline
+					// advances from the absolute schedule in pullStarted,
+					// never from completion times: neither read latency nor
+					// a slow async push may add a period per packet.
 					const pending = push(packet)
 					if (typeof pending === 'boolean') {
 						if (pending) {
@@ -1191,8 +1197,9 @@ export const startCallAudioPump = (
 					if (clockMs !== undefined) {
 						// Late pulls skip the wait and snap the deadline forward:
 						// the schedule never sleeps to make up lost time.
-						nextDeadline = pulls === 1 ? pullAt + clockMs : nextDeadline + clockMs
-						if (nextDeadline < pullAt) nextDeadline = pullAt + clockMs
+						nextDeadline = pulls === 1 ? pullStarted + clockMs : nextDeadline + clockMs
+						const now = Date.now()
+						if (nextDeadline < now) nextDeadline = now + clockMs
 					}
 				} finally {
 					if (wakeParkedPull === wakeCurrent) wakeParkedPull = undefined

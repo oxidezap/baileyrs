@@ -171,6 +171,10 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 				aliceRelay.cancel()
 				bobRelay.cancel()
 				bobEnded.cancel()
+				// The call is already up on both sides: end it before
+				// leaving, or the next test inherits a live call and its
+				// stale events. Failures here still surface below.
+				await alice.sock.endCall(callId).catch(() => undefined)
 				if (process.env.BARBACK_RELAY_PORT !== undefined) throw err
 				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
 				return
@@ -296,7 +300,9 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 				bobEnded.cancel()
 				// Same lane rule as the mlow test above: a configured relay
 				// that never allocates is a regression, not an incapable
-				// mock.
+				// mock. Either way the half-open call ends first so the
+				// next test starts clean.
+				await alice.sock.endCall(callId).catch(() => undefined)
 				if (process.env.BARBACK_RELAY_PORT !== undefined) throw err
 				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
 				return
