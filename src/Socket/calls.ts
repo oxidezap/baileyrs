@@ -1376,6 +1376,16 @@ const markEndIncomplete = (ctx: SocketContext, callId: string): void => {
 	}
 }
 
+/**
+ * Drop the incomplete mark once the signaling fallback it exists for has
+ * run: a later hangup for the same ID must re-end natively and read the
+ * fresh outcome, not skip on a stale mark. Failed fallbacks keep theirs
+ * for the retry.
+ */
+export const clearIncompleteEnd = (ctx: SocketContext, callId: string): void => {
+	incompleteSetFor(ctx).delete(callId)
+}
+
 export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
 	ctx.withClient(async client => {
 		// A previous hangup already ended the local handle without telling

@@ -63,7 +63,7 @@ import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
 import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
-import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent } from './calls.ts'
+import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent, clearIncompleteEnd } from './calls.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -1101,6 +1101,10 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 						client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
 					)
 					activeCallContexts.delete(callId)
+					// The fallback the incomplete mark exists for has run:
+					// a later hangup for this ID must re-end natively and
+					// read the fresh outcome instead of skipping on it.
+					clearIncompleteEnd(ctx, callId)
 				} finally {
 					// Local media stops even when the stanza fails; the routing
 					// context above stays for the retry, which needs the

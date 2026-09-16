@@ -40,6 +40,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
+import { endianness } from 'node:os'
 import process from 'node:process'
 import readline from 'node:readline'
 import qrcode from 'qrcode-terminal'
@@ -95,11 +96,20 @@ const usage = (): never => {
 	process.exit(2)
 }
 
-/** Fail fast with a named binary when ffmpeg/ffplay are not installed. */
+/**
+ * Fail fast with a named binary when ffmpeg/ffplay are not installed. Runs
+ * after the socket exists on every media path, so a missing binary takes
+ * the installed shutdown (terminal restore, relay close, socket end)
+ * instead of a bare exit that strands all three.
+ */
 const requireBinary = (name: 'ffmpeg' | 'ffplay'): void => {
 	const found = spawnSync(name, ['-version'], { stdio: 'ignore' }).status === 0
 	if (!found) {
 		console.error(`${name} not found on PATH; install it to run Example/call.ts`)
+		if (shutdownExampleOnFatal) {
+			shutdownExampleOnFatal(2)
+			throw new Error(`${name} not found on PATH`)
+		}
 		process.exit(2)
 	}
 }
@@ -402,6 +412,41 @@ const spawnPcmEncoder = (args: CallExampleArgs): ChildProcess | null => {
 	return ffmpeg
 }
 
+/**
+ * ffmpeg emits `s16le` while `Int16Array` reads host order: identical on
+ * little-endian hosts, byte-swapped everywhere else. Branch once here so
+ * the fast reinterpret path costs nothing on LE and big-endian hosts
+ * decode explicitly instead of shipping swapped samples.
+ */
+const HOST_LITTLE_ENDIAN: boolean = endianness() === 'LE'
+
+/** Decode one s16le window to samples, honoring the host byte order. */
+const s16leToSamples = (bytes: Uint8Array, offset: number, samples: number): Int16Array => {
+	const byteOffset = bytes.byteOffset + offset
+	if (HOST_LITTLE_ENDIAN && byteOffset % Int16Array.BYTES_PER_ELEMENT === 0) {
+		return new Int16Array(bytes.buffer, byteOffset, samples)
+	}
+	const out = new Int16Array(samples)
+	if (HOST_LITTLE_ENDIAN) {
+		new Uint8Array(out.buffer).set(bytes.subarray(offset, offset + samples * 2))
+		return out
+	}
+	const view = new DataView(bytes.buffer, byteOffset, samples * 2)
+	for (let i = 0; i < samples; i++) out[i] = view.getInt16(i * 2, true)
+	return out
+}
+
+/** Encode samples to s16le bytes for the ffplay pipe, honoring host order. */
+const samplesToS16le = (samples: Int16Array): Buffer => {
+	if (HOST_LITTLE_ENDIAN) {
+		return Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)
+	}
+	const out = Buffer.allocUnsafe(samples.length * 2)
+	const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
+	for (let i = 0; i < samples.length; i++) view.setInt16(i * 2, samples[i]!, true)
+	return out
+}
+
 export const splitPcm16Frames = (
 	frameSamples = 960
 ): { push(bytes: Uint8Array): Int16Array[]; flush(): Int16Array[] } => {
@@ -419,21 +464,12 @@ export const splitPcm16Frames = (
 				pendingLength += copied
 				offset = copied
 				if (pendingLength < frameBytes) return frames
-				const completed = new Int16Array(frameSamples)
-				new Uint8Array(completed.buffer).set(scratch)
-				frames.push(completed)
+				frames.push(s16leToSamples(scratch, 0, frameSamples))
 				pendingLength = 0
 			}
 
 			while (offset + frameBytes <= bytes.length) {
-				const byteOffset = bytes.byteOffset + offset
-				if (byteOffset % Int16Array.BYTES_PER_ELEMENT === 0) {
-					frames.push(new Int16Array(bytes.buffer, byteOffset, frameSamples))
-				} else {
-					const copied = new Int16Array(frameSamples)
-					new Uint8Array(copied.buffer).set(bytes.subarray(offset, offset + frameBytes))
-					frames.push(copied)
-				}
+				frames.push(s16leToSamples(bytes, offset, frameSamples))
 				offset += frameBytes
 			}
 
@@ -1180,7 +1216,7 @@ const main = async (): Promise<void> => {
 			if (frame.callId !== liveCallId) return
 			inboundPcmFrames++
 			if (inboundPcmFrames === 1) console.log('inbound audio pcm16/16000/mono')
-			pcmPlayer?.write(Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength))
+			pcmPlayer?.write(samplesToS16le(frame.data))
 		})
 	}
 	// Peer video goes to its own ffplay window, minted with the call like
@@ -1681,11 +1717,11 @@ const main = async (): Promise<void> => {
 		}
 		accepting = true
 		try {
-			// Explicit opt-in only: a remote video offer must not start the local
-			// camera by itself. Receiving the peer's video is accepted with the
-			// call; the outbound encoder starts only when --video was passed.
-			const withVideo = args.video !== undefined
-			const id = await sock.acceptCallPcm(call.id, withVideo)
+			// Inbound video follows the offer, outbound capture stays
+			// opt-in: a remote video offer without --video still shows the
+			// peer, but never starts the local camera by itself.
+			const acceptVideo = args.video !== undefined || call.isVideo === true
+			const id = await sock.acceptCallPcm(call.id, acceptVideo)
 			if (deadCallIds.has(id) || deadCallIds.has(call.id)) {
 				console.log('call ended while accepting; not starting capture for', id)
 				return
@@ -1700,11 +1736,15 @@ const main = async (): Promise<void> => {
 			sourceFormat = 'pcm'
 			ensureEncoder()
 			startPcmPlayback()
-			if (withVideo) {
+			if (acceptVideo) {
 				videoActive = true
 				startVideoPlayback()
-				ensureVideoEncoder()
-				console.log('🎥 video started with call accept')
+				if (args.video !== undefined) {
+					ensureVideoEncoder()
+					console.log('🎥 video started with call accept')
+				} else {
+					console.log('🎥 showing peer video (no local camera without --video)')
+				}
 			}
 			console.log('answered', id, 'with pcm16')
 		} finally {
