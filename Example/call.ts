@@ -637,10 +637,25 @@ const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
 	// a sync throw the try/catch below could see. Without this listener
 	// that 'error' event is unhandled and takes down the example.
 	ffplay.stdin?.on('error', err => console.error('ffplay PCM pipe broke:', (err as Error).message))
+	// A stalled-but-alive ffplay stops consuming while frames keep
+	// arriving: write() then returns false and Node queues unboundedly,
+	// so shed while the drain is pending instead of buffering the call.
+	let needDrain = false
+	ffplay.stdin?.on('drain', () => {
+		needDrain = false
+	})
 	return {
 		write: bytes => {
-			if (ffplay.stdin && !ffplay.stdin.destroyed) {
-				ffplay.stdin.write(bytes)
+			const stdin = ffplay.stdin
+			if (!stdin || stdin.destroyed) return
+			if (needDrain) return
+			try {
+				if (stdin.write(bytes) === false) {
+					needDrain = true
+					console.log('ffplay PCM stalled: shedding until drain')
+				}
+			} catch {
+				// ignore
 			}
 		},
 		stop: () => {
@@ -665,7 +680,10 @@ export const getMlowFrameDurationMs = (toc: number): number => MLOW_FRAME_DURATI
 const MAX_VIDEO_AU_BUFFER = 4 * 1024 * 1024
 
 /** Split a raw Annex-B byte stream into access units on AUD boundaries (NAL type 9). */
-export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[] } => {
+export const splitVideoAccessUnits = (): {
+	push(bytes: Uint8Array): Uint8Array[]
+	flush(): Uint8Array[]
+} => {
 	let buffered: Uint8Array = new Uint8Array(0)
 	let scanPos = 0
 	let audStarts: number[] = []
@@ -755,6 +773,21 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 			buffered = buffered.slice(allStarts[allStarts.length - 1]!)
 			scanPos = 0
 			return units
+		},
+		flush(): Uint8Array[] {
+			// The trailing access unit has all its bytes — only a successor
+			// AUD delimits it, so a finite source must flush it explicitly
+			// on encoder exit or the final frame is always dropped. Nothing
+			// classifiable buffered means nothing complete to return.
+			if (!seenAud || audStarts.length === 0) return []
+			const lastStart = audStarts[audStarts.length - 1]!
+			if (lastStart >= buffered.length) return []
+			const unit = buffered.slice(lastStart)
+			buffered = new Uint8Array(0)
+			scanPos = 0
+			audStarts = []
+			seenAud = false
+			return [unit]
 		}
 	}
 }
@@ -876,14 +909,24 @@ const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; sto
 	// Same async-EPIPE hazard as the audio player above: a dead viewer
 	// surfaces it on the stdin stream, outside any try/catch.
 	ffplay.stdin?.on('error', err => console.error('ffplay (video) pipe broke:', (err as Error).message))
+	// Same stall hazard: shed while the drain is pending rather than
+	// queueing access units without bound.
+	let needDrain = false
+	ffplay.stdin?.on('drain', () => {
+		needDrain = false
+	})
 	return {
 		write: unit => {
-			if (ffplay.stdin && !ffplay.stdin.destroyed) {
-				try {
-					ffplay.stdin.write(unit)
-				} catch {
-					// ignore
+			const stdin = ffplay.stdin
+			if (!stdin || stdin.destroyed) return
+			if (needDrain) return
+			try {
+				if (stdin.write(unit) === false) {
+					needDrain = true
+					console.log('ffplay (video) stalled: shedding until drain')
 				}
+			} catch {
+				// ignore
 			}
 		},
 		stop: () => {
@@ -1326,47 +1369,57 @@ const main = async (): Promise<void> => {
 		const splitter = splitVideoAccessUnits()
 		let outboundAuCount = 0
 		let seenFirstKeyframe = false
-		child.stdout?.on('data', (chunk: Buffer) => {
-			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
-			for (const unit of splitter.push(new Uint8Array(chunk))) {
-				const isKeyframe = auHasKeyframe(unit)
-				if (!seenFirstKeyframe) {
-					if (!isKeyframe) continue
-					seenFirstKeyframe = true
+		const pushVideoUnit = (unit: Uint8Array): void => {
+			const isKeyframe = auHasKeyframe(unit)
+			if (!seenFirstKeyframe) {
+				if (!isKeyframe) return
+				seenFirstKeyframe = true
+			}
+			outboundAuCount++
+			if (outboundAuCount % 30 === 1 || isKeyframe) {
+				console.log(`🎥 OUT video: AU #${outboundAuCount} (${unit.length}B, keyframe=${isKeyframe})`)
+			}
+			if (videoWriter) {
+				try {
+					const accepted = videoWriter.tryWrite(unit)
+					if (!accepted) {
+						outboundVideoShed++
+						if (outboundVideoShed % 50 === 1)
+							console.log(`shed ${outboundVideoShed} video access units under backpressure`)
+					}
+				} catch (err) {
+					console.error('video push error:', (err as Error).message)
 				}
-				outboundAuCount++
-				if (outboundAuCount % 30 === 1 || isKeyframe) {
-					console.log(`🎥 OUT video: AU #${outboundAuCount} (${unit.length}B, keyframe=${isKeyframe})`)
-				}
-				if (videoWriter) {
-					try {
-						const accepted = videoWriter.tryWrite(unit)
+			} else if (liveCallId) {
+				void sock
+					.pushCallVideo(liveCallId, unit)
+					.then(accepted => {
 						if (!accepted) {
 							outboundVideoShed++
 							if (outboundVideoShed % 50 === 1)
 								console.log(`shed ${outboundVideoShed} video access units under backpressure`)
 						}
-					} catch (err) {
-						console.error('video push error:', (err as Error).message)
-					}
-				} else {
-					void sock
-						.pushCallVideo(liveCallId, unit)
-						.then(accepted => {
-							if (!accepted) {
-								outboundVideoShed++
-								if (outboundVideoShed % 50 === 1)
-									console.log(`shed ${outboundVideoShed} video access units under backpressure`)
-							}
-						})
-						.catch(err => console.error('video push failed:', (err as Error).message))
-				}
+					})
+					.catch(err => console.error('video push failed:', (err as Error).message))
 			}
+		}
+		child.stdout?.on('data', (chunk: Buffer) => {
+			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
+			for (const unit of splitter.push(new Uint8Array(chunk))) pushVideoUnit(unit)
 		})
 		child.on('exit', code => {
 			console.log(`ffmpeg (video) exited (${code})`)
 			if (videoEncoder === child) {
 				videoEncoder = null
+				// Clean EOF on a finite --video file leaves the trailing
+				// access unit buffered — no successor AUD delimits it.
+				// Flush it before closing the writer or the final frame is
+				// always dropped (a still image would send nothing at
+				// all). A killed encoder may leave a partial NAL behind,
+				// so only code 0 flushes.
+				if (code === 0) {
+					for (const unit of splitter.flush()) pushVideoUnit(unit)
+				}
 				videoWriter?.close()
 				videoWriter = null
 			}

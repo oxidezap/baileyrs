@@ -345,6 +345,30 @@ const OPTIONAL_BUFFER_FIELDS = ['videoOutboundQueued', 'videoInboundQueued'] as 
 const normalizeCallAudioBuffer = (method: string, raw: unknown): CallAudioBuffer =>
 	normalizeNumericRecord<CallAudioBuffer>(method, 'audio buffer', raw, BUFFER_FIELDS, OPTIONAL_BUFFER_FIELDS)
 
+/**
+ * Reject a call listing the bridge shaped unexpectedly instead of handing
+ * undefined IDs to hangups: like the stats and buffer readers above, a
+ * malformed boundary value is a 500, never a pass-through.
+ */
+const normalizeActiveCalls = (method: string, raw: unknown): ActiveCall[] => {
+	if (!Array.isArray(raw)) {
+		throw new Boom(`${method}: bridge returned no active-call list`, { statusCode: 500 })
+	}
+	return raw.map(entry => {
+		if (typeof entry !== 'object' || entry === null) {
+			throw new Boom(`${method}: bridge active-call entry is not an object`, { statusCode: 500 })
+		}
+		const record = entry as Record<string, unknown>
+		if (typeof record.callId !== 'string' || record.callId.length === 0) {
+			throw new Boom(`${method}: bridge active-call entry has no callId`, { statusCode: 500 })
+		}
+		if (typeof record.peerJid !== 'string' || record.peerJid.length === 0) {
+			throw new Boom(`${method}: bridge active-call entry has no peerJid`, { statusCode: 500 })
+		}
+		return { callId: record.callId, peerJid: record.peerJid }
+	})
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Media router: bridge callbacks in, per-call sinks and socket events out
 // ─────────────────────────────────────────────────────────────────────────────
@@ -466,33 +490,34 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 	// not skip the stop below by matching nothing.
 	if (typeof record.callId !== 'string' || typeof record.kind !== 'string') return false
 	if (!(MEDIA_EVENT_KINDS as readonly string[]).includes(record.kind)) return false
-	// Per-variant field checks: the boundary that publishes typed events must
-	// not let impossible values through on a malformed or version-skewed
-	// payload. Absent stays absent; present must match the documented shape.
+	// Every documented field is checked wherever it appears, not just on
+	// its home variant: a correct discriminator with a mistyped field from
+	// another variant (a `state` string on `relay-allocated`, a `code` on
+	// `ended`) is still malformed and must not publish. Absent stays
+	// absent; present must match the documented shape.
 	const optionalString = (value: unknown): boolean => value === undefined || typeof value === 'string'
 	const optionalSafeInteger = (value: unknown): boolean =>
 		value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
-	switch (record.kind) {
-		case 'relay-allocate-failed':
-			return record.code === undefined || (typeof record.code === 'number' && Number.isSafeInteger(record.code))
-		case 'media-setup-failed':
-			return optionalString(record.detail)
-		case 'audio-codec-switched':
-			return optionalString(record.from) && optionalString(record.to)
-		case 'audio-codec-source-fixed':
-			return optionalString(record.sending) && optionalString(record.peerExpects)
-		case 'video-upgrade-requested':
-		case 'video-state-changed':
-			return optionalSafeInteger(record.state)
-		default:
-			if (record.stats === undefined) return true
-			try {
-				normalizeCallMediaStats('call media event', record.stats)
-				return true
-			} catch {
-				return false
-			}
+	const optionalStats = (value: unknown): boolean => {
+		if (value === undefined) return true
+		try {
+			normalizeCallMediaStats('call media event', value)
+			return true
+		} catch {
+			return false
+		}
 	}
+	const fieldChecks: Record<string, (value: unknown) => boolean> = {
+		code: value => value === undefined || (typeof value === 'number' && Number.isSafeInteger(value)),
+		detail: optionalString,
+		from: optionalString,
+		to: optionalString,
+		sending: optionalString,
+		peerExpects: optionalString,
+		state: optionalSafeInteger,
+		stats: optionalStats
+	}
+	return Object.entries(fieldChecks).every(([field, check]) => check(record[field]))
 }
 
 export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRouterDeps): CallMediaRouter => {
@@ -1659,7 +1684,8 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			return media.getSourceFormat(callId)
 		},
 		/** Every call the bridge currently holds a handle for. */
-		getActiveCalls: (): Promise<ActiveCall[]> => withAudioClient('getActiveCalls', client => client.getActiveCalls()),
+		getActiveCalls: (): Promise<ActiveCall[]> =>
+			withAudioClient('getActiveCalls', client => normalizeActiveCalls('getActiveCalls', client.getActiveCalls())),
 		/**
 		 * Start sending our camera on a live call: attaches the video
 		 * endpoints and offers the upgrade to the peer. Pure encoded H.264

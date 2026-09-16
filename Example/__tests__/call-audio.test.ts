@@ -188,6 +188,24 @@ describe('splitVideoAccessUnits', () => {
 		expect(r3[0]).toEqual(au2)
 	})
 
+	it('flushes the trailing access unit when the source ends', () => {
+		const splitter = splitVideoAccessUnits()
+		const au1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42])
+		const tail = new Uint8Array([0, 0, 0, 1, 9, 0x20, 0, 0, 0, 1, 0x41, 0x9a])
+		// One AUD so far: nothing complete to emit yet.
+		expect(splitter.push(au1).length).toBe(0)
+		expect(splitter.push(tail).length).toBe(1)
+		// au1 came out on the second push; only the tail remains buffered.
+		expect(splitter.flush()).toEqual([tail])
+		expect(splitter.flush()).toEqual([])
+	})
+
+	it('flushes nothing classifiable when no AUD arrived', () => {
+		const splitter = splitVideoAccessUnits()
+		expect(splitter.push(new Uint8Array([0, 0, 0, 1, 0x67, 0x42])).length).toBe(0)
+		expect(splitter.flush()).toEqual([])
+	})
+
 	it('keeps the AUD boundary when a chunk ends right after the start code', () => {
 		const splitter = splitVideoAccessUnits()
 		const au1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42])

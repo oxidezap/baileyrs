@@ -1473,6 +1473,30 @@ describe('call audio socket methods', () => {
 		expect(() => methods.onCallAudio('CALL-1', () => {})).toThrow(/already ended/)
 	})
 
+	it('drops events carrying another variant mistyped field', () => {
+		const errors: Array<[unknown, string]> = []
+		const emitted: unknown[] = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: event => emitted.push(event),
+			reportError: (err, msg) => errors.push([err, msg])
+		})
+		// Correct discriminator, wrong-variant field: `state` is a number
+		// on video events, never a string on relay-allocated.
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocated', state: 'bad' } as never)
+		expect(emitted).toHaveLength(0)
+		expect(errors.map(([, msg]) => msg)).toContain('call media event dropped')
+		// Well-typed extras on the home variant still pass.
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'relay-allocate-failed', code: 403 })
+		expect(emitted).toHaveLength(1)
+	})
+
+	it('rejects a malformed active-call listing instead of passing it through', async () => {
+		const methods = makeCallAudioMethods(stubCtx({ getActiveCalls: () => [{ callId: 'CALL-1' }] }), nullRouter())
+		await expect(methods.getActiveCalls()).rejects.toThrow(/has no peerJid/)
+		const notArray = makeCallAudioMethods(stubCtx({ getActiveCalls: () => null }), nullRouter())
+		await expect(notArray.getActiveCalls()).rejects.toThrow(/no active-call list/)
+	})
+
 	it('terminal tombstones stay bounded on a long-lived socket', () => {
 		const router = nullRouter()
 		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
