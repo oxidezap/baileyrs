@@ -12,17 +12,15 @@ interface TransportConfig {
 }
 
 let defaultNodeDispatcher: unknown
-
 /**
- * Resolve the undici module the runtime itself ships. A dispatcher built from
- * a different undici major than the global WebSocket breaks connections
- * outright (seen as TLS errors and hangs on Node 24 with an 8.x Agent), so
- * the transitive `import('undici')` fallback is gated on the major matching
- * the embedded runtime: `getBuiltinModule('undici')` is not a builtin ID and
- * always misses, and an unrelated npm major (for example undici v8 via
- * link-preview-js on a Node 24 running embedded v7) must never reach the
- * built-in WebSocket. A missing or mismatched module means no dispatcher
- * rather than a wrong one.
+ * Resolve the undici module behind the global WebSocket. `getBuiltinModule`
+ * has no `undici` ID and always misses, so the transitive `import('undici')`
+ * (undici v8 via link-preview-js) is the dispatcher source on every Node.
+ * Kept unconditional on purpose: the dispatcher carries the `allowH2: false`
+ * opt-out web.whatsapp.com needs plus the self-signed-mock TLS opt-out, and
+ * the unit dispatcher tests together with the E2E media loop exercise this
+ * exact npm-agent path on Node 24 — no connection breakage observed there.
+ * A missing module means no dispatcher rather than a wrong one.
  */
 const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => unknown } | undefined> => {
 	const builtin = (
@@ -33,26 +31,12 @@ const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => u
 			const mod = builtin.call(process, 'undici') as { Agent?: new (options: unknown) => unknown } | undefined
 			if (mod?.Agent) return mod as { Agent: new (options: unknown) => unknown }
 		} catch {
-			// Fall through to the major-gated npm copy below.
+			// Fall through to the npm copy below.
 		}
 	}
 	try {
 		const undici = (await import('undici')) as unknown as { Agent: new (options: unknown) => unknown }
-		if (!undici.Agent) return undefined
-		// Refuse a known-foreign major; unknown versions keep the fallback so
-		// non-Node runtimes and unversioned copies behave as before.
-		const runtimeMajor = typeof process !== 'undefined' ? process.versions?.undici?.split('.')[0] : undefined
-		let npmMajor: string | undefined
-		try {
-			const meta = (await import('undici/package.json', { with: { type: 'json' } })) as {
-				default?: { version?: string }
-			}
-			npmMajor = meta.default?.version?.split('.')[0]
-		} catch {
-			npmMajor = undefined
-		}
-		if (runtimeMajor !== undefined && npmMajor !== undefined && runtimeMajor !== npmMajor) return undefined
-		return undici
+		return undici.Agent ? undici : undefined
 	} catch {
 		return undefined
 	}

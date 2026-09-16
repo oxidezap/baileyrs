@@ -510,6 +510,21 @@ describe('call audio pump', () => {
 		pump.stop('socket-closed')
 		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'call-ended' })
 	})
+
+	it('rejects an off-union stop reason instead of publishing it', () => {
+		const pump = startCallAudioPump(() => true, { next: async () => null })
+		expect(() => pump.stop('bogus' as never)).toThrow(/stop reason must be one of/)
+	})
+
+	it('a null push rejects instead of reading as a stop', async () => {
+		// Null is the interrupt sentinel, resolved only by stop(): with no
+		// stop in flight a null push result is a broken contract, and must
+		// surface rather than settle done as `stopped`.
+		const pump = startCallAudioPump(() => Promise.resolve(null as unknown as boolean), {
+			next: async () => new Uint8Array([1])
+		})
+		await expect(pump.done).rejects.toThrow(/push must resolve a boolean/)
+	})
 })
 
 describe('call media router', () => {
@@ -1340,5 +1355,27 @@ describe('call audio socket methods', () => {
 		})
 		expect(pushed).toBe(2)
 		expect(received).toHaveLength(1)
+	})
+
+	it('refuses sinks once the call ended or teardown started', () => {
+		const router = nullRouter()
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'ended' })
+		expect(() => methods.onCallAudio('CALL-1', () => {})).toThrow(/already ended/)
+		expect(() => methods.onCallVideo('CALL-1', () => {})).toThrow(/already ended/)
+
+		const closing = makeCallAudioMethods(stubCtx(liveClient(), true), nullRouter())
+		expect(() => closing.onCallAudio('CALL-9', () => {})).toThrow(/Connection Closed/)
+	})
+
+	it('an unrecognized hangup outcome keeps the routing context for retry', async () => {
+		let forgotten = 0
+		const methods = makeCallAudioMethods(
+			stubCtx({ endCall: async () => ({ outcome: 'future-outcome' }) }),
+			nullRouter(),
+			{ onCallEnded: () => forgotten++ }
+		)
+		await expect(methods.endCall('CALL-1')).rejects.toThrow(/unrecognized end outcome/)
+		expect(forgotten).toBe(0)
 	})
 })

@@ -674,7 +674,15 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 				merged.set(buffered)
 				merged.set(bytes, prevLen)
 				buffered = merged
-				scanPos = Math.max(0, prevLen - 3)
+				// Four bytes back, not three: a chunk ending exactly after
+				// `00 00 00 01` leaves a start code whose header arrives in
+				// the next chunk, and a 3-byte overlap re-enters past it —
+				// seeing `00 00 01` rejected as preceded-by-zero and losing
+				// the AUD boundary. Classifications inside the rescan
+				// window are dropped and re-derived so the overlap cannot
+				// record the same start twice.
+				scanPos = Math.max(0, prevLen - 4)
+				audStarts = audStarts.filter(start => start < scanPos)
 			}
 
 			if (buffered.length > MAX_VIDEO_AU_BUFFER) {

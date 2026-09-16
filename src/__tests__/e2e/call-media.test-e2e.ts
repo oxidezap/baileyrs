@@ -23,7 +23,7 @@
 import { after, before, describe, test } from 'node:test'
 
 import type { CallAudioFrame, CallAudioSink, CallMediaStats } from '../../index.ts'
-import { depacketizeOpusFromMlow, makeSilenceCallAudioSource } from '../../index.ts'
+import { makeSilenceCallAudioSource } from '../../index.ts'
 import { expect } from '../expect.ts'
 import { createTestClient, destroyTestClient, type TestClient } from './test-client.ts'
 import { makeUdpRelayProvider } from './udp-relay-provider.ts'
@@ -149,7 +149,7 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		// that replaced the captain's silent shed.
 		expect(bob.sock.getCallAudioFormat(bobCallId)).toBe('mlow')
 		expect(alice.sock.getCallAudioFormat(callId)).toBe('mlow')
-		await expect(alice.sock.pushCallAudio(callId, SID, 'opus')).rejects.toThrow(/negotiated mlow/)
+		await expect(alice.sock.pushCallAudio(callId, SID, 'opus')).rejects.toThrow(/source is mlow/)
 		const stopAliceSink = alice.sock.onCallAudio(callId, aliceAudio)
 		const stopBobSink = bob.sock.onCallAudio(bobCallId, bobAudio)
 		try {
@@ -293,13 +293,14 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
 				return
 			}
-			// Straight through, never pre-packetized: the engine rewrites to
-			// the MLOW escape in flight, and the frame arrives carrying it.
-			// Depacketizing restores the exact pushed bytes.
+			// Straight through, never pre-packetized: on a pure `opus`
+			// promise the engine carries the packet as-is (the MLOW-escape
+			// rewrite only runs on `opus-mlow` calls), so the frame arrives
+			// holding the exact pushed bytes.
 			expect(await alice.sock.pushCallAudio(callId, opusPacket, 'opus')).toBe(true)
 			const received = await waitForFrames(frames, 1, 30_000, 'opus alice->bob')
 			expect(received[0]!.codec).toBe('opus')
-			expect(depacketizeOpusFromMlow(received[0]!.data)).toEqual(opusPacket)
+			expect(received[0]!.data).toEqual(opusPacket)
 			const end = await alice.sock.endCall(callId)
 			expect(end.outcome !== 'local-only').toBe(true)
 			await bobEnded.promise

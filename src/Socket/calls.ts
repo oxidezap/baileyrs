@@ -232,6 +232,12 @@ export const normalizeCallEndResult = (raw: unknown): CallEndResult => {
 	return raw as CallEndResult
 }
 
+const KNOWN_CALL_END_OUTCOMES = ['peer-notified', 'partly-notified', 'local-only', 'already-ended'] as const
+
+/** Guard the closed hangup union: a version-skewed bridge must not clear call state with a shape it never named. */
+const isKnownCallEndOutcome = (outcome: unknown): outcome is CallEndResult['outcome'] =>
+	(KNOWN_CALL_END_OUTCOMES as readonly unknown[]).includes(outcome)
+
 const assertVideoPacket = (method: string, data: Uint8Array): void =>
 	assertNonEmptyPacket(method, data, 'one Annex-B H.264 access unit')
 
@@ -1152,10 +1158,14 @@ export const startCallAudioPump = (
 					} else {
 						const accepted = await Promise.race([pending, interruptCurrent])
 						if (stopped) break
-						// Null means the interrupt won, which only stop()
-						// triggers — covered by the check above, kept so the
-						// type narrows.
-						if (accepted === null) break
+						// Null with no stop means the push itself resolved
+						// null: the interrupt is the only other null source
+						// and only stop() resolves it, which sets stopped
+						// first. A null push is a broken contract, not a
+						// stop — report it instead of ending as `stopped`.
+						if (accepted === null) {
+							throw new Boom('startCallAudioPump: push must resolve a boolean', { statusCode: 400 })
+						}
 						if (typeof accepted !== 'boolean') {
 							throw new Boom('startCallAudioPump: push must resolve a boolean', { statusCode: 400 })
 						}
@@ -1310,6 +1320,15 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		if (typeof sink !== 'function') {
 			throw new Boom(`${method}: sink must be a function`, { statusCode: 400 })
 		}
+		// Same admission as writers and pumps: a sink registered after the
+		// terminal event or during teardown would outlive its call, retained
+		// with its decoder while no sweep can ever remove it.
+		if (ctx.isClosing?.() ?? false) {
+			throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+		}
+		if (media.isTerminalCall?.(callId) ?? false) {
+			throw new Boom(`${method}: call ${callId} already ended`, { statusCode: 409 })
+		}
 		return add(callId, sink)
 	}
 
@@ -1408,6 +1427,16 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			assertCallId('endCall', callId)
 			return withAudioClient('endCall', client => client.endCall(callId).then(normalizeCallEndResult))
 				.then(result => {
+					// A shape outside the bridge union is not a hangup: the
+					// routing context stays for the retry or the signaling
+					// fallback instead of resolving an object no consumer
+					// was promised. Local media still stops below — the
+					// call is over here whatever the bridge meant.
+					if (!isKnownCallEndOutcome(result?.outcome)) {
+						throw new Boom(`endCall: bridge reported an unrecognized end outcome for ${callId}`, {
+							statusCode: 500
+						})
+					}
 					// Resolving means the local side is down whatever the
 					// outcome, so the socket forgets the call too. A rejection
 					// keeps the entry: the hangup may still be retried.

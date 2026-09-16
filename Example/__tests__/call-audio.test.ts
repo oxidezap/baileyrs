@@ -187,6 +187,22 @@ describe('splitVideoAccessUnits', () => {
 		expect(r3.length).toBe(1)
 		expect(r3[0]).toEqual(au2)
 	})
+
+	it('keeps the AUD boundary when a chunk ends right after the start code', () => {
+		const splitter = splitVideoAccessUnits()
+		const au1 = new Uint8Array([0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 0x67, 0x42])
+		const au2 = new Uint8Array([0, 0, 0, 1, 9, 0x20, 0, 0, 0, 1, 0x41, 0x9a])
+		const stream = new Uint8Array(au1.length + au2.length)
+		stream.set(au1)
+		stream.set(au2, au1.length)
+		// Split inside au2's 4-byte start code: first chunk ends exactly
+		// after `00 00 00 01`, the AUD header arrives with the next chunk.
+		const cut = au1.length + 4
+		expect(splitter.push(stream.subarray(0, cut)).length).toBe(0)
+		const units = splitter.push(stream.subarray(cut))
+		expect(units.length).toBe(1)
+		expect(units[0]).toEqual(au1)
+	})
 })
 
 describe('orientationFilter', () => {
