@@ -1572,10 +1572,10 @@ const main = async (): Promise<void> => {
 			return
 		}
 		if (key?.name === 'q') {
-			void hangup().then(async () => {
-				await sock.end(undefined).catch(err => console.error('socket close failed:', (err as Error).message))
-				process.exit(0)
-			})
+			// Through shutdown, not a bare exit: it restores the raw
+			// terminal above plus the relay cleanup, hangup and socket
+			// teardown the direct path skipped.
+			shutdown(0)
 		}
 		if (key?.name === 'm' && liveCallId) {
 			muted = !muted

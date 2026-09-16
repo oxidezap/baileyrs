@@ -1164,6 +1164,7 @@ export const startCallAudioPump = (
 		let exhausted = false
 		let pulls = 0
 		let nextDeadline = 0
+		let clockOriginMs = 0
 		// The loop throws on two documented paths: `source.next()` rejects,
 		// and `push()` throws when the call already ended. Both converge on
 		// the same cleanup below: the release runs and the abort listener
@@ -1195,10 +1196,8 @@ export const startCallAudioPump = (
 					}
 					// Anchored before the pull, not after: a source with
 					// nontrivial `next()` latency (file/stream readers)
-					// must not stretch every interval by its read time.
-					// The absolute schedule below advances from the
-					// previous deadline; this timestamp only anchors the
-					// first deadline and the snap-forward comparison.
+					// sets the grid origin below instead of stretching
+					// every interval by its read time.
 					const pullStarted = clockMs !== undefined ? Date.now() : 0
 					const packet = await Promise.race([source.next(), interruptCurrent])
 					if (stopped) break
@@ -1249,11 +1248,13 @@ export const startCallAudioPump = (
 					}
 					pulls++
 					if (clockMs !== undefined) {
-						// Late pulls skip the wait and snap the deadline forward:
-						// the schedule never sleeps to make up lost time.
-						nextDeadline = pulls === 1 ? pullStarted + clockMs : nextDeadline + clockMs
-						const now = Date.now()
-						if (nextDeadline < now) nextDeadline = now + clockMs
+						// Absolute slot grid from the first pull: an overdue
+						// read skips its wait (the wait below computes <= 0)
+						// instead of sleeping another full period after it,
+						// so slow reads cost their own latency, never an
+						// extra cadence on top — and the phase never drifts.
+						if (pulls === 1) clockOriginMs = pullStarted
+						nextDeadline = clockOriginMs + pulls * clockMs
 					}
 				} finally {
 					if (wakeParkedPull === wakeCurrent) wakeParkedPull = undefined
@@ -1327,15 +1328,26 @@ export interface CallAudioMethodHooks {
 // (`local-only` or `partly-notified`). Re-ending such a handle natively
 // can report `already-ended` — which reads as notified and would skip the
 // signaling fallback the retained routing exists for — so a repeated
-// hangup goes straight to signaling instead. Bounded like the terminal
-// tombstones; IDs are unique per call.
+// hangup goes straight to signaling instead. Per socket (two sockets in
+// one process may share a call ID, each with its own native handle), held
+// weakly so teardown drops them: bounded like the terminal tombstones on
+// top, since IDs are unique per call.
 const INCOMPLETE_END_CALLS = 256
-const incompleteEndCalls = new Set<string>()
-const markEndIncomplete = (callId: string): void => {
-	incompleteEndCalls.add(callId)
-	if (incompleteEndCalls.size > INCOMPLETE_END_CALLS) {
-		const oldest = incompleteEndCalls.values().next()
-		if (!oldest.done) incompleteEndCalls.delete(oldest.value)
+const incompleteEndCalls = new WeakMap<object, Set<string>>()
+const incompleteSetFor = (ctx: SocketContext): Set<string> => {
+	let set = incompleteEndCalls.get(ctx)
+	if (!set) {
+		set = new Set<string>()
+		incompleteEndCalls.set(ctx, set)
+	}
+	return set
+}
+const markEndIncomplete = (ctx: SocketContext, callId: string): void => {
+	const set = incompleteSetFor(ctx)
+	set.add(callId)
+	if (set.size > INCOMPLETE_END_CALLS) {
+		const oldest = set.values().next()
+		if (!oldest.done) set.delete(oldest.value)
 	}
 }
 
@@ -1344,7 +1356,7 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 		// A previous hangup already ended the local handle without telling
 		// the peer: native re-end would answer `already-ended` and look
 		// notified, so skip it and let the caller signal instead.
-		if (incompleteEndCalls.has(callId)) return false
+		if (incompleteSetFor(ctx).has(callId)) return false
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {
@@ -1359,10 +1371,10 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 				return false
 			}
 			if (result.outcome === 'local-only' || result.outcome === 'partly-notified') {
-				markEndIncomplete(callId)
+				markEndIncomplete(ctx, callId)
 				return false
 			}
-			incompleteEndCalls.delete(callId)
+			incompleteSetFor(ctx).delete(callId)
 			return result.outcome === 'peer-notified' || result.outcome === 'already-ended'
 		} catch (err) {
 			const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
@@ -1556,10 +1568,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 					// straight away. A rejection keeps the entry for the
 					// same reason: the hangup may still be retried.
 					if (result.outcome === 'peer-notified' || result.outcome === 'already-ended') {
-						incompleteEndCalls.delete(callId)
+						incompleteSetFor(ctx).delete(callId)
 						hooks.onCallEnded?.(callId)
 					} else {
-						markEndIncomplete(callId)
+						markEndIncomplete(ctx, callId)
 					}
 					return result
 				})

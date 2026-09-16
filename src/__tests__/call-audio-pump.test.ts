@@ -1177,6 +1177,18 @@ describe('call audio socket methods', () => {
 		expect(await endMediaCallIfPresent(repeatCtx, 'CALL-9')).toBe(false)
 		expect(await endMediaCallIfPresent(repeatCtx, 'CALL-9')).toBe(false)
 		expect(nativeEnds).toBe(1)
+		// Another socket (its own context) sharing the call ID is
+		// unaffected: each side owns its native handle, so the mark is
+		// per-socket and the repeat ends natively there.
+		let otherNativeEnds = 0
+		const otherCtx = stubCtx({
+			endCall: async () => {
+				otherNativeEnds++
+				return { outcome: 'already-ended' }
+			}
+		})
+		expect(await endMediaCallIfPresent(otherCtx, 'CALL-9')).toBe(true)
+		expect(otherNativeEnds).toBe(1)
 		// Fresh IDs per scenario below: the incomplete marks above are
 		// per-call module state, and reusing CALL-1 would trip the
 		// repeat-hangup skip instead of the path under test.
