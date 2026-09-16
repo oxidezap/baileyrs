@@ -480,7 +480,14 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				.catch(() => {})
 		},
 		onIncomingCall: event => {
-			trackIncomingCall(activeCallContexts, event)
+			// A terminal ringing update (rejected, timed out, terminated
+			// elsewhere) opens no media handle and may never produce a
+			// `call.media: ended` sweep: stop the call's media here so a
+			// sink registered while handling the offer is not retained,
+			// and later registrations for the dead ID are refused.
+			if (trackIncomingCall(activeCallContexts, event)) {
+				callMedia.stopCall(event.action.callId)
+			}
 		},
 		onDirtyState: event => refreshParticipating(event.dirtyType),
 		/**

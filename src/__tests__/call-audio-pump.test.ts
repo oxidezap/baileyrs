@@ -1164,6 +1164,22 @@ describe('call audio socket methods', () => {
 				'CALL-1'
 			)
 		).toBe(false)
+		// An incomplete first hangup is remembered: the repeat skips the
+		// native re-end (which would answer `already-ended` and look
+		// notified) and falls straight through to signaling instead.
+		let nativeEnds = 0
+		const repeatCtx = stubCtx({
+			endCall: async () => {
+				nativeEnds++
+				return nativeEnds === 1 ? { outcome: 'local-only', failure: 'x' } : { outcome: 'already-ended' }
+			}
+		})
+		expect(await endMediaCallIfPresent(repeatCtx, 'CALL-9')).toBe(false)
+		expect(await endMediaCallIfPresent(repeatCtx, 'CALL-9')).toBe(false)
+		expect(nativeEnds).toBe(1)
+		// Fresh IDs per scenario below: the incomplete marks above are
+		// per-call module state, and reusing CALL-1 would trip the
+		// repeat-hangup skip instead of the path under test.
 		const localOnlyReported: unknown[] = []
 		const localOnlyCtx = {
 			withClient: async (operation: (client: never) => unknown) =>
@@ -1171,7 +1187,7 @@ describe('call audio socket methods', () => {
 			isClosing: () => false,
 			reportUnexpectedError: (err: unknown) => localOnlyReported.push(err)
 		} as unknown as SocketContext
-		expect(await endMediaCallIfPresent(localOnlyCtx, 'CALL-1')).toBe(false)
+		expect(await endMediaCallIfPresent(localOnlyCtx, 'CALL-2')).toBe(false)
 		expect(localOnlyReported).toEqual([])
 		const reported: unknown[] = []
 		const reportingCtx = {
@@ -1180,7 +1196,7 @@ describe('call audio socket methods', () => {
 			isClosing: () => false,
 			reportUnexpectedError: (err: unknown) => reported.push(err)
 		} as unknown as SocketContext
-		expect(await endMediaCallIfPresent(reportingCtx, 'CALL-1')).toBe(false)
+		expect(await endMediaCallIfPresent(reportingCtx, 'CALL-3')).toBe(false)
 		expect(reported).toHaveLength(1)
 		expect(
 			await endMediaCallIfPresent(
@@ -1189,7 +1205,7 @@ describe('call audio socket methods', () => {
 						throw coded
 					}
 				}),
-				'CALL-1'
+				'CALL-4'
 			)
 		).toBe(false)
 		await expect(
@@ -1199,7 +1215,7 @@ describe('call audio socket methods', () => {
 						throw new Error('gone')
 					}
 				}),
-				'CALL-1'
+				'CALL-5'
 			)
 		).rejects.toThrow(/gone/)
 	})

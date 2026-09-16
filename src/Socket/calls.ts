@@ -1323,8 +1323,28 @@ export interface CallAudioMethodHooks {
  * failed hangup keeps its routing context for the retry instead of reading
  * as a call that is gone.
  */
+// Calls whose last native hangup left the peer un-notified
+// (`local-only` or `partly-notified`). Re-ending such a handle natively
+// can report `already-ended` — which reads as notified and would skip the
+// signaling fallback the retained routing exists for — so a repeated
+// hangup goes straight to signaling instead. Bounded like the terminal
+// tombstones; IDs are unique per call.
+const INCOMPLETE_END_CALLS = 256
+const incompleteEndCalls = new Set<string>()
+const markEndIncomplete = (callId: string): void => {
+	incompleteEndCalls.add(callId)
+	if (incompleteEndCalls.size > INCOMPLETE_END_CALLS) {
+		const oldest = incompleteEndCalls.values().next()
+		if (!oldest.done) incompleteEndCalls.delete(oldest.value)
+	}
+}
+
 export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
 	ctx.withClient(async client => {
+		// A previous hangup already ended the local handle without telling
+		// the peer: native re-end would answer `already-ended` and look
+		// notified, so skip it and let the caller signal instead.
+		if (incompleteEndCalls.has(callId)) return false
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {
@@ -1338,7 +1358,11 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 				)
 				return false
 			}
-			if (result.outcome === 'local-only' || result.outcome === 'partly-notified') return false
+			if (result.outcome === 'local-only' || result.outcome === 'partly-notified') {
+				markEndIncomplete(callId)
+				return false
+			}
+			incompleteEndCalls.delete(callId)
 			return result.outcome === 'peer-notified' || result.outcome === 'already-ended'
 		} catch (err) {
 			const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
@@ -1526,10 +1550,16 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 					// `local-only` or `partly-notified` the peer was never
 					// (fully) told, and a later terminateCall fallback still
 					// needs the remembered peer and call creator to signal
-					// it. A rejection keeps the entry for the same reason:
-					// the hangup may still be retried.
+					// it. The incomplete mark goes with it, so that fallback
+					// skips the native re-end (which would answer
+					// `already-ended` and look notified) and signals
+					// straight away. A rejection keeps the entry for the
+					// same reason: the hangup may still be retried.
 					if (result.outcome === 'peer-notified' || result.outcome === 'already-ended') {
+						incompleteEndCalls.delete(callId)
 						hooks.onCallEnded?.(callId)
+					} else {
+						markEndIncomplete(callId)
 					}
 					return result
 				})

@@ -778,12 +778,15 @@ export const showPairingQr = (qr: string): boolean => {
 		return false
 	}
 	const text = `scan this QR with your phone:\n${rendered}\n`
-	for (const device of ['/dev/tty', 'CON']) {
+	// `CON` is Windows-only: on headless POSIX it is an ordinary relative
+	// filename, and writing there would persist the credential to disk.
+	const devices = process.platform === 'win32' ? ['CON'] : ['/dev/tty']
+	for (const device of devices) {
 		try {
 			writeFileSync(device, text)
 			return true
 		} catch {
-			// Not this platform, or no controlling terminal: try the next.
+			// No controlling terminal: fall through to the instructions.
 		}
 	}
 	console.error('pairing needed: re-run attached to a terminal to scan the QR')
@@ -1094,8 +1097,18 @@ const main = async (): Promise<void> => {
 	let accepting = false
 	// Calls that saw `ended` before going live: accept/dial continuations
 	// check this after their await so a fast setup failure cannot leave
-	// capture and playback running for a dead call.
+	// capture and playback running for a dead call. Bounded, because the
+	// race resolves within milliseconds while a long-running listen
+	// process would otherwise pin every call ID it ever saw.
+	const DEAD_CALL_TOMBSTONES = 64
 	const deadCallIds = new Set<string>()
+	const markCallDead = (callId: string): void => {
+		deadCallIds.add(callId)
+		if (deadCallIds.size > DEAD_CALL_TOMBSTONES) {
+			const oldest = deadCallIds.values().next()
+			if (!oldest.done) deadCallIds.delete(oldest.value)
+		}
+	}
 	let stopPcmSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
@@ -1490,7 +1503,7 @@ const main = async (): Promise<void> => {
 		// Terminal ids are remembered even for calls that are not live yet:
 		// an `ended` landing while accept/dial is still pending must stop
 		// the continuation below from starting capture for a dead call.
-		if (event.kind === 'ended') deadCallIds.add(event.callId)
+		if (event.kind === 'ended') markCallDead(event.callId)
 		if (event.kind === 'ended' && event.callId === liveCallId) {
 			console.log('peer ended the call')
 			void hangup().then(() => {
@@ -1524,12 +1537,17 @@ const main = async (): Promise<void> => {
 		stopEncoder()
 		stopVideoEncoder()
 		stopVideoPlayback()
-		void hangup()
-			.catch(() => undefined)
+		// Only the app-level hangup is force-bounded: the socket teardown
+		// below owns the auth-store durability barriers, and killing it
+		// mid-flush would lose session writes. Every wait inside sock.end
+		// is bounded by construction (release grace, close grace, quiescing
+		// flush), so it cannot strand the exit the way a wedged hangup can.
+		void Promise.race([
+			hangup().catch(() => undefined),
+			new Promise<void>(resolve => setTimeout(resolve, 3000).unref())
+		])
 			.then(() => sock.end(undefined).catch(() => undefined))
 			.then(() => process.exit(exitCode))
-		// Never strand: a wedged hangup must not hold the exit open.
-		setTimeout(() => process.exit(exitCode), 3000).unref()
 	}
 	// Registered before any dial/answer await: stdin is already in raw mode
 	// above, so a Ctrl+C during a stalled dial would otherwise become a
@@ -1584,6 +1602,12 @@ const main = async (): Promise<void> => {
 				.catch(err => console.error('video diagnostics failed:', (err as Error).message))
 		}
 	})
+
+	// Set once the socket and its shutdown sequence exist: a fatal error
+	// before that (arg parsing, auth state) has nothing to clean up, while
+	// anything after must run the same relay close, socket end and terminal
+	// restore as an orderly shutdown instead of a bare exit.
+	shutdownExampleOnFatal = shutdown
 
 	const answer = async (call: WACallEvent): Promise<void> => {
 		if (liveCallId !== undefined || accepting) {
@@ -1668,9 +1692,20 @@ const main = async (): Promise<void> => {
 
 // Guarded so the Ogg helpers stay importable without booting a socket.
 import { pathToFileURL } from 'node:url'
+
+/** Assigned once main owns a socket: fatal errors clean up before exiting. */
+let shutdownExampleOnFatal: ((exitCode: number) => void) | undefined
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
 	main().catch(err => {
 		console.error('fatal:', err instanceof Error ? err.message : err)
-		process.exit(1)
+		// A dial/setup failure after the socket exists still owns relay
+		// handles, an open socket and a raw terminal: run the orderly
+		// shutdown (durability barriers included) instead of a bare exit.
+		// Before the socket exists there is nothing to clean — exit now.
+		// (shutdown() exits on its own once cleanup finishes, so the
+		// fallback exit runs only when no shutdown was ever installed.)
+		if (shutdownExampleOnFatal) shutdownExampleOnFatal(1)
+		else process.exit(1)
 	})
 }

@@ -118,6 +118,43 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 		}
 	})
 
+	it('terminal updates report back so the socket stops the media', () => {
+		// trackIncomingCall returns whether the update ended the call on
+		// this device: Socket/index.ts stops the call's media on true, since
+		// a terminal ringing call opens no media handle and may never emit
+		// `call.media: ended` to sweep sinks registered on the offer.
+		// The cast stands in for the canonical bridge event, which is
+		// untyped past the adapter; spreads below need a concrete object
+		// type, so each call site casts instead of the fixture.
+		const ringing = {
+			type: 'incomingCall',
+			from: '5511@s.whatsapp.net',
+			timestamp: 1_730_000_000,
+			offline: false,
+			action: { type: 'offer', callId: 'CALL-1' }
+		}
+		const cache: CallOfferCache = new Map()
+		expect(trackIncomingCall(cache, ringing as never)).toBe(false)
+		expect(trackIncomingCall(cache, { ...ringing, action: { type: 'accept', callId: 'CALL-1' } } as never)).toBe(false)
+		for (const terminal of ['reject', 'timeout', 'terminate'] as const) {
+			const id = `CALL-${terminal}`
+			const terminalCache: CallOfferCache = new Map()
+			expect(trackIncomingCall(terminalCache, { ...ringing, action: { type: 'offer', callId: id } } as never)).toBe(
+				false
+			)
+			expect(trackIncomingCall(terminalCache, { ...ringing, action: { type: terminal, callId: id } } as never)).toBe(
+				true
+			)
+		}
+		expect(
+			trackIncomingCall(cache, {
+				...ringing,
+				endedElsewhere: true,
+				action: { type: 'accept', callId: 'CALL-1' }
+			} as never)
+		).toBe(true)
+	})
+
 	it('an offer without callCreator still enriches later updates', () => {
 		const noCreator = {
 			type: 'incoming_call',

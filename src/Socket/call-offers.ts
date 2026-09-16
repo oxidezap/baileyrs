@@ -35,14 +35,19 @@ const FORGET_CALL_TYPES: ReadonlySet<string> = new Set(['reject', 'timeout', 'te
  * The offer snapshot is stored even when the offer carries no `callCreator`
  * (the field is optional on the bridge): enrichment must not depend on
  * routing metadata being present.
+ *
+ * Returns whether the update was terminal for this device (rejected, timed
+ * out, terminated, or resolved elsewhere): the socket stops the call's media
+ * registrations on true, since a terminal ringing call opens no media handle
+ * and may never emit `call.media: ended` to sweep them.
  */
-export const trackIncomingCall = (cache: CallOfferCache, event: IncomingCallEvent): void => {
+export const trackIncomingCall = (cache: CallOfferCache, event: IncomingCallEvent): boolean => {
 	const { callId, callCreator, type } = event.action
 	if (event.endedElsewhere === true || FORGET_CALL_TYPES.has(type)) {
 		const snapshot = cache.get(callId)
 		if (snapshot) enrichFromSnapshot(event, snapshot)
 		cache.delete(callId)
-		return
+		return true
 	}
 	if (type === 'offer') {
 		cache.set(callId, {
@@ -52,7 +57,7 @@ export const trackIncomingCall = (cache: CallOfferCache, event: IncomingCallEven
 			callerPn: event.action.callerPn,
 			groupJid: event.action.groupJid
 		})
-		return
+		return false
 	}
 	const snapshot = cache.get(callId)
 	if (snapshot) {
@@ -64,6 +69,7 @@ export const trackIncomingCall = (cache: CallOfferCache, event: IncomingCallEven
 	} else if (callCreator) {
 		cache.set(callId, { peer: event.from, callCreator })
 	}
+	return false
 }
 
 /** Fill a sparse update from the remembered offer without overwriting it. */
