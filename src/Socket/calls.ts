@@ -1466,10 +1466,15 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 							statusCode: 500
 						})
 					}
-					// Resolving means the local side is down whatever the
-					// outcome, so the socket forgets the call too. A rejection
-					// keeps the entry: the hangup may still be retried.
-					hooks.onCallEnded?.(callId)
+					// Only a fully-notified hangup forgets the routing: on
+					// `local-only` or `partly-notified` the peer was never
+					// (fully) told, and a later terminateCall fallback still
+					// needs the remembered peer and call creator to signal
+					// it. A rejection keeps the entry for the same reason:
+					// the hangup may still be retried.
+					if (result.outcome === 'peer-notified' || result.outcome === 'already-ended') {
+						hooks.onCallEnded?.(callId)
+					}
 					return result
 				})
 				.finally(() => media.stopCall(callId))

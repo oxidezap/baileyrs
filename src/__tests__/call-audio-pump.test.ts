@@ -1309,6 +1309,20 @@ describe('call audio socket methods', () => {
 		expect(forgotten).toEqual(['CALL-1'])
 	})
 
+	it('endCall keeps the routing context when the peer was not told', async () => {
+		const forgotten: string[] = []
+		const withHooks = (client: object): ReturnType<typeof makeCallAudioMethods> =>
+			makeCallAudioMethods(stubCtx(client), nullRouter(), { onCallEnded: id => forgotten.push(id) })
+		// local-only and partly-notified leave the peer (partly) unaware, so
+		// a later terminateCall fallback can still route the stanza.
+		for (const outcome of ['local-only', 'partly-notified'] as const) {
+			const result =
+				outcome === 'local-only' ? { outcome, failure: 'no-route' } : { outcome, notified: 1, unconfirmed: 1 }
+			expect(await withHooks({ endCall: async () => result }).endCall('CALL-1')).toEqual(result)
+		}
+		expect(forgotten).toEqual([])
+	})
+
 	it('a writer sends synchronously and dies with the call, not the process', async () => {
 		const router = makeCallMediaRouter({ emitMediaEvent: () => undefined, reportError: () => undefined })
 		const seen: Uint8Array[] = []

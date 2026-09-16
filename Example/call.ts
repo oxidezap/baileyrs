@@ -42,6 +42,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import process from 'node:process'
 import readline from 'node:readline'
+import qrcode from 'qrcode-terminal'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import {
 	classifyStunPacket,
@@ -757,14 +758,24 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 }
 
 /**
- * Show a live pairing QR on the console device only. The console is local
- * to the operator's session: unlike stdout/stderr it is never redirected
- * into transcripts or log collectors, so a captured log cannot replay the
- * credential (`/dev/tty` on POSIX, `CON` on Windows). Headless runs have no
- * console — they get instructions instead of the secret.
+ * Show a live pairing QR as a scannable matrix on the console device only.
+ * The raw payload would not scan, so it is encoded to a QR symbol first;
+ * the console is local to the operator's session — unlike stdout/stderr it
+ * is never redirected into transcripts or log collectors, so a captured log
+ * cannot replay the credential (`/dev/tty` on POSIX, `CON` on Windows).
+ * Headless runs have no console — they get instructions instead of the
+ * secret.
  */
 export const showPairingQr = (qr: string): boolean => {
-	const text = `scan this QR with your phone:\n${qr}\n`
+	let rendered: string | undefined
+	qrcode.generate(qr, { small: true }, code => {
+		rendered = code
+	})
+	if (!rendered) {
+		console.error('pairing needed: could not render the QR')
+		return false
+	}
+	const text = `scan this QR with your phone:\n${rendered}\n`
 	for (const device of ['/dev/tty', 'CON']) {
 		try {
 			writeFileSync(device, text)
