@@ -345,7 +345,7 @@ export type CallAudioWriter = {
 
 /** Synchronous writer for 960-sample PCM16 call frames. */
 export type CallPcmWriter = {
-	/** Queue one 20 ms PCM16 frame. False means backpressure or a closed writer. */
+	/** Queue one 60 ms PCM16 frame (960 samples at 16 kHz mono). False means backpressure or a closed writer. */
 	tryWrite(samples: Int16Array): boolean
 	/** Invalidate the writer without ending the call. */
 	close(): void

@@ -157,7 +157,12 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		expect(outcome.code === 0).toBe(false)
 		// The crash signature, not just any nonzero exit: anything else (a
 		// sync error, an unhandled rejection after setup) would satisfy the
-		// lines above while describing a different hazard.
+		// lines above while describing a different hazard. All three are
+		// documented shapes of this exact free-mid-disconnect fault across
+		// bridge builds — the release mutex abort, the preview signature
+		// mismatch, and the out-of-bounds trap the same race trips on newer
+		// toolchains — and the reachedTarget plus wasm://wasm/ pins above
+		// tie them to this hazard rather than unrelated corruption.
 		const hasWasmFault =
 			outcome.stderr.includes('function signature mismatch') ||
 			outcome.stderr.includes('memory access out of bounds') ||

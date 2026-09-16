@@ -121,6 +121,7 @@ export interface CallRelayTransportProvider {
 
 const AUDIO_FORMATS = ['mlow', 'opus', 'opus-mlow', undefined] as const
 const KEYFRAME_URGENCIES = ['coalesced', 'immediate'] as const
+const STOP_REASONS = ['source-ended', 'stopped', 'aborted', 'call-ended', 'socket-closed'] as const
 
 /**
  * Rewrite one RFC Opus packet to the MLOW escape the engine carries, for
@@ -359,6 +360,8 @@ export interface CallMediaRouter {
 	routeMediaEvent(event: CallMediaEvent): void
 	/** Track a pump stopper so `ended` / teardown ends it with the call. */
 	trackPump(callId: string, stop: (reason?: CallAudioStopReason) => void, done?: Promise<unknown>): void
+	/** Whether the call already saw its terminal event. Late registrations stop at once. */
+	isTerminalCall?(callId: string): boolean
 	/** Forget one finished pump. Sinks and sibling pumps stay: only `ended` or teardown ends those. */
 	untrackPump(callId: string, stop: () => void): void
 	/** Stop a call's pumps and drop its sinks. */
@@ -439,11 +442,11 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 	// not let impossible values through on a malformed or version-skewed
 	// payload. Absent stays absent; present must match the documented shape.
 	const optionalString = (value: unknown): boolean => value === undefined || typeof value === 'string'
-	const optionalFiniteNumber = (value: unknown): boolean =>
-		value === undefined || (typeof value === 'number' && Number.isFinite(value))
+	const optionalSafeInteger = (value: unknown): boolean =>
+		value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
 	switch (record.kind) {
 		case 'relay-allocate-failed':
-			return record.code === undefined || (typeof record.code === 'number' && Number.isFinite(record.code))
+			return record.code === undefined || (typeof record.code === 'number' && Number.isSafeInteger(record.code))
 		case 'media-setup-failed':
 			return optionalString(record.detail)
 		case 'audio-codec-switched':
@@ -452,7 +455,7 @@ const isMediaEvent = (event: unknown): event is CallMediaEvent => {
 			return optionalString(record.sending) && optionalString(record.peerExpects)
 		case 'video-upgrade-requested':
 		case 'video-state-changed':
-			return optionalFiniteNumber(record.state)
+			return optionalSafeInteger(record.state)
 		default:
 			if (record.stats === undefined) return true
 			try {
@@ -656,12 +659,27 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 			}
 		},
 		trackPump(callId, stop, done?) {
+			// A registration racing the terminal event: the sweep already ran,
+			// so inserting would resurrect a live pump or writer for a dead
+			// call. Stop at once instead — the resource settles as call-ended
+			// rather than pushing into a torn-down bridge handle.
+			if (terminalCalls.has(callId)) {
+				try {
+					stop('call-ended')
+				} catch (err) {
+					reportError(err, `stopping a late call audio pump for ${callId}`)
+				}
+				return
+			}
 			let set = pumps.get(callId)
 			if (!set) {
 				set = new Set()
 				pumps.set(callId, set)
 			}
 			set.add({ stop, done })
+		},
+		isTerminalCall(callId) {
+			return terminalCalls.has(callId)
 		},
 		untrackPump(callId, stop) {
 			const set = pumps.get(callId)
@@ -802,6 +820,8 @@ export const makeFileCallAudioSource = async (
 	let sent = 0
 	return {
 		next: async () => {
+			// A short tail goes out as-is: odd-size fixtures stay usable, and
+			// the strict runt-tail reader is openFilePacketReader below.
 			if (sent >= total || offset >= bytes.length) return null
 			if (intervalMs > 0 && sent > 0) await paceDelay(intervalMs)
 			const chunk = bytes.subarray(offset, offset + packetBytes)
@@ -1014,9 +1034,8 @@ export const startCallAudioPump = (
 	// per-iteration promise goes out of scope with the race that settled it.
 	let wakeParkedPull: (() => void) | undefined
 	const stats = { pushed: 0, shed: 0 }
-	const source = asCallAudioPacketSource('startCallAudioPump', input)
-	// The mode discriminator is closed: a misspelling must fail here, not
-	// silently run unpaced as source timing and flood the media queue.
+	// Validated before acquiring the source: a misspelled mode must fail
+	// without holding an iterator whose release would then never run.
 	const rawTiming = options.timing as { mode?: unknown; packetDurationMs?: unknown } | undefined
 	const timingMode = rawTiming?.mode
 	if (rawTiming !== undefined && timingMode !== 'source' && timingMode !== 'clock') {
@@ -1032,8 +1051,14 @@ export const startCallAudioPump = (
 		}
 		clockMs = durationMs
 	}
+	const source = asCallAudioPacketSource('startCallAudioPump', input)
 
 	const stop = (reason: CallAudioStopReason = 'stopped'): void => {
+		// The reason is a closed union in the published stats: an off-union
+		// value from untyped JS would otherwise flow straight into the report.
+		if (!(STOP_REASONS as readonly string[]).includes(reason)) {
+			throw new Boom(`startCallAudioPump: stop reason must be one of ${STOP_REASONS.join(', ')}`, { statusCode: 400 })
+		}
 		// A teardown stop always flips the wait policy, even after the pump
 		// finished: the release already ran (or was correctly skipped), but
 		// `done` may still be waiting it out, and only this flag settles it.
@@ -1111,7 +1136,11 @@ export const startCallAudioPump = (
 					// Async pushes race the same interrupt as pulls: a stalled
 					// push settles `done` on stop instead of hanging it, and a
 					// packet whose push loses the race counts neither way.
-					// Cadence stays in the source, never here.
+					// Cadence stays in the source, never here. The deadline is
+					// anchored on the scheduled pull time, not on the push
+					// settlement: an async push slower than the clock period
+					// must not add a full extra period per packet.
+					const pullAt = clockMs !== undefined ? Date.now() : 0
 					const pending = push(packet)
 					if (typeof pending === 'boolean') {
 						if (pending) {
@@ -1127,6 +1156,9 @@ export const startCallAudioPump = (
 						// triggers — covered by the check above, kept so the
 						// type narrows.
 						if (accepted === null) break
+						if (typeof accepted !== 'boolean') {
+							throw new Boom('startCallAudioPump: push must resolve a boolean', { statusCode: 400 })
+						}
 						if (accepted) {
 							stats.pushed++
 						} else {
@@ -1138,8 +1170,8 @@ export const startCallAudioPump = (
 					if (clockMs !== undefined) {
 						// Late pulls skip the wait and snap the deadline forward:
 						// the schedule never sleeps to make up lost time.
-						nextDeadline = pulls === 1 ? Date.now() + clockMs : nextDeadline + clockMs
-						if (nextDeadline < Date.now()) nextDeadline = Date.now() + clockMs
+						nextDeadline = pulls === 1 ? pullAt + clockMs : nextDeadline + clockMs
+						if (nextDeadline < pullAt) nextDeadline = pullAt + clockMs
 					}
 				} finally {
 					if (wakeParkedPull === wakeCurrent) wakeParkedPull = undefined
@@ -1238,9 +1270,13 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		assertCallId(method, callId)
 		const client = await ctx.withClient(c => asCallAudioClient(c, requiredClientMethod))
 		// Same admission race as the pump: a writer registered after the
-		// teardown drain would push into a closing client.
+		// teardown drain would push into a closing client, and one racing
+		// the terminal event would outlive its call.
 		if (ctx.isClosing?.() ?? false) {
 			throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
+		}
+		if (media.isTerminalCall?.(callId) ?? false) {
+			throw new Boom(`${method}: call ${callId} already ended`, { statusCode: 409 })
 		}
 		let closed = false
 		const invalidate = (): void => {
@@ -1427,7 +1463,9 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		/** Mute or unmute the mic on a live call. */
 		setCallMuted: (callId: string, muted: boolean): Promise<void> => {
 			assertCallId('setCallMuted', callId)
-			assertOptionalBoolean('setCallMuted', 'muted', muted)
+			if (typeof muted !== 'boolean') {
+				throw new Boom('setCallMuted: muted must be a boolean', { statusCode: 400 })
+			}
 			return callAudioMethod('setCallMuted', callId, client => client.setCallMuted(callId, muted))
 		},
 		/** Media counters for one call; readable after the call ends. */
@@ -1559,16 +1597,25 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			options: CallAudioPumpOptions = {}
 		): Promise<CallAudioPump> => {
 			assertCallId('startCallAudioPump', callId)
-			const packets = asCallAudioPacketSource('startCallAudioPump', source)
 			assertArgumentDomain('startCallAudioPump', 'audioFormat', options.audioFormat, AUDIO_FORMATS)
 			assertPushFormat('startCallAudioPump', media, callId, options.audioFormat)
+			// Fail fast like pushCallAudio: an encoded pump on a PCM call must
+			// reject here, not consume a packet and fail inside done.
+			assertSourceMode('startCallAudioPump', media, callId, 'encoded')
 			const client = await ctx.withClient(c => asCallAudioClient(c, 'callPushAudio'))
 			// Rechecked after admission: teardown may have started — and its
-			// drain snapshotted — while the client promise was in flight. What
-			// follows is synchronous, so no second interleaving is possible.
+			// drain snapshotted — while the client promise was in flight, and
+			// the terminal event may have swept the registry. What follows is
+			// synchronous, so no second interleaving is possible.
 			if (ctx.isClosing?.() ?? false) {
 				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
 			}
+			if (media.isTerminalCall?.(callId) ?? false) {
+				throw new Boom(`startCallAudioPump: call ${callId} already ended`, { statusCode: 409 })
+			}
+			// Converted last: acquiring the iterator can hold a file, stream
+			// or reader whose release only runs on a created pump.
+			const packets = asCallAudioPacketSource('startCallAudioPump', source)
 			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), packets, options)
 			media.trackPump(callId, pump.stop, pump.done)
 			// A spent or failed pump only drops its own tracking: sibling

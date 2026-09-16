@@ -14,12 +14,15 @@ interface TransportConfig {
 let defaultNodeDispatcher: unknown
 
 /**
- * Resolve the undici module the runtime itself ships, never an npm copy. A
- * dispatcher built from a different undici major than the global WebSocket
- * breaks connections outright (seen as TLS errors and hangs on Node 24 with
- * an 8.x Agent), so the transitive `import('undici')` is only a fallback
- * for runtimes without `getBuiltinModule`, and a missing module means no
- * dispatcher rather than a wrong one.
+ * Resolve the undici module the runtime itself ships. A dispatcher built from
+ * a different undici major than the global WebSocket breaks connections
+ * outright (seen as TLS errors and hangs on Node 24 with an 8.x Agent), so
+ * the transitive `import('undici')` fallback is gated on the major matching
+ * the embedded runtime: `getBuiltinModule('undici')` is not a builtin ID and
+ * always misses, and an unrelated npm major (for example undici v8 via
+ * link-preview-js on a Node 24 running embedded v7) must never reach the
+ * built-in WebSocket. A missing or mismatched module means no dispatcher
+ * rather than a wrong one.
  */
 const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => unknown } | undefined> => {
 	const builtin = (
@@ -30,12 +33,26 @@ const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => u
 			const mod = builtin.call(process, 'undici') as { Agent?: new (options: unknown) => unknown } | undefined
 			if (mod?.Agent) return mod as { Agent: new (options: unknown) => unknown }
 		} catch {
-			// Fall through to the npm copy below.
+			// Fall through to the major-gated npm copy below.
 		}
 	}
 	try {
 		const undici = (await import('undici')) as unknown as { Agent: new (options: unknown) => unknown }
-		return undici.Agent ? undici : undefined
+		if (!undici.Agent) return undefined
+		// Refuse a known-foreign major; unknown versions keep the fallback so
+		// non-Node runtimes and unversioned copies behave as before.
+		const runtimeMajor = typeof process !== 'undefined' ? process.versions?.undici?.split('.')[0] : undefined
+		let npmMajor: string | undefined
+		try {
+			const meta = (await import('undici/package.json', { with: { type: 'json' } })) as {
+				default?: { version?: string }
+			}
+			npmMajor = meta.default?.version?.split('.')[0]
+		} catch {
+			npmMajor = undefined
+		}
+		if (runtimeMajor !== undefined && npmMajor !== undefined && runtimeMajor !== npmMajor) return undefined
+		return undici
 	} catch {
 		return undefined
 	}

@@ -1878,7 +1878,7 @@ describe('dispatch: dirty_state uses the typed internal callback', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dispatcher — history sync (messaging-history.set + bootstrap fan-out)
+// Dispatcher — history sync (messaging-history.set + chat bootstrap fan-out)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The bridge may split one chunk into bounded batches (isFinalBatch=false on
@@ -2079,19 +2079,31 @@ describe('dispatch: history_sync → messaging-history.set', () => {
 		expect(sets[0]?.chats[0]?.messages?.length).toBe(1)
 	})
 
-	it('also fans out chats.upsert + contacts.upsert when conversations are present', () => {
+	it('keeps conversations in history without fanning them out as contact mutations', () => {
 		const buckets = collectMany(
 			{
 				type: 'history_sync',
-				data: { syncType: HSType.INITIAL_BOOTSTRAP, conversations: [{ id: '5511@s.whatsapp.net', name: 'Foo' }] }
+				data: {
+					syncType: HSType.INITIAL_BOOTSTRAP,
+					conversations: [
+						{ id: '5511@s.whatsapp.net', name: 'Foo' },
+						{ id: '120@g.us', name: 'Group' }
+					]
+				}
 			},
 			'chats.upsert',
 			'contacts.upsert',
 			'messaging-history.set'
 		)
 		expect(buckets['chats.upsert'].length).toBe(1)
-		expect(buckets['contacts.upsert'].length).toBe(1)
+		expect(buckets['chats.upsert'][0]?.map(chat => chat.id)).toEqual(['5511@s.whatsapp.net', '120@g.us'])
+		expect(buckets['contacts.upsert'].length).toBe(0)
 		expect(buckets['messaging-history.set'].length).toBe(1)
+		expect(buckets['messaging-history.set'][0]?.contacts.map(contact => contact.id)).toEqual([
+			'5511@s.whatsapp.net',
+			'120@g.us'
+		])
+		expect(buckets['messaging-history.set'][0]?.chats.map(chat => chat.id)).toEqual(['5511@s.whatsapp.net', '120@g.us'])
 	})
 
 	it('skips chats.upsert when no conversations (PUSH_NAME-only sync)', () => {
@@ -2104,7 +2116,7 @@ describe('dispatch: history_sync → messaging-history.set', () => {
 			'contacts.upsert'
 		)
 		expect(buckets['chats.upsert'].length).toBe(0)
-		expect(buckets['contacts.upsert'].length).toBe(1)
+		expect(buckets['contacts.upsert'].length).toBe(0)
 	})
 })
 

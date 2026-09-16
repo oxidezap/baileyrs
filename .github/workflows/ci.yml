@@ -193,8 +193,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # Same reasoning as lint: `node --test` runs the suites out of `src`.
+      # `node --test` also discovers `Example/__tests__`, which imports
+      # `../lib/index.js`: build it first, since `lib/` is gitignored.
       - run: npm ci --ignore-scripts
+
+      - run: npm run build
 
       - run: npm test
 
@@ -259,7 +262,7 @@ jobs:
     timeout-minutes: 10
     services:
       mock-server:
-        image: ghcr.io/whiskeysockets-devtools/bartender:7d30323
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:9f9df686b1a70d27d4f2dbb70e28988529be4cda062a5013ab90d8a00e9d78c6
         credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.BARTENDER_GHCR_TOKEN }}

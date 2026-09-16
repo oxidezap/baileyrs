@@ -56,7 +56,11 @@ const waitForFrames = async (
 const waitForMedia = (
 	sock: TestClient['sock'],
 	kind: string,
-	timeoutMs: number
+	timeoutMs: number,
+	// Back-to-back tests arm a fresh `ended` wait while the previous call's
+	// terminal event may still be in flight: a kind-only predicate would
+	// resolve on the stale call. Pass the expected id to match it too.
+	callId?: string
 ): { promise: Promise<void>; cancel: () => void } => {
 	let cleanup!: () => void
 	const promise = new Promise<void>((resolve, reject) => {
@@ -64,8 +68,9 @@ const waitForMedia = (
 			cleanup()
 			reject(new Error(`timed out waiting for call.media ${kind}`))
 		}, timeoutMs)
-		const listener = (event: { kind: string }) => {
+		const listener = (event: { kind: string; callId?: string }) => {
 			if (event.kind !== kind) return
+			if (callId !== undefined && event.callId !== callId) return
 			cleanup()
 			resolve()
 		}
@@ -121,7 +126,6 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
 		const aliceRelay = waitForMedia(alice.sock, 'relay-allocated', 60_000)
 		const bobRelay = waitForMedia(bob.sock, 'relay-allocated', 60_000)
-		const bobEnded = waitForMedia(bob.sock, 'ended', 30_000)
 		const mediaSeen: string[] = []
 		const recordMedia = (tag: string) => (event: { callId: string; kind: string }) => {
 			mediaSeen.push(`${tag}:${event.callId.slice(0, 8)}:${event.kind}`)
@@ -131,6 +135,9 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		alice.sock.ev.on('call.media', onAliceMedia)
 		bob.sock.ev.on('call.media', onBobMedia)
 		const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
+		// Armed after the dial, matched to this call: a delayed `ended` from
+		// the previous test must not resolve the new wait.
+		const bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
 		const offer = await bobOffer
 		const offeredId = offer.find(event => event.status === 'offer')?.id
 		expect(offeredId).toBe(callId)
@@ -230,9 +237,18 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const offered = await offer
 		expect(offered.some(event => event.status === 'offer' && event.id === callId)).toBe(true)
 		await bob.sock.acceptCall(callId, 'mlow')
-		const pump = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ packets: 3, intervalMs: 5 }))
-		expect(await pump.done).toEqual({ pushed: 3, shed: 0, stopReason: 'source-ended' })
-		await alice.sock.endCall(callId)
+		const bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
+		try {
+			const pump = await alice.sock.startCallAudioPump(
+				callId,
+				makeSilenceCallAudioSource({ packets: 3, intervalMs: 5 })
+			)
+			expect(await pump.done).toEqual({ pushed: 3, shed: 0, stopReason: 'source-ended' })
+			await alice.sock.endCall(callId)
+			await bobEnded.promise
+		} finally {
+			bobEnded.cancel()
+		}
 	})
 
 	test('the opus promise carries packets both ways', async t => {
@@ -246,8 +262,8 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
 			const aliceRelay = waitForMedia(alice.sock, 'relay-allocated', 60_000)
 			const bobRelay = waitForMedia(bob.sock, 'relay-allocated', 60_000)
-			const bobEnded = waitForMedia(bob.sock, 'ended', 30_000)
 			const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'opus')
+			const bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
 			expect(alice.sock.getCallAudioFormat(callId)).toBe('opus')
 			await bobOffer
 			let bobCallId: string

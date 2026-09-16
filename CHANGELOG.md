@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.6](https://github.com/oxidezap/baileyrs/compare/v0.3.5...v0.3.6) (2026-09-14)
+
+
+### Features
+
+* **history:** wire history sync admission policy ([#143](https://github.com/oxidezap/baileyrs/issues/143)) ([f25e677](https://github.com/oxidezap/baileyrs/commit/f25e677a439e327b9570c50475263bdbb645ea05))
+
+
+### Bug Fixes
+
+* **ci:** pin Bartender image after E2E regression ([#141](https://github.com/oxidezap/baileyrs/issues/141)) ([0b08709](https://github.com/oxidezap/baileyrs/commit/0b0870983cf17194d6334cd18b8c0ff3a2ab4b44))
+
+## [0.3.5](https://github.com/oxidezap/baileyrs/compare/v0.3.4...v0.3.5) (2026-09-13)
+
+
+### Bug Fixes
+
+* **events:** keep history contacts out of contacts.upsert ([#139](https://github.com/oxidezap/baileyrs/issues/139)) ([7a92205](https://github.com/oxidezap/baileyrs/commit/7a92205f36e50f5f59f83da2ef4abdbe543d58a0))
+
 ## [0.3.4](https://github.com/oxidezap/baileyrs/compare/v0.3.3...v0.3.4) (2026-09-10)
 
 

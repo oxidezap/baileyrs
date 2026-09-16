@@ -1033,13 +1033,9 @@ const DISPATCHERS: DispatcherMap = {
 		}
 		ctx.ev.emit('messaging-history.set', payload)
 
-		// Also fan out to `chats.upsert` / `contacts.upsert` so bots that
-		// wire those (instead of, or in addition to, messaging-history.set)
-		// get hydrated. Upstream emits both channels from different code
-		// paths; we collapse them here so consumers picking either pattern
-		// see the same data on the first pair.
+		// Keep the chat hydration fan-out for compatibility. Contacts are part
+		// of the history snapshot and must not be re-emitted as mutations.
 		if (evt.chats.length > 0) ctx.ev.emit('chats.upsert', evt.chats)
-		if (evt.contacts.length > 0) ctx.ev.emit('contacts.upsert', evt.contacts)
 	}
 }
 

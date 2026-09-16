@@ -299,6 +299,24 @@ preserved. No QR re-scan, no logged-out events.
 
 A few behaviors that differ from upstream — almost always to your advantage:
 
+- **History contacts stay on `messaging-history.set`.** During HistorySync,
+  read the `contacts` array from that event to hydrate a contact store. baileyrs
+  does not re-emit those snapshot entries through `contacts.upsert`, including
+  push-name-only syncs. Semantic updates such as `contacts.update` still emit
+  normally for inbound push names and contact changes.
+
+- **`shouldSyncHistoryMessage` is supported, on a partial notification view.**
+  The policy runs before the engine downloads or parses history content and
+  receives a decoded `HistorySyncNotification` carrying only that pre-download
+  metadata: `syncType`, `chunkOrder`, `progress`, `fileLength` (as `Long`) and
+  `peerDataRequestSessionId`. Media and key fields stay absent rather than
+  synthesized, and sync types outside the upstream processable set are rejected
+  after the callback runs. Returning `false` permanently acknowledges the
+  chunk — no retry — so it is not a transient load-shedding hook. Requesting
+  full history (`syncFullHistory`) stays engine-owned, and unlike upstream the
+  policy is not re-invoked to gate the initial-sync state machine: admission
+  covers received notifications only.
+
 - **An undecryptable message tells you what it was.** The CIPHERTEXT stub
   emitted on `messages.upsert` for a message that failed to decrypt carries
   `stanzaType`: the envelope's `type` attribute as the server stamped it on the
@@ -346,8 +364,8 @@ A few behaviors that differ from upstream — almost always to your advantage:
   authority — the type system requires each `SocketConfig` member to be
   classified, so it cannot fall behind — and it also covers `keepAliveIntervalMs`,
   `markOnlineOnConnect`, `maxMsgRetryCount`, `msgRetryCounterCache`,
-  `retryRequestDelayMs`, `fireInitQueries`, `syncFullHistory`,
-  `shouldSyncHistoryMessage`, `generateHighQualityLinkPreview`,
+   `retryRequestDelayMs`, `fireInitQueries`, `syncFullHistory`,
+   `generateHighQualityLinkPreview`,
   `linkPreviewImageThumbnailWidth`, `enableAutoSessionRecreation`,
   `enableRecentMessageCache`, `appStateMacVerification`,
   `patchMessageBeforeSending`, `customUploadHosts`, `countryCode`,

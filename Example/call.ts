@@ -886,7 +886,10 @@ const main = async (): Promise<void> => {
 	const connected = new Promise<void>((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error('connect timeout')), 60_000)
 		sock.ev.on('connection.update', update => {
-			if (update.qr) console.log('scan this QR with your phone:', update.qr)
+			// The QR is a live pairing credential: keep it off stdout, where
+			// shell transcripts or service logs could capture and replay it.
+			// It still has to reach the operator's terminal for the scan.
+			if (update.qr) console.error('scan this QR with your phone:', update.qr)
 			if (update.connection === 'open') {
 				clearTimeout(timer)
 				resolve()
@@ -1439,7 +1442,10 @@ const main = async (): Promise<void> => {
 		}
 		accepting = true
 		try {
-			const withVideo = (args.video !== undefined || call.isVideo) === true
+			// Explicit opt-in only: a remote video offer must not start the local
+			// camera by itself. Receiving the peer's video is accepted with the
+			// call; the outbound encoder starts only when --video was passed.
+			const withVideo = args.video !== undefined
 			const id = await sock.acceptCallPcm(call.id, withVideo)
 			liveCallId = id
 			muted = false
