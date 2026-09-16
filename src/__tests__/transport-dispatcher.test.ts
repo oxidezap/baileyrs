@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it } from 'node:test'
+import { describe, it } from 'node:test'
 
 import { makeTransport } from '../Socket/transport.ts'
 import type { ILogger } from '../Utils/logger.ts'
@@ -14,16 +14,10 @@ const silentLogger = {
 	error: () => {}
 } as unknown as ILogger
 
-const platformWebSocket = globalThis.WebSocket
-
 describe('transport: dispatcher options and H2 opt-out', () => {
 	let capturedOptions: Array<Record<string, unknown> | undefined> = []
 
-	afterEach(() => {
-		globalThis.WebSocket = platformWebSocket
-	})
-
-	beforeEach(() => {
+	const installCapturedWebSocket = () => {
 		capturedOptions = []
 		class CapturedWebSocket {
 			static readonly OPEN = 1
@@ -53,11 +47,15 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 				for (const listener of this.listeners.get(type) ?? []) listener({})
 			}
 		}
-		globalThis.WebSocket = CapturedWebSocket as unknown as typeof WebSocket
-	})
+		return CapturedWebSocket as unknown as typeof WebSocket
+	}
 
 	it('configures a dispatcher with allowH2 disabled to avoid HTTP/2 WS rejection', async () => {
-		const transport = makeTransport({ waWebSocketUrl: 'ws://127.0.0.1:1/ws', logger: silentLogger })
+		const transport = makeTransport({
+			waWebSocketUrl: 'ws://127.0.0.1:1/ws',
+			logger: silentLogger,
+			webSocketCtor: installCapturedWebSocket()
+		})
 		await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
 
 		const options = capturedOptions[0]
@@ -77,7 +75,8 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 		const transport = makeTransport({
 			waWebSocketUrl: 'ws://127.0.0.1:1/ws',
 			logger: silentLogger,
-			dangerSkipCertChainVerify: true
+			dangerSkipCertChainVerify: true,
+			webSocketCtor: installCapturedWebSocket()
 		})
 		await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
 

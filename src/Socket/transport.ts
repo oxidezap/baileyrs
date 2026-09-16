@@ -9,51 +9,56 @@ interface TransportConfig {
 	options?: RequestInit
 	/** Test-only opt-out of TLS verification, forwarded to the WS agent below. */
 	dangerSkipCertChainVerify?: boolean
+	/** Test-only WebSocket constructor, so unit tests observe the handshake options. */
+	webSocketCtor?: typeof WebSocket
+}
+
+interface RuntimeUndici {
+	Agent: new (options: unknown) => unknown
+	WebSocket: typeof WebSocket
 }
 
 let defaultNodeDispatcher: unknown
 /**
- * Resolve the undici module behind the global WebSocket. `getBuiltinModule`
+ * Resolve the undici module backing this runtime's WebSocket. `getBuiltinModule`
  * has no `undici` ID and always misses, so the transitive `import('undici')`
- * (undici v8 via link-preview-js) is the dispatcher source on every Node.
- * Kept unconditional on purpose: the dispatcher carries the `allowH2: false`
- * opt-out web.whatsapp.com needs plus the self-signed-mock TLS opt-out, and
- * the unit dispatcher tests together with the E2E media loop exercise this
- * exact npm-agent path on Node 24 — no connection breakage observed there.
+ * (undici v8 via link-preview-js) is the source on every Node.
+ *
+ * Both the Agent and the WebSocket class come from that one module, never
+ * mixed with the global WebSocket: pairing a dispatcher built from one
+ * undici major with a socket embedding another (npm v8 Agent with Node 24's
+ * embedded v7 class) breaks close propagation — reproduced as a
+ * run-completion hang where the server-side destroy is never observed.
  * A missing module means no dispatcher rather than a wrong one.
  */
-const loadRuntimeUndici = async (): Promise<{ Agent: new (options: unknown) => unknown } | undefined> => {
+const loadRuntimeUndici = async (): Promise<RuntimeUndici | undefined> => {
 	const builtin = (
 		typeof process !== 'undefined' ? (process as unknown as Record<string, unknown>).getBuiltinModule : undefined
 	) as undefined | ((name: string) => unknown)
 	if (typeof builtin === 'function') {
 		try {
-			const mod = builtin.call(process, 'undici') as { Agent?: new (options: unknown) => unknown } | undefined
-			if (mod?.Agent) return mod as { Agent: new (options: unknown) => unknown }
+			const mod = builtin.call(process, 'undici') as RuntimeUndici | undefined
+			if (mod?.Agent && mod?.WebSocket) return mod
 		} catch {
 			// Fall through to the npm copy below.
 		}
 	}
 	try {
-		const undici = (await import('undici')) as unknown as { Agent: new (options: unknown) => unknown }
-		return undici.Agent ? undici : undefined
+		const undici = (await import('undici')) as unknown as Partial<RuntimeUndici>
+		if (!undici.Agent || !undici.WebSocket) return undefined
+		return undici as RuntimeUndici
 	} catch {
 		return undefined
 	}
 }
 
-const getDefaultDispatcher = async (insecure: boolean): Promise<unknown> => {
+const getDefaultDispatcher = async (undici: RuntimeUndici, insecure: boolean): Promise<unknown> => {
 	if (defaultNodeDispatcher !== undefined && !insecure) return defaultNodeDispatcher
 	try {
 		// Node 22+ enables experimental WebSocket-over-HTTP/2 by default.
 		// web.whatsapp.com does not support RFC 8441, so HTTP/2 handshakes
 		// fail immediately with 400. Use an Agent with allowH2: false
 		// unless the caller supplied their own dispatcher.
-		const undici = await loadRuntimeUndici()
-		if (!undici) {
-			if (!insecure) defaultNodeDispatcher = null
-			return null
-		}
 		// An undici Agent ignores NODE_TLS_REJECT_UNAUTHORIZED, which the
 		// plain WebSocket path honoured: without this, pointing a socket at
 		// a self-signed mock breaks the moment a dispatcher is set.
@@ -112,21 +117,28 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
 
 			const wsOptions: Record<string, unknown> = {}
+			let WebSocketCtor: typeof WebSocket = WebSocket
 			if (typeof process !== 'undefined' && process.versions?.node) {
 				// Test-only paths (self-signed mock, NODE_TLS_REJECT_UNAUTHORIZED)
 				// need the opt-out on the agent itself; callers keep passing
 				// their own dispatcher first.
 				const insecure = config.dangerSkipCertChainVerify === true || process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0'
-				const dispatcher = config.options?.dispatcher ?? (await getDefaultDispatcher(insecure))
+				const undici = await loadRuntimeUndici()
+				const dispatcher = config.options?.dispatcher ?? (undici ? await getDefaultDispatcher(undici, insecure) : null)
 				if (generation !== connectionGeneration) throw new Error('WebSocket connection superseded')
 				if (dispatcher) wsOptions.dispatcher = dispatcher
 				wsOptions.headers = { Origin: DEFAULT_ORIGIN }
+				// Same-module socket for the Agent above, never the global
+				// class: see loadRuntimeUndici for the cross-major breakage.
+				if (undici) WebSocketCtor = undici.WebSocket
 			}
+			if (config.webSocketCtor) WebSocketCtor = config.webSocketCtor
 			if (generation !== connectionGeneration) throw new Error('WebSocket connection superseded')
 			handle = h
 			disconnectTarget = ws
 
-			const newWs = Object.keys(wsOptions).length > 0 ? new WebSocket(url, wsOptions as never) : new WebSocket(url)
+			const newWs =
+				Object.keys(wsOptions).length > 0 ? new WebSocketCtor(url, wsOptions as never) : new WebSocketCtor(url)
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 
