@@ -251,7 +251,10 @@ export type CallAudioBuffer = {
  * their `finally` blocks and readers close. It is not called after a `null`
  * — a spent source has nothing left to release. The pump waits for it, the
  * way `for await...break` waits for `return()`: a release that never settles
- * holds `done` open, so it must settle.
+ * holds `done` open, so it must settle. Socket teardown bounds that wait
+ * with a short grace instead of waiting it out, so a wedged source cannot
+ * hold `sock.end()` forever while an ordinary slow close still finishes
+ * before `done` settles.
  */
 export type CallAudioPacketSource = {
 	next(): Promise<Uint8Array | null>

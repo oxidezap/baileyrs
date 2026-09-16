@@ -1023,17 +1023,28 @@ export const startCallAudioPump = (
 	// cleanup, for example — is then a no-op instead of running the release a
 	// second time after a spent source.
 	let finished = false
-	// Teardown stops must settle `done` without waiting out source cleanup:
-	// a wedged generator release would otherwise hold socket teardown open.
-	// Call-scoped stops still wait, so `finally` blocks run before `done`.
+	// Teardown stops settle `done` past a bounded release grace instead of
+	// waiting source cleanup out: a wedged generator release must not hold
+	// socket teardown open, but a merely slow one (file close, stream
+	// cleanup) still runs before `done` so consumers can reuse the source
+	// after `sock.end()`. Call-scoped stops still wait unbounded, so
+	// `finally` blocks run before `done`. Kept at half the teardown
+	// watchdog the router tests pin, so a wedged pump settles with margin.
+	const RELEASE_TEARDOWN_GRACE_MS = 1000
 	let skipReleaseWait = false
-	// Resolved by a teardown stop: the release wait below races it, so a
-	// teardown that arrives while `done` already waits out cleanup settles
-	// at once instead of hanging on it.
+	// Resolved by a teardown stop: a release wait started under a
+	// call-scoped stop switches to the bounded grace below instead of
+	// hanging on cleanup that teardown must not wait out.
 	let wakeReleaseWait: (() => void) | undefined
-	const releaseWaitSkipped = new Promise<void>(resolve => {
+	const releaseWaitInterrupted = new Promise<void>(resolve => {
 		wakeReleaseWait = () => resolve()
 	})
+	// Bounded and unref'd: a wedged release must not hold teardown — or the
+	// process — open past the grace.
+	const teardownGrace = (): Promise<void> =>
+		new Promise(resolve => {
+			setTimeout(resolve, RELEASE_TEARDOWN_GRACE_MS).unref()
+		})
 	// Wakes the pull currently parked in `source.next()`, if any. Replaced
 	// every iteration: a shared stop promise would pile one pair of reactions
 	// per raced pull onto itself and hold them for the whole call, while a
@@ -1201,11 +1212,22 @@ export const startCallAudioPump = (
 			finished = true
 			// Cleanup settles inside the finally, not past it: a propagating
 			// failure must not skip the release wait. The original error still
-			// propagates afterwards, so failures keep their shape. Teardown
-			// stops skip the wait and settle at once; their cleanup keeps
-			// running detached rather than holding the socket close open.
-			// Raced, not branched: a teardown arriving mid-await settles too.
-			if (!skipReleaseWait) await Promise.race([releaseSettled, releaseWaitSkipped])
+			// propagates afterwards, so failures keep their shape. A teardown
+			// stop bounds the wait with the grace above and then settles, and
+			// one arriving mid-await switches the wait to the grace instead of
+			// hanging on it: cleanup slower than that keeps running detached
+			// rather than holding the socket close open.
+			if (!skipReleaseWait) {
+				await Promise.race([
+					releaseSettled,
+					(async (): Promise<void> => {
+						await releaseWaitInterrupted
+						await teardownGrace()
+					})()
+				])
+			} else {
+				await Promise.race([releaseSettled, teardownGrace()])
+			}
 		}
 		return { ...stats, stopReason: stopReason ?? 'source-ended' }
 	})()

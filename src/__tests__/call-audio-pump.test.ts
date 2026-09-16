@@ -500,8 +500,8 @@ describe('call audio pump', () => {
 
 	it('a teardown stop settles done past a wedged release', async () => {
 		// The release never settles: a call-scoped stop would wait it out
-		// forever, but the teardown policy must settle `done` at once while
-		// the first stop reason still wins the report.
+		// forever, but the teardown policy settles `done` past its bounded
+		// grace while the first stop reason still wins the report.
 		const pump = startCallAudioPump(() => true, {
 			next: () => new Promise<Uint8Array | null>(() => {}),
 			release: () => new Promise<void>(() => {})
@@ -509,6 +509,25 @@ describe('call audio pump', () => {
 		pump.stop('call-ended')
 		pump.stop('socket-closed')
 		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'call-ended' })
+	})
+
+	it('a teardown stop still awaits a slow release inside the grace', async () => {
+		// A release that settles — just slowly — must run before `done`:
+		// only a wedged one may be left behind, never ordinary cleanup.
+		let released = false
+		const pump = startCallAudioPump(() => true, {
+			next: () => new Promise<Uint8Array | null>(() => {}),
+			release: () =>
+				new Promise<void>(resolve =>
+					setTimeout(() => {
+						released = true
+						resolve()
+					}, 50)
+				)
+		})
+		pump.stop('socket-closed')
+		expect(await pump.done).toEqual({ pushed: 0, shed: 0, stopReason: 'socket-closed' })
+		expect(released).toBe(true)
 	})
 
 	it('rejects an off-union stop reason instead of publishing it', () => {

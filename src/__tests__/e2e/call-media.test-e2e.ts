@@ -154,20 +154,24 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const stopBobSink = bob.sock.onCallAudio(bobCallId, bobAudio)
 		try {
 			// Both engines must report the relay up before media can flow.
-			// Mocks without a UDP relay path never fire this: skipping keeps
-			// the suite green there instead of timing out, and the recorded
-			// events below say which half went quiet. The skip enables
-			// itself the day UDP candidates appear.
+			// Mocks without a UDP relay path never fire this. The CI lane
+			// publishes the mock relay and says so through
+			// BARBACK_RELAY_PORT: there a missing relay-allocated is a
+			// relay-setup regression and fails. Anywhere else the mock may
+			// genuinely lack the path, so skipping keeps the suite green
+			// instead of timing out; the recorded events below say which
+			// half went quiet.
 			// TODO(voip-mock-relay): once that support proves stable, drop
 			// this wait to a fast probe instead of a 60s timeout.
 			try {
 				await aliceRelay.promise
 				await bobRelay.promise
-			} catch {
+			} catch (err) {
 				console.log('media events seen:', JSON.stringify(mediaSeen))
 				aliceRelay.cancel()
 				bobRelay.cancel()
 				bobEnded.cancel()
+				if (process.env.BARBACK_RELAY_PORT !== undefined) throw err
 				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
 				return
 			}
@@ -286,10 +290,14 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			try {
 				await aliceRelay.promise
 				await bobRelay.promise
-			} catch {
+			} catch (err) {
 				aliceRelay.cancel()
 				bobRelay.cancel()
 				bobEnded.cancel()
+				// Same lane rule as the mlow test above: a configured relay
+				// that never allocates is a regression, not an incapable
+				// mock.
+				if (process.env.BARBACK_RELAY_PORT !== undefined) throw err
 				t.skip('mock offers no UDP relay path: relay-allocated never arrived')
 				return
 			}

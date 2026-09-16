@@ -306,6 +306,10 @@ jobs:
         env:
           SOCKET_URL: "wss://127.0.0.1:8080/ws/chat"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          # The lane publishes the mock UDP relay above: the media tests
+          # read this marker and fail (instead of skipping) when the
+          # relay-allocated event never arrives.
+          BARBACK_RELAY_PORT: "3479"
         run: npm run test:e2e
 
   # The one check worth requiring on the branch. It has to report on every run,

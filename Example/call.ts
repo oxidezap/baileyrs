@@ -39,6 +39,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
 import process from 'node:process'
 import readline from 'node:readline'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
@@ -628,6 +629,11 @@ const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
 		{ stdio: ['pipe', 'ignore', 'inherit'] }
 	)
 	ffplay.on('error', err => console.error('ffplay PCM failed to start:', (err as Error).message))
+	// A dead ffplay (headless host, lost audio device, malformed input)
+	// fails the next write with an async EPIPE on the stdin Writable — not
+	// a sync throw the try/catch below could see. Without this listener
+	// that 'error' event is unhandled and takes down the example.
+	ffplay.stdin?.on('error', err => console.error('ffplay PCM pipe broke:', (err as Error).message))
 	return {
 		write: bytes => {
 			if (ffplay.stdin && !ffplay.stdin.destroyed) {
@@ -750,6 +756,23 @@ export const splitVideoAccessUnits = (): { push(bytes: Uint8Array): Uint8Array[]
 	}
 }
 
+/**
+ * Show a live pairing QR on the controlling terminal only. `/dev/tty` is
+ * local to the operator's session: unlike stdout/stderr it is never
+ * redirected into transcripts or log collectors, so a captured log cannot
+ * replay the credential. Headless runs have no controlling terminal — they
+ * get instructions instead of the secret.
+ */
+export const showPairingQr = (qr: string): boolean => {
+	try {
+		writeFileSync('/dev/tty', `scan this QR with your phone:\n${qr}\n`)
+		return true
+	} catch {
+		console.error('pairing needed: re-run attached to a terminal to scan the QR')
+		return false
+	}
+}
+
 /** Map WhatsApp device orientation (0..=3) to an ffplay video filter string. */
 export const orientationFilter = (orientation: number): string | null => {
 	switch (orientation & 0x03) {
@@ -829,6 +852,9 @@ const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; sto
 		{ stdio: ['pipe', 'ignore', 'inherit'] }
 	)
 	ffplay.on('error', err => console.error('ffplay (video) failed to start:', (err as Error).message))
+	// Same async-EPIPE hazard as the audio player above: a dead viewer
+	// surfaces it on the stdin stream, outside any try/catch.
+	ffplay.stdin?.on('error', err => console.error('ffplay (video) pipe broke:', (err as Error).message))
 	return {
 		write: unit => {
 			if (ffplay.stdin && !ffplay.stdin.destroyed) {
@@ -894,10 +920,12 @@ const main = async (): Promise<void> => {
 	const connected = new Promise<void>((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error('connect timeout')), 60_000)
 		sock.ev.on('connection.update', update => {
-			// The QR is a live pairing credential: keep it off stdout, where
-			// shell transcripts or service logs could capture and replay it.
-			// It still has to reach the operator's terminal for the scan.
-			if (update.qr) console.error('scan this QR with your phone:', update.qr)
+			// The QR is a live pairing credential: stdout and stderr both
+			// land in shell transcripts, service logs and CI collectors, so
+			// neither may carry it. The controlling terminal is local to
+			// the operator's session — redirection never captures it — so
+			// the secret goes there, and only there.
+			if (update.qr) showPairingQr(update.qr)
 			if (update.connection === 'open') {
 				clearTimeout(timer)
 				resolve()
@@ -1048,6 +1076,10 @@ const main = async (): Promise<void> => {
 
 	let liveCallId: string | undefined
 	let accepting = false
+	// Calls that saw `ended` before going live: accept/dial continuations
+	// check this after their await so a fast setup failure cannot leave
+	// capture and playback running for a dead call.
+	const deadCallIds = new Set<string>()
 	let stopPcmSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
@@ -1434,6 +1466,10 @@ const main = async (): Promise<void> => {
 				console.log('🎥 video stopped by peer (downgraded to voice)')
 			}
 		}
+		// Terminal ids are remembered even for calls that are not live yet:
+		// an `ended` landing while accept/dial is still pending must stop
+		// the continuation below from starting capture for a dead call.
+		if (event.kind === 'ended') deadCallIds.add(event.callId)
 		if (event.kind === 'ended' && event.callId === liveCallId) {
 			console.log('peer ended the call')
 			void hangup().then(() => {
@@ -1455,6 +1491,10 @@ const main = async (): Promise<void> => {
 			// call; the outbound encoder starts only when --video was passed.
 			const withVideo = args.video !== undefined
 			const id = await sock.acceptCallPcm(call.id, withVideo)
+			if (deadCallIds.has(id) || deadCallIds.has(call.id)) {
+				console.log('call ended while accepting; not starting capture for', id)
+				return
+			}
 			liveCallId = id
 			muted = false
 			inboundPcmFrames = 0
@@ -1494,6 +1534,10 @@ const main = async (): Promise<void> => {
 		sourceFormat = 'pcm'
 		const withVideo = args.video !== undefined
 		const id = await sock.dialCallPcm(args.peer!, withVideo)
+		if (deadCallIds.has(id)) {
+			console.log('call ended while dialing; not starting capture for', id)
+			process.exit(0)
+		}
 		liveCallId = id
 		inboundPcmFrames = 0
 		outboundGenerated = 0
