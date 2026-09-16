@@ -580,6 +580,11 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	}
 
 	const stopCallWith = (callId: string, reason: CallAudioStopReason): void => {
+		// Every local stop is terminal: bridge `ended` events, `endCall`
+		// and `terminateCall` all land here, and after any of them a late
+		// pump, writer or sink registration must be refused rather than
+		// resurrected for a dead call.
+		terminalCalls.add(callId)
 		const tracked = pumps.get(callId)
 		if (tracked) {
 			pumps.delete(callId)
@@ -650,8 +655,10 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 				reportError(new Error('bridge delivered a malformed call media event'), 'call media event dropped')
 				return
 			}
+			// stopCall marks the call terminal itself, so local hangups
+			// (endCall, terminateCall) get the same late-registration
+			// refusal as bridge `ended` events.
 			if (event.kind === 'ended') {
-				terminalCalls.add(event.callId)
 				stopCall(event.callId)
 			}
 			// Guarded like every other dispatch into consumer code: a throwing

@@ -136,14 +136,10 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 
 	it('free() mid-disconnect still kills the process, so end() keeps draining', async () => {
 		// The one shape `free()` never became safe for: freeing under the
-		// disconnect teardown aborts the process from inside wasm. On the
-		// released bridge that abort read `cannot recursively acquire mutex`;
-		// the calls-domain preview (pinned in package-lock.json) changed the
-		// teardown internals and it now reads `function signature mismatch`
-		// instead. Either way the process dies from inside wasm rather than
-		// surviving, which is what this pins: it is why `release` awaits
-		// `disconnect()` before freeing — drop that drain and `void
-		// sock.ws.close(); await sock.end()` can land here.
+		// disconnect teardown aborts the process from inside wasm, which is
+		// what this pins: it is why `release` awaits `disconnect()` before
+		// freeing — drop that drain and `void sock.ws.close(); await
+		// sock.end()` can land here.
 		const outcome = await runChild(
 			`
 			c.disconnect().catch(() => {})
@@ -155,19 +151,14 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		expect(outcome.reachedTarget).toBe(true)
 		expect(outcome.timedOut).toBe(false)
 		expect(outcome.code === 0).toBe(false)
-		// The crash signature, not just any nonzero exit: anything else (a
-		// sync error, an unhandled rejection after setup) would satisfy the
-		// lines above while describing a different hazard. All three are
-		// documented shapes of this exact free-mid-disconnect fault across
-		// bridge builds — the release mutex abort, the preview signature
-		// mismatch, and the out-of-bounds trap the same race trips on newer
-		// toolchains — and the reachedTarget plus wasm://wasm/ pins above
-		// tie them to this hazard rather than unrelated corruption.
-		const hasWasmFault =
-			outcome.stderr.includes('function signature mismatch') ||
-			outcome.stderr.includes('memory access out of bounds') ||
-			outcome.stderr.includes('cannot recursively acquire mutex')
-		expect(hasWasmFault).toBe(true)
+		// The exact crash signature of the pinned preview build, not just
+		// any nonzero exit or any wasm fault: anything else (a sync error,
+		// an unhandled rejection after setup, unrelated memory corruption)
+		// would satisfy the lines above while describing a different
+		// hazard. Probed against the lockfile build (preview-cd3654f aborts
+		// with the mutex message); when a bridge bump changes teardown
+		// internals, re-probe and update this string with the lockfile.
+		expect(outcome.stderr).toContain('cannot recursively acquire mutex')
 		expect(outcome.stderr).toContain('wasm://wasm/')
 	})
 

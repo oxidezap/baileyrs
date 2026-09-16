@@ -1401,6 +1401,15 @@ describe('call audio socket methods', () => {
 		expect(() => closing.onCallAudio('CALL-9', () => {})).toThrow(/Connection Closed/)
 	})
 
+	it('a locally ended call refuses late registrations', async () => {
+		const router = nullRouter()
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		await methods.endCall('CALL-1')
+		// The local hangup marks the call terminal: a sink racing it must
+		// not be retained past the teardown sweep that already ran.
+		expect(() => methods.onCallAudio('CALL-1', () => {})).toThrow(/already ended/)
+	})
+
 	it('an unrecognized hangup outcome keeps the routing context for retry', async () => {
 		let forgotten = 0
 		const methods = makeCallAudioMethods(
