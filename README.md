@@ -89,7 +89,7 @@ now resolves to baileyrs.
 
 ### What gets installed
 
-`npm install @oxidezap/baileyrs` always brings two runtime dependencies.
+`npm install @oxidezap/baileyrs` always brings three runtime dependencies.
 
 - `@oxidezap/whatsapp-rust-bridge` is the Rust engine doing the protocol
   work. It is the library, not an add-on, so it stays a hard dependency.
@@ -97,6 +97,10 @@ now resolves to baileyrs.
   `Long` objects in the types, and the package builds real ones at runtime.
   A consumer without it fails compilation in four declaration files and
   fails at import, so there is nothing to save by dropping it. I checked.
+- `undici` backs the WebSocket transport: its Agent carries the HTTP/2
+  opt-out and the self-signed-mock TLS opt-out, and the socket class comes
+  from the same copy so the two can never mix majors. A consumer without
+  it gets no dispatcher and no handshake headers.
 
 Everything else is an optional peer. It is used when present and skipped
 when not.

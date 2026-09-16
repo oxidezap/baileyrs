@@ -934,6 +934,17 @@ const main = async (): Promise<void> => {
 		...(args.socketUrl !== undefined ? { waWebSocketUrl: args.socketUrl } : {}),
 		...(args.dangerSkipCertVerify ? { dangerSkipCertChainVerify: true as const } : {})
 	})
+	// Installed before the first post-socket await: relay setup, the
+	// connection wait and its 60-second timeout can all reject before the
+	// full shutdown below exists, and those paths must still end the
+	// socket (durability barriers) instead of exiting bare. Upgraded to
+	// the full shutdown once it is defined.
+	shutdownExampleOnFatal = () => {
+		void sock
+			.end(undefined)
+			.catch(() => undefined)
+			.then(() => process.exit(1))
+	}
 	// Listen before the relay provider waits for the client, so an open
 	// emitted during that await is still observed.
 	const connected = new Promise<void>((resolve, reject) => {
