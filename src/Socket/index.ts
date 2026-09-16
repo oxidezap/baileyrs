@@ -1064,6 +1064,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				client.rejectCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
 			)
 			activeCallContexts.delete(callId)
+			// A rejected ringing call never opens a media handle and may
+			// never emit `call.media: ended`: stop its media registrations
+			// and mark it terminal so late sinks, writers and pumps are
+			// refused instead of retained until socket teardown. Only on
+			// success — a failed reject keeps everything for the retry.
+			callMedia.stopCall(callId)
 		},
 		/**
 		 * Hang up a live call. Same routing as `rejectCall`: the identifiers

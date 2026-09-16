@@ -612,6 +612,8 @@ export class AudioJitterBuffer {
 }
 
 const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
+	// Checked here, not at startup: signaling-only runs never play audio.
+	requireBinary('ffplay')
 	const ffplay = spawn(
 		'ffplay',
 		[
@@ -829,6 +831,7 @@ export const auHasKeyframe = (au: Uint8Array): boolean => {
 
 /** ffplay renders raw H.264 fed on stdin. One window per call, like audio. */
 const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; stop(): void } => {
+	requireBinary('ffplay')
 	const filter = orientationFilter(orientation)
 	const vfArgs = filter ? ['-vf', filter] : []
 	const ffplay = spawn(
@@ -895,8 +898,6 @@ const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; sto
 // ── the call ──
 
 const main = async (): Promise<void> => {
-	requireBinary('ffmpeg')
-	requireBinary('ffplay')
 	const args = parseArgs(process.argv.slice(2))
 
 	const { state } = await useMultiFileAuthState(args.authDir)
@@ -1191,6 +1192,10 @@ const main = async (): Promise<void> => {
 	// answer would consume file input before the media handle exists.
 	const ensureEncoder = (): void => {
 		if (encoder || sourceFormat !== 'pcm' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
+		// Checked here, not at startup: a sourceless dial and a
+		// signaling-only listen never spawn ffmpeg, so they must not
+		// require it either.
+		requireBinary('ffmpeg')
 		const callForChild = liveCallId
 		void sock
 			.openCallPcmWriter(callForChild)
@@ -1277,6 +1282,7 @@ const main = async (): Promise<void> => {
 	// AU per push to the bridge, and the same child-scoping rules as audio apply.
 	const ensureVideoEncoder = (): void => {
 		if (videoEncoder || !liveCallId) return
+		requireBinary('ffmpeg')
 		const source = args.video ?? 'camera'
 		args.video = source
 		const callForChild = liveCallId
@@ -1525,6 +1531,59 @@ const main = async (): Promise<void> => {
 		// Never strand: a wedged hangup must not hold the exit open.
 		setTimeout(() => process.exit(exitCode), 3000).unref()
 	}
+	// Registered before any dial/answer await: stdin is already in raw mode
+	// above, so a Ctrl+C during a stalled dial would otherwise become a
+	// keypress with no listener and the terminal would never be restored.
+	process.on('SIGINT', () => shutdown(130))
+	process.stdin.on('keypress', (_chunk, key: { name?: string; sequence?: string; ctrl?: boolean } | undefined) => {
+		// Ctrl+C never becomes SIGINT in raw mode; it arrives as a keypress
+		// and takes the same shutdown as the signal.
+		if (key?.sequence === '\x03' || (key?.name === 'c' && key?.ctrl)) {
+			shutdown(130)
+			return
+		}
+		if (key?.name === 'q') {
+			void hangup().then(async () => {
+				await sock.end(undefined).catch(err => console.error('socket close failed:', (err as Error).message))
+				process.exit(0)
+			})
+		}
+		if (key?.name === 'm' && liveCallId) {
+			muted = !muted
+			sock.setCallMuted(liveCallId, muted).then(
+				() => console.log(muted ? 'muted' : 'unmuted'),
+				err => console.error('mute failed:', (err as Error).message)
+			)
+		}
+		if (key?.name === 's' && liveCallId) {
+			void logCallStats(liveCallId, 'live')
+		}
+		if (key?.name === 'v' && liveCallId) {
+			const id = liveCallId
+			if (videoActive) {
+				void stopVideo(id)
+			} else {
+				void acceptOrStartVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
+			}
+		}
+		if (key?.name === 'k' && liveCallId) {
+			const id = liveCallId
+			void sock
+				.requestCallKeyframe(id, 'immediate')
+				.then(() => console.log('keyframe requested'))
+				.catch(err => console.error('keyframe request failed:', (err as Error).message))
+		}
+		if (key?.name === 'd' && liveCallId) {
+			sock
+				.getCallVideoDiagnostics(liveCallId)
+				.then(diagnostics =>
+					console.log(
+						`self=${diagnostics.selfState} peer=${diagnostics.peerState} upgrade-timeout=${diagnostics.upgradeTimeoutMs}ms`
+					)
+				)
+				.catch(err => console.error('video diagnostics failed:', (err as Error).message))
+		}
+	})
 
 	const answer = async (call: WACallEvent): Promise<void> => {
 		if (liveCallId !== undefined || accepting) {
@@ -1605,57 +1664,6 @@ const main = async (): Promise<void> => {
 	} else {
 		console.log(args.accept ? 'listening (answering every ring)' : 'listening (rejecting every ring)')
 	}
-
-	process.on('SIGINT', () => shutdown(130))
-	process.stdin.on('keypress', (_chunk, key: { name?: string; sequence?: string; ctrl?: boolean } | undefined) => {
-		// Ctrl+C never becomes SIGINT in raw mode; it arrives as a keypress
-		// and takes the same shutdown as the signal.
-		if (key?.sequence === '\x03' || (key?.name === 'c' && key?.ctrl)) {
-			shutdown(130)
-			return
-		}
-		if (key?.name === 'q') {
-			void hangup().then(async () => {
-				await sock.end(undefined).catch(err => console.error('socket close failed:', (err as Error).message))
-				process.exit(0)
-			})
-		}
-		if (key?.name === 'm' && liveCallId) {
-			muted = !muted
-			sock.setCallMuted(liveCallId, muted).then(
-				() => console.log(muted ? 'muted' : 'unmuted'),
-				err => console.error('mute failed:', (err as Error).message)
-			)
-		}
-		if (key?.name === 's' && liveCallId) {
-			void logCallStats(liveCallId, 'live')
-		}
-		if (key?.name === 'v' && liveCallId) {
-			const id = liveCallId
-			if (videoActive) {
-				void stopVideo(id)
-			} else {
-				void acceptOrStartVideo(id).catch(err => console.error('video start failed:', (err as Error).message))
-			}
-		}
-		if (key?.name === 'k' && liveCallId) {
-			const id = liveCallId
-			void sock
-				.requestCallKeyframe(id, 'immediate')
-				.then(() => console.log('keyframe requested'))
-				.catch(err => console.error('keyframe request failed:', (err as Error).message))
-		}
-		if (key?.name === 'd' && liveCallId) {
-			sock
-				.getCallVideoDiagnostics(liveCallId)
-				.then(diagnostics =>
-					console.log(
-						`self=${diagnostics.selfState} peer=${diagnostics.peerState} upgrade-timeout=${diagnostics.upgradeTimeoutMs}ms`
-					)
-				)
-				.catch(err => console.error('video diagnostics failed:', (err as Error).message))
-		}
-	})
 }
 
 // Guarded so the Ogg helpers stay importable without booting a socket.

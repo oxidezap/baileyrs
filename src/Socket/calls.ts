@@ -232,11 +232,33 @@ export const normalizeCallEndResult = (raw: unknown): CallEndResult => {
 	return raw as CallEndResult
 }
 
-const KNOWN_CALL_END_OUTCOMES = ['peer-notified', 'partly-notified', 'local-only', 'already-ended'] as const
+const isCountValue = (value: unknown): value is number =>
+	typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 
-/** Guard the closed hangup union: a version-skewed bridge must not clear call state with a shape it never named. */
-const isKnownCallEndOutcome = (outcome: unknown): outcome is CallEndResult['outcome'] =>
-	(KNOWN_CALL_END_OUTCOMES as readonly unknown[]).includes(outcome)
+/**
+ * Guard the closed hangup union, discriminator and payload alike: a
+ * version-skewed bridge returning a known outcome with missing or mistyped
+ * fields (a `partly-notified` without counts, a `local-only` without a
+ * reason) must not clear call state with a shape the union never named.
+ * Null means unrecognized — the caller decides between throwing (keeping
+ * the routing for a retry) and falling back to signaling.
+ */
+export const parseCallEndResult = (raw: unknown): CallEndResult | null => {
+	const result = normalizeCallEndResult(raw)
+	if (typeof result !== 'object' || result === null) return null
+	const record = result as unknown as Record<string, unknown>
+	switch (record.outcome) {
+		case 'peer-notified':
+		case 'already-ended':
+			return result
+		case 'local-only':
+			return typeof record.failure === 'string' ? result : null
+		case 'partly-notified':
+			return isCountValue(record.notified) && isCountValue(record.unconfirmed) ? result : null
+		default:
+			return null
+	}
+}
 
 const assertVideoPacket = (method: string, data: Uint8Array): void =>
 	assertNonEmptyPacket(method, data, 'one Annex-B H.264 access unit')
@@ -539,7 +561,20 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 	// the sinks below. An ended call negotiates nothing.
 	const sourceFormats = new Map<string, CallAudioFormat>()
 	const pcmCalls = new Set<string>()
+	// Terminal-call tombstones, bounded: a late registration races the
+	// terminal event within milliseconds, so history beyond the last few
+	// hundred calls is never consulted — while an unbounded set would pin
+	// every call ID a long-lived socket ever saw. Eviction is oldest-first;
+	// IDs are unique, so no live call is ever affected.
+	const TERMINAL_CALL_TOMBSTONES = 256
 	const terminalCalls = new Set<string>()
+	const markCallTerminal = (callId: string): void => {
+		terminalCalls.add(callId)
+		if (terminalCalls.size > TERMINAL_CALL_TOMBSTONES) {
+			const oldest = terminalCalls.values().next()
+			if (!oldest.done) terminalCalls.delete(oldest.value)
+		}
+	}
 	// Pumps stopped but whose `done` has not settled: `drainAll` waits for
 	// these, so ending a call and then the socket cannot strand source
 	// cleanup behind a teardown that already resolved. Entries leave when
@@ -584,7 +619,7 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		// and `terminateCall` all land here, and after any of them a late
 		// pump, writer or sink registration must be refused rather than
 		// resurrected for a dead call.
-		terminalCalls.add(callId)
+		markCallTerminal(callId)
 		const tracked = pumps.get(callId)
 		if (tracked) {
 			pumps.delete(callId)
@@ -651,15 +686,27 @@ export const makeCallMediaRouter = ({ emitMediaEvent, reportError }: CallMediaRo
 		routePcmFrame: pcmSinks.route,
 		routeVideoFrame: videoSinks.route,
 		routeMediaEvent(event) {
+			// Terminal cleanup runs on the discriminator alone, before the
+			// full-shape check below: a version-skewed `ended` with
+			// malformed optional details must still stop its pumps, writers
+			// and sinks instead of leaving them on a dead bridge handle.
+			// Only the public emit requires the full shape.
+			const rawEvent = event as { kind?: unknown; callId?: unknown }
+			if (
+				typeof event === 'object' &&
+				event !== null &&
+				rawEvent.kind === 'ended' &&
+				typeof rawEvent.callId === 'string' &&
+				rawEvent.callId.length > 0
+			) {
+				// stopCall marks the call terminal itself, so local hangups
+				// (endCall, terminateCall) get the same late-registration
+				// refusal as bridge `ended` events.
+				stopCall(rawEvent.callId)
+			}
 			if (!isMediaEvent(event)) {
 				reportError(new Error('bridge delivered a malformed call media event'), 'call media event dropped')
 				return
-			}
-			// stopCall marks the call terminal itself, so local hangups
-			// (endCall, terminateCall) get the same late-registration
-			// refusal as bridge `ended` events.
-			if (event.kind === 'ended') {
-				stopCall(event.callId)
 			}
 			// Guarded like every other dispatch into consumer code: a throwing
 			// `call.media` listener must not propagate through the bridge's
@@ -1281,18 +1328,18 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {
-			const outcome = normalizeCallEndResult(
+			const result = parseCallEndResult(
 				await (endCall as (this: unknown, id: string) => Promise<CallEndResult>).call(client, callId)
-			) as CallEndResult
-			if (outcome?.outcome === 'local-only' || outcome?.outcome === 'partly-notified') return false
-			const notified = outcome?.outcome === 'peer-notified' || outcome?.outcome === 'already-ended'
-			if (!notified) {
+			)
+			if (!result) {
 				ctx.reportUnexpectedError(
 					new Error(`endMediaCallIfPresent: bridge reported an unrecognized end outcome for ${callId}`),
 					'call hangup fell back to signaling'
 				)
+				return false
 			}
-			return notified
+			if (result.outcome === 'local-only' || result.outcome === 'partly-notified') return false
+			return result.outcome === 'peer-notified' || result.outcome === 'already-ended'
 		} catch (err) {
 			const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
 			if (coded.kind === 'invalid-argument' && coded.field === 'callId') return false
@@ -1462,13 +1509,15 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		endCall: (callId: string): Promise<CallEndResult> => {
 			assertCallId('endCall', callId)
 			return withAudioClient('endCall', client => client.endCall(callId).then(normalizeCallEndResult))
-				.then(result => {
-					// A shape outside the bridge union is not a hangup: the
-					// routing context stays for the retry or the signaling
-					// fallback instead of resolving an object no consumer
-					// was promised. Local media still stops below — the
-					// call is over here whatever the bridge meant.
-					if (!isKnownCallEndOutcome(result?.outcome)) {
+				.then(raw => {
+					// A shape outside the bridge union — unknown outcome or
+					// a known one with missing/mistyped fields — is not a
+					// hangup: the routing context stays for the retry or the
+					// signaling fallback instead of resolving an object no
+					// consumer was promised. Local media still stops below —
+					// the call is over here whatever the bridge meant.
+					const result = parseCallEndResult(raw)
+					if (!result) {
 						throw new Boom(`endCall: bridge reported an unrecognized end outcome for ${callId}`, {
 							statusCode: 500
 						})

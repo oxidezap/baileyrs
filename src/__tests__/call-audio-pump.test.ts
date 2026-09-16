@@ -1410,6 +1410,54 @@ describe('call audio socket methods', () => {
 		expect(() => methods.onCallAudio('CALL-1', () => {})).toThrow(/already ended/)
 	})
 
+	it('a hangup outcome with mistyped fields keeps the routing context', async () => {
+		const forgotten: string[] = []
+		const withHooks = (client: object): ReturnType<typeof makeCallAudioMethods> =>
+			makeCallAudioMethods(stubCtx(client), nullRouter(), { onCallEnded: id => forgotten.push(id) })
+		// Known discriminator, invalid payload: a partly-notified without
+		// counts and a local-only without a reason are not hangups either.
+		await expect(
+			withHooks({ endCall: async () => ({ outcome: 'partly-notified' }) }).endCall('CALL-1')
+		).rejects.toThrow(/unrecognized end outcome/)
+		await expect(
+			withHooks({ endCall: async () => ({ outcome: 'local-only', failure: 1 }) }).endCall('CALL-1')
+		).rejects.toThrow(/unrecognized end outcome/)
+		expect(forgotten).toEqual([])
+	})
+
+	it('a malformed ended event still tears the call down', () => {
+		const errors: Array<[unknown, string]> = []
+		const router = makeCallMediaRouter({
+			emitMediaEvent: () => undefined,
+			reportError: (err, msg) => errors.push([err, msg])
+		})
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		const received: Array<{ callId: string }> = []
+		methods.onCallAudio('CALL-1', frame => received.push(frame))
+		// Recognizable call ID and terminal kind, but a stats object the
+		// union never allows: the public event drops, the teardown runs.
+		// Casts stand in for the version-skewed bridge, which is untyped
+		// at runtime.
+		router.routeMediaEvent({ callId: 'CALL-1', kind: 'ended', stats: { bogus: 1 } } as never)
+		expect(errors.map(([, msg]) => msg)).toContain('call media event dropped')
+		router.routeAudioFrame({ callId: 'CALL-1', data: new Uint8Array([0x90]), codec: 'mlow' } as never)
+		expect(received).toHaveLength(0)
+		expect(() => methods.onCallAudio('CALL-1', () => {})).toThrow(/already ended/)
+	})
+
+	it('terminal tombstones stay bounded on a long-lived socket', () => {
+		const router = nullRouter()
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), router)
+		for (let n = 0; n < 300; n++) {
+			router.routeMediaEvent({ callId: `CALL-${n}`, kind: 'ended' })
+		}
+		// The oldest IDs aged out of the bounded tombstone store, so a
+		// pathological late registration there is admitted; recent calls
+		// are still refused.
+		expect(() => methods.onCallAudio('CALL-0', () => {})).not.toThrow()
+		expect(() => methods.onCallAudio('CALL-299', () => {})).toThrow(/already ended/)
+	})
+
 	it('an unrecognized hangup outcome keeps the routing context for retry', async () => {
 		let forgotten = 0
 		const methods = makeCallAudioMethods(
