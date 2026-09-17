@@ -367,15 +367,43 @@ const defineLazyValue = (target: DynamicObject, key: string, build: () => unknow
 /**
  * Type path to schema index, built on first use.
  *
- * Only the repair path needs it, and that path is only reached after an encode
- * has already failed — so an importer that never sends a refused value never
- * pays for the 498 entries.
+ * The alias projection and the repair path are the only readers. The projection
+ * runs on every send, so the first message encoded builds the map; a process
+ * that never encodes one never pays for the 498 entries.
  */
 let schemaIdsByPath: Map<string, number> | undefined
+let lastSchemaPath: string | undefined
+let lastSchemaId: number | undefined
+
+// The send path asks for the same type on every call, so the last answer is
+// memoised: this lookup is on the ordinary path now, not only after a throw.
 const schemaIdFor = (path: string): number | undefined => {
+	if (path === lastSchemaPath) return lastSchemaId
 	schemaIdsByPath ??= new Map(PROTO_MESSAGE_SCHEMAS.map(([name], index) => [name, index]))
-	return schemaIdsByPath.get(path)
+	lastSchemaPath = path
+	lastSchemaId = schemaIdsByPath.get(path)
+	return lastSchemaId
 }
+
+// Bridge names stay neutral; only these schema-qualified public aliases differ.
+//
+// The first two are the same field number under two spellings across the two
+// schemas. The last two kept both their number and their wire type and were
+// renamed when the bridge regenerated against a newer WhatsApp snapshot, so the
+// wire already agrees and only the public spelling needs translating.
+const FIELD_ALIASES: Readonly<Record<string, readonly [string, string]>> = {
+	'SyncActionValue.AgentAction': ['deviceID', 'deviceId'],
+	'SyncActionValue.ChatAssignmentAction': ['deviceAgentID', 'deviceAgentId'],
+	'Message.ExtendedTextMessage': ['faviconMMSMetadata', 'faviconMmsMetadata'],
+	'Message.MessageHistoryMetadata': ['oldestMessageTimestamp', 'oldestMessageTimestampInWindow']
+}
+
+// Indexed by schema id, because two of the three readers are on hot paths: an
+// array read replaces a string-keyed lookup, and the map above stays the single
+// place the names are written down.
+let aliasBySchema: Array<readonly [string, string] | undefined> | undefined
+const aliasFor = (schemaId: number): readonly [string, string] | undefined =>
+	(aliasBySchema ??= PROTO_MESSAGE_SCHEMAS.map(([path]) => FIELD_ALIASES[path]))[schemaId]
 
 /**
  * Coerces the three inputs the bridge codec refuses back to what upstream
@@ -402,9 +430,19 @@ const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>
 	if (seen.has(value)) return value
 	seen.add(value)
 	let output: DynamicObject | undefined
+	const alias = aliasFor(schemaId)
 	for (const field of fields) {
-		if (!hasOwn(value, field[0])) continue
-		const current = value[field[0]]
+		// Either spelling reaches the same field number, so a value the codec refuses
+		// has to be coerced whichever name it arrives under: the alias projection
+		// hands the codec the bridge name, which is then the spelling this repair
+		// sees. Without this the refusal surfaced as a throw for that spelling only.
+		const fieldKey = hasOwn(value, field[0])
+			? field[0]
+			: alias !== undefined && alias[0] === field[0] && hasOwn(value, alias[1])
+				? alias[1]
+				: undefined
+		if (fieldKey === undefined) continue
+		const current = value[fieldKey]
 		if (current === null || current === undefined) continue
 		const repair = (item: unknown): unknown => {
 			if (field[1] === PROTO_FIELD_KIND.message) return repairMessage(field[2], item, seen)
@@ -436,7 +474,7 @@ const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>
 		} else {
 			converted = repair(current)
 		}
-		if (converted !== current) (output ??= { ...value })[field[0]] = converted
+		if (converted !== current) (output ??= { ...value })[fieldKey] = converted
 	}
 	// The ancestor path, not everything ever visited: the same object reached
 	// twice in different branches is legitimate and must still be repaired.
@@ -458,12 +496,142 @@ export const repairProtoMessage = (path: string, message: unknown): unknown => {
 	return schemaId === undefined ? message : repairMessage(schemaId, message)
 }
 
-// Bridge names stay neutral; only these schema-qualified public aliases differ.
-const FIELD_ALIASES: Readonly<Record<string, readonly [string, string]>> = {
-	'SyncActionValue.AgentAction': ['deviceID', 'deviceId'],
-	'SyncActionValue.ChatAssignmentAction': ['deviceAgentID', 'deviceAgentId']
+/**
+ * The message-typed fields of a schema, by name, built on first use.
+ *
+ * Indexed by the keys a message actually carries rather than by the schema's
+ * field list, because unlike `repairMessage` this walk runs on the ordinary
+ * send path: its cost is then proportional to the message, which is the same
+ * tree the codec is about to walk.
+ */
+const messageFieldsByNameBySchema: Array<ReadonlyMap<string, ProtoFieldSchema> | undefined> = []
+const messageFieldsOf = (schemaId: number): ReadonlyMap<string, ProtoFieldSchema> => {
+	const existing = messageFieldsByNameBySchema[schemaId]
+	if (existing) return existing
+	const index = new Map<string, ProtoFieldSchema>()
+	for (const field of PROTO_MESSAGE_SCHEMAS[schemaId]?.[1] ?? []) {
+		if (field[1] === PROTO_FIELD_KIND.message) index.set(field[0], field)
+	}
+	messageFieldsByNameBySchema[schemaId] = index
+	return index
 }
 
+/**
+ * Rewrites the public spelling of every aliased field back to the name the
+ * neutral codec writes, and returns `value` itself when there is nothing to
+ * translate.
+ *
+ * The send path encodes through `encodeProto` rather than this facade's
+ * constructors, and what it encodes may have come back through the facade's
+ * decode — where the public spellings now appear. The codec does not know those
+ * names and drops them without an error, so the translation has to happen on
+ * the ordinary path: `repairProtoMessage` only runs after a throw, and a
+ * dropped field never throws.
+ *
+ * Copy-on-write throughout, like `repairMessage`: an untouched branch is shared
+ * rather than rebuilt, and the key an alias consumed is skipped afterwards so
+ * the result cannot carry both spellings.
+ */
+const projectAliases = (schemaId: number, value: unknown): unknown => {
+	if (!isObject(value)) return value
+	const messageFields = messageFieldsOf(schemaId)
+	const alias = aliasFor(schemaId)
+	let output: DynamicObject | undefined
+	if (alias && hasOwn(value, alias[0])) {
+		const moved = value[alias[0]]
+		// The moved value is walked too, not just renamed: a message-typed alias
+		// whose own type carries an alias would otherwise keep the public spelling
+		// below it. Scalar aliases have no such field, so this is one lookup.
+		const field = messageFields.get(alias[0])
+		;(output ??= { ...value })[alias[1]] =
+			field && moved !== null && moved !== undefined ? projectAliases(field[2], moved) : moved
+		delete output[alias[0]]
+	}
+	// Values a message does not carry cost nothing here: the loop is the message's
+	// own keys, not the schema's fields.
+	for (const key of Object.keys(value)) {
+		if (key === alias?.[0]) continue
+		const field = messageFields.get(key)
+		if (!field) continue
+		const current = value[key]
+		if (current === null || current === undefined) continue
+		let converted: unknown = current
+		if (field[3] & PROTO_FIELD_FLAG.repeated) {
+			if (Array.isArray(current)) {
+				let items: unknown[] | undefined
+				for (let index = 0; index < current.length; index++) {
+					const item = projectAliases(field[2], current[index])
+					if (item !== current[index]) (items ??= current.slice())[index] = item
+				}
+				converted = items ?? current
+			}
+		} else if (field[3] & PROTO_FIELD_FLAG.map) {
+			if (isObject(current)) {
+				let entries: DynamicObject | undefined
+				for (const entry in current) {
+					const item = projectAliases(field[2], current[entry])
+					if (item !== current[entry]) (entries ??= { ...current })[entry] = item
+				}
+				converted = entries ?? current
+			}
+		} else {
+			converted = projectAliases(field[2], current)
+		}
+		if (converted !== current) (output ??= { ...value })[key] = converted
+	}
+	return output ?? value
+}
+
+/**
+ * The alias projection for a codec addressed by type name, for the send path
+ * that reaches `encodeProto` directly.
+ *
+ * Reference equality means "nothing to translate", so an unaffected message is
+ * passed through rather than copied.
+ */
+export const projectProtoMessage = (path: string, message: unknown): unknown => {
+	const schemaId = schemaIdFor(path)
+	return schemaId === undefined ? message : projectAliases(schemaId, message)
+}
+
+// Bridge names stay neutral; only these schema-qualified public aliases differ.
+/**
+ * The value a schema field reads out of `data`.
+ *
+ * When the public property is not an own one, the bridge spelling answers
+ * instead — the same tolerance `encode` and `fromPartial` have, so an object the
+ * bridge or an older caller spelled differently is not dropped silently.
+ *
+ * `hasOwn` and not a null check: an instance carries its defaults on the
+ * prototype, so an absent public field reads as `0` there and the bridge key
+ * would never be reached. Reading `data[field[0]]` as the last resort keeps every
+ * shape a caller already passes behaving exactly as it did.
+ */
+const fieldValue = (
+	data: DynamicObject,
+	field: ProtoFieldSchema,
+	alias: readonly [string, string] | undefined
+): unknown =>
+	!hasOwn(data, field[0]) && alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1])
+		? data[alias[1]]
+		: data[field[0]]
+
+/**
+ * True when either spelling of `field` is an own property of `data`.
+ *
+ * `toObject` reports a field only when the instance actually carries it, which
+ * is what keeps an instance's prototype defaults out of the output. An instance
+ * built from a bridge-spelled object carries that name instead, so the test has
+ * to accept it there too.
+ */
+const hasOwnField = (
+	data: DynamicObject,
+	field: ProtoFieldSchema,
+	alias: readonly [string, string] | undefined
+): boolean => hasOwn(data, field[0]) || (alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1]))
+
+// The names live in `FIELD_ALIASES` above; this is the same translation for the
+// facade's own construction paths.
 class ProtoCompatibilityRuntime {
 	/** Sparse: filled by `constructorFor`, never by the constructor. */
 	readonly constructors: Array<ProtoConstructor | undefined>
@@ -707,9 +875,10 @@ class ProtoCompatibilityRuntime {
 		// megamorphic path, where V8 does not elide for..of iterator
 		// allocations (~90 iterator results per WebMessageInfo envelope).
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
 		for (let i = 0; i < fields.length; i++) {
 			const field = fields[i]!
-			const value = data[field[0]]
+			const value = fieldValue(data, field, alias)
 			if (value === null || value === undefined) continue
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (!Array.isArray(value))
@@ -764,6 +933,7 @@ class ProtoCompatibilityRuntime {
 		const data = input as DynamicObject
 		const output: DynamicObject = {}
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
 		for (const field of fields) {
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (options.arrays || options.defaults) output[field[0]] = []
@@ -775,7 +945,7 @@ class ProtoCompatibilityRuntime {
 		}
 
 		for (const field of fields) {
-			const value = data[field[0]]
+			const value = fieldValue(data, field, alias)
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (
 					value &&
@@ -794,7 +964,7 @@ class ProtoCompatibilityRuntime {
 				}
 				continue
 			}
-			if (value === null || value === undefined || !hasOwn(data, field[0])) continue
+			if (value === null || value === undefined || !hasOwnField(data, field, alias)) continue
 			output[field[0]] = this.toObjectField(field, value, options)
 			const group = oneofName(field)
 			if (group && options.oneofs) output[group] = field[0]
@@ -882,7 +1052,7 @@ class ProtoCompatibilityRuntime {
 		const source = isObject(value) ? value : {}
 		const instance = Object.create(this.constructorFor(schemaId).prototype) as DynamicObject
 		const messageFields = this.messageFieldsByName[schemaId]!
-		const alias = FIELD_ALIASES[PROTO_MESSAGE_SCHEMAS[schemaId]![0]]
+		const alias = aliasFor(schemaId)
 		for (const sourceKey in source) {
 			const key = alias && sourceKey === alias[1] ? alias[0] : sourceKey
 			const nested = source[sourceKey]
@@ -915,7 +1085,7 @@ class ProtoCompatibilityRuntime {
 		if (!isObject(value)) return value
 		let output: DynamicObject | undefined
 		if (typeof value[INSTANCE_SCHEMA] === 'number') output = { ...value }
-		const alias = FIELD_ALIASES[PROTO_MESSAGE_SCHEMAS[schemaId]![0]]
+		const alias = aliasFor(schemaId)
 		// An own public field wins, including explicit null/undefined (absence).
 		// A bridge-spelled field remains accepted when the public one is absent.
 		if (alias && hasOwn(value, alias[0])) {

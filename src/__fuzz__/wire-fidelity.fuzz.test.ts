@@ -23,8 +23,9 @@
 
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { projectProtoMessage } from '../Compatibility/proto-runtime.ts'
 import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
-import type { Divergence } from './harness/divergence.ts'
+import { undoRenames, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import { relayedBytes } from './harness/send-path.ts'
 import { generateProtoObject, textFieldPredicate } from './generators/proto.ts'
@@ -135,12 +136,22 @@ describe('send-path wire fidelity on generated messages', () => {
 
 				// A plain encode/decode of the same input, through the same codec — so
 				// anything that differs is the send path's doing and not the codec's.
+				//
+				// Projected the way the send path projects, for the reason the same
+				// reference is in `scripts/compatibility/wire-fidelity-core.ts`: the
+				// codec writes a field named as upstream names it only after the name
+				// translation, so an unprojected reference lacks the field entirely —
+				// and `preserves` is directional, which would leave a projection that
+				// drops that field invisible from both sides.
 				let reference: unknown
 				try {
 					// The reference encode gets its own copy: `relayMessage` may mutate the
 					// message it is handed, and a reference built from a mutated object
 					// would compare the send path against its own output.
-					reference = decodeProto('Message', encodeProto('Message', structuredClone(message)))
+					reference = decodeProto(
+						'Message',
+						encodeProto('Message', projectProtoMessage('Message', structuredClone(message)))
+					)
 				} catch {
 					// The codec cannot carry this message at all; that is the codec
 					// fuzzer's subject, not this one's.
@@ -266,13 +277,26 @@ describe('send-path wire fidelity on generated messages', () => {
 				// deliberately. A bridge decoder that returned a number where upstream
 				// returns the string is exactly the readability regression this target is
 				// named for.
-				if (!equivalent(bridgeView, upstreamView, { isTextField: textFieldPredicate('Message') })) {
+				// Renames are folded on both sides, as the codec differentials do:
+				// `RENAMED_PROTO_FIELDS` is where this project records that the bridge
+				// names a field differently, and both views decode the *same* bytes, so
+				// folding the same names out of both leaves every real difference — a
+				// value, a presence, a field number — still failing.
+				//
+				// Both sides, not one: the fold rebuilds every object it walks, so a byte
+				// field comes out as a numeric-keyed plain object, and the same bytes give
+				// the same one on both sides. Folding a single side would compare that
+				// object against a Uint8Array and report a difference that is the fold's
+				// own doing.
+				const bridgeFields = undoRenames(bridgeView)
+				const upstreamFields = undoRenames(upstreamView)
+				if (!equivalent(bridgeFields, upstreamFields, { isTextField: textFieldPredicate('Message') })) {
 					findings.push({
 						target: 'wire:upstream-readable',
 						input: { jid, message },
-						local: normalise(bridgeView),
-						upstream: normalise(upstreamView),
-						detail: preserves(bridgeView, upstreamView)
+						local: normalise(bridgeFields),
+						upstream: normalise(upstreamFields),
+						detail: preserves(bridgeFields, upstreamFields)
 							? 'the bridge read fields from the sent bytes that upstream discards as unknown'
 							: 'upstream read fields from the sent bytes that the bridge does not return'
 					})

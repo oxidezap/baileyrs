@@ -220,12 +220,18 @@ describe('generated protobuf runtime facade', () => {
 		assert.equal(report.enums.coverage, 100)
 		assert.equal(report.codecTypes.coverage, 99.8)
 		assert.deepEqual(report.codecTypes.unsupported, ['BotAvatarMetadata'])
-		assert.equal(report.wireFields.coverage, 99.34)
-		assert.equal(report.wireFields.matched, 2408)
+		assert.equal(report.wireFields.coverage, 99.42)
+		assert.equal(report.wireFields.matched, 2410)
 		assert.equal(report.wireFields.total, 2424)
-		assert.equal(report.wireFields.gaps.length, 16)
+		assert.equal(report.wireFields.gaps.length, 14)
 		assert.deepEqual(report.wireFields.unexpectedGaps, [])
 		assert.deepEqual(report.wireFields.resolvedKnownGaps, [])
+		// Named, not just counted: the totals above would stay silent if a later
+		// change reopened one of these and closed something else.
+		assert.deepEqual(
+			report.wireFields.gaps.filter(gap => gap.includes('favicon') || gap.includes('oldestMessageTimestamp')),
+			[]
+		)
 	})
 
 	it('keeps compatibility metadata compact and ships no second codec runtime', () => {

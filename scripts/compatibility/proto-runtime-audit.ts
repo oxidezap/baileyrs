@@ -51,23 +51,25 @@ const KNOWN_WIRE_GAPS = [
 	'BotMetadata.avatarMetadata',
 	'Message.AudioMessage.mediaKeyDomain',
 	'Message.DocumentMessage.mediaKeyDomain',
-	// Renamed rather than absent: WhatsApp schema 2.3000.1044659339 spells field
-	// 33 `faviconMmsMetadata`, which bridge 0.10.0 regenerated against, while
-	// baileys 7.0.0-rc13 still declares `faviconMMSMetadata`. The wire is
-	// identical; the gap closes when upstream regenerates its proto.
-	'Message.ExtendedTextMessage.faviconMMSMetadata',
 	'Message.ImageMessage.mediaKeyDomain',
 	'Message.MMSThumbnailMetadata.mediaKeyDomain',
-	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
-	// Renumbered, not absent: the bridge writes field 115 and baileys 7.0.0-rc13
+	// Renumbered, not absent: the bridge writes field 115 and the pinned baileys
 	// declares 114. WhatsApp Web assigns 115 and leaves 114 unassigned, so the
 	// bridge is the conforming side and the gap closes when upstream regenerates
 	// its proto. `proto-field-number-mismatch` in src/__fuzz__/harness/divergence.ts
 	// carries the client citation and a minimal reproducer.
 	'Message.pollResultSnapshotMessageV3',
 	'SyncActionValue.businessBroadcastAssociationAction'
+	// Two entries left this list once the facade translated the bridge's renamed
+	// spellings: Message.ExtendedTextMessage.faviconMMSMetadata and
+	// Message.MessageHistoryMetadata.oldestMessageTimestamp. Both keep their field
+	// number and wire type, so only the property name ever differed. The names now
+	// live in FIELD_ALIASES in src/Compatibility/proto-runtime.ts, which both this
+	// facade and the send path read. The raw bridge still renames them —
+	// RENAMED_PROTO_FIELDS in src/__fuzz__/harness/divergence.ts records that for
+	// the neutral codec, which is a separate axis.
 ] as const
 
 const objectOptions = [
