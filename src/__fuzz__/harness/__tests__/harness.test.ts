@@ -22,6 +22,13 @@ import {
 	type SchemaContext
 } from '../wire.ts'
 
+// Node's test runner isolates this file in its own process. Keep job settings
+// out of these synthetic probes, including report and corpus writes. The runner
+// must stay dynamically imported below so this runs before it reads configuration.
+for (const name of Object.keys(process.env)) {
+	if (name.startsWith('FUZZ_')) delete process.env[name]
+}
+
 describe('fuzz harness — deterministic randomness', () => {
 	it('replays an identical stream for an identical seed', () => {
 		const draw = () => {
