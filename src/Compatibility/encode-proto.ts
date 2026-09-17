@@ -15,6 +15,16 @@ import { projectProtoMessage, repairProtoMessage } from './proto-runtime.ts'
  * absorbed, so the strict contract stays true of the bridge and the tolerant
  * one stays true of this library.
  *
+ * The three do not all follow the same reference, and the difference is worth
+ * stating. The surrogate becomes a single U+FFFD — what any UTF-8 encoder
+ * produces, and what the client sends — while upstream protobufjs writes three
+ * WTF-8 bytes instead, which is the artifact `replaceLoneSurrogates` in the fuzz
+ * registry folds away when it compares. The empty string becoming `0` is the other
+ * direction: the client never writes it and the bridge refuses it on purpose, so
+ * that one substitution is Baileys compatibility rather than client compliance.
+ * It stays because a message that used to reach the server should not start
+ * throwing, and it is written down here so it is a decision rather than an accident.
+ *
  * Repair on failure rather than check on write: the ordinary encode is exactly
  * the call it was before, with no scan of any field, and the repair runs only
  * for a message that was already going to throw. `encodeProto` returns finished

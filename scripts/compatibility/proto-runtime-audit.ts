@@ -42,6 +42,21 @@ export interface ProtoRuntimeCompatibilityReport {
 
 const KNOWN_UNSUPPORTED_CODECS = ['BotAvatarMetadata'] as const
 
+/**
+ * The gaps this layer cannot close, and the reason they are not ours.
+ *
+ * Each one is a field the WhatsApp Web schema no longer declares while the pinned
+ * baileys still does. Checked against the client rather than only against
+ * baileys: whatspec's extraction of WhatsApp Web 2.3000.1047483476
+ * (`generated/proto/WAProto.proto`) and the bridge's schema manifest agree —
+ * `mediaKeyDomain` exists only on `MediaDomainInfo`, `SyncActionValue` numbers run
+ * 60–64 then 66 with the `BusinessBroadcastAssociationAction` message left
+ * declared and unreferenced, and no bot-avatar type is declared anywhere.
+ *
+ * So nothing in whatspec, `whatsapp-rust` or the bridge can add them back, and a
+ * companion that put them on the wire would send a field the client does not read.
+ * They close when upstream regenerates its proto.
+ */
 const KNOWN_WIRE_GAPS = [
 	'BotAvatarMetadata.action',
 	'BotAvatarMetadata.behaviorGraph',
