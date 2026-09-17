@@ -52,12 +52,7 @@ for (const [path, publicKey, bridgeKey, samples] of ALIASED_FIELDS) {
 			assert.equal(Object.hasOwn(decoded, publicKey), Object.hasOwn(theirs.decode(bytes), publicKey))
 			assert.equal(Object.hasOwn(decoded, bridgeKey), false)
 			assert.deepEqual(ours.toObject(ours.fromObject(input)), theirs.toObject(theirs.fromObject(input)))
-			// `fromPartial` returns numbers for 64-bit fields where upstream returns
-			// `Long`, a difference older than these aliases, so it is normalised out.
-			assert.deepEqual(
-				ours.toObject(ours.fromPartial(input), { longs: String }),
-				theirs.toObject(theirs.fromObject(input), { longs: String })
-			)
+			assert.deepEqual(ours.toObject(ours.fromPartial(input)), theirs.toObject(theirs.fromObject(input)))
 			assert.deepEqual(input, snapshot)
 		}
 	})
