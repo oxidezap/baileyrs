@@ -15,31 +15,35 @@ import { projectProtoMessage, repairProtoMessage } from './proto-runtime.ts'
  * absorbed, so the strict contract stays true of the bridge and the tolerant
  * one stays true of this library.
  *
+ * The three do not all follow the same reference, and the difference is worth
+ * stating. The surrogate becomes a single U+FFFD — what any UTF-8 encoder
+ * produces, and what the client sends — while upstream protobufjs writes three
+ * WTF-8 bytes instead, which is the artifact `replaceLoneSurrogates` in the fuzz
+ * registry folds away when it compares. The empty string becoming `0` is the other
+ * direction: the client never writes it and the bridge refuses it on purpose, so
+ * that one substitution is Baileys compatibility rather than client compliance.
+ * It stays because a message that used to reach the server should not start
+ * throwing, and it is written down here so it is a decision rather than an accident.
+ *
  * Repair on failure rather than check on write: the ordinary encode is exactly
  * the call it was before, with no scan of any field, and the repair runs only
  * for a message that was already going to throw. `encodeProto` returns finished
  * bytes rather than a lazy writer, so one try/catch covers it.
  */
 export const encodeProtoCompat = (path: string, message: unknown): Uint8Array => {
-	// The codec writes a field by the name its own schema declares, and silently
-	// drops a key it does not know. A message that came back through the facade's
-	// decode carries the public spellings, so they have to be translated here,
-	// before the encode rather than after a failure that never comes. Returns the
-	// same reference when nothing is aliased, so an ordinary message pays only
-	// for the keys it carries.
+	// The codec drops a key it does not know without throwing, so a public spelling has
+	// to be translated before the encode: a repair after a throw never runs. Same
+	// reference when nothing is aliased.
 	const projected = projectProtoMessage(path, message)
 	try {
 		return encodeProto(path, projected)
 	} catch (error) {
-		// Repaired from the caller's message rather than from `projected`: the repair
-		// walks the schema this library publishes, so it looks for the public names —
-		// the projected object carries the codec's, which it would not find, and the
-		// failure would propagate instead of being absorbed.
+		// Repaired from the caller's message: this repair walks the schema this library
+		// publishes, so the projected names would not be found and the failure would
+		// propagate instead of being absorbed.
 		const repaired = repairProtoMessage(path, message)
 		// Reference equality: nothing was coerced, so the failure is something this
-		// does not explain — an unmodelled type, a number no int64 can hold, an
-		// unknown enum name — and it has to keep propagating rather than be
-		// retried into a second throw.
+		// does not explain and it has to keep propagating rather than be retried.
 		if (repaired === message) throw error
 		return encodeProto(path, projectProtoMessage(path, repaired))
 	}

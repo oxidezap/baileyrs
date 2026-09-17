@@ -105,10 +105,8 @@ describe('send-path wire fidelity auditor', () => {
 	})
 
 	/**
-	 * The auditor's reference is projected the way the send path projects, which is
-	 * what makes it able to see a dropped aliased field at all — and what makes it
-	 * blind to a projection that keeps the field and corrupts the value, since both
-	 * sides would be wrong together. This expectation comes from the input instead.
+	 * The auditor's reference is projected too, so it cannot see a projection that
+	 * corrupts a value both sides would then agree on. This oracle comes from the input.
 	 */
 	it('delivers the value an aliased field was given, not only its name', async () => {
 		const message = {
@@ -120,8 +118,8 @@ describe('send-path wire fidelity auditor', () => {
 		const sent = decodeProto('Message', await relayedBytes(message)) as unknown as {
 			extendedTextMessage: { faviconMmsMetadata: Record<string, unknown> }
 		}
-		// Read through the codec's own spelling: the bridge wrote the field, which is
-		// the half under test, and the facade is what names it for a consumer.
+		// Read through the codec's own spelling: the bridge wrote the field, and the
+		// facade is what names it for a consumer.
 		assert.equal(sent.extendedTextMessage.faviconMmsMetadata.thumbnailDirectPath, 'direct-path')
 		assert.deepEqual(message.extendedTextMessage.faviconMMSMetadata, { thumbnailDirectPath: 'direct-path' })
 	})
