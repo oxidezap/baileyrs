@@ -8,7 +8,7 @@ interface Codec {
 	decode(bytes: Uint8Array): Record<string, unknown> & { toJSON(): unknown }
 	fromObject(value: unknown): Record<string, unknown>
 	fromPartial(value: unknown): Record<string, unknown>
-	toObject(value: unknown): Record<string, unknown>
+	toObject(value: unknown, options?: Record<string, unknown>): Record<string, unknown>
 }
 
 const codec = (root: unknown, path: string): Codec => {
@@ -17,11 +17,32 @@ const codec = (root: unknown, path: string): Codec => {
 	return value as unknown as Codec
 }
 
-for (const [path, publicKey, bridgeKey, samples] of [
+/**
+ * The fields the pinned bridge round-trips under a different name.
+ *
+ * The bridge regenerates its schema from a WhatsApp snapshot while upstream
+ * Baileys generates from its own proto, so a field can keep its number and its
+ * wire type and still change spelling. Baileys code then writes a property the
+ * bridge does not know — lost silently, with no error — and reads one that is
+ * never set. The facade owns the public spelling, so it translates both ways.
+ *
+ * `samples` holds values that discriminate the conversion: a zero, a real value,
+ * and for message-typed fields an empty and a populated one.
+ */
+const ALIASED_FIELDS: readonly (readonly [string, string, string, readonly unknown[]])[] = [
 	['SyncActionValue.AgentAction', 'deviceID', 'deviceId', [0, 7]],
-	['SyncActionValue.ChatAssignmentAction', 'deviceAgentID', 'deviceAgentId', ['', 'abc']]
-] as const) {
-	it(`preserves presence and conversions for ${path}`, () => {
+	['SyncActionValue.ChatAssignmentAction', 'deviceAgentID', 'deviceAgentId', ['', 'abc']],
+	[
+		'Message.ExtendedTextMessage',
+		'faviconMMSMetadata',
+		'faviconMmsMetadata',
+		[{}, { thumbnailDirectPath: 'direct-path', mediaKeyTimestamp: 7 }]
+	],
+	['Message.MessageHistoryMetadata', 'oldestMessageTimestamp', 'oldestMessageTimestampInWindow', [0, 7]]
+]
+
+for (const [path, publicKey, bridgeKey, samples] of ALIASED_FIELDS) {
+	it(`preserves presence and conversions for ${path}.${publicKey}`, () => {
 		const ours = codec(local, path)
 		const theirs = codec(upstream, path)
 		for (const input of [
@@ -38,12 +59,19 @@ for (const [path, publicKey, bridgeKey, samples] of [
 			assert.equal(Object.hasOwn(decoded, publicKey), Object.hasOwn(theirs.decode(bytes), publicKey))
 			assert.equal(Object.hasOwn(decoded, bridgeKey), false)
 			assert.deepEqual(ours.toObject(ours.fromObject(input)), theirs.toObject(theirs.fromObject(input)))
-			assert.deepEqual(ours.toObject(ours.fromPartial(input)), theirs.toObject(theirs.fromObject(input)))
+			// The bridge's own `fromPartial` yields plain numbers for 64-bit fields
+			// where upstream yields `Long`. That difference predates these aliases and
+			// shows on any int64 (`messageCount` included), so `longs: String`
+			// normalises that one dimension and leaves the names under test.
+			assert.deepEqual(
+				ours.toObject(ours.fromPartial(input), { longs: String }),
+				theirs.toObject(theirs.fromObject(input), { longs: String })
+			)
 			assert.deepEqual(input, snapshot)
 		}
 	})
 
-	it(`uses the public spelling when both names occur in ${path}`, () => {
+	it(`uses the public spelling when both names occur in ${path}.${publicKey}`, () => {
 		const ours = codec(local, path)
 		const theirs = codec(upstream, path)
 		for (const value of [...samples, null, undefined]) {
@@ -71,6 +99,27 @@ it('translates nested aliases without mutating the caller', () => {
 	assert.deepEqual(input, before)
 })
 
+it('translates a renamed field two levels down without mutating the caller', () => {
+	// The rename sits on MessageHistoryMetadata, reached through
+	// Message.messageHistoryNotice, so the projection has to recurse past two
+	// holders before the name it knows about appears.
+	const input = {
+		extendedTextMessage: { faviconMMSMetadata: { thumbnailDirectPath: 'direct-path' } },
+		messageHistoryNotice: { messageHistoryMetadata: { oldestMessageTimestamp: 7, messageCount: 2 } }
+	}
+	const before = structuredClone(input)
+	const ours = codec(local, 'Message')
+	const theirs = codec(upstream, 'Message')
+	const bytes = theirs.encode(input).finish()
+	assert.deepEqual(Buffer.from(ours.encode(input).finish()), Buffer.from(bytes))
+	assert.deepEqual(ours.decode(bytes).toJSON(), theirs.decode(bytes).toJSON())
+	assert.deepEqual(
+		ours.toObject(ours.fromPartial(input), { longs: String }),
+		theirs.toObject(theirs.fromObject(input), { longs: String })
+	)
+	assert.deepEqual(input, before)
+})
+
 it('preserves AgentAction deviceID through the compatibility facade', () => {
 	const input = { deviceID: 7 }
 	const expected = upstream.SyncActionValue.AgentAction.encode(input).finish()
@@ -91,6 +140,20 @@ it('decodes a fixed AgentAction wire fixture with the upstream public key', () =
 	const actual = local.SyncActionValue.AgentAction.decode(bytes).toJSON()
 	assert.deepEqual(expected, { deviceID: 7 })
 	assert.deepEqual(actual, expected)
+})
+
+it('decodes fixed fixtures for the renamed fields with the upstream public key', () => {
+	// Field 2 of MessageHistoryMetadata, and field 33 of ExtendedTextMessage as an
+	// empty payload. Literal bytes, so a rename that survives the round trip
+	// through both encoders cannot hide the wire shape.
+	for (const [path, bytes] of [
+		['Message.MessageHistoryMetadata', Uint8Array.from([0x10, 0x07])],
+		['Message.ExtendedTextMessage', Uint8Array.from([0x8a, 0x02, 0x00])]
+	] as const) {
+		const ours = codec(local, path)
+		const theirs = codec(upstream, path)
+		assert.deepEqual(ours.decode(bytes).toJSON(), theirs.decode(bytes).toJSON())
+	}
 })
 
 it('keeps fromPartial free of the encode-only codec requirement', () => {

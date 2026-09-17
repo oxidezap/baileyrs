@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { PROTO_MESSAGE_SCHEMAS } from '../../../src/WAProto/compatibility-schema.ts'
 import {
 	auditWireFidelity,
@@ -8,6 +8,7 @@ import {
 	buildFuzzCases,
 	divergentPaths,
 	fidelityAuditFailed,
+	relayedBytes,
 	renderFidelityReport
 } from '../wire-fidelity-core.ts'
 import { runCli } from '../wire-fidelity-audit.ts'
@@ -16,7 +17,7 @@ const SEED = 20260808
 
 /**
  * `pollResultSnapshotMessageV3` sits at field 115 in the bridge proto and 114 in
- * baileys 7.0.0-rc13. Both codecs read their own bytes, so it is a schema gap
+ * the pinned baileys. Both codecs read their own bytes, so it is a schema gap
  * rather than a send-path one; pinned here so a second divergence fails.
  *
  * 115 is the conforming number: WhatsApp Web's own field table assigns it there
@@ -27,9 +28,9 @@ const SEED = 20260808
  */
 const KNOWN_DIVERGENT = ['pollResultSnapshotMessageV3']
 
-const contextInfoFields = (
-	PROTO_MESSAGE_SCHEMAS.find(([path]) => path === 'MessageContextInfo')?.[1] ?? []
-).map(field => field[0])
+const contextInfoFields = (PROTO_MESSAGE_SCHEMAS.find(([path]) => path === 'MessageContextInfo')?.[1] ?? []).map(
+	field => field[0]
+)
 
 describe('send-path wire fidelity auditor', () => {
 	it('finds nothing dropped or altered on the current send path', async () => {
@@ -101,5 +102,27 @@ describe('send-path wire fidelity auditor', () => {
 			process.stdout.write = write
 		}
 		assert.match(written.join(''), /fuzz seed: 20260808/u)
+	})
+
+	/**
+	 * The auditor's reference is projected the way the send path projects, which is
+	 * what makes it able to see a dropped aliased field at all — and what makes it
+	 * blind to a projection that keeps the field and corrupts the value, since both
+	 * sides would be wrong together. This expectation comes from the input instead.
+	 */
+	it('delivers the value an aliased field was given, not only its name', async () => {
+		const message = {
+			extendedTextMessage: {
+				text: 'x',
+				faviconMMSMetadata: { thumbnailDirectPath: 'direct-path' }
+			}
+		}
+		const sent = decodeProto('Message', await relayedBytes(message)) as unknown as {
+			extendedTextMessage: { faviconMmsMetadata: Record<string, unknown> }
+		}
+		// Read through the codec's own spelling: the bridge wrote the field, which is
+		// the half under test, and the facade is what names it for a consumer.
+		assert.equal(sent.extendedTextMessage.faviconMmsMetadata.thumbnailDirectPath, 'direct-path')
+		assert.deepEqual(message.extendedTextMessage.faviconMMSMetadata, { thumbnailDirectPath: 'direct-path' })
 	})
 })
