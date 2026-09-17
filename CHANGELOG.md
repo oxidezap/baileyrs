@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.7](https://github.com/oxidezap/baileyrs/compare/v0.3.6...v0.3.7) (2026-09-17)
+
+
+### Bug Fixes
+
+* **compat:** return Long from 64-bit partials and repair the event-map assertions ([#152](https://github.com/oxidezap/baileyrs/issues/152)) ([df79b5c](https://github.com/oxidezap/baileyrs/commit/df79b5cf1784e9be189231f6acdbd524105e9f9d))
+* **proto:** translate deviceID and deviceAgentID aliases in the facade ([#147](https://github.com/oxidezap/baileyrs/issues/147)) ([18a7580](https://github.com/oxidezap/baileyrs/commit/18a7580249d395eb9c9938e88609eb6d158578ea))
+* **proto:** translate the bridge's renamed wire fields in the facade and send path ([#149](https://github.com/oxidezap/baileyrs/issues/149)) ([abee690](https://github.com/oxidezap/baileyrs/commit/abee690dcc283412aa0eb8278979c5633e2f0730))
+
 ## [0.3.6](https://github.com/oxidezap/baileyrs/compare/v0.3.5...v0.3.6) (2026-09-14)
 
 
