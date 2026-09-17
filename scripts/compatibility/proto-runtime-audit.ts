@@ -67,8 +67,6 @@ const KNOWN_WIRE_GAPS = [
 	// its proto. `proto-field-number-mismatch` in src/__fuzz__/harness/divergence.ts
 	// carries the client citation and a minimal reproducer.
 	'Message.pollResultSnapshotMessageV3',
-	'SyncActionValue.AgentAction.deviceID',
-	'SyncActionValue.ChatAssignmentAction.deviceAgentID',
 	'SyncActionValue.businessBroadcastAssociationAction'
 ] as const
 

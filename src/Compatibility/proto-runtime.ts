@@ -458,6 +458,12 @@ export const repairProtoMessage = (path: string, message: unknown): unknown => {
 	return schemaId === undefined ? message : repairMessage(schemaId, message)
 }
 
+// Bridge names stay neutral; only these schema-qualified public aliases differ.
+const FIELD_ALIASES: Readonly<Record<string, readonly [string, string]>> = {
+	'SyncActionValue.AgentAction': ['deviceID', 'deviceId'],
+	'SyncActionValue.ChatAssignmentAction': ['deviceAgentID', 'deviceAgentId']
+}
+
 class ProtoCompatibilityRuntime {
 	/** Sparse: filled by `constructorFor`, never by the constructor. */
 	readonly constructors: Array<ProtoConstructor | undefined>
@@ -597,7 +603,11 @@ class ProtoCompatibilityRuntime {
 		constructor.toObject = (message, options) => this.toObject(schemaId, message, options)
 		constructor.getTypeUrl = (prefix = 'type.googleapis.com') => `${prefix}/proto.${path}`
 		constructor.fromPartial = message => {
-			const partial = sourceCodec?.fromPartial ? sourceCodec.fromPartial(message) : message
+			// A partial is not written, so it must not inherit encode's codec
+			// requirement: the bridge accepts holders of types it does not implement
+			// and simply drops them. Only the alias translation is needed here.
+			const projected = this.projectForEncode(schemaId, message, false)
+			const partial = sourceCodec?.fromPartial ? sourceCodec.fromPartial(projected) : projected
 			return this.hydrate(schemaId, isObject(partial) ? partial : {})
 		}
 		constructor.encode = (message, writer) => {
@@ -872,8 +882,10 @@ class ProtoCompatibilityRuntime {
 		const source = isObject(value) ? value : {}
 		const instance = Object.create(this.constructorFor(schemaId).prototype) as DynamicObject
 		const messageFields = this.messageFieldsByName[schemaId]!
-		for (const key in source) {
-			const nested = source[key]
+		const alias = FIELD_ALIASES[PROTO_MESSAGE_SCHEMAS[schemaId]![0]]
+		for (const sourceKey in source) {
+			const key = alias && sourceKey === alias[1] ? alias[0] : sourceKey
+			const nested = source[sourceKey]
 			const field = messageFields[key]
 			if (!field) {
 				instance[key] = nested
@@ -899,15 +911,22 @@ class ProtoCompatibilityRuntime {
 		return instance
 	}
 
-	private projectForEncode(schemaId: number, value: unknown): unknown {
+	private projectForEncode(schemaId: number, value: unknown, requireCodecs = true): unknown {
 		if (!isObject(value)) return value
 		let output: DynamicObject | undefined
 		if (typeof value[INSTANCE_SCHEMA] === 'number') output = { ...value }
+		const alias = FIELD_ALIASES[PROTO_MESSAGE_SCHEMAS[schemaId]![0]]
+		// An own public field wins, including explicit null/undefined (absence).
+		// A bridge-spelled field remains accepted when the public one is absent.
+		if (alias && hasOwn(value, alias[0])) {
+			;(output ??= { ...value })[alias[1]] = value[alias[0]]
+			delete output[alias[0]]
+		}
 		for (const field of this.messageFields[schemaId]!) {
 			if (!hasOwn(value, field[0])) continue
 			const nested = value[field[0]]
 			if (nested === null || nested === undefined) continue
-			if (!this.sourceCodecs[field[2]]) {
+			if (requireCodecs && !this.sourceCodecs[field[2]]) {
 				throw new Error(`protobuf codec unavailable for ${PROTO_MESSAGE_SCHEMAS[field[2]]![0]}`)
 			}
 			let converted: unknown = nested
@@ -915,7 +934,7 @@ class ProtoCompatibilityRuntime {
 				if (Array.isArray(nested)) {
 					let items: unknown[] | undefined
 					for (let index = 0; index < nested.length; index++) {
-						const item = this.projectForEncode(field[2], nested[index])
+						const item = this.projectForEncode(field[2], nested[index], requireCodecs)
 						if (item !== nested[index]) (items ??= nested.slice())[index] = item
 					}
 					converted = items ?? nested
@@ -924,13 +943,13 @@ class ProtoCompatibilityRuntime {
 				if (isObject(nested)) {
 					let entries: DynamicObject | undefined
 					for (const key in nested) {
-						const item = this.projectForEncode(field[2], nested[key])
+						const item = this.projectForEncode(field[2], nested[key], requireCodecs)
 						if (item !== nested[key]) (entries ??= { ...nested })[key] = item
 					}
 					converted = entries ?? nested
 				}
 			} else {
-				converted = this.projectForEncode(field[2], nested)
+				converted = this.projectForEncode(field[2], nested, requireCodecs)
 			}
 			if (converted !== nested) (output ??= { ...value })[field[0]] = converted
 		}
