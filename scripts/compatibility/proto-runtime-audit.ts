@@ -62,14 +62,9 @@ const KNOWN_WIRE_GAPS = [
 	// carries the client citation and a minimal reproducer.
 	'Message.pollResultSnapshotMessageV3',
 	'SyncActionValue.businessBroadcastAssociationAction'
-	// Two entries left this list once the facade translated the bridge's renamed
-	// spellings: Message.ExtendedTextMessage.faviconMMSMetadata and
-	// Message.MessageHistoryMetadata.oldestMessageTimestamp. Both keep their field
-	// number and wire type, so only the property name ever differed. The names now
-	// live in FIELD_ALIASES in src/Compatibility/proto-runtime.ts, which both this
-	// facade and the send path read. The raw bridge still renames them —
-	// RENAMED_PROTO_FIELDS in src/__fuzz__/harness/divergence.ts records that for
-	// the neutral codec, which is a separate axis.
+	// Two entries left this list when the facade learned the bridge's renamed spellings
+	// (faviconMMSMetadata, oldestMessageTimestamp). The raw bridge still renames them;
+	// RENAMED_PROTO_FIELDS in divergence.ts records that for the neutral codec.
 ] as const
 
 const objectOptions = [
