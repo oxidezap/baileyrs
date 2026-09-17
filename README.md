@@ -54,11 +54,12 @@ Without the translation a write with the Baileys spelling is lost silently — t
 bridge drops a property it does not know — and a decode never sets the public
 property, so code written against the upstream types reads `undefined`.
 
-The translation covers encoding and `fromPartial`, where a bridge spelling is
-accepted when the public property is absent, and decoding, where the value and
-`toJSON()`/`toObject()` report the public spelling. An own public property wins
-when both spellings are supplied, including an explicit `null` or `undefined`,
-which omits the field. Inputs are never mutated.
+The translation covers encoding, `fromPartial` and `fromObject`, where a bridge
+spelling is accepted when the public property is absent, and every read-out —
+decoding, `toJSON()` and `toObject()` — where the value and its property are the
+public ones. An own public property wins when both spellings are supplied,
+including an explicit `null` or `undefined`, which omits the field. Inputs are
+never mutated.
 
 This stays in this layer: the neutral bridge API keeps its own names, and the raw
 codec differences the fuzzers record in `src/__fuzz__/harness/divergence.ts` are

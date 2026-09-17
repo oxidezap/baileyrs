@@ -595,6 +595,41 @@ export const projectProtoMessage = (path: string, message: unknown): unknown => 
 }
 
 // Bridge names stay neutral; only these schema-qualified public aliases differ.
+/**
+ * The value a schema field reads out of `data`.
+ *
+ * When the public property is not an own one, the bridge spelling answers
+ * instead — the same tolerance `encode` and `fromPartial` have, so an object the
+ * bridge or an older caller spelled differently is not dropped silently.
+ *
+ * `hasOwn` and not a null check: an instance carries its defaults on the
+ * prototype, so an absent public field reads as `0` there and the bridge key
+ * would never be reached. Reading `data[field[0]]` as the last resort keeps every
+ * shape a caller already passes behaving exactly as it did.
+ */
+const fieldValue = (
+	data: DynamicObject,
+	field: ProtoFieldSchema,
+	alias: readonly [string, string] | undefined
+): unknown =>
+	!hasOwn(data, field[0]) && alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1])
+		? data[alias[1]]
+		: data[field[0]]
+
+/**
+ * True when either spelling of `field` is an own property of `data`.
+ *
+ * `toObject` reports a field only when the instance actually carries it, which
+ * is what keeps an instance's prototype defaults out of the output. An instance
+ * built from a bridge-spelled object carries that name instead, so the test has
+ * to accept it there too.
+ */
+const hasOwnField = (
+	data: DynamicObject,
+	field: ProtoFieldSchema,
+	alias: readonly [string, string] | undefined
+): boolean => hasOwn(data, field[0]) || (alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1]))
+
 // The names live in `FIELD_ALIASES` above; this is the same translation for the
 // facade's own construction paths.
 class ProtoCompatibilityRuntime {
@@ -840,9 +875,10 @@ class ProtoCompatibilityRuntime {
 		// megamorphic path, where V8 does not elide for..of iterator
 		// allocations (~90 iterator results per WebMessageInfo envelope).
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
 		for (let i = 0; i < fields.length; i++) {
 			const field = fields[i]!
-			const value = data[field[0]]
+			const value = fieldValue(data, field, alias)
 			if (value === null || value === undefined) continue
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (!Array.isArray(value))
@@ -897,6 +933,7 @@ class ProtoCompatibilityRuntime {
 		const data = input as DynamicObject
 		const output: DynamicObject = {}
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
 		for (const field of fields) {
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (options.arrays || options.defaults) output[field[0]] = []
@@ -908,7 +945,7 @@ class ProtoCompatibilityRuntime {
 		}
 
 		for (const field of fields) {
-			const value = data[field[0]]
+			const value = fieldValue(data, field, alias)
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (
 					value &&
@@ -927,7 +964,7 @@ class ProtoCompatibilityRuntime {
 				}
 				continue
 			}
-			if (value === null || value === undefined || !hasOwn(data, field[0])) continue
+			if (value === null || value === undefined || !hasOwnField(data, field, alias)) continue
 			output[field[0]] = this.toObjectField(field, value, options)
 			const group = oneofName(field)
 			if (group && options.oneofs) output[group] = field[0]

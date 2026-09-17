@@ -6,6 +6,7 @@ import { proto as local } from '../WAProto/runtime.ts'
 interface Codec {
 	encode(value: unknown): { finish(): Uint8Array }
 	decode(bytes: Uint8Array): Record<string, unknown> & { toJSON(): unknown }
+	create(value: unknown): Record<string, unknown>
 	fromObject(value: unknown): Record<string, unknown>
 	fromPartial(value: unknown): Record<string, unknown>
 	toObject(value: unknown, options?: Record<string, unknown>): Record<string, unknown>
@@ -69,6 +70,26 @@ for (const [path, publicKey, bridgeKey, samples] of ALIASED_FIELDS) {
 			)
 			assert.deepEqual(input, snapshot)
 		}
+	})
+
+	it(`accepts the bridge spelling in fromObject and reports the public one for ${path}.${publicKey}`, () => {
+		const ours = codec(local, path)
+		const theirs = codec(upstream, path)
+		for (const value of samples) {
+			// Upstream is the oracle for the name and for the conversion: it produces
+			// this shape from the public spelling, which is what a consumer must see.
+			const expected = theirs.toObject(theirs.fromObject({ [publicKey]: value }))
+			assert.deepEqual(ours.toObject(ours.fromObject({ [bridgeKey]: value })), expected)
+			// `create` stores what it is given, so this pins the reported name rather
+			// than the conversion.
+			assert.equal(Object.hasOwn(ours.toObject(ours.create({ [bridgeKey]: value })), publicKey), true)
+		}
+		// An own public field still wins, which is what keeps upstream's own inputs
+		// behaving exactly as they do there.
+		assert.deepEqual(
+			ours.toObject(ours.fromObject({ [publicKey]: samples[1], [bridgeKey]: samples[0] })),
+			theirs.toObject(theirs.fromObject({ [publicKey]: samples[1] }))
+		)
 	})
 
 	it(`uses the public spelling when both names occur in ${path}.${publicKey}`, () => {
