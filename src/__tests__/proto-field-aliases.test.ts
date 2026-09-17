@@ -19,16 +19,8 @@ const codec = (root: unknown, path: string): Codec => {
 }
 
 /**
- * The fields the pinned bridge round-trips under a different name.
- *
- * The bridge regenerates its schema from a WhatsApp snapshot while upstream
- * Baileys generates from its own proto, so a field can keep its number and its
- * wire type and still change spelling. Baileys code then writes a property the
- * bridge does not know — lost silently, with no error — and reads one that is
- * never set. The facade owns the public spelling, so it translates both ways.
- *
- * `samples` holds values that discriminate the conversion: a zero, a real value,
- * and for message-typed fields an empty and a populated one.
+ * The fields the pinned bridge round-trips under a different name. `samples` are the
+ * values that discriminate the conversion, so a broken one cannot pass on `{}` alone.
  */
 const ALIASED_FIELDS: readonly (readonly [string, string, string, readonly unknown[]])[] = [
 	['SyncActionValue.AgentAction', 'deviceID', 'deviceId', [0, 7]],
@@ -60,10 +52,8 @@ for (const [path, publicKey, bridgeKey, samples] of ALIASED_FIELDS) {
 			assert.equal(Object.hasOwn(decoded, publicKey), Object.hasOwn(theirs.decode(bytes), publicKey))
 			assert.equal(Object.hasOwn(decoded, bridgeKey), false)
 			assert.deepEqual(ours.toObject(ours.fromObject(input)), theirs.toObject(theirs.fromObject(input)))
-			// The bridge's own `fromPartial` yields plain numbers for 64-bit fields
-			// where upstream yields `Long`. That difference predates these aliases and
-			// shows on any int64 (`messageCount` included), so `longs: String`
-			// normalises that one dimension and leaves the names under test.
+			// `fromPartial` returns numbers for 64-bit fields where upstream returns
+			// `Long`, a difference older than these aliases, so it is normalised out.
 			assert.deepEqual(
 				ours.toObject(ours.fromPartial(input), { longs: String }),
 				theirs.toObject(theirs.fromObject(input), { longs: String })
@@ -76,16 +66,15 @@ for (const [path, publicKey, bridgeKey, samples] of ALIASED_FIELDS) {
 		const ours = codec(local, path)
 		const theirs = codec(upstream, path)
 		for (const value of samples) {
-			// Upstream is the oracle for the name and for the conversion: it produces
-			// this shape from the public spelling, which is what a consumer must see.
+			// Upstream is the oracle: it produces this shape from the public spelling,
+			// which is what a consumer must see.
 			const expected = theirs.toObject(theirs.fromObject({ [publicKey]: value }))
 			assert.deepEqual(ours.toObject(ours.fromObject({ [bridgeKey]: value })), expected)
 			// `create` stores what it is given, so this pins the reported name rather
 			// than the conversion.
 			assert.equal(Object.hasOwn(ours.toObject(ours.create({ [bridgeKey]: value })), publicKey), true)
 		}
-		// An own public field still wins, which is what keeps upstream's own inputs
-		// behaving exactly as they do there.
+		// An own public field still wins, as it does for upstream's own inputs.
 		assert.deepEqual(
 			ours.toObject(ours.fromObject({ [publicKey]: samples[1], [bridgeKey]: samples[0] })),
 			theirs.toObject(theirs.fromObject({ [publicKey]: samples[1] }))
@@ -121,9 +110,7 @@ it('translates nested aliases without mutating the caller', () => {
 })
 
 it('translates a renamed field two levels down without mutating the caller', () => {
-	// The rename sits on MessageHistoryMetadata, reached through
-	// Message.messageHistoryNotice, so the projection has to recurse past two
-	// holders before the name it knows about appears.
+	// Two holders deep, so the projection has to recurse to reach the renamed name.
 	const input = {
 		extendedTextMessage: { faviconMMSMetadata: { thumbnailDirectPath: 'direct-path' } },
 		messageHistoryNotice: { messageHistoryMetadata: { oldestMessageTimestamp: 7, messageCount: 2 } }
@@ -164,9 +151,7 @@ it('decodes a fixed AgentAction wire fixture with the upstream public key', () =
 })
 
 it('decodes fixed fixtures for the renamed fields with the upstream public key', () => {
-	// Field 2 of MessageHistoryMetadata, and field 33 of ExtendedTextMessage as an
-	// empty payload. Literal bytes, so a rename that survives the round trip
-	// through both encoders cannot hide the wire shape.
+	// Literal bytes, so neither encoder can hide a rename in a shared round trip.
 	for (const [path, bytes] of [
 		['Message.MessageHistoryMetadata', Uint8Array.from([0x10, 0x07])],
 		['Message.ExtendedTextMessage', Uint8Array.from([0x8a, 0x02, 0x00])]

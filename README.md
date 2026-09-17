@@ -38,10 +38,9 @@ are listed in `src/__fuzz__/harness/divergence.ts`.
 
 ### Protobuf field names
 
-Upstream Baileys and the bridge generate their schemas from different sources, so
-a field can keep its number and its wire type and still be spelled differently.
-The public `proto` facade always uses the Baileys spelling and translates both
-ways, including for fields nested at any depth:
+The bridge and upstream Baileys generate their schemas from different sources, so a
+field can keep its number and wire type and still be spelled differently. The `proto`
+facade always uses the Baileys spelling:
 
 | Type                                   | Baileys                  | Bridge                           |
 | -------------------------------------- | ------------------------ | -------------------------------- |
@@ -50,27 +49,11 @@ ways, including for fields nested at any depth:
 | `Message.ExtendedTextMessage`          | `faviconMMSMetadata`     | `faviconMmsMetadata`             |
 | `Message.MessageHistoryMetadata`       | `oldestMessageTimestamp` | `oldestMessageTimestampInWindow` |
 
-Without the translation a write with the Baileys spelling is lost silently — the
-bridge drops a property it does not know — and a decode never sets the public
-property, so code written against the upstream types reads `undefined`.
-
-The translation covers encoding, `fromPartial` and `fromObject`, where a bridge
-spelling is accepted when the public property is absent, and every read-out —
-decoding, `toJSON()` and `toObject()` — where the value and its property are the
-public ones. An own public property wins when both spellings are supplied,
-including an explicit `null` or `undefined`, which omits the field. Inputs are
-never mutated.
-
-This stays in this layer: the neutral bridge API keeps its own names, and the raw
-codec differences the fuzzers record in `src/__fuzz__/harness/divergence.ts` are
-unchanged.
-
-Both directions matter. A message the facade decoded carries the public
-spellings, and the send path encodes through the neutral codec, which drops a key
-it does not know without an error — so `encodeProtoCompat` translates before
-encoding rather than repairing after a failure that never comes. Relaying a
-message (`relayMessage(jid, msg.message)`) and sending one you built yourself both
-keep these fields.
+Without the translation a write in the Baileys spelling is dropped by the codec and a
+read never sets the public property. Both the facade and the send path translate, in
+both directions, for fields nested at any depth. An own public property wins over the
+bridge name, including an explicit `null` or `undefined`, and inputs are never
+mutated. The bridge keeps its own names.
 
 ## Documentation
 

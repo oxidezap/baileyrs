@@ -134,15 +134,9 @@ describe('send-path wire fidelity on generated messages', () => {
 				if (!isUsable(value)) return []
 				const { jid, message } = value
 
-				// A plain encode/decode of the same input, through the same codec — so
-				// anything that differs is the send path's doing and not the codec's.
-				//
-				// Projected the way the send path projects, for the reason the same
-				// reference is in `scripts/compatibility/wire-fidelity-core.ts`: the
-				// codec writes a field named as upstream names it only after the name
-				// translation, so an unprojected reference lacks the field entirely —
-				// and `preserves` is directional, which would leave a projection that
-				// drops that field invisible from both sides.
+				// Projected like the send path, as `wire-fidelity-core.ts` does: the codec
+				// writes a field named as upstream names it only after the translation, and
+				// `preserves` is directional, so an unprojected reference hides a drop.
 				let reference: unknown
 				try {
 					// The reference encode gets its own copy: `relayMessage` may mutate the
@@ -277,17 +271,10 @@ describe('send-path wire fidelity on generated messages', () => {
 				// deliberately. A bridge decoder that returned a number where upstream
 				// returns the string is exactly the readability regression this target is
 				// named for.
-				// Renames are folded on both sides, as the codec differentials do:
-				// `RENAMED_PROTO_FIELDS` is where this project records that the bridge
-				// names a field differently, and both views decode the *same* bytes, so
-				// folding the same names out of both leaves every real difference — a
-				// value, a presence, a field number — still failing.
-				//
-				// Both sides, not one: the fold rebuilds every object it walks, so a byte
-				// field comes out as a numeric-keyed plain object, and the same bytes give
-				// the same one on both sides. Folding a single side would compare that
-				// object against a Uint8Array and report a difference that is the fold's
-				// own doing.
+				// Renames are folded out of both views, as the codec differentials do. Both:
+				// the fold rebuilds every object it walks, so a byte field would compare as a
+				// numeric-keyed object against a `Uint8Array` and read as a difference the
+				// fold invented. Values and field numbers still fail.
 				const bridgeFields = undoRenames(bridgeView)
 				const upstreamFields = undoRenames(upstreamView)
 				if (!equivalent(bridgeFields, upstreamFields, { isTextField: textFieldPredicate('Message') })) {

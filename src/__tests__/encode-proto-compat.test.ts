@@ -173,17 +173,13 @@ describe('repairProtoMessage — copy-on-write contract', () => {
 
 describe('encodeProtoCompat — fields whose public name the codec does not know', () => {
 	/**
-	 * The write path hands the neutral codec a message that may have come back
-	 * through the facade's decode, where the public spellings appear. The codec
-	 * drops a key it does not know without throwing, so the translation has to
-	 * happen here on the ordinary path — a repair after a throw never runs.
+	 * The codec drops a key it does not know without throwing, so the send path has to
+	 * translate before the encode: a repair after a throw never runs.
 	 */
 	it('writes a renamed field under the name the codec accepts', () => {
-		// Message.extendedTextMessage = field 6 (3209), holding text = field 1
-		// (0a01) 'x' and faviconMMSMetadata = field 33 (8a02) with
-		// thumbnailDirectPath = field 1 (0a01) 'd'. Field 33 exists in the codec
-		// only as `faviconMmsMetadata`, so these bytes appear only if the name was
-		// translated.
+		// 3209 = extendedTextMessage (field 6), 8a02 = faviconMMSMetadata (33),
+		// 0a0164 = thumbnailDirectPath 'd'. Field 33 is written only under the
+		// codec's own spelling, so these bytes appear only if the name was translated.
 		expect(
 			hex(
 				encodeProtoCompat('Message', {
@@ -194,26 +190,20 @@ describe('encodeProtoCompat — fields whose public name the codec does not know
 	})
 
 	it('keeps aliased fields when a decoded message is re-encoded', () => {
-		// The relay case: `relayMessage(jid, msg.message)` re-encodes what the
-		// facade just decoded. Bytes written out by hand: extendedTextMessage =
-		// field 6, then messageHistoryNotice = field 102 (b206) with
-		// messageHistoryMetadata = field 2 (1204), oldestMessageTimestamp = field
-		// 2 (1007) and messageCount = field 3 (1802).
+		// Relaying what the facade just decoded. 3209 = extendedTextMessage (6), b206 =
+		// messageHistoryNotice (102) carrying oldestMessageTimestamp (1007) and count (1802).
 		const wire = '32090a01788a02030a0164b20606120410071802'
 		const instance = proto.Message.decode(Buffer.from(wire, 'hex'))
-		// The precondition of the regression: decode reports the public name, which
-		// the published declarations expose as `faviconMMSMetadata` while these
-		// source-level types still carry the bridge's spelling.
+		// The precondition of the regression: decode reports the public name, though
+		// these source-level types still call it the bridge's.
 		const decodedExtendedText = instance.extendedTextMessage as unknown as Record<string, unknown>
 		expect(decodedExtendedText.faviconMMSMetadata).toBeDefined()
 		expect(hex(encodeProtoCompat('Message', instance))).toBe(wire)
 	})
 
 	it('repairs a refused value under either spelling of an aliased field', () => {
-		// The projection hands the codec the bridge's name, so the repair has to find
-		// the field under that name as well. Hand-written bytes: extendedTextMessage =
-		// field 6 (3205), faviconMmsMetadata = field 33 (8a02) with mediaKeyTimestamp =
-		// field 5 (2800) coerced from an empty string to 0.
+		// The projection hands the codec the bridge's name, so a repair has to find the
+		// field there too: 3205 = extendedTextMessage (6), 8a02 = favicon (33), 2800 = 0.
 		const wire = '32058a02022800'
 		expect(
 			hex(encodeProtoCompat('Message', { extendedTextMessage: { faviconMmsMetadata: { mediaKeyTimestamp: '' } } }))

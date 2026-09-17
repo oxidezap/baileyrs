@@ -264,11 +264,8 @@ export const auditWireFidelity = async (
 	const findings: FidelityFinding[] = []
 
 	for (const testCase of cases) {
-		// A plain encode of the same input, so anything the send path drops or
-		// changes shows up. It is projected the way the send path projects, because
-		// the codec writes a field named as upstream names it only after the name
-		// translation: comparing against an untranslated encode would report that
-		// translation as an alteration of the field it was sent to deliver.
+		// Projected like the send path: the codec writes a field named as upstream names
+		// it only after the translation, so an untranslated reference reads as an alteration.
 		const reference = decodeProto(
 			'Message',
 			encodeProto('Message', projectProtoMessage('Message', testCase.message))
