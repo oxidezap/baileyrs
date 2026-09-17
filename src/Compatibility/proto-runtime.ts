@@ -237,6 +237,18 @@ class LongBinaryReader extends BinaryReader {
 const longFromValue = (value: unknown, unsigned: boolean): Long =>
 	LongRuntime.fromValue(value as Long | number | string, unsigned)
 
+/**
+ * The neutral codec hands a 64-bit field back as a number while the value is exact as
+ * a double, and as a word split past that, where upstream declares a `Long` whose
+ * methods callers use. The decode reader above exists for the same reason.
+ */
+const hydratedScalar = (kind: number, value: unknown): unknown => {
+	if (value instanceof LongRuntime) return value
+	const split = isObject(value) && typeof value.low === 'number' && typeof value.high === 'number'
+	if (typeof value !== 'number' && typeof value !== 'string' && !split) return value
+	return longFromValue(value, kind === PROTO_FIELD_KIND.unsigned64)
+}
+
 const longToBigInt = (value: unknown, unsigned: boolean): bigint => {
 	if (typeof value === 'bigint') return value
 	if (typeof value === 'number') return BigInt(Math.trunc(value))
@@ -587,6 +599,7 @@ class ProtoCompatibilityRuntime {
 	/** Sparse: filled by `constructorFor`, never by the constructor. */
 	readonly constructors: Array<ProtoConstructor | undefined>
 	readonly enums: EnumRuntime[]
+	readonly int64FieldsByName: readonly Readonly<Record<string, number>>[]
 	readonly messageFields: readonly (readonly ProtoFieldSchema[])[]
 	readonly messageFieldsByName: readonly Readonly<Record<string, ProtoFieldSchema>>[]
 	readonly namespace: DynamicObject
@@ -596,6 +609,17 @@ class ProtoCompatibilityRuntime {
 	constructor(sourceNamespace: DynamicObject) {
 		this.namespace = { ...sourceNamespace }
 		this.enums = PROTO_ENUM_SCHEMAS.map(([, entries]) => this.makeEnum(entries))
+		// Only the 64-bit names are indexed: `hydrate` looks up every key a partial or a
+		// decode produced, and the rest of them need no conversion.
+		this.int64FieldsByName = PROTO_MESSAGE_SCHEMAS.map(([, fields]) => {
+			const indexed = Object.create(null) as Record<string, number>
+			for (const field of fields) {
+				if (field[1] === PROTO_FIELD_KIND.signed64 || field[1] === PROTO_FIELD_KIND.unsigned64) {
+					indexed[field[0]] = field[1]
+				}
+			}
+			return indexed
+		})
 		this.messageFields = PROTO_MESSAGE_SCHEMAS.map(([, fields]) =>
 			fields.filter(field => field[1] === PROTO_FIELD_KIND.message)
 		)
@@ -1003,13 +1027,15 @@ class ProtoCompatibilityRuntime {
 		const source = isObject(value) ? value : {}
 		const instance = Object.create(this.constructorFor(schemaId).prototype) as DynamicObject
 		const messageFields = this.messageFieldsByName[schemaId]!
+		const int64Fields = this.int64FieldsByName[schemaId]!
 		const alias = aliasFor(schemaId)
 		for (const sourceKey in source) {
 			const key = alias && sourceKey === alias[1] ? alias[0] : sourceKey
 			const nested = source[sourceKey]
 			const field = messageFields[key]
 			if (!field) {
-				instance[key] = nested
+				const kind = int64Fields[key]
+				instance[key] = kind === undefined ? nested : hydratedScalar(kind, nested)
 			} else if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (Array.isArray(nested)) {
 					for (let index = 0; index < nested.length; index++) {
