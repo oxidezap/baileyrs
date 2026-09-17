@@ -826,10 +826,15 @@ const DISPATCHERS: DispatcherMap = {
 	// ── Calls ──
 	incomingCall: (evt, { ctx, callbacks }) => {
 		callbacks?.onIncomingCall?.(evt)
-		const isGroup = isJidGroup(evt.from)
-		// Canonical call actions use the exact public Baileys status spelling;
-		// missed-call notifications are normalized to `timeout` by the adapter.
+		// The socket fills non-offer updates from the offer it cached (see
+		// `onIncomingCall` in `Socket/index.ts`): a raw `accept` carries no
+		// `isVideo`, so without that step it would reach the consumer without
+		// one. This mirrors upstream Baileys' `callOfferCache` enrichment in
+		// `messages-recv.js` `handleCall`.
 		const status: WACallUpdateType = evt.action.type
+		// An explicit `group_jid` on the offer wins over the `from` heuristic:
+		// for group calls the stanza peer is the caller, not the group.
+		const groupJid = evt.action.groupJid ?? (isJidGroup(evt.from) ? evt.from : undefined)
 		const callEvt: WACallEvent = {
 			chatId: evt.from,
 			from: evt.action.callCreator ?? evt.from,
@@ -838,14 +843,10 @@ const DISPATCHERS: DispatcherMap = {
 			date: new Date(evt.timestamp * 1000),
 			status,
 			offline: evt.offline,
-			isGroup,
-			// Group JID = `evt.from` only when the stanza came from a group
-			// JID itself. The bridge offer payload doesn't carry a separate
-			// `group_jid` field today, so the group's JID IS the `from` for
-			// `<call>` stanzas in groups.
-			...(isGroup ? { groupJid: evt.from } : {}),
+			...(evt.action.isVideo !== undefined ? { isVideo: !!evt.action.isVideo } : {}),
+			isGroup: !!groupJid,
+			...(groupJid ? { groupJid } : {}),
 			...(evt.action.callerPn ? { callerPn: evt.action.callerPn } : {}),
-			...(evt.action.type === 'offer' ? { isVideo: !!evt.action.isVideo } : {}),
 			// Bridge auxiliary fields (offer-only / terminate-only / always)
 			...(evt.action.callerCountryCode ? { callerCountryCode: evt.action.callerCountryCode } : {}),
 			...(evt.action.deviceClass ? { deviceClass: evt.action.deviceClass } : {}),
@@ -853,6 +854,8 @@ const DISPATCHERS: DispatcherMap = {
 			...(evt.action.audio ? { audio: evt.action.audio } : {}),
 			...(evt.action.duration !== undefined ? { duration: evt.action.duration } : {}),
 			...(evt.action.audioDuration !== undefined ? { audioDuration: evt.action.audioDuration } : {}),
+			...(evt.action.reason ? { reason: evt.action.reason } : {}),
+			...(evt.videoOrientation !== undefined ? { videoOrientation: evt.videoOrientation } : {}),
 			...(evt.stanzaId ? { stanzaId: evt.stanzaId } : {}),
 			...(evt.notify ? { notify: evt.notify } : {}),
 			...(evt.platform ? { platform: evt.platform } : {}),

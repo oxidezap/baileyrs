@@ -530,8 +530,16 @@ export interface CanonicalCallAction {
 	joinable?: boolean
 	/** Audio codec list advertised on the offer. Offer-only. */
 	audio?: string[]
-	/** `true` for video calls. Offer-only. */
+	/**
+	 * `true` for video calls. Set on `offer`; later updates reuse the offer's
+	 * value through the socket's offer cache (mirrors upstream Baileys'
+	 * `callOfferCache` enrichment in `messages-recv.js`).
+	 */
 	isVideo?: boolean
+	/** Explicit group JID from the offer (`group_jid`). Offer-only. */
+	groupJid?: string
+	/** Reject/terminate reason string from the bridge (`reason`). Terminal-only. */
+	reason?: string
 	/** Total call duration in seconds. Terminate-only. */
 	duration?: number
 	/** Active audio duration in seconds. Terminate-only. */
@@ -551,6 +559,18 @@ export interface CanonicalIncomingCall {
 	platform?: string
 	/** WhatsApp client version on the caller side. */
 	version?: string
+	/**
+	 * Camera rotation the sender announced on this stanza's `<video>` child
+	 * (`0..3`). Only an `offer` or `accept` carries one.
+	 */
+	videoOrientation?: number
+	/**
+	 * `true` when this update resolved the call on another of our devices
+	 * (`call_ended_elsewhere`): this device owns no live call. The socket
+	 * uses it to drop the offer snapshot instead of keeping routing state
+	 * for a call handled elsewhere.
+	 */
+	endedElsewhere?: boolean
 	action: CanonicalCallAction
 }
 

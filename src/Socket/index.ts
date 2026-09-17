@@ -24,6 +24,10 @@ import { DEFAULT_CONNECTION_CONFIG, MEDIA_TYPES, type MediaType } from '../Defau
 import type {
 	BinaryNode,
 	AuthenticationCreds,
+	CallAudioFrame,
+	CallPcmFrame,
+	CallMediaEvent,
+	CallVideoFrame,
 	ConnectionState,
 	Contact,
 	ReachoutTimelockState,
@@ -58,6 +62,8 @@ import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
+import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
+import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent, clearIncompleteEnd } from './calls.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -211,6 +217,11 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		 * store to drain.
 		 */
 		teardown: async (client, error) => {
+			// Drain call pumps before anything else: they hold the client and
+			// push into it, so they settle ahead of disconnect rather than in
+			// an end handler after the flush. `callMedia` is declared below
+			// and read here the way `ws` is — the closure only runs at close.
+			await callMedia.drainAll()
 			try {
 				await ws.close()
 			} catch {
@@ -372,6 +383,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		fullConfig,
 		ws,
 		reportUnexpectedError: unexpectedErrors.report,
+		isClosing: () => owner.isClosing(),
 		getUser: () => user,
 		getMe: () => {
 			const me = auth.creds.me
@@ -434,8 +446,21 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	const receiptMutex = makeMutex()
 	const appStatePatchMutex = makeMutex()
 	const notificationMutex = makeMutex()
-	const activeCallContexts = new Map<string, { peer: string; callCreator: string }>()
+	const activeCallContexts: CallOfferCache = new Map()
 	socketEndHandlers.push(() => activeCallContexts.clear())
+	/**
+	 * Encoded-audio call media routing. The bridge fires `onCallAudio` per
+	 * decoded packet and `onCallEvent` per lifecycle step off the same
+	 * callbacks object it reads for everything else; assigning them here
+	 * (rather than inside `makeEventHandlers`) keeps the media routing next
+	 * to the methods that consume it. A release bridge ignores the extra
+	 * properties, so this is inert until the audio domain exists.
+	 */
+	const callMedia = makeCallMediaRouter({
+		emitMediaEvent: event => ev.emit('call.media', event),
+		reportError: (err, msg) => unexpectedErrors.report(err, msg)
+	})
+	socketEndHandlers.push(() => callMedia.stopAll())
 	const groupMethods = makeGroupMethods(ctx)
 	const communityMethods = makeCommunityMethods(ctx, groupMethods)
 	const refreshParticipating = makeParticipatingRefreshHandler(ctx, {
@@ -455,11 +480,13 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				.catch(() => {})
 		},
 		onIncomingCall: event => {
-			const { callId, callCreator, type } = event.action
-			if (type === 'reject' || type === 'accept' || type === 'timeout' || type === 'terminate') {
-				activeCallContexts.delete(callId)
-			} else if (callCreator) {
-				activeCallContexts.set(callId, { peer: event.from, callCreator })
+			// A terminal ringing update (rejected, timed out, terminated
+			// elsewhere) opens no media handle and may never produce a
+			// `call.media: ended` sweep: stop the call's media here so a
+			// sink registered while handling the offer is not retained,
+			// and later registrations for the dead ID are refused.
+			if (trackIncomingCall(activeCallContexts, event)) {
+				callMedia.stopCall(event.action.callId)
 			}
 		},
 		onDirtyState: event => refreshParticipating(event.dirtyType),
@@ -490,6 +517,17 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// way — `sock.end()`, an `await using` scope exiting — has to as well,
 		// or one fires from a socket whose client is already freed.
 		onCleanup: cleanup => socketEndHandlers.push(cleanup)
+	})
+	// The audio domain reads these off the callbacks object before it moves
+	// into the parsed form. `Object.assign` rather than a literal: the
+	// release `.d.ts` does not declare the members, and a literal would fail
+	// its excess-property check there. This keeps the wiring compiling under
+	// both the release bridge and the preview.
+	Object.assign(eventHandlers, {
+		onCallAudio: (frame: CallAudioFrame) => callMedia.routeAudioFrame(frame),
+		onCallPcm: (frame: CallPcmFrame) => callMedia.routePcmFrame(frame),
+		onCallVideo: (frame: CallVideoFrame) => callMedia.routeVideoFrame(frame),
+		onCallEvent: (event: CallMediaEvent) => callMedia.routeMediaEvent(event)
 	})
 
 	const init = async () => {
@@ -1033,6 +1071,51 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				client.rejectCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
 			)
 			activeCallContexts.delete(callId)
+			// A rejected ringing call never opens a media handle and may
+			// never emit `call.media: ended`: stop its media registrations
+			// and mark it terminal so late sinks, writers and pumps are
+			// refused instead of retained until socket teardown. Only on
+			// success — a failed reject keeps everything for the retry.
+			callMedia.stopCall(callId)
+		},
+		/**
+		 * Hang up a live call. Same routing as `rejectCall`: the identifiers
+		 * come from the `incoming_call` event that rang, and the cached
+		 * peer/call-creator pair wins when this socket saw the offer. Fire
+		 * and forget — resolving means the `<terminate>` stanza went out, per
+		 * the bridge calls domain (preview PR 115).
+		 */
+		terminateCall: async (callId: string, callFrom: string) => {
+			try {
+				// A media call ends through its own handle: one stanza tears
+				// down both ends, and the result says how much of the peer was
+				// told. Without a record there is nothing native to end, and
+				// the stanza below carries the hangup instead.
+				if (await endMediaCallIfPresent(ctx, callId)) {
+					activeCallContexts.delete(callId)
+					return
+				}
+				const context = activeCallContexts.get(callId)
+				try {
+					await ctx.withClient(client =>
+						client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+					)
+					activeCallContexts.delete(callId)
+					// The fallback the incomplete mark exists for has run:
+					// a later hangup for this ID must re-end natively and
+					// read the fresh outcome instead of skipping on it.
+					clearIncompleteEnd(ctx, callId)
+				} finally {
+					// Local media stops even when the stanza fails; the routing
+					// context above stays for the retry, which needs the
+					// remembered peer and call creator.
+					callMedia.stopCall(callId)
+				}
+			} finally {
+				// Belt and braces with the per-path stops: whatever route the
+				// hangup took, no pump keeps pulling after it.
+				callMedia.stopCall(callId)
+			}
 		},
 		/**
 		 * Fetch the account's current reachout-timelock state from the server.
@@ -1081,6 +1164,9 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
+		...makeCallAudioMethods(ctx, callMedia, {
+			onCallEnded: callId => activeCallContexts.delete(callId)
+		}),
 		...makeServerQueryMethods(ctx),
 		downloadMedia: async <T extends MediaDownloadType>(
 			message: WAMessage,

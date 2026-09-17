@@ -171,8 +171,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # --ignore-scripts skips `prepare`, and `tsc && oxlint` reads `src`, never
-      # `lib`. This job used to spend a build on output it never opened.
+      # --ignore-scripts skips `prepare`, so lint builds `lib` itself before
+      # the example typecheck reads it. `tsc && oxlint` still only read `src`.
       - run: npm ci --ignore-scripts
 
       - run: npm run lint
@@ -193,8 +193,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # Same reasoning as lint: `node --test` runs the suites out of `src`.
+      # `node --test` also discovers `Example/__tests__`, which imports
+      # `../lib/index.js`: build it first, since `lib/` is gitignored.
       - run: npm ci --ignore-scripts
+
+      - run: npm run build
 
       - run: npm test
 
@@ -265,9 +268,14 @@ jobs:
           password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
         ports:
           - 8080:8080
+          # UDP loopback relay for VoIP media tests: the offer's relay
+          # candidates name 127.0.0.1, so the mapped host port is what the
+          # runner dials. Must match BARBACK_RELAY_PORT below.
+          - 3479:3479/udp
         env:
           CHATSTATE_TTL_SECS: "3"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          BARBACK_RELAY_PORT: "3479"
         options: --log-driver none
 
     steps:
@@ -298,6 +306,10 @@ jobs:
         env:
           SOCKET_URL: "wss://127.0.0.1:8080/ws/chat"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          # The lane publishes the mock UDP relay above: the media tests
+          # read this marker and fail (instead of skipping) when the
+          # relay-allocated event never arrives.
+          BARBACK_RELAY_PORT: "3479"
         run: npm run test:e2e
 
   # The one check worth requiring on the branch. It has to report on every run,
