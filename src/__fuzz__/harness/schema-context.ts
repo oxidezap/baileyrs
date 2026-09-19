@@ -159,9 +159,19 @@ interface FieldFacts {
 }
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
-const wireTypesByPath = new Map(PROTO_FIELD_WIRE_TYPES)
+type WireTypeMetadata = readonly [
+	readonly [string, readonly number[]],
+	...(readonly (readonly [string, readonly number[]])[])
+]
+type MapKeyWireTypeMetadata = readonly [
+	readonly [string, readonly (readonly [string, number])[]],
+	...(readonly (readonly [string, readonly (readonly [string, number])[]])[])
+]
+const wireTypesByPath = new Map(JSON.parse(PROTO_FIELD_WIRE_TYPES) as WireTypeMetadata)
 const mapKeyWireTypesByPath = new Map(
-	PROTO_MAP_KEY_WIRE_TYPES.map(([path, fields]) => [path, new Map(fields)] as const)
+	(JSON.parse(PROTO_MAP_KEY_WIRE_TYPES) as MapKeyWireTypeMetadata).map(
+		([path, fields]) => [path, new Map(fields)] as const
+	)
 )
 
 /**
