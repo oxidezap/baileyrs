@@ -929,6 +929,19 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.deepEqual([...(allowedWireTypes('Location', 1) ?? [])], [1])
 	})
 
+	it('validates recursive messages beyond the old depth budget', async () => {
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, nestedMessageAt, packedWireType } = await import('../schema-context.ts')
+		const facts = { allowedWireTypes, isStringField, nestedMessageAt, packedWireType }
+		let payload = new Uint8Array()
+		for (let depth = 0; depth < 20; depth++) {
+			payload = Uint8Array.from([0x0a, payload.length, ...payload])
+			payload = Uint8Array.from([0xc2, 0x02, payload.length, ...payload])
+		}
+		const result = validateSchemaWire(payload, 'Message', facts)
+		assert.equal(result.valid, true)
+	})
+
 	it('rejects a map field arriving at a non-length-delimited wire type', async () => {
 		// Maps encode as length-delimited entry messages on the wire, so a map
 		// number arriving as a varint is schema-invalid rather than

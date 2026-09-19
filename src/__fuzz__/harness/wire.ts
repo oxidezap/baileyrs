@@ -768,67 +768,69 @@ const validatePacked = (bytes: Uint8Array, start: number, end: number, wireType:
 	return cursor.offset === end
 }
 
-const validateRecords = (
-	bytes: Uint8Array,
-	cursor: { offset: number },
-	end: number,
-	path: string,
-	facts: SchemaWireFacts,
-	depth: number,
-	entrySchema?: { readonly wireTypes: ReadonlyMap<number, number>; readonly valueMessagePath?: string }
-): SchemaWireResult => {
-	// Past the recursion budget the payload is unvalidated, not valid: the
-	// nesting-bomb mutator deliberately generates depths of 16 and above, so
-	// calling the remainder valid would misclassify a disagreement caused by a
-	// schema-invalid record below the budget as agreement. Only an empty tail
-	// stays valid — there is nothing left that could disagree.
-	if (depth > 12) return cursor.offset === end ? { valid: true } : { valid: false, reason: 'framing', path }
-	while (cursor.offset < end) {
+interface ValidationFrame {
+	readonly cursor: { offset: number }
+	readonly end: number
+	readonly path: string
+	readonly entrySchema?: { readonly wireTypes: ReadonlyMap<number, number>; readonly valueMessagePath?: string }
+}
+
+/** Validates nested records with an explicit stack so deep valid messages stay schema-checked. */
+const validateRecords = (bytes: Uint8Array, path: string, facts: SchemaWireFacts): SchemaWireResult => {
+	const stack: ValidationFrame[] = [{ cursor: { offset: 0 }, end: bytes.length, path }]
+	while (stack.length > 0) {
+		const frame = stack[stack.length - 1]!
+		const { cursor, end, entrySchema } = frame
+		if (cursor.offset === end) {
+			stack.pop()
+			continue
+		}
 		const tag = readRawVarint(bytes, cursor)
-		if (tag === undefined) return { valid: false, reason: 'framing', path }
+		if (tag === undefined) return { valid: false, reason: 'framing', path: frame.path }
 		const field = Number(tag >> 3n)
 		const wireType = Number(tag & 7n)
-		if (field < 1 || field > 536_870_911 || wireType > 5) return { valid: false, reason: 'framing', path }
+		if (field < 1 || field > 536_870_911 || wireType > 5) {
+			return { valid: false, reason: 'framing', path: frame.path }
+		}
 		const entryWireType = entrySchema?.wireTypes.get(field)
-		const allowed = entrySchema === undefined ? facts.allowedWireTypes(path, field) : undefined
+		const allowed = entrySchema === undefined ? facts.allowedWireTypes(frame.path, field) : undefined
 		if (
 			(entryWireType !== undefined && entryWireType !== wireType) ||
 			(allowed !== undefined && !allowed.has(wireType))
 		) {
-			return { valid: false, reason: 'wire-type', path, field, actualWireType: wireType }
+			return { valid: false, reason: 'wire-type', path: frame.path, field, actualWireType: wireType }
 		}
 		if (wireType === 3) {
 			if (entryWireType !== undefined || allowed !== undefined || !skipGroup(bytes, cursor, end, field)) {
-				return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
+				return { valid: false, reason: 'framing', path: frame.path, field, actualWireType: wireType }
 			}
 		} else if (wireType === 4) {
-			return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
+			return { valid: false, reason: 'framing', path: frame.path, field, actualWireType: wireType }
 		} else if (wireType === 0) {
-			if (readRawVarint(bytes, cursor) === undefined) return { valid: false, reason: 'framing', path }
+			if (readRawVarint(bytes, cursor) === undefined) return { valid: false, reason: 'framing', path: frame.path }
 		} else if (wireType === 1) {
-			if (cursor.offset + 8 > end) return { valid: false, reason: 'framing', path }
+			if (cursor.offset + 8 > end) return { valid: false, reason: 'framing', path: frame.path }
 			cursor.offset += 8
 		} else if (wireType === 5) {
-			if (cursor.offset + 4 > end) return { valid: false, reason: 'framing', path }
+			if (cursor.offset + 4 > end) return { valid: false, reason: 'framing', path: frame.path }
 			cursor.offset += 4
 		} else if (wireType === 2) {
 			const length = readRawVarint(bytes, cursor)
-			if (length === undefined) return { valid: false, reason: 'framing', path }
+			if (length === undefined) return { valid: false, reason: 'framing', path: frame.path }
 			const size = Number(length)
 			if (!Number.isSafeInteger(size) || size < 0 || cursor.offset + size > end) {
-				return { valid: false, reason: 'framing', path }
+				return { valid: false, reason: 'framing', path: frame.path }
 			}
 			const start = cursor.offset
 			const stop = start + size
-			const packed = facts.packedWireType?.(path, field)
+			const packed = facts.packedWireType?.(frame.path, field)
 			if (packed !== undefined && !validatePacked(bytes, start, stop, packed)) {
-				return { valid: false, reason: 'framing', path, field }
+				return { valid: false, reason: 'framing', path: frame.path, field }
 			}
-			const mapEntry = entrySchema === undefined ? facts.mapEntrySchema?.(path, field) : undefined
+			const mapEntry = entrySchema === undefined ? facts.mapEntrySchema?.(frame.path, field) : undefined
 			if (mapEntry !== undefined) {
-				const inner = validateRecords(bytes, { offset: start }, stop, path, facts, depth + 1, mapEntry)
-				if (!inner.valid) return inner
 				cursor.offset = stop
+				stack.push({ cursor: { offset: start }, end: stop, path: frame.path, entrySchema: mapEntry })
 				continue
 			}
 			const nestedPath =
@@ -836,31 +838,26 @@ const validateRecords = (
 					? field === 2
 						? entrySchema.valueMessagePath
 						: undefined
-					: facts.nestedMessageAt(path, field)
+					: facts.nestedMessageAt(frame.path, field)
 			if (nestedPath !== undefined) {
-				const inner = validateRecords(bytes, cursor, stop, nestedPath, facts, depth + 1)
-				if (!inner.valid) return inner
-				// A nested message that consumed fewer bytes than its length holds
-				// trailing records the schema cannot place; those stay framing, and
-				// an unknown tail is skippable rather than invalid. Only a hard
-				// framing failure inside fails the payload.
 				cursor.offset = stop
+				stack.push({ cursor: { offset: start }, end: stop, path: nestedPath })
 			} else if (
 				(entrySchema !== undefined && (field === 1 || (field === 2 && nestedPath === undefined))) ||
-				facts.isStringField(path, field)
+				facts.isStringField(frame.path, field)
 			) {
 				if (!isValidUtf8(bytes, start, stop)) {
-					return { valid: false, reason: 'invalid-utf8', path, field }
+					return { valid: false, reason: 'invalid-utf8', path: frame.path, field }
 				}
 				cursor.offset = stop
 			} else {
 				cursor.offset = stop
 			}
 		} else {
-			return { valid: false, reason: 'framing', path }
+			return { valid: false, reason: 'framing', path: frame.path }
 		}
 	}
-	return cursor.offset === end ? { valid: true } : { valid: false, reason: 'framing', path }
+	return { valid: true }
 }
 
 /**
@@ -869,7 +866,7 @@ const validateRecords = (
  * numbers stay skippable.
  */
 export const validateSchemaWire = (bytes: Uint8Array, path: string, facts: SchemaWireFacts): SchemaWireResult =>
-	validateRecords(bytes, { offset: 0 }, bytes.length, path, facts, 0)
+	validateRecords(bytes, path, facts)
 
 /** Renders a validation failure for a finding's detail line. */
 export const describeSchemaWire = (result: Extract<SchemaWireResult, { valid: false }>): string => {
