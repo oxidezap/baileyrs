@@ -904,8 +904,7 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		// agreement-worthy — even though the generated value metadata says
 		// nothing about the outer record.
 		const { validateSchemaWire } = await import('../wire.ts')
-		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt } =
-			await import('../schema-context.ts')
+		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt } = await import('../schema-context.ts')
 		const maps = mapFieldNumbers('Config')
 		assert.ok(maps.has(1), 'expected Config field 1 to be a map number')
 		const facts = {
