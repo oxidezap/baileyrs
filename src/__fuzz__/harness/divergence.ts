@@ -17,6 +17,7 @@
  */
 
 import { normalise } from './compare.ts'
+import { fieldsOfPath, messagePathOfField } from '../generators/proto.ts'
 
 export interface Divergence {
 	/** Fuzzer-scoped identity, e.g. `jid:jidDecode` or `proto:Message.roundTrip`. */
@@ -180,20 +181,10 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
 	'StickerMessage.mediaKeyDomain',
 	'VideoMessage.mediaKeyDomain',
 	'ExtendedTextMessage.faviconMMSMetadata',
-	'ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
-	// Decoded protobuf objects use field names, not generated holder type names:
-	// `videoMessage`, not `VideoMessage`. Keep these exact aliases alongside
-	// schema identities so a wrapped decoded object reaches the same holder
-	// decision without turning the rule into a leaf-name allowance.
-	'audioMessage.mediaKeyDomain',
-	'documentMessage.mediaKeyDomain',
-	'imageMessage.mediaKeyDomain',
-	'mmsThumbnailMetadata.mediaKeyDomain',
-	'stickerMessage.mediaKeyDomain',
-	'videoMessage.mediaKeyDomain',
-	'ptvMessage.mediaKeyDomain',
-	'extendedTextMessage.faviconMMSMetadata',
-	'extendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
+	'ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
+	// Decoded paths are normalized through the generated schema before lookup;
+	// no lower-camel leaf aliases are kept here, which prevents an identically
+	// named field on an unrelated holder from inheriting this allowance.
 ])
 
 /**
@@ -205,12 +196,20 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
  * decided gap. `pollResultSnapshotMessageV3` needs no holder at all — it is
  * the same renumbered field everywhere — so it matches on the leaf alone.
  */
-const isDocumentedOmission = (here: string): boolean => {
+const isDocumentedOmission = (here: string, holderSchemaPath?: string): boolean => {
 	if (DECODE_OMITTED_PATHS.has(here)) return true
 	const segments = here.split('.')
 	const leaf = segments.at(-1)
 	if (leaf === undefined) return false
-	if (leaf === 'pollResultSnapshotMessageV3') return true
+	if (holderSchemaPath !== undefined) {
+		const holder = holderSchemaPath.split('.').at(-1)
+		if (holder !== undefined) {
+			if (DECODE_OMITTED_HOLDERS.has(`${holder}.${leaf}`)) return true
+			if (holderSchemaPath === 'Message' && leaf === 'pollResultSnapshotMessageV3') return true
+		}
+	}
+	// When schema traversal cannot resolve a legacy decoded wrapper, only the
+	// direct Message spelling remains acceptable; never fall back to the leaf.
 	// Holder + leaf, so the wrapper depth is irrelevant but the holder is not:
 	// `….videoMessage.mediaKeyDomain` is the decided gap on the bridge schema's
 	// `Message.VideoMessage` holder, while the same leaf under any other holder
@@ -233,18 +232,34 @@ const isDocumentedOmission = (here: string): boolean => {
  * value that differs where both sides have the key fails outright, so this can
  * never excuse a misread — only an absence that is already on the record.
  */
+const nestedSchemaPath = (schemaPath: string | undefined, field: string): string | undefined => {
+	if (schemaPath === undefined) return undefined
+	try {
+		const declaration = fieldsOfPath(schemaPath).find(candidate => candidate[0] === field)
+		return declaration === undefined ? undefined : messagePathOfField(declaration)
+	} catch {
+		return undefined
+	}
+}
+
 export const hasKnownProtoRename = (local: unknown, upstream: unknown): boolean =>
 	RENAMED_PROTO_FIELDS.some(
 		([upstreamName, bridgeName]) => text(local).includes(bridgeName) && text(upstream).includes(upstreamName)
 	)
 
-export const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
+export const sameExceptUnwrittenFields = (
+	local: unknown,
+	upstream: unknown,
+	path: string,
+	depth = 0,
+	schemaPath = path
+): boolean => {
 	if (depth > 12) return sameShape(local, upstream)
 	if (Array.isArray(local) || Array.isArray(upstream)) {
 		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
 		// The index is not part of the path: a repeated field's elements all share
 		// the declaring field, and numbering them would make the set unwritable.
-		return local.every((item, index) => sameExceptUnwrittenFields(item, upstream[index], path, depth + 1))
+		return local.every((item, index) => sameExceptUnwrittenFields(item, upstream[index], path, depth + 1, schemaPath))
 	}
 	const ourKeys = plainObject(local)
 	const theirKeys = plainObject(upstream)
@@ -254,10 +269,11 @@ export const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, pat
 	for (const key of theirKeys) {
 		const here = `${path}.${key}`
 		if (!Object.hasOwn(ours, key)) {
-			if (!isDocumentedOmission(here)) return false
+			if (!isDocumentedOmission(here, schemaPath)) return false
 			continue
 		}
-		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1)) return false
+		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1, nestedSchemaPath(schemaPath, key)))
+			return false
 	}
 	return ourKeys.every(key => Object.hasOwn(theirs, key))
 }
