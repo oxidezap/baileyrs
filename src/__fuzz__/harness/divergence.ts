@@ -570,38 +570,6 @@ const withoutKey = (value: unknown, name: string, depth = 0): unknown => {
 }
 
 /**
- * Replaces every string with a placeholder, leaving the structure.
- *
- * The two decoders resolve invalid UTF-8 into *different characters*, not into a
- * known substitution — the bridge writes one U+FFFD per bad byte, protobufjs
- * runs its own reader and produces whatever it makes of them. So there is no
- * character class to fold: what can be checked is that the difference is
- * confined to text at all. Masking the strings and requiring the rest to agree
- * rules out a dropped field, a changed number, a different nesting — everything
- * except the text itself.
- *
- * The residual gap is a regression that changed some *other* string field while
- * one field happened to hold invalid UTF-8. Closing that needs the decoders to
- * report which bytes they could not read.
- */
-const maskStrings = (value: unknown, depth = 0): unknown => {
-	if (depth > 12) return value
-	if (typeof value === 'string') return '<text>'
-	if (Array.isArray(value)) return value.map(item => maskStrings(item, depth + 1))
-	if (typeof value !== 'object' || value === null) return value
-	const out: Record<string, unknown> = {}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		Object.defineProperty(out, key, {
-			value: maskStrings(nested, depth + 1),
-			enumerable: true,
-			writable: true,
-			configurable: true
-		})
-	}
-	return out
-}
-
-/**
  * True when two poll aggregates hold the same options and voters, in any order.
  *
  * The entry claims ordering and nothing else, so that is what has to be checked:
@@ -1599,17 +1567,14 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		target: 'proto:mutation-interpretation',
 		status: 'intended',
 		reason:
-			'When a string field carries bytes that are not valid UTF-8, the two decoders produce different strings: the bridge substitutes U+FFFD per undecodable byte, protobufjs runs its own reader and resolves the same bytes into different characters. Both accept the payload, so a peer sending malformed UTF-8 hands the two libraries different text. Same root cause as the lone-surrogate difference on the encode side, and the pair should be decided together.',
+			'When a declared string carries bytes that are not valid UTF-8, the schema validator routes the disagreement to interpretation: the bridge substitutes U+FFFD while protobufjs salvages its own text. The malformed string makes the whole payload an undefined peer input, so this entry is selected by the validator diagnostic even when the same mutation also changes other decoded fields. Wire-type and framing failures have separate entries.',
 		review: '2026-11-01',
-		// The substitution has to be the *only* difference. A mutated payload can
-		// carry several populated fields, so keying on "a replacement character
-		// appears somewhere" let a decoder regression that also dropped or changed
-		// another field ride alongside one U+FFFD. Both sides have their
-		// undecodable text folded to a single placeholder, and the rest must agree.
-		when: divergence => {
-			if (!text(divergence.local).includes('\uFFFD')) return false
-			return sameShape(maskStrings(normalise(divergence.local)), maskStrings(normalise(divergence.upstream)))
-		}
+		// The unified validator supplies the reason, so this cannot be reached by
+		// a replacement character in an unrelated ordinary target. Match the
+		// diagnostic rather than the decoded shape: malformed UTF-8 makes the
+		// complete peer payload an interpretation case even when the mutator also
+		// changes another field.
+		when: divergence => (divergence.detail ?? '').includes('not valid UTF-8')
 	},
 
 	{
@@ -1722,7 +1687,10 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		status: 'intended',
 		reason:
 			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
-		review: '2027-02-01'
+		review: '2027-02-01',
+		// Wire-type and invalid-UTF-8 failures have dedicated entries above;
+		// this broad fallback is only for bytes that fail protobuf framing.
+		when: divergence => (divergence.detail ?? '').includes('not well-formed protobuf')
 	},
 	{
 		id: 'proto-repeated-scalars-unpacked',

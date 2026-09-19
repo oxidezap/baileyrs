@@ -898,7 +898,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					if (!source.ok) continue
 					const bytes = source.value as Uint8Array
 					const local = attempt(() => decodeProto(path, bytes))
-					const remote = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+					const remote = readBackUpstream(type, path, bytes)
 
 					if (local.ok !== remote.ok) {
 						findings.push({
