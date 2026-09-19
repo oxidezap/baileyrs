@@ -156,12 +156,10 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 ])
 
 const RENAMED_DROP_PATHS: ReadonlySet<string> = new Set([
-	'SyncActionValue.agentAction.deviceID',
-	'SyncActionValue.AgentAction.deviceID',
-	'SyncActionValue.chatAssignmentAction.deviceAgentID',
-	'SyncActionValue.ChatAssignmentAction.deviceAgentID',
-	'Message.messageHistoryMetadata.oldestMessageTimestamp',
-	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
+	'agentAction.deviceID',
+	'AgentAction.deviceID',
+	'chatAssignment.deviceAgentID',
+	'ChatAssignment.deviceAgentID',
 	'messageHistoryMetadata.oldestMessageTimestamp',
 	'MessageHistoryMetadata.oldestMessageTimestamp'
 ])
@@ -314,6 +312,22 @@ const hasRenameCollision = (value: unknown): boolean => {
 }
 
 /** Classifies only bridge-side, schema-documented omissions as field omissions. */
+export const classifyDecodeParityDifference = (
+	local: unknown,
+	upstream: unknown,
+	path: string,
+	options: Pick<NormaliseOptions, 'isTextField'> = {}
+): 'proto:field-omission' | 'proto:decode-parity' => {
+	const normalLocal = normalise(local, 0, options)
+	const normalUpstream = normalise(upstream, 0, options)
+	if (hasRenameCollision(normalLocal) || hasRenameCollision(normalUpstream)) return 'proto:decode-parity'
+	const a = undoRenames(normalLocal)
+	const b = undoRenames(normalUpstream)
+	return omitsKeysOnly(a, b, options) && sameExceptUnwrittenFields(a, b, path)
+		? 'proto:field-omission'
+		: 'proto:decode-parity'
+}
+
 export const classifyRoundTripDifference = (
 	local: unknown,
 	upstream: unknown,

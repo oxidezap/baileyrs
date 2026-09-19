@@ -23,7 +23,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
-import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
+import { equivalent, normalise } from './harness/compare.ts'
 import {
 	canonicalWire,
 	differsOnlyByPacking,
@@ -32,13 +32,7 @@ import {
 	sameWireContent,
 	sameWireOrdering
 } from './harness/wire.ts'
-import {
-	classifyRoundTripDifference,
-	hasKnownProtoRename,
-	sameExceptUnwrittenFields,
-	undoRenames,
-	type Divergence
-} from './harness/divergence.ts'
+import { classifyDecodeParityDifference, classifyRoundTripDifference, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import {
 	firstFieldNumber,
@@ -953,19 +947,9 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 							// decode-parity target, which no entry may excuse.
 							target: populatedTouchesUnknownType(path, message)
 								? 'proto:unknown-type-dropped'
-								: // Decode findings carry no omitted-field identity. Only keep a
-									// subset in the omission class when the path-scoped
-									// sameExceptUnwrittenFields predicate can prove it is one of
-									// the documented bridge gaps. A known rename plus a newly
-									// dropped property must stay decode-parity: the generic
-									// field-omission entry intentionally cannot excuse it.
-									omitsKeysOnly(undoRenames(local.value), undoRenames(remote.value), {
-											isTextField: textFieldPredicate(path)
-									  }) &&
-									  (!hasKnownProtoRename(local.value, remote.value) ||
-											sameExceptUnwrittenFields(undoRenames(local.value), undoRenames(remote.value), path))
-									? 'proto:field-omission'
-									: 'proto:decode-parity',
+								: classifyDecodeParityDifference(local.value, remote.value, path, {
+										isTextField: textFieldPredicate(path)
+									}),
 							input: { path, origin, message, bytes: hex(bytes) },
 							local: normalise(local.value),
 							upstream: normalise(remote.value),

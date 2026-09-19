@@ -15,12 +15,8 @@
  */
 
 import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
-import {
-	PROTO_FIELD_FLAG,
-	PROTO_FIELD_KIND,
-	PROTO_FIELD_WIRE_TYPES,
-	PROTO_MAP_KEY_WIRE_TYPES
-} from '../../WAProto/compatibility-schema.ts'
+import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND } from '../../WAProto/compatibility-schema.ts'
+import { PROTO_FIELD_WIRE_TYPES, PROTO_MAP_KEY_WIRE_TYPES } from '../schema-wire-metadata.ts'
 import { fieldsOfPath, messagePathOfField } from '../generators/proto.ts'
 import type { SchemaContext } from './wire.ts'
 

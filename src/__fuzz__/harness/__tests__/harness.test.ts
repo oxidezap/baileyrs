@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
 	applyAllowlist,
+	classifyDecodeParityDifference,
 	classifyRoundTripDifference,
 	staleEntries,
 	type Divergence,
@@ -1191,6 +1192,24 @@ describe('fuzz harness — round-trip omission classification', () => {
 		)
 		assert.equal(
 			classifyRoundTripDifference(
+				{ value: { agentAction: {} } },
+				{ value: { agentAction: { deviceID: 0 } } },
+				'SyncActionData',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ value: { chatAssignment: {} } },
+				{ value: { chatAssignment: { deviceAgentID: 0 } } },
+				'SyncActionData',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
 				{ agentAction: { deviceId: 1 } },
 				{ agentAction: { deviceID: 1 }, businessBroadcastAssociationAction: {} },
 				'SyncActionValue',
@@ -1236,6 +1255,49 @@ describe('fuzz harness — round-trip omission classification', () => {
 		assert.equal(
 			classifyRoundTripDifference({ timestamp: 1 }, { timestamp: 2 }, 'SyncActionValue', text),
 			'proto:round-trip'
+		)
+	})
+
+	it('requires documented omissions for decode parity too', () => {
+		const text = { isTextField: () => false }
+		assert.equal(
+			classifyDecodeParityDifference(
+				{ mediaKeyTimestamp: 1 },
+				{ mediaKeyTimestamp: 1, mediaKeyDomain: 0 },
+				'Message.ImageMessage',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyDecodeParityDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, businessBroadcastAssociationAction: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyDecodeParityDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, chatLockSettings: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:decode-parity'
+		)
+		assert.equal(
+			classifyDecodeParityDifference({ timestamp: 1 }, { timestamp: 1, chatLockSettings: {} }, 'SyncActionValue', text),
+			'proto:decode-parity'
+		)
+		assert.equal(
+			classifyDecodeParityDifference({ timestamp: 1, extra: {} }, { timestamp: 1 }, 'SyncActionValue', text),
+			'proto:decode-parity'
+		)
+		assert.equal(
+			classifyDecodeParityDifference({ timestamp: 1 }, { timestamp: 2 }, 'SyncActionValue', text),
+			'proto:decode-parity'
 		)
 	})
 })
