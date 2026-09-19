@@ -159,7 +159,8 @@ const RENAMED_DROP_PATHS: ReadonlySet<string> = new Set([
 	'agentAction.deviceID',
 	'AgentAction.deviceID',
 	'chatAssignment.deviceAgentID',
-	'ChatAssignment.deviceAgentID',
+	'chatAssignmentAction.deviceAgentID',
+	'ChatAssignmentAction.deviceAgentID',
 	'messageHistoryMetadata.oldestMessageTimestamp',
 	'MessageHistoryMetadata.oldestMessageTimestamp'
 ])
