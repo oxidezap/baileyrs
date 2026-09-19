@@ -898,6 +898,31 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.deepEqual([...(allowedWireTypes('Location', 1) ?? [])], [1])
 	})
 
+	it('rejects a map field arriving at a non-length-delimited wire type', async () => {
+		// Maps encode as length-delimited entry messages on the wire, so a map
+		// number arriving as a varint is schema-invalid rather than
+		// agreement-worthy — even though the generated value metadata says
+		// nothing about the outer record.
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt } =
+			await import('../schema-context.ts')
+		const maps = mapFieldNumbers('Config')
+		assert.ok(maps.has(1), 'expected Config field 1 to be a map number')
+		const facts = {
+			allowedWireTypes: (at: string, field: number) =>
+				maps.has(field) && at === 'Config' ? new Set([2]) : allowedWireTypes(at, field),
+			isStringField,
+			nestedMessageAt
+		}
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x08, 0x00]), 'Config', facts), {
+			valid: false,
+			reason: 'wire-type',
+			path: 'Config',
+			field: 1,
+			actualWireType: 0
+		})
+	})
+
 	it('treats undecodable bytes in a declared string as schema-invalid', async () => {
 		// A protobuf string is UTF-8: invalid bytes in one are not semantically
 		// valid input even when they frame, so the validator fails them rather

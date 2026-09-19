@@ -1692,7 +1692,12 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-wire-type-mismatch-ignored-upstream',
-		target: 'proto:mutation-agreement',
+		// Both interpretation and agreement: the validator now routes a
+		// wire-mismatched payload to `proto:mutation-interpretation`, while a
+		// run from before the validator (or a corpus replay spelling the old
+		// target) still reports it under agreement. The shape predicate is the
+		// same either way, so neither spelling goes stale.
+		target: /^proto:mutation-(agreement|interpretation)$/u,
 		status: 'intended',
 		reason:
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",

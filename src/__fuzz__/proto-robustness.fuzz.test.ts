@@ -28,7 +28,7 @@ import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise } from './harness/compare.ts'
 import { describeSchemaWire, validateSchemaWire, type SchemaWireFacts } from './harness/wire.ts'
-import { allowedWireTypes, isStringField, nestedMessageAt } from './harness/schema-context.ts'
+import { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt } from './harness/schema-context.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, textFieldPredicate, HOT_PROTO_PATHS } from './generators/proto.ts'
@@ -283,7 +283,17 @@ describe('protobuf decoder robustness under mutation', () => {
 				// protobufjs reads those anyway where the bridge treats them as
 				// unknown or substitutes. Only a payload valid under the schema on
 				// both sides demands agreement.
-				const facts: SchemaWireFacts = { allowedWireTypes, isStringField, nestedMessageAt }
+				// Map fields encode as length-delimited entry messages on the wire,
+				// so a map number arriving at any other wire type is schema-invalid
+				// rather than agreement-worthy. The facts cache skips maps (its
+				// metadata describes the value), so they are answered here.
+				const maps = mapFieldNumbers(path)
+				const facts: SchemaWireFacts = {
+					allowedWireTypes: (at, field) =>
+						maps.has(field) && at === path ? new Set([2]) : allowedWireTypes(at, field),
+					isStringField,
+					nestedMessageAt
+				}
 				const validation = validateSchemaWire(bytes, path, facts)
 				return {
 					target: validation.valid ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',

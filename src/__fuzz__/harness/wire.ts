@@ -723,7 +723,12 @@ const validateRecords = (
 	facts: SchemaWireFacts,
 	depth: number
 ): SchemaWireResult => {
-	if (depth > 12) return { valid: true }
+	// Past the recursion budget the payload is unvalidated, not valid: the
+	// nesting-bomb mutator deliberately generates depths of 16 and above, so
+	// calling the remainder valid would misclassify a disagreement caused by a
+	// schema-invalid record below the budget as agreement. Only an empty tail
+	// stays valid — there is nothing left that could disagree.
+	if (depth > 12) return cursor.offset === end ? { valid: true } : { valid: false, reason: 'framing', path }
 	while (cursor.offset < end) {
 		const tag = readRawVarint(bytes, cursor)
 		if (tag === undefined) return { valid: false, reason: 'framing', path }

@@ -279,6 +279,69 @@ export const allowedWireTypes = (path: string, field: number): ReadonlySet<numbe
 /** True when field number holds a declared `string` of `path`. */
 export const isStringField = (path: string, field: number): boolean => factsFor(path).strings.has(field)
 
+/**
+ * Field numbers holding a map on `path`.
+ *
+ * Maps encode as a repeated length-delimited entry message, so the outer
+ * record is always wire type 2. factsFor skips map entries (their generated
+ * `wireType` metadata describes the value, not the outer record), so their
+ * numbers are collected here instead — through the same both-encoder number
+ * recovery the rest of the facts use.
+ */
+export const mapFieldNumbers = (path: string): ReadonlySet<number> => {
+	// An empty map encodes to nothing on both encoders, so the number is
+	// recovered with a single-entry map instead — the same both-encoder number
+	// recovery the rest of the facts use.
+	const out = new Set<number>()
+	const type = upstreamType(path)
+	if (!type) return out
+	for (const field of fieldsOfPath(path)) {
+		if ((field[3] & PROTO_FIELD_FLAG.map) === 0) continue
+		for (const encode of [
+			(): Uint8Array | undefined => {
+				try {
+					// A non-empty map encodes its entries; one entry suffices.
+					// The value shape depends on the entry: a message entry
+					// takes an object, a string-valued entry a string.
+					for (const probe of [{ probe: {} }, { probe: 'x' }]) {
+						try {
+							const bytes = type.encode({ [field[0]]: probe }).finish()
+							if (bytes.length > 0) return bytes
+						} catch {
+							// Wrong value shape for this entry; try the next.
+						}
+					}
+					return undefined
+				} catch {
+					return undefined
+				}
+			},
+			(): Uint8Array | undefined => {
+				try {
+					for (const probe of [{ probe: {} }, { probe: 'x' }]) {
+						try {
+							const bytes = encodeProto(path, { [field[0]]: probe })
+							if ((bytes as Uint8Array).length > 0) return bytes as Uint8Array
+						} catch {
+							// Wrong value shape for this entry; try the next.
+						}
+					}
+					return undefined
+				} catch {
+					return undefined
+				}
+			}
+		]) {
+			const bytes = encode()
+			if (bytes !== undefined && bytes.length > 0) {
+				const number = firstFieldNumber(bytes)
+				if (number !== undefined) out.add(number)
+			}
+		}
+	}
+	return out
+}
+
 /** The nested message type at a field number of `path`, if the schema places one. */
 export const nestedMessageAt = (path: string, field: number): string | undefined =>
 	factsFor(path).messageNumbers.get(field)
