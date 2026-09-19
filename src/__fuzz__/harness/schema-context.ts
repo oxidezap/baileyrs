@@ -15,7 +15,7 @@
  */
 
 import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
-import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND } from '../../WAProto/compatibility-schema.ts'
+import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND, PROTO_FIELD_WIRE_TYPES } from '../../WAProto/compatibility-schema.ts'
 import { fieldsOfPath, messagePathOfField } from '../generators/proto.ts'
 import type { SchemaContext } from './wire.ts'
 
@@ -158,6 +158,7 @@ interface FieldFacts {
 }
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
+const wireTypesByPath = new Map(PROTO_FIELD_WIRE_TYPES)
 
 /**
  * Every number a field is written under, asking both encoders rather than one.
@@ -233,7 +234,9 @@ const factsFor = (path: string): FieldFacts => {
 			const one = isMessage ? {} : sampleFor(field[1])
 			const isRepeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
 			const nested = messagePathOfField(field)
-			const base = field[5]
+			const fieldIndex = fieldsOfPath(path).indexOf(field)
+			const base = fieldIndex < 0 ? undefined : wireTypesByPath.get(path)?.[fieldIndex]
+			if (base === undefined) throw new Error(`missing wire type metadata for ${path}.${field[0]}`)
 			for (const number of numbersFor(path, type, field[0], isRepeated ? [one] : one)) {
 				const prior = claimant.get(number)
 				if (prior !== undefined && prior !== field[0]) {
@@ -342,11 +345,14 @@ export const mapEntrySchemas = (path: string): ReadonlyMap<number, MapEntrySchem
 				const number = bytes === undefined ? undefined : firstFieldNumber(bytes)
 				if (number !== undefined) numbers.add(number)
 			}
+			const fieldIndex = fieldsOfPath(path).indexOf(field)
+			const valueWireType = fieldIndex < 0 ? undefined : wireTypesByPath.get(path)?.[fieldIndex]
+			if (valueWireType === undefined) throw new Error(`missing wire type metadata for ${path}.${field[0]}`)
 			for (const number of numbers) {
 				out.set(number, {
 					wireTypes: new Map([
 						[1, 2],
-						[2, field[1] === PROTO_FIELD_KIND.message ? 2 : field[5]]
+						[2, field[1] === PROTO_FIELD_KIND.message ? 2 : valueWireType]
 					]),
 					valueMessagePath: messagePathOfField(field)
 				})

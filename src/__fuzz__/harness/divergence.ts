@@ -172,6 +172,15 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
  * than merely unwritten (the smoke seed draws exactly this). It is listed at
  * its full field path so no other holder is forgiven by it.
  */
+const SCHEMA_REFERENCED_MEDIA_HOLDERS = [
+	'quotedQuestion',
+	'noteMessage',
+	'messageAddOn',
+	'quotedStatus',
+	'catalogImage',
+	'productImage'
+] as const
+
 const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
 	'AudioMessage.mediaKeyDomain',
 	'DocumentMessage.mediaKeyDomain',
@@ -195,7 +204,10 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
 	'message.pollResultSnapshotMessageV3',
 	'quotedMessage.pollResultSnapshotMessageV3',
 	'quotedResponse.pollResultSnapshotMessageV3',
-	'editedMessage.pollResultSnapshotMessageV3'
+	'editedMessage.pollResultSnapshotMessageV3',
+	// Schema references expose these nested Message/ImageMessage holders under
+	// their bridge spellings; keep the allowance at the holder, not the leaf.
+	...SCHEMA_REFERENCED_MEDIA_HOLDERS.map(holder => `${holder}.mediaKeyDomain`)
 ])
 
 /**
