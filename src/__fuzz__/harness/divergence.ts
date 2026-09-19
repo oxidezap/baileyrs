@@ -155,6 +155,12 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 	'SyncActionData.value.businessBroadcastAssociationAction'
 ])
 
+const RENAMED_DROP_PATHS: ReadonlySet<string> = new Set([
+	'SyncActionValue.agentAction.deviceID',
+	'SyncActionValue.chatAssignmentAction.deviceAgentID',
+	'Message.messageHistoryMetadata.oldestMessageTimestamp'
+])
+
 /**
  * Holder/leaf pairs the bridge never writes, whatever wraps the holder.
  *
@@ -238,13 +244,21 @@ export const hasKnownProtoRename = (local: unknown, upstream: unknown): boolean 
 		([upstreamName, bridgeName]) => text(local).includes(bridgeName) && text(upstream).includes(upstreamName)
 	)
 
-export const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
+export const sameExceptUnwrittenFields = (
+	local: unknown,
+	upstream: unknown,
+	path: string,
+	depth = 0,
+	allowRenamedDrops = false
+): boolean => {
 	if (depth > 12) return sameShape(local, upstream)
 	if (Array.isArray(local) || Array.isArray(upstream)) {
 		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
 		// The index is not part of the path: a repeated field's elements all share
 		// the declaring field, and numbering them would make the set unwritable.
-		return local.every((item, index) => sameExceptUnwrittenFields(item, upstream[index], path, depth + 1))
+		return local.every((item, index) =>
+			sameExceptUnwrittenFields(item, upstream[index], path, depth + 1, allowRenamedDrops)
+		)
 	}
 	const ourKeys = plainObject(local)
 	const theirKeys = plainObject(upstream)
@@ -254,10 +268,10 @@ export const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, pat
 	for (const key of theirKeys) {
 		const here = `${path}.${key}`
 		if (!Object.hasOwn(ours, key)) {
-			if (!isDocumentedOmission(here)) return false
+			if (!isDocumentedOmission(here) && !(allowRenamedDrops && RENAMED_DROP_PATHS.has(here))) return false
 			continue
 		}
-		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1)) return false
+		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1, allowRenamedDrops)) return false
 	}
 	return ourKeys.every(key => Object.hasOwn(theirs, key))
 }

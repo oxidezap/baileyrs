@@ -1005,7 +1005,11 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					// normalisation folds a changed text field back into agreement and
 					// hands a co-occurring text regression the omission entry's excuse.
 					const shape = { isTextField: textFieldPredicate(path) }
-					return omitsKeysOnly(a, b, shape) || omitsKeysOnly(b, a, shape) ? 'proto:field-omission' : 'proto:round-trip'
+					const knownRename = hasKnownProtoRename(localView, upstreamView)
+					const documentedOmission =
+						(omitsKeysOnly(a, b, shape) && (!knownRename || sameExceptUnwrittenFields(a, b, path, 0, true))) ||
+						(omitsKeysOnly(b, a, shape) && (!knownRename || sameExceptUnwrittenFields(b, a, path, 0, true)))
+					return documentedOmission ? 'proto:field-omission' : 'proto:round-trip'
 				}
 
 				// The same schema-aware comparison decode-parity uses. Without it, a
