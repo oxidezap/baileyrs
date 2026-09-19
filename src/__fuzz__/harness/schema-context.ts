@@ -123,16 +123,73 @@ export const expectedWireTypes = (path: string, field: number): ReadonlySet<numb
 	if (matches.length !== 1) return undefined
 	const found = matches[0]!
 	const repeated = (found[3] & PROTO_FIELD_FLAG.repeated) !== 0
-	switch (found[1]) {
-		case PROTO_FIELD_KIND.string:
-		case PROTO_FIELD_KIND.bytes:
-		case PROTO_FIELD_KIND.message:
-			return new Set([2])
-		case PROTO_FIELD_KIND.float:
-			return new Set(repeated ? [5, 2] : [5])
-		default:
-			return new Set(repeated ? [0, 2] : [0])
+	// The compact schema lumps fixed-width declarations with their varint
+	// siblings (fixed64 with uint64, sfixed32 with int32, double with float),
+	// so the base wire type is read off the encoded tag, not the kind: a valid
+	// fixed64 record uses wire type 1, a fixed32 one wire type 5, a double one
+	// wire type 1. Only a repeated packable field additionally accepts wire
+	// type 2, the packed spelling.
+	const base = wireTypeOfEncodedTag(path, found[0])
+	if (base === undefined) return undefined
+	if (!repeated) return new Set([base])
+	return new Set([base, 2])
+}
+
+/**
+ * The wire type the encoders actually write for a field, read off a
+ * singleton encoding of it.
+ *
+ * The kind alone cannot answer this: the compact schema maps fixed64 to
+ * `unsigned64` and sfixed32 to `signed32`, whose varint wire type 0 is wrong
+ * for the fixed-width spelling both encoders emit. The tag both encoders agree
+ * on is the ground truth instead — measured, `SignedPreKeyRecordStructure`
+ * field 5 encodes as `29 …`, wire type 1.
+ */
+const wireTypeOfEncodedTag = (path: string, name: string): number | undefined => {
+	const field = fieldsOfPath(path).find(candidate => candidate[0] === name)
+	if (!field || (field[3] & PROTO_FIELD_FLAG.map) !== 0) return undefined
+	const one =
+		field[1] === PROTO_FIELD_KIND.message
+			? {}
+			: field[1] === PROTO_FIELD_KIND.string
+				? 'x'
+				: field[1] === PROTO_FIELD_KIND.bool
+					? true
+					: field[1] === PROTO_FIELD_KIND.bytes
+						? new Uint8Array([1])
+						: 7
+	const repeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
+	const sample = repeated ? [one] : one
+	for (const encode of [
+		(): Uint8Array | undefined => {
+			try {
+				return upstreamType(path)
+					?.encode({ [name]: sample })
+					.finish()
+			} catch {
+				return undefined
+			}
+		},
+		(): Uint8Array | undefined => {
+			try {
+				return encodeProto(path, { [name]: sample })
+			} catch {
+				return undefined
+			}
+		}
+	]) {
+		const bytes = encode()
+		if (bytes === undefined || bytes.length === 0) continue
+		let tag = 0n
+		let shift = 0n
+		for (let index = 0; index < bytes.length && index < 10; index++) {
+			const byte = bytes[index]!
+			tag |= BigInt(byte & 0x7f) << shift
+			if ((byte & 0x80) === 0) return Number(tag & 7n)
+			shift += 7n
+		}
 	}
+	return undefined
 }
 
 /**

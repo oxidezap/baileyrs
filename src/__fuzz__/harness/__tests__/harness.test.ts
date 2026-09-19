@@ -881,6 +881,20 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.equal(sameWireOrdering(nested(minimal), nested(respelledValue)), false)
 	})
 
+	it('reads fixed-width wire types off the encoded tag, not the schema kind', async () => {
+		// The compact schema lumps fixed64 with uint64, so the kind alone says
+		// wire type 0 — but both encoders write `SignedPreKeyRecordStructure`
+		// field 5 as `29 …`, wire type 1. The expectation has to come from the
+		// tag, or every valid fixed64 payload reads as schema-invalid.
+		const { expectedWireTypes } = await import('../schema-context.ts')
+		assert.deepEqual([...(expectedWireTypes('SignedPreKeyRecordStructure', 5) ?? [])], [1])
+		// And the varint kinds keep wire type 0: MessageKey field 1 is a string,
+		// SyncActionValue field 1 an int64, ClientPayload field 9 an sfixed32.
+		assert.deepEqual([...(expectedWireTypes('MessageKey', 1) ?? [])], [2])
+		assert.deepEqual([...(expectedWireTypes('SyncActionValue', 1) ?? [])], [0])
+		assert.deepEqual([...(expectedWireTypes('ClientPayload', 9) ?? [])], [5])
+	})
+
 	it('reads a packing difference alongside a dropped field as an omission', () => {
 		// Same repeated field spelled both ways, and field 2 present on one side only.
 		const packed = lengthDelimited(22, [0x80, 0x80, 0x40, 0x00])

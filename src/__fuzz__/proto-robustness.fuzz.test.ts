@@ -323,19 +323,22 @@ describe('protobuf decoder robustness under mutation', () => {
 				// caller that has a schema passes it — and this one has `path`.
 				const schema = schemaAt(path)
 				const framed = canonicalWire(bytes, schema) !== undefined
-				const mistyped =
-					framed && schemaValidWire(bytes, schema, expectedWireTypes)
-						? undefined
-						: firstMismatchedWireField(bytes, schema)
+				// The validity verdict and the diagnostic are separate values: a
+				// nested mismatch fails the recursive check while the top-level
+				// scan names nothing, so the identifier being undefined must not
+				// read as valid. Target selection asks only `schemaValid`.
+				const schemaValid = framed && schemaValidWire(bytes, schema, expectedWireTypes)
+				const mistyped = schemaValid ? undefined : (firstMismatchedWireField(bytes, schema) ?? 'a nested field')
 				return {
-					target: framed && mistyped === undefined ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
+					target: schemaValid ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
 					input: { path, mutator, bytes: hex(bytes) },
 					local: normalise(local.value),
 					upstream: normalise(remote.value),
-					detail:
-						framed && mistyped === undefined
-							? 'both decoders read the same well-formed payload differently'
-							: mistyped !== undefined
+					detail: schemaValid
+						? 'both decoders read the same well-formed payload differently'
+						: mistyped === 'a nested field'
+							? 'both decoders accepted bytes whose nested message fails the schema wire types, and read them differently'
+							: framed
 								? `both decoders accepted a payload carrying field ${mistyped} at a wire type the schema never gives it, and read it differently`
 								: 'both decoders accepted bytes that are not well-formed protobuf, and read them differently'
 				}
