@@ -94,25 +94,36 @@ const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false
  * converter's sign artifact is repaired, field by field, and a real value
  * difference elsewhere still fails the comparison.
  */
+const repairDecoded64 = (raw: unknown, converted: unknown, path: string, depth = 0): unknown => {
+	if (depth > 12 || raw === null || converted === null || typeof raw !== 'object' || typeof converted !== 'object') {
+		return converted
+	}
+	if (Array.isArray(raw) || Array.isArray(converted)) {
+		if (!Array.isArray(raw) || !Array.isArray(converted)) return converted
+		return converted.map((value, index) => repairDecoded64(raw[index], value, path, depth + 1))
+	}
+	const rawRecord = raw as Record<string, unknown>
+	const fixed = { ...(converted as Record<string, unknown>) }
+	for (const [name, kind] of int64KindsOfPath(path)) {
+		if (!Object.hasOwn(rawRecord, name) || !Object.hasOwn(fixed, name)) continue
+		const truth = longToDecimal(rawRecord[name], kind === PROTO_FIELD_KIND.unsigned64)
+		if (truth !== undefined) fixed[name] = truth
+	}
+	for (const field of fieldsOfPath(path)) {
+		const nestedPath = messagePathOfField(field)
+		if (nestedPath === undefined || !Object.hasOwn(rawRecord, field[0]) || !Object.hasOwn(fixed, field[0])) continue
+		fixed[field[0]] = repairDecoded64(rawRecord[field[0]], fixed[field[0]], nestedPath, depth + 1)
+	}
+	return fixed
+}
+
 const readBackUpstream = (type: UpstreamType, path: string, bytes: Uint8Array): Outcome => {
 	const decoded = attempt(() => type.decode(bytes))
 	if (!decoded.ok) return { ok: false, error: (decoded as unknown as { error: string }).error }
 	const converted = attempt(() => type.toObject(decoded.value, TO_OBJECT))
 	if (!converted.ok) return converted
-	const kinds = int64KindsOfPath(path)
-	if (kinds.size === 0) return converted
-	const raw = decoded.value as Record<string, unknown>
-	const fixed = { ...(converted.value as Record<string, unknown>) }
-	let repaired = false
-	for (const [name, kind] of kinds) {
-		if (!Object.hasOwn(raw, name) || !Object.hasOwn(fixed, name)) continue
-		const truth = longToDecimal(raw[name], kind === PROTO_FIELD_KIND.unsigned64)
-		if (truth !== undefined && truth !== fixed[name]) {
-			fixed[name] = truth
-			repaired = true
-		}
-	}
-	return repaired ? { ok: true, value: fixed } : converted
+	const repaired = repairDecoded64(decoded.value, converted.value, path)
+	return { ok: true, value: repaired }
 }
 
 /** One entry in the two finite field sweeps: name and number, per declared field. */

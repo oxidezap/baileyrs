@@ -1236,7 +1236,7 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 	 * finding on it is the cheapest way to ask whether the runner minimised
 	 * something it was never going to report.
 	 */
-	const alwaysFinds = (target: string) => {
+	const alwaysFinds = (target: string, detail = 'always') => {
 		let checks = 0
 		return {
 			count: () => checks,
@@ -1247,7 +1247,7 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 					input: { padding: 'x'.repeat(64) },
 					local: 'a',
 					upstream: 'b',
-					detail: 'always'
+					detail
 				}
 			}
 		}
@@ -1255,7 +1255,10 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 
 	it('does not minimise a finding the registry already excuses', async () => {
 		const { fuzz } = await import('../runner.ts')
-		const probe = alwaysFinds('proto:mutation-interpretation')
+		const probe = alwaysFinds(
+			'proto:mutation-interpretation',
+			'both decoders accepted bytes that are not well-formed protobuf, and read them differently'
+		)
 		const report = await fuzz<{ padding: string }>({
 			target: 'proto:mutation-interpretation',
 			runs: 5,

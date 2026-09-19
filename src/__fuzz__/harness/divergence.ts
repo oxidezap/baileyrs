@@ -208,7 +208,7 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
  * the same renumbered field everywhere — so it matches on the leaf alone.
  */
 const isDocumentedOmission = (here: string): boolean => {
-	if (DECODE_OMITTED_PATHS.has(here)) return true
+	if (DECODE_OMITTED_PATHS.has(here) || DECODE_OMITTED_HOLDERS.has(here)) return true
 	const segments = here.split('.')
 	for (let start = 1; start < segments.length; start++) {
 		if (DECODE_OMITTED_HOLDERS.has(segments.slice(start).join('.'))) return true
@@ -1666,20 +1666,12 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 		reason:
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
 		review: '2027-02-01',
-		when: divergence =>
-			// The *last* mutator of the chain, not a substring of it. `mutate`
-			// records `nesting-bomb → flip-bit`, and a substring test would excuse
-			// whatever the second mutator produced merely because a nesting bomb ran
-			// first. Reading the tail keeps that out while still covering
-			// `truncate → nesting-bomb`, where the bomb is what shaped the bytes.
-			lastMutator(divergence.input) === 'nesting-bomb' &&
-			// Narrow to the direction the reason argues: the bridge decoded an empty
-			// message, upstream decoded a non-empty one. The reverse, and any
-			// disagreement over a field both sides read, is not this and must still
-			// be reported. `plainObject` rather than a truthiness check so a `null`
-			// or a string from either side falls through instead of being excused.
-			plainObject(normalise(divergence.local))?.length === 0 &&
-			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
+		// The unified validator supplies the exact schema reason. Any decoded
+		// disagreement caused by a recognised field arriving at an impossible
+		// wire type is this strictness difference; framing and invalid UTF-8 have
+		// their own entries. Do not key this on the nesting-bomb mutator: other
+		// mutators can produce the same schema-invalid wire spelling.
+		when: divergence => (divergence.detail ?? '').includes('at a wire type the schema never gives')
 	},
 	{
 		id: 'proto-malformed-interpretation',

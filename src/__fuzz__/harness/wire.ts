@@ -831,7 +831,12 @@ const validateRecords = (
 				cursor.offset = stop
 				continue
 			}
-			const nestedPath = entrySchema?.valueMessagePath ?? facts.nestedMessageAt(path, field)
+			const nestedPath =
+				entrySchema !== undefined
+					? field === 2
+						? entrySchema.valueMessagePath
+						: undefined
+					: facts.nestedMessageAt(path, field)
 			if (nestedPath !== undefined) {
 				const inner = validateRecords(bytes, cursor, stop, nestedPath, facts, depth + 1)
 				if (!inner.valid) return inner
