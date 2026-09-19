@@ -9,7 +9,13 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { applyAllowlist, staleEntries, type Divergence, type KnownDivergence } from '../divergence.ts'
+import {
+	applyAllowlist,
+	classifyRoundTripDifference,
+	staleEntries,
+	type Divergence,
+	type KnownDivergence
+} from '../divergence.ts'
 import { corpusSlug } from '../corpus.ts'
 import { makeRandom } from '../random.ts'
 import { shrink } from '../shrink.ts'
@@ -1153,6 +1159,59 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			`a field number is claimed by two fields, so the scan degraded it to opaque bytes: ${collisions
 				.map(([path, numbers]) => `${path} #${numbers.join(', #')}`)
 				.join('; ')}`
+		)
+	})
+})
+
+describe('fuzz harness — round-trip omission classification', () => {
+	it('only accepts documented bridge-side omissions', () => {
+		const text = { isTextField: () => false }
+		assert.equal(
+			classifyRoundTripDifference(
+				{ mediaKeyTimestamp: 1 },
+				{ mediaKeyTimestamp: 1, mediaKeyDomain: 0 },
+				'Message.ImageMessage',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference({}, { deviceID: 0 }, 'SyncActionValue.AgentAction', text),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ agentAction: {} }, { agentAction: { deviceID: 0 } }, 'SyncActionValue', text),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, businessBroadcastAssociationAction: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, chatLockSettings: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ timestamp: 1 }, { timestamp: 1, chatLockSettings: {} }, 'SyncActionValue', text),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ timestamp: 1, extra: {} }, { timestamp: 1 }, 'SyncActionValue', text),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ timestamp: 1 }, { timestamp: 2 }, 'SyncActionValue', text),
+			'proto:round-trip'
 		)
 	})
 })

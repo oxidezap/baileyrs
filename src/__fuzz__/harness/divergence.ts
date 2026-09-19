@@ -16,7 +16,7 @@
  * divergence it excused is how a real regression slips back in unnoticed.
  */
 
-import { normalise } from './compare.ts'
+import { normalise, omitsKeysOnly, type NormaliseOptions } from './compare.ts'
 
 export interface Divergence {
 	/** Fuzzer-scoped identity, e.g. `jid:jidDecode` or `proto:Message.roundTrip`. */
@@ -157,8 +157,13 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 
 const RENAMED_DROP_PATHS: ReadonlySet<string> = new Set([
 	'SyncActionValue.agentAction.deviceID',
+	'SyncActionValue.AgentAction.deviceID',
 	'SyncActionValue.chatAssignmentAction.deviceAgentID',
-	'Message.messageHistoryMetadata.oldestMessageTimestamp'
+	'SyncActionValue.ChatAssignmentAction.deviceAgentID',
+	'Message.messageHistoryMetadata.oldestMessageTimestamp',
+	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
+	'messageHistoryMetadata.oldestMessageTimestamp',
+	'MessageHistoryMetadata.oldestMessageTimestamp'
 ])
 
 /**
@@ -268,7 +273,7 @@ export const sameExceptUnwrittenFields = (
 	for (const key of theirKeys) {
 		const here = `${path}.${key}`
 		if (!Object.hasOwn(ours, key)) {
-			if (!isDocumentedOmission(here) && !(allowRenamedDrops && RENAMED_DROP_PATHS.has(here))) return false
+			if (!isDocumentedOmission(here) && !(allowRenamedDrops && isRenamedDropPath(here))) return false
 			continue
 		}
 		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1, allowRenamedDrops)) return false
@@ -285,6 +290,29 @@ export const sameExceptUnwrittenFields = (
  */
 const plainObject = (value: unknown): string[] | undefined =>
 	typeof value === 'object' && value !== null && !Array.isArray(value) ? Object.keys(value) : undefined
+
+const isRenamedDropPath = (here: string): boolean => {
+	if (RENAMED_DROP_PATHS.has(here)) return true
+	const segments = here.split('.')
+	for (let start = 1; start < segments.length; start++) {
+		if (RENAMED_DROP_PATHS.has(segments.slice(start).join('.'))) return true
+	}
+	return false
+}
+
+/** Classifies only bridge-side, schema-documented omissions as field omissions. */
+export const classifyRoundTripDifference = (
+	local: unknown,
+	upstream: unknown,
+	path: string,
+	options: Pick<NormaliseOptions, 'isTextField'> = {}
+): 'proto:field-omission' | 'proto:round-trip' => {
+	const a = undoRenames(normalise(local, 0, options))
+	const b = undoRenames(normalise(upstream, 0, options))
+	return omitsKeysOnly(a, b, options) && sameExceptUnwrittenFields(a, b, path, 0, true)
+		? 'proto:field-omission'
+		: 'proto:round-trip'
+}
 
 /** `showOutcome` renders a thrown result as this prefix; a returned value is passed through raw. */
 const isThrow = (value: unknown): value is string => typeof value === 'string' && value.startsWith('<throw ')

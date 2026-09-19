@@ -32,7 +32,13 @@ import {
 	sameWireContent,
 	sameWireOrdering
 } from './harness/wire.ts'
-import { hasKnownProtoRename, sameExceptUnwrittenFields, undoRenames, type Divergence } from './harness/divergence.ts'
+import {
+	classifyRoundTripDifference,
+	hasKnownProtoRename,
+	sameExceptUnwrittenFields,
+	undoRenames,
+	type Divergence
+} from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
 import {
 	firstFieldNumber,
@@ -998,18 +1004,9 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				// something was omitted.
 				const classify = (localView: unknown, upstreamView: unknown): string => {
 					if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
-					const a = undoRenames(localView)
-					const b = undoRenames(upstreamView)
-					// Under `compare`'s rules, not the default ones — for the reason
-					// spelled out on the decode-parity classifier: the weaker
-					// normalisation folds a changed text field back into agreement and
-					// hands a co-occurring text regression the omission entry's excuse.
-					const shape = { isTextField: textFieldPredicate(path) }
-					const knownRename = hasKnownProtoRename(localView, upstreamView)
-					const documentedOmission =
-						(omitsKeysOnly(a, b, shape) && (!knownRename || sameExceptUnwrittenFields(a, b, path, 0, true))) ||
-						(omitsKeysOnly(b, a, shape) && (!knownRename || sameExceptUnwrittenFields(b, a, path, 0, true)))
-					return documentedOmission ? 'proto:field-omission' : 'proto:round-trip'
+					return classifyRoundTripDifference(localView, upstreamView, path, {
+						isTextField: textFieldPredicate(path)
+					})
 				}
 
 				// The same schema-aware comparison decode-parity uses. Without it, a
