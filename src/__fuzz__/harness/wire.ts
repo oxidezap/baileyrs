@@ -878,37 +878,6 @@ export const describeSchemaWire = (result: Extract<SchemaWireResult, { valid: fa
 	return `a payload carrying field ${where} at a wire type the schema never gives it, and read it differently`
 }
 
-/**
- * Checks every record of a framed payload against the schema's wire types,
- * recursively into nested messages the schema places.
- *
- * Kept for the byte-level codec targets, which validate only wire types:
- * unknown field numbers pass through, as does a nested payload under a number
- * the schema cannot place. Prefer `validateSchemaWire` for new callers — it
- * additionally checks string encoding and reports the failure.
- */
-export const schemaValidWire = (
-	bytes: Uint8Array,
-	schema: SchemaContext,
-	expected: (path: string, field: number) => ReadonlySet<number> | undefined
-): boolean => {
-	const fields = scan(bytes, 12, schema)
-	if (fields === undefined) return false
-	const check = (entries: readonly WireField[], path: string, depth: number): boolean => {
-		if (depth > 12) return true
-		for (const entry of entries) {
-			const allowed = expected(path, entry.field)
-			if (allowed !== undefined && !allowed.has(entry.wireType)) return false
-			const nestedPath = schema.messageAt(path, entry.field)
-			if (nestedPath !== undefined && entry.wireType === 2 && entry.nested !== undefined) {
-				if (!check(entry.nested, nestedPath, depth + 1)) return false
-			}
-		}
-		return true
-	}
-	return check(fields, schema.path, 0)
-}
-
 /** Re-reads the rendering produced for a nested message, or undefined for opaque bytes. */
 const parseNested = (value: string): WireField[] | undefined => {
 	if (value === '') return []
