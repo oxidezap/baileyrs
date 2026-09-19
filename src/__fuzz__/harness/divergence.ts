@@ -128,98 +128,97 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
 /**
  * The keys a decoded object may be missing, qualified by where they sit.
  *
- * Two of the three documented gaps are themselves compositional. `mediaKeyDomain`
- * is absent on every one of the six media holders, and only `mediaKeyDomain`
- * sits on more than one type — so any `<holder>.mediaKeyDomain` the bridge
- * never writes is the same gap, wherever a generative draw puts it. Likewise
- * `pollResultSnapshotMessageV3` is field 114 upstream and 115 here, so any
- * holder carrying it decodes to a field this side does not have. Both are
- * matched by suffix rather than enumerated by path, and both stay narrow: a
- * value that differs where both sides hold the key still fails, as does any
- * other missing key.
+ * Two different absences compose here. `businessBroadcastAssociationAction` is
+ * a gap on exactly one holder and stays path-pinned: a bare leaf would forgive
+ * it anywhere. The other two are decided by holder/schema-field identity, not
+ * by path: `mediaKeyDomain` is unwritten on all six media holders the bridge
+ * schema declares it on (audio, document, image, thumbnail, sticker, video),
+ * and `pollResultSnapshotMessageV3` is field 114 upstream and 115 here, so
+ * any holder carrying it decodes to a field this side does not have. The
+ * wrapper a generative draw reaches them through — `ContextInfo.quotedMessage`
+ * today, `ProtocolMessage.editedMessage` tomorrow — is an accident of the
+ * draw, so the check looks at the last two segments (holder + leaf) rather
+ * than the whole path. A value that differs where both sides hold the key
+ * still fails, as does any other missing key.
  *
  * Deliberately NOT the leaves of `NOT_ENCODED_FIELDS` beyond those two, for
- * two reasons that a leaf-name set gets wrong in opposite directions.
- *
- * That list is the *encoder* gap, and three of its entries — `deviceID`,
+ * the reason a leaf-name set gets wrong: three of its entries — `deviceID`,
  * `deviceAgentID`, `oldestMessageTimestamp` — are decoded under a renamed
- * property rather than dropped. Taking its leaves would let one valid rename
+ * property rather than dropped. Taking their leaves would let one valid rename
  * stand in for a key genuinely missing somewhere else: a `SyncActionValue`
  * showing the expected `AgentAction.deviceId` alongside a newly absent
  * `ChatAssignmentAction.deviceAgentID` would pass, because `undoRenames`
  * restores the first and the set forgives the second.
- *
- * And a leaf name is not unique. `messageParamsJson` was the live case — a gap
- * on `Message.PaymentExtendedMetadata` while the schema declares another on
- * `Message.InteractiveMessage.NativeFlowMessage`, so a bare leaf accepted at any
- * nesting depth would have excused a new drop of the second as though it were
- * the documented first. Bridge 0.10.0 writes both, which closes that example
- * without closing the hazard: of the leaves left, only `mediaKeyDomain` sits on
- * more than one type, and it is a gap on all six. The first holder to be fixed
- * on its own puts the case straight back, and keying by path is what means it
- * does not have to be noticed for the sweep to catch it.
- *
- * Keyed by `<decoded type>.<key path>` and measured rather than derived: this
- * is the absence the decode targets actually produced. A drop anywhere else,
- * including the same leaf under a different holder, still fails.
  */
 const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 	'SyncActionValue.businessBroadcastAssociationAction',
-	'SyncActionData.value.businessBroadcastAssociationAction',
-	// Measured after the 0.8.0 bump, on a ContextInfo whose quoted message is a
-	// video: `Message.VideoMessage.mediaKeyDomain` is one of the eleven the bridge
-	// never writes, and this is the path a generative draw puts it at. Listed
-	// rather than matched by leaf, so the same field under another holder is still
-	// a drop nobody has looked at.
-	'ContextInfo.quotedMessage.videoMessage.mediaKeyDomain',
-	// Measured after the 0.10.0 bump, all four the same two gaps reached through
-	// paths the older schema did not put a generative draw at. `mediaKeyDomain`
-	// is one of the eleven the bridge never writes; `pollResultSnapshotMessageV3`
-	// is field 114 upstream and 115 here, so upstream's bytes for it are a field
-	// this side does not have. Listed by path, like the video one above, so the
-	// same leaf under a holder nobody has looked at is still a drop.
-	'ContextInfo.quotedMessage.audioMessage.mediaKeyDomain',
-	'ContextInfo.quotedMessage.pollResultSnapshotMessageV3',
-	'ContextInfo.quotedMessage.ptvMessage.mediaKeyDomain',
-	'ContextInfo.quotedMessage.documentMessage.mediaKeyDomain',
-	'ContextInfo.quotedMessage.extendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
-	'ContextInfo.questionReplyQuotedMessage.quotedResponse.pollResultSnapshotMessageV3',
-	'Message.ExtendedTextMessage.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
-	'Message.ExtendedTextMessage.contextInfo.quotedMessage.videoMessage.mediaKeyDomain',
-	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
-	'Message.ProtocolMessage.editedMessage.audioMessage.mediaKeyDomain',
-	'Message.ProtocolMessage.editedMessage.buttonsMessage.documentMessage.mediaKeyDomain',
-	'Message.ProtocolMessage.editedMessage.documentMessage.mediaKeyDomain',
-	'Message.ProtocolMessage.editedMessage.extendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
-	'Message.MessageHistoryNotice.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
-	'Message.DeviceSentMessage.message.pollResultSnapshotMessageV3'
+	'SyncActionData.value.businessBroadcastAssociationAction'
 ])
 
 /**
- * The leaves the bridge never writes under any holder, matched by suffix.
+ * Holder/leaf pairs the bridge never writes, whatever wraps the holder.
  *
- * `mediaKeyDomain` is unwritten on all six media holders and
- * `pollResultSnapshotMessageV3` is renumbered (114 upstream, 115 here), so the
- * holder a generative draw reaches them through is an accident of the draw —
- * the second deep seed on the same code produced eight more paths the first
- * never drew (an audio holder, a ptv holder, a sticker holder, an image holder,
- * multi-gap compositions of both). Enumerating holders one by one turns every
- * new draw into a new registry edit; the suffix keeps the entry to what was
- * actually decided: these two leaves, missing on this side, with equal values
- * everywhere else. `businessBroadcastAssociationAction` stays path-pinned: it
- * is a gap on exactly one holder, and a bare leaf would forgive it anywhere.
+ * The six media holders come from the generated schema — the same six
+ * `NOT_ENCODED_FIELDS` and the presence sweep already pin — and the
+ * renumbered field is one identity wherever it recurses. A gap fixed on one
+ * holder but surviving on another is still excused here until the pair is
+ * edited, which is the documented residual risk; a gap on a holder this list
+ * never named still fails.
+ *
+ * `Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain` is the same
+ * shape of gap one level deeper: the bridge renames the whole
+ * `faviconMMSMetadata` submessage to `faviconMmsMetadata` and drops the
+ * upstream spelling on encode, so the leaf inside it is unreachable rather
+ * than merely unwritten (the smoke seed draws exactly this). It is listed at
+ * its full field path so no other holder is forgiven by it.
  */
-const DECODE_OMITTED_SUFFIXES: readonly string[] = ['.mediaKeyDomain', '.pollResultSnapshotMessageV3']
+const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
+	'Message.AudioMessage.mediaKeyDomain',
+	'Message.DocumentMessage.mediaKeyDomain',
+	'Message.ImageMessage.mediaKeyDomain',
+	'Message.MMSThumbnailMetadata.mediaKeyDomain',
+	'Message.StickerMessage.mediaKeyDomain',
+	'Message.VideoMessage.mediaKeyDomain',
+	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	'Message.pollResultSnapshotMessageV3'
+])
+
+/**
+ * True when a missing key is one of the documented holder/leaf gaps.
+ *
+ * Only the holder (second-to-last segment) and the leaf (last segment) are
+ * consulted, so `ContextInfo.quotedMessage.videoMessage.mediaKeyDomain` and
+ * `ProtocolMessage.editedMessage.videoMessage.mediaKeyDomain` are the same
+ * decided gap. `pollResultSnapshotMessageV3` needs no holder at all — it is
+ * the same renumbered field everywhere — so it matches on the leaf alone.
+ */
+const isDocumentedOmission = (here: string): boolean => {
+	if (DECODE_OMITTED_PATHS.has(here)) return true
+	const segments = here.split('.')
+	const leaf = segments.at(-1)
+	if (leaf === undefined) return false
+	if (leaf === 'pollResultSnapshotMessageV3') return DECODE_OMITTED_HOLDERS.has(`Message.${leaf}`)
+	// Holder + leaf, so the wrapper depth is irrelevant but the holder is not:
+	// `….videoMessage.mediaKeyDomain` is the decided gap on the bridge schema's
+	// `Message.VideoMessage` holder, while the same leaf under any other holder
+	// still fails. The renamed-submessage gap needs a longer chain: its holder
+	// is `faviconMMSMetadata` itself, which only this entry names — so the
+	// match walks the trailing segments rather than fixing the depth.
+	for (let start = 1; start < segments.length; start++) {
+		if (DECODE_OMITTED_HOLDERS.has(segments.slice(start).join('.'))) return true
+	}
+	return false
+}
 
 /**
  * True when the two decodes agree once the documented absences are allowed on
  * the bridge's side, and nothing else differs.
  *
- * Directional on purpose. Upstream may carry a key this side lacks, and only at
- * a path `DECODE_OMITTED_PATHS` names; this side carrying a key upstream lacks
- * is a decoder inventing a property, which is a different defect. Any value that
- * differs where both sides have the key fails outright, so this can never excuse
- * a misread — only an absence that is already on the record.
+ * Directional on purpose. Upstream may carry a key this side lacks, and only
+ * when `isDocumentedOmission` names it; this side carrying a key upstream
+ * lacks is a decoder inventing a property, which is a different defect. Any
+ * value that differs where both sides have the key fails outright, so this can
+ * never excuse a misread — only an absence that is already on the record.
  */
 const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
 	if (depth > 12) return sameShape(local, upstream)
@@ -237,9 +236,7 @@ const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: stri
 	for (const key of theirKeys) {
 		const here = `${path}.${key}`
 		if (!Object.hasOwn(ours, key)) {
-			if (!DECODE_OMITTED_PATHS.has(here) && !DECODE_OMITTED_SUFFIXES.some(suffix => here.endsWith(suffix))) {
-				return false
-			}
+			if (!isDocumentedOmission(here)) return false
 			continue
 		}
 		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1)) return false

@@ -928,6 +928,12 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 							// Same classification as the encode side: a decoder that drops
 							// a field and a decoder that reads a different value are two
 							// different defects and must not share one allowlist entry.
+							// The omission predicate runs on the renames-undone views,
+							// exactly what the allowlist's rename entry decides on: a
+							// renamed field still present under the bridge spelling is
+							// not a dropped field, and without the undo a rename plus
+							// a documented omission fell through to the generic
+							// decode-parity target, which no entry may excuse.
 							target: populatedTouchesUnknownType(path, message)
 								? 'proto:unknown-type-dropped'
 								: // The same predicate the gate above used. Without it this
@@ -936,7 +942,9 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 									// already-known omission is classified as the omission and
 									// excused — decode findings carry no `omits ...` tag, so that
 									// entry accepts them unconditionally.
-									omitsKeysOnly(local.value, remote.value, { isTextField: textFieldPredicate(path) })
+									omitsKeysOnly(undoRenames(local.value), undoRenames(remote.value), {
+											isTextField: textFieldPredicate(path)
+									  })
 									? 'proto:field-omission'
 									: 'proto:decode-parity',
 							input: { path, origin, message, bytes: hex(bytes) },

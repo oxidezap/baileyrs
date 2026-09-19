@@ -66,133 +66,6 @@ export const int64KindsOfPath = (path: string): ReadonlyMap<string, number> => {
 }
 
 /**
- * The wire types the schema declares for a field number of `path`, when the
- * number belongs to exactly one field there.
- *
- * The robustness fuzzer needs this to tell wire-framed bytes from schema-valid
- * ones: a payload can frame as protobuf while carrying a known field at a wire
- * type that field can never have (`MessageKey` field 1 is `string remoteJid`,
- * so `08 00` — field 1, varint — is framed but meaningless). protobufjs reads
- * such a field anyway; the bridge treats it as unknown. Only the schema
- * separates "both decoders read the same valid payload differently" from a
- * strictness difference on invalid input.
- *
- * Packed repeated scalars also arrive as length-delimited, so a packable
- * repeated field accepts wire types 0 and 2 (varints) or 5 and 2 (fixed32).
- * A singular scalar accepts only its own wire type: an unpacked varint never
- * arrives length-delimited on a valid payload.
- */
-export const expectedWireTypes = (path: string, field: number): ReadonlySet<number> | undefined => {
-	const matches = fieldsOfPath(path).filter(candidate => {
-		if ((candidate[3] & PROTO_FIELD_FLAG.map) !== 0) return false
-		const one =
-			candidate[1] === PROTO_FIELD_KIND.message
-				? {}
-				: candidate[1] === PROTO_FIELD_KIND.string
-					? 'x'
-					: candidate[1] === PROTO_FIELD_KIND.bool
-						? true
-						: candidate[1] === PROTO_FIELD_KIND.bytes
-							? new Uint8Array([1])
-							: 7
-		const repeated = (candidate[3] & PROTO_FIELD_FLAG.repeated) !== 0
-		const sample = repeated ? [one] : one
-		for (const encode of [
-			(): Uint8Array | undefined => {
-				try {
-					return upstreamType(path)
-						?.encode({ [candidate[0]]: sample })
-						.finish()
-				} catch {
-					return undefined
-				}
-			},
-			(): Uint8Array | undefined => {
-				try {
-					return encodeProto(path, { [candidate[0]]: sample })
-				} catch {
-					return undefined
-				}
-			}
-		]) {
-			const bytes = encode()
-			if (bytes !== undefined && bytes.length > 0 && firstFieldNumber(bytes) === field) return true
-		}
-		return false
-	})
-	if (matches.length !== 1) return undefined
-	const found = matches[0]!
-	const repeated = (found[3] & PROTO_FIELD_FLAG.repeated) !== 0
-	// The compact schema lumps fixed-width declarations with their varint
-	// siblings (fixed64 with uint64, sfixed32 with int32, double with float),
-	// so the base wire type is read off the encoded tag, not the kind: a valid
-	// fixed64 record uses wire type 1, a fixed32 one wire type 5, a double one
-	// wire type 1. Only a repeated packable field additionally accepts wire
-	// type 2, the packed spelling.
-	const base = wireTypeOfEncodedTag(path, found[0])
-	if (base === undefined) return undefined
-	if (!repeated) return new Set([base])
-	return new Set([base, 2])
-}
-
-/**
- * The wire type the encoders actually write for a field, read off a
- * singleton encoding of it.
- *
- * The kind alone cannot answer this: the compact schema maps fixed64 to
- * `unsigned64` and sfixed32 to `signed32`, whose varint wire type 0 is wrong
- * for the fixed-width spelling both encoders emit. The tag both encoders agree
- * on is the ground truth instead — measured, `SignedPreKeyRecordStructure`
- * field 5 encodes as `29 …`, wire type 1.
- */
-const wireTypeOfEncodedTag = (path: string, name: string): number | undefined => {
-	const field = fieldsOfPath(path).find(candidate => candidate[0] === name)
-	if (!field || (field[3] & PROTO_FIELD_FLAG.map) !== 0) return undefined
-	const one =
-		field[1] === PROTO_FIELD_KIND.message
-			? {}
-			: field[1] === PROTO_FIELD_KIND.string
-				? 'x'
-				: field[1] === PROTO_FIELD_KIND.bool
-					? true
-					: field[1] === PROTO_FIELD_KIND.bytes
-						? new Uint8Array([1])
-						: 7
-	const repeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
-	const sample = repeated ? [one] : one
-	for (const encode of [
-		(): Uint8Array | undefined => {
-			try {
-				return upstreamType(path)
-					?.encode({ [name]: sample })
-					.finish()
-			} catch {
-				return undefined
-			}
-		},
-		(): Uint8Array | undefined => {
-			try {
-				return encodeProto(path, { [name]: sample })
-			} catch {
-				return undefined
-			}
-		}
-	]) {
-		const bytes = encode()
-		if (bytes === undefined || bytes.length === 0) continue
-		let tag = 0n
-		let shift = 0n
-		for (let index = 0; index < bytes.length && index < 10; index++) {
-			const byte = bytes[index]!
-			tag |= BigInt(byte & 0x7f) << shift
-			if ((byte & 0x80) === 0) return Number(tag & 7n)
-			shift += 7n
-		}
-	}
-	return undefined
-}
-
-/**
  * protobufjs namespaces nest, so a schema path is a lookup chain.
  *
  * The intermediate segments are *functions*, not objects: `proto.Message` is the
@@ -264,6 +137,22 @@ interface FieldFacts {
 	readonly messages: ReadonlyMap<number, string>
 	/** Numbers two different fields claim — see `factsFor`. Empty across the schema today. */
 	readonly contested: ReadonlySet<number>
+	/**
+	 * Allowed wire types per field number, read off the generated `wireType`
+	 * metadata: the declaration's wire type, plus 2 for repeated packable
+	 * fields. Cached with the rest because validation asks per record of every
+	 * mutated payload.
+	 */
+	readonly wireTypes: ReadonlyMap<number, ReadonlySet<number>>
+	/**
+	 * Whether field number holds a declared `string`, used to validate UTF-8
+	 * strictly: a protobuf string is UTF-8, so undecodable bytes in one are not
+	 * schema-valid input even when they frame. `bytes` fields and submessages
+	 * carry arbitrary bytes and are not checked.
+	 */
+	readonly strings: ReadonlySet<number>
+	/** Field numbers holding a nested message, for the recursive descent. */
+	readonly messageNumbers: ReadonlyMap<number, string>
 }
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
@@ -330,6 +219,9 @@ const factsFor = (path: string): FieldFacts => {
 	const messages = new Map<number, string>()
 	const claimant = new Map<number, string>()
 	const contested = new Set<number>()
+	const wireTypes = new Map<number, ReadonlySet<number>>()
+	const strings = new Set<number>()
+	const messageNumbers = new Map<number, string>()
 	const type = upstreamType(path)
 	if (type) {
 		for (const field of fieldsOfPath(path)) {
@@ -347,6 +239,13 @@ const factsFor = (path: string): FieldFacts => {
 				claimant.set(number, field[0])
 				if (isRepeated && PACKABLE_KINDS.has(field[1])) repeated.add(number)
 				if (nested !== undefined) messages.set(number, nested)
+				if (nested !== undefined) messageNumbers.set(number, nested)
+				if (field[1] === PROTO_FIELD_KIND.string) strings.add(number)
+				const base = field[5]
+				wireTypes.set(
+					number,
+					isRepeated && (base === 0 || base === 1 || base === 5) ? new Set([base, 2]) : new Set([base])
+				)
 			}
 		}
 	}
@@ -355,15 +254,34 @@ const factsFor = (path: string): FieldFacts => {
 	for (const number of contested) {
 		repeated.delete(number)
 		messages.delete(number)
+		wireTypes.delete(number)
+		strings.delete(number)
+		messageNumbers.delete(number)
 	}
 
-	const facts: FieldFacts = { repeated, messages, contested }
+	const facts: FieldFacts = { repeated, messages, contested, wireTypes, strings, messageNumbers }
 	fieldFactsByPath.set(path, facts)
 	return facts
 }
 
 /** The numbers more than one field claims on this message. Empty across the schema today. */
 export const contestedFieldNumbers = (path: string): readonly number[] => [...factsFor(path).contested]
+
+/**
+ * Allowed wire types for a field number of `path`, from the cached per-message
+ * facts: the declaration's wire type, plus 2 for a repeated packable field.
+ * Unknown or contested numbers answer undefined, which the validator treats as
+ * skippable rather than invalid — protobuf says unknown fields must be skipped.
+ */
+export const allowedWireTypes = (path: string, field: number): ReadonlySet<number> | undefined =>
+	factsFor(path).wireTypes.get(field)
+
+/** True when field number holds a declared `string` of `path`. */
+export const isStringField = (path: string, field: number): boolean => factsFor(path).strings.has(field)
+
+/** The nested message type at a field number of `path`, if the schema places one. */
+export const nestedMessageAt = (path: string, field: number): string | undefined =>
+	factsFor(path).messageNumbers.get(field)
 
 export const schemaAt = (path: string): SchemaContext => ({
 	path,

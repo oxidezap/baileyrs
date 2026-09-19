@@ -881,18 +881,62 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.equal(sameWireOrdering(nested(minimal), nested(respelledValue)), false)
 	})
 
-	it('reads fixed-width wire types off the encoded tag, not the schema kind', async () => {
+	it('reads fixed-width wire types off the generated metadata, not the schema kind', async () => {
 		// The compact schema lumps fixed64 with uint64, so the kind alone says
-		// wire type 0 — but both encoders write `SignedPreKeyRecordStructure`
-		// field 5 as `29 …`, wire type 1. The expectation has to come from the
-		// tag, or every valid fixed64 payload reads as schema-invalid.
-		const { expectedWireTypes } = await import('../schema-context.ts')
-		assert.deepEqual([...(expectedWireTypes('SignedPreKeyRecordStructure', 5) ?? [])], [1])
-		// And the varint kinds keep wire type 0: MessageKey field 1 is a string,
-		// SyncActionValue field 1 an int64, ClientPayload field 9 an sfixed32.
-		assert.deepEqual([...(expectedWireTypes('MessageKey', 1) ?? [])], [2])
-		assert.deepEqual([...(expectedWireTypes('SyncActionValue', 1) ?? [])], [0])
-		assert.deepEqual([...(expectedWireTypes('ClientPayload', 9) ?? [])], [5])
+		// wire type 0 — but the generated `wireType` metadata records 1, the
+		// table protobufjs encodes with. Without it every valid fixed64 payload
+		// reads as schema-invalid and a real disagreement there is reclassified
+		// into the excused interpretation class.
+		const { allowedWireTypes } = await import('../schema-context.ts')
+		assert.deepEqual([...(allowedWireTypes('SignedPreKeyRecordStructure', 5) ?? [])], [1])
+		// varint, fixed32, length-delimited and 64-bit fixed-width kinds:
+		// MessageKey field 1 is a string, SyncActionValue field 1 an int64,
+		// ClientPayload field 9 an sfixed32, Location field 1 a double.
+		assert.deepEqual([...(allowedWireTypes('MessageKey', 1) ?? [])], [2])
+		assert.deepEqual([...(allowedWireTypes('SyncActionValue', 1) ?? [])], [0])
+		assert.deepEqual([...(allowedWireTypes('ClientPayload', 9) ?? [])], [5])
+		assert.deepEqual([...(allowedWireTypes('Location', 1) ?? [])], [1])
+	})
+
+	it('treats undecodable bytes in a declared string as schema-invalid', async () => {
+		// A protobuf string is UTF-8: invalid bytes in one are not semantically
+		// valid input even when they frame, so the validator fails them rather
+		// than demanding the bridge reproduce protobufjs's salvage. `bytes`
+		// fields carry arbitrary bytes and stay valid.
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, nestedMessageAt } = await import('../schema-context.ts')
+		const facts = { allowedWireTypes, isStringField, nestedMessageAt }
+		// MessageKey field 1 is `string remoteJid`: tag 0x0a, length 1, 0xff.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x0a, 0x01, 0xff]), 'MessageKey', facts), {
+			valid: false,
+			reason: 'invalid-utf8',
+			path: 'MessageKey',
+			field: 1
+		})
+		// Unknown field numbers stay skippable: field 99 varint is valid.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0xb8, 0x06, 0x01]), 'MessageKey', facts), {
+			valid: true
+		})
+		// A nested mismatch is reported, not swallowed: Message field 49 is
+		// `deviceSentMessage`, so a varint arriving where a message descends
+		// fails the recursive check even though the top-level tag frames.
+		// Tag 0xf2 0x03 is field 62 << 3 | 2; its two-byte payload 0x08 0x00 is
+		// field 1 as a varint, which must not validate as a length-delimited
+		// Message. Field 62 is unknown to Message, so the payload is opaque —
+		// instead craft the failure one level down: MessageKey field 1 is a
+		// string, and the same bytes as a varint fail there.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x08, 0x00]), 'MessageKey', facts), {
+			valid: false,
+			reason: 'wire-type',
+			path: 'MessageKey',
+			field: 1,
+			actualWireType: 0
+		})
+		// And a nested message that consumed fewer bytes than its length is
+		// still framing: MessageKey field 3 is `string id`, so 0x0a 0x03 with
+		// only 0x08 0x00 inside overruns the submessage boundary.
+		const nested = validateSchemaWire(Uint8Array.from([0x1a, 0x03, 0x0a, 0x02, 0x08, 0x00]), 'Message', facts)
+		assert.equal(nested.valid, false)
 	})
 
 	it('reads a packing difference alongside a dropped field as an omission', () => {
