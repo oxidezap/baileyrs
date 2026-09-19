@@ -607,6 +607,37 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			excused(renamed, { ...declared, businessBroadcastAssociationAction: {} }),
 			'the rename beside a field the bridge never writes — the shape deep mode draws'
 		)
+		// Decoded keys use lower camel case, while the omission registry is
+		// holder-scoped by generated type. Wrapped media and favicon paths must
+		// still reach their exact holder entries rather than falling through to a
+		// broad mediaKeyDomain suffix allowance.
+		assert.ok(
+			excusedWith(
+				{ path: 'Message' },
+				{ agentAction: { deviceId: '0n' }, videoMessage: {} },
+				{ agentAction: { deviceID: '0n' }, videoMessage: { mediaKeyDomain: {} } }
+			),
+			'video mediaKeyDomain omission is holder-scoped through a decoded wrapper'
+		)
+		assert.ok(
+			excusedWith(
+				{ path: 'Message' },
+				{ agentAction: { deviceId: '0n' }, extendedTextMessage: {} },
+				{
+					agentAction: { deviceID: '0n' },
+					extendedTextMessage: { faviconMMSMetadata: { mediaKeyDomain: {} } }
+				}
+			),
+			'favicon mediaKeyDomain omission reaches its nested holder'
+		)
+		assert.ok(
+			!excusedWith(
+				{ path: 'Message' },
+				{ agentAction: { deviceId: '0n' }, reactionMessage: {} },
+				{ agentAction: { deviceID: '0n' }, reactionMessage: { mediaKeyDomain: {} } }
+			),
+			'an unsupported media holder remains a finding'
+		)
 		// The documented absence is rooted at the decoded type, so a finding that
 		// names no type cannot reach it. Pinned because the root lookup is the one
 		// place a later change could widen every path at once.
@@ -904,14 +935,16 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		// agreement-worthy — even though the generated value metadata says
 		// nothing about the outer record.
 		const { validateSchemaWire } = await import('../wire.ts')
-		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt } = await import('../schema-context.ts')
+		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt, packedWireType } =
+			await import('../schema-context.ts')
 		const maps = mapFieldNumbers('Config')
 		assert.ok(maps.has(1), 'expected Config field 1 to be a map number')
 		const facts = {
 			allowedWireTypes: (at: string, field: number) =>
 				maps.has(field) && at === 'Config' ? new Set([2]) : allowedWireTypes(at, field),
 			isStringField,
-			nestedMessageAt
+			nestedMessageAt,
+			packedWireType
 		}
 		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x08, 0x00]), 'Config', facts), {
 			valid: false,
@@ -920,6 +953,67 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			field: 1,
 			actualWireType: 0
 		})
+	})
+
+	it('validates nested map fields and packed scalar payloads', async () => {
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt, packedWireType } =
+			await import('../schema-context.ts')
+		const mapsByPath = new Map<string, ReadonlySet<number>>()
+		const mapsAt = (path: string): ReadonlySet<number> => {
+			const cached = mapsByPath.get(path)
+			if (cached !== undefined) return cached
+			const maps = mapFieldNumbers(path)
+			mapsByPath.set(path, maps)
+			return maps
+		}
+		const facts = {
+			allowedWireTypes: (path: string, field: number) =>
+				mapsAt(path).has(field) ? new Set([2]) : allowedWireTypes(path, field),
+			isStringField,
+			nestedMessageAt,
+			packedWireType: (path: string, field: number) =>
+				mapsAt(path).has(field) ? undefined : packedWireType(path, field)
+		}
+		// MusicUserIdAction.musicUserIdMap is a nested map; field 2 as a
+		// varint must not fall through as an unknown number.
+		const nestedMap = validateSchemaWire(Uint8Array.from([0x10, 0x00]), 'SyncActionValue.MusicUserIdAction', facts)
+		assert.deepEqual(nestedMap, {
+			valid: false,
+			reason: 'wire-type',
+			path: 'SyncActionValue.MusicUserIdAction',
+			field: 2,
+			actualWireType: 0
+		})
+		// ImageMessage.scanLengths is repeated uint32 field 22. A packed
+		// occurrence with an unterminated inner varint is not schema-valid.
+		const packed = validateSchemaWire(Uint8Array.from([0xb2, 0x01, 0x01, 0x80]), 'Message.ImageMessage', facts)
+		assert.equal(packed.valid, false)
+		assert.equal(packed.reason, 'framing')
+	})
+
+	it('accepts balanced unknown groups and rejects mismatched group ends', async () => {
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, nestedMessageAt, packedWireType } = await import('../schema-context.ts')
+		const facts = { allowedWireTypes, isStringField, nestedMessageAt, packedWireType }
+		// Unknown field 99: start-group, field 1 varint, matching end-group.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x9b, 0x06, 0x08, 0x00, 0x9c, 0x06]), 'MessageKey', facts), {
+			valid: true
+		})
+		assert.equal(
+			validateSchemaWire(Uint8Array.from([0x9b, 0x06, 0x08, 0x00, 0xa4, 0x06]), 'MessageKey', facts).valid,
+			false
+		)
+		// A tenth varint byte may carry only bit 63; an overflowing terminator
+		// is malformed even when it appears as an unknown scalar value.
+		assert.equal(
+			validateSchemaWire(
+				Uint8Array.from([0x08, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02]),
+				'MessageKey',
+				facts
+			).valid,
+			false
+		)
 	})
 
 	it('treats undecodable bytes in a declared string as schema-invalid', async () => {
@@ -1163,8 +1257,8 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 
 		assert.equal(report.excused, 5)
 		assert.deepEqual(report.findings, [])
-		// One evaluation per input and nothing else. A shrink pass would add its
-		// candidates plus the re-check of the minimised input.
+		// One evaluation per generated input and nothing else. A shrink pass
+		// would add its candidates plus a re-check of the minimised input.
 		assert.equal(probe.count(), 5)
 	})
 

@@ -144,6 +144,8 @@ interface FieldFacts {
 	 * mutated payload.
 	 */
 	readonly wireTypes: ReadonlyMap<number, ReadonlySet<number>>
+	/** The scalar wire type carried inside a packed repeated field, if any. */
+	readonly packedWireTypes: ReadonlyMap<number, number>
 	/**
 	 * Whether field number holds a declared `string`, used to validate UTF-8
 	 * strictly: a protobuf string is UTF-8, so undecodable bytes in one are not
@@ -220,6 +222,7 @@ const factsFor = (path: string): FieldFacts => {
 	const claimant = new Map<number, string>()
 	const contested = new Set<number>()
 	const wireTypes = new Map<number, ReadonlySet<number>>()
+	const packedWireTypes = new Map<number, number>()
 	const strings = new Set<number>()
 	const messageNumbers = new Map<number, string>()
 	const type = upstreamType(path)
@@ -230,6 +233,7 @@ const factsFor = (path: string): FieldFacts => {
 			const one = isMessage ? {} : sampleFor(field[1])
 			const isRepeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
 			const nested = messagePathOfField(field)
+			const base = field[5]
 			for (const number of numbersFor(path, type, field[0], isRepeated ? [one] : one)) {
 				const prior = claimant.get(number)
 				if (prior !== undefined && prior !== field[0]) {
@@ -237,11 +241,13 @@ const factsFor = (path: string): FieldFacts => {
 					continue
 				}
 				claimant.set(number, field[0])
-				if (isRepeated && PACKABLE_KINDS.has(field[1])) repeated.add(number)
+				if (isRepeated && PACKABLE_KINDS.has(field[1])) {
+					repeated.add(number)
+					packedWireTypes.set(number, base)
+				}
 				if (nested !== undefined) messages.set(number, nested)
 				if (nested !== undefined) messageNumbers.set(number, nested)
 				if (field[1] === PROTO_FIELD_KIND.string) strings.add(number)
-				const base = field[5]
 				wireTypes.set(
 					number,
 					isRepeated && (base === 0 || base === 1 || base === 5) ? new Set([base, 2]) : new Set([base])
@@ -255,11 +261,12 @@ const factsFor = (path: string): FieldFacts => {
 		repeated.delete(number)
 		messages.delete(number)
 		wireTypes.delete(number)
+		packedWireTypes.delete(number)
 		strings.delete(number)
 		messageNumbers.delete(number)
 	}
 
-	const facts: FieldFacts = { repeated, messages, contested, wireTypes, strings, messageNumbers }
+	const facts: FieldFacts = { repeated, messages, contested, wireTypes, packedWireTypes, strings, messageNumbers }
 	fieldFactsByPath.set(path, facts)
 	return facts
 }
@@ -275,6 +282,10 @@ export const contestedFieldNumbers = (path: string): readonly number[] => [...fa
  */
 export const allowedWireTypes = (path: string, field: number): ReadonlySet<number> | undefined =>
 	factsFor(path).wireTypes.get(field)
+
+/** The scalar wire type carried inside a packed repeated field, if any. */
+export const packedWireType = (path: string, field: number): number | undefined =>
+	factsFor(path).packedWireTypes.get(field)
 
 /** True when field number holds a declared `string` of `path`. */
 export const isStringField = (path: string, field: number): boolean => factsFor(path).strings.has(field)

@@ -173,14 +173,26 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
  * its full field path so no other holder is forgiven by it.
  */
 const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
-	'Message.AudioMessage.mediaKeyDomain',
-	'Message.DocumentMessage.mediaKeyDomain',
-	'Message.ImageMessage.mediaKeyDomain',
-	'Message.MMSThumbnailMetadata.mediaKeyDomain',
-	'Message.StickerMessage.mediaKeyDomain',
-	'Message.VideoMessage.mediaKeyDomain',
-	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
-	'Message.pollResultSnapshotMessageV3'
+	'AudioMessage.mediaKeyDomain',
+	'DocumentMessage.mediaKeyDomain',
+	'ImageMessage.mediaKeyDomain',
+	'MMSThumbnailMetadata.mediaKeyDomain',
+	'StickerMessage.mediaKeyDomain',
+	'VideoMessage.mediaKeyDomain',
+	'ExtendedTextMessage.faviconMMSMetadata',
+	'ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	// Decoded protobuf objects use field names, not generated holder type names:
+	// `videoMessage`, not `VideoMessage`. Keep these exact aliases alongside
+	// schema identities so a wrapped decoded object reaches the same holder
+	// decision without turning the rule into a leaf-name allowance.
+	'audioMessage.mediaKeyDomain',
+	'documentMessage.mediaKeyDomain',
+	'imageMessage.mediaKeyDomain',
+	'mmsThumbnailMetadata.mediaKeyDomain',
+	'stickerMessage.mediaKeyDomain',
+	'videoMessage.mediaKeyDomain',
+	'extendedTextMessage.faviconMMSMetadata',
+	'extendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
 ])
 
 /**
@@ -197,7 +209,7 @@ const isDocumentedOmission = (here: string): boolean => {
 	const segments = here.split('.')
 	const leaf = segments.at(-1)
 	if (leaf === undefined) return false
-	if (leaf === 'pollResultSnapshotMessageV3') return DECODE_OMITTED_HOLDERS.has(`Message.${leaf}`)
+	if (leaf === 'pollResultSnapshotMessageV3') return true
 	// Holder + leaf, so the wrapper depth is irrelevant but the holder is not:
 	// `….videoMessage.mediaKeyDomain` is the decided gap on the bridge schema's
 	// `Message.VideoMessage` holder, while the same leaf under any other holder
@@ -1585,8 +1597,8 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-decode-invalid-utf8',
-		target: 'proto:mutation-agreement',
-		status: 'open',
+		target: 'proto:mutation-interpretation',
+		status: 'intended',
 		reason:
 			'When a string field carries bytes that are not valid UTF-8, the two decoders produce different strings: the bridge substitutes U+FFFD per undecodable byte, protobufjs runs its own reader and resolves the same bytes into different characters. Both accept the payload, so a peer sending malformed UTF-8 hands the two libraries different text. Same root cause as the lone-surrogate difference on the encode side, and the pair should be decided together.',
 		review: '2026-11-01',
@@ -1600,14 +1612,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			return sameShape(maskStrings(normalise(divergence.local)), maskStrings(normalise(divergence.upstream)))
 		}
 	},
-	{
-		id: 'proto-malformed-interpretation',
-		target: 'proto:mutation-interpretation',
-		status: 'intended',
-		reason:
-			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
-		review: '2027-02-01'
-	},
+
 	{
 		id: 'proto-field-number-mismatch',
 		// `wire:upstream-readable` specifically, not every wire target. That one
@@ -1692,12 +1697,7 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-wire-type-mismatch-ignored-upstream',
-		// Both interpretation and agreement: the validator now routes a
-		// wire-mismatched payload to `proto:mutation-interpretation`, while a
-		// run from before the validator (or a corpus replay spelling the old
-		// target) still reports it under agreement. The shape predicate is the
-		// same either way, so neither spelling goes stale.
-		target: /^proto:mutation-(agreement|interpretation)$/u,
+		target: 'proto:mutation-interpretation',
 		status: 'intended',
 		reason:
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
@@ -1716,6 +1716,14 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 			// or a string from either side falls through instead of being excused.
 			plainObject(normalise(divergence.local))?.length === 0 &&
 			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
+	},
+	{
+		id: 'proto-malformed-interpretation',
+		target: 'proto:mutation-interpretation',
+		status: 'intended',
+		reason:
+			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
+		review: '2027-02-01'
 	},
 	{
 		id: 'proto-repeated-scalars-unpacked',

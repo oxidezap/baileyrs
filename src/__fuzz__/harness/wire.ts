@@ -635,6 +635,8 @@ export interface SchemaWireFacts {
 	readonly isStringField: (path: string, field: number) => boolean
 	/** The nested message type at the number, if the schema places one. */
 	readonly nestedMessageAt: (path: string, field: number) => string | undefined
+	/** The scalar wire type inside a packed repeated field, if any. */
+	readonly packedWireType?: (path: string, field: number) => number | undefined
 }
 
 /**
@@ -707,6 +709,7 @@ const readRawVarint = (bytes: Uint8Array, cursor: { offset: number }): bigint | 
 	for (let index = 0; index < 10; index++) {
 		if (cursor.offset >= bytes.length) return undefined
 		const byte = bytes[cursor.offset++]!
+		if (index === 9 && (byte & 0x7f) > 0x01) return undefined
 		result |= BigInt(byte & 0x7f) << shift
 		if ((byte & 0x80) === 0) return result
 		shift += 7n
@@ -715,6 +718,51 @@ const readRawVarint = (bytes: Uint8Array, cursor: { offset: number }): bigint | 
 }
 
 /** Validates one message's records out of the raw bytes, recursing by schema. */
+const skipGroup = (bytes: Uint8Array, cursor: { offset: number }, end: number, groupField: number): boolean => {
+	while (cursor.offset < end) {
+		const tag = readRawVarint(bytes, cursor)
+		if (tag === undefined) return false
+		const field = Number(tag >> 3n)
+		const wireType = Number(tag & 7n)
+		if (field < 1 || field > 536_870_911) return false
+		if (wireType === 4) return field === groupField
+		if (wireType === 3) {
+			if (!skipGroup(bytes, cursor, end, field)) return false
+		} else if (wireType === 0) {
+			if (readRawVarint(bytes, cursor) === undefined) return false
+		} else if (wireType === 1) {
+			if (cursor.offset + 8 > end) return false
+			cursor.offset += 8
+		} else if (wireType === 2) {
+			const length = readRawVarint(bytes, cursor)
+			if (length === undefined) return false
+			const size = Number(length)
+			if (!Number.isSafeInteger(size) || size < 0 || cursor.offset + size > end) return false
+			cursor.offset += size
+		} else if (wireType === 5) {
+			if (cursor.offset + 4 > end) return false
+			cursor.offset += 4
+		} else {
+			return false
+		}
+	}
+	return false
+}
+
+const validatePacked = (bytes: Uint8Array, start: number, end: number, wireType: number): boolean => {
+	const cursor = { offset: start }
+	while (cursor.offset < end) {
+		if (wireType === 0) {
+			if (readRawVarint(bytes, cursor) === undefined) return false
+		} else {
+			const width = wireType === 1 ? 8 : 4
+			if (cursor.offset + width > end) return false
+			cursor.offset += width
+		}
+	}
+	return cursor.offset === end
+}
+
 const validateRecords = (
 	bytes: Uint8Array,
 	cursor: { offset: number },
@@ -739,7 +787,13 @@ const validateRecords = (
 		if (allowed !== undefined && !allowed.has(wireType)) {
 			return { valid: false, reason: 'wire-type', path, field, actualWireType: wireType }
 		}
-		if (wireType === 0) {
+		if (wireType === 3) {
+			if (allowed !== undefined || !skipGroup(bytes, cursor, end, field)) {
+				return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
+			}
+		} else if (wireType === 4) {
+			return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
+		} else if (wireType === 0) {
 			if (readRawVarint(bytes, cursor) === undefined) return { valid: false, reason: 'framing', path }
 		} else if (wireType === 1) {
 			if (cursor.offset + 8 > end) return { valid: false, reason: 'framing', path }
@@ -756,6 +810,10 @@ const validateRecords = (
 			}
 			const start = cursor.offset
 			const stop = start + size
+			const packed = facts.packedWireType?.(path, field)
+			if (packed !== undefined && !validatePacked(bytes, start, stop, packed)) {
+				return { valid: false, reason: 'framing', path, field }
+			}
 			const nestedPath = facts.nestedMessageAt(path, field)
 			if (nestedPath !== undefined) {
 				const inner = validateRecords(bytes, cursor, stop, nestedPath, facts, depth + 1)

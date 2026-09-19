@@ -28,7 +28,13 @@ import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise } from './harness/compare.ts'
 import { describeSchemaWire, validateSchemaWire, type SchemaWireFacts } from './harness/wire.ts'
-import { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt } from './harness/schema-context.ts'
+import {
+	allowedWireTypes,
+	isStringField,
+	mapFieldNumbers,
+	nestedMessageAt,
+	packedWireType
+} from './harness/schema-context.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, textFieldPredicate, HOT_PROTO_PATHS } from './generators/proto.ts'
@@ -287,12 +293,19 @@ describe('protobuf decoder robustness under mutation', () => {
 				// so a map number arriving at any other wire type is schema-invalid
 				// rather than agreement-worthy. The facts cache skips maps (its
 				// metadata describes the value), so they are answered here.
-				const maps = mapFieldNumbers(path)
+				const mapsByPath = new Map<string, ReadonlySet<number>>()
+				const mapsAt = (at: string): ReadonlySet<number> => {
+					const cached = mapsByPath.get(at)
+					if (cached !== undefined) return cached
+					const maps = mapFieldNumbers(at)
+					mapsByPath.set(at, maps)
+					return maps
+				}
 				const facts: SchemaWireFacts = {
-					allowedWireTypes: (at, field) =>
-						maps.has(field) && at === path ? new Set([2]) : allowedWireTypes(at, field),
+					allowedWireTypes: (at, field) => (mapsAt(at).has(field) ? new Set([2]) : allowedWireTypes(at, field)),
 					isStringField,
-					nestedMessageAt
+					nestedMessageAt,
+					packedWireType: (at, field) => (mapsAt(at).has(field) ? undefined : packedWireType(at, field))
 				}
 				const validation = validateSchemaWire(bytes, path, facts)
 				return {
