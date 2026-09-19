@@ -28,6 +28,44 @@ export interface UpstreamType {
 }
 
 /**
+ * Reads a decoded 64-bit word the way `toObject(..., { longs: String })` should:
+ * an unsigned word as its unsigned decimal, a signed one as its signed decimal.
+ *
+ * Upstream's own converter gets `fixed64` wrong — it always negates the high
+ * word, so `2^64 - 1` renders as `-1` — while the decoded Long itself carries
+ * the right `{ low, high, unsigned }` triple. Comparisons that need the truth
+ * ask the value instead of the converter.
+ */
+export const longToDecimal = (value: unknown, unsigned: boolean): string | undefined => {
+	if (typeof value === 'string') return value
+	if (typeof value === 'number') return String(value)
+	if (typeof value === 'bigint') return value.toString()
+	if (typeof value !== 'object' || value === null) return undefined
+	const { low, high } = value as { low?: unknown; high?: unknown }
+	if (typeof low !== 'number' || typeof high !== 'number') return undefined
+	const words = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0)
+	return (unsigned || high >= 0 ? words : words - (1n << 64n)).toString()
+}
+
+/**
+ * The kind of every 64-bit field under `path`, by property name, at one level.
+ *
+ * The oracle reads fixed-width 64-bit fields back through protobufjs's own
+ * `toObject` converter, which renders them with the wrong sign (see
+ * `longToDecimal`). Re-reading the raw decoded value with the declared
+ * signedness tells a converter artifact apart from a real codec difference.
+ */
+export const int64KindsOfPath = (path: string): ReadonlyMap<string, number> => {
+	const out = new Map<string, number>()
+	for (const field of fieldsOfPath(path)) {
+		if (field[1] === PROTO_FIELD_KIND.signed64 || field[1] === PROTO_FIELD_KIND.unsigned64) {
+			out.set(field[0], field[1])
+		}
+	}
+	return out
+}
+
+/**
  * protobufjs namespaces nest, so a schema path is a lookup chain.
  *
  * The intermediate segments are *functions*, not objects: `proto.Message` is the
@@ -99,6 +137,24 @@ interface FieldFacts {
 	readonly messages: ReadonlyMap<number, string>
 	/** Numbers two different fields claim — see `factsFor`. Empty across the schema today. */
 	readonly contested: ReadonlySet<number>
+	/**
+	 * Allowed wire types per field number, read off the generated `wireType`
+	 * metadata: the declaration's wire type, plus 2 for repeated packable
+	 * fields. Cached with the rest because validation asks per record of every
+	 * mutated payload.
+	 */
+	readonly wireTypes: ReadonlyMap<number, ReadonlySet<number>>
+	/** The scalar wire type carried inside a packed repeated field, if any. */
+	readonly packedWireTypes: ReadonlyMap<number, number>
+	/**
+	 * Whether field number holds a declared `string`, used to validate UTF-8
+	 * strictly: a protobuf string is UTF-8, so undecodable bytes in one are not
+	 * schema-valid input even when they frame. `bytes` fields and submessages
+	 * carry arbitrary bytes and are not checked.
+	 */
+	readonly strings: ReadonlySet<number>
+	/** Field numbers holding a nested message, for the recursive descent. */
+	readonly messageNumbers: ReadonlyMap<number, string>
 }
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
@@ -165,6 +221,10 @@ const factsFor = (path: string): FieldFacts => {
 	const messages = new Map<number, string>()
 	const claimant = new Map<number, string>()
 	const contested = new Set<number>()
+	const wireTypes = new Map<number, ReadonlySet<number>>()
+	const packedWireTypes = new Map<number, number>()
+	const strings = new Set<number>()
+	const messageNumbers = new Map<number, string>()
 	const type = upstreamType(path)
 	if (type) {
 		for (const field of fieldsOfPath(path)) {
@@ -173,6 +233,7 @@ const factsFor = (path: string): FieldFacts => {
 			const one = isMessage ? {} : sampleFor(field[1])
 			const isRepeated = (field[3] & PROTO_FIELD_FLAG.repeated) !== 0
 			const nested = messagePathOfField(field)
+			const base = field[5]
 			for (const number of numbersFor(path, type, field[0], isRepeated ? [one] : one)) {
 				const prior = claimant.get(number)
 				if (prior !== undefined && prior !== field[0]) {
@@ -180,8 +241,17 @@ const factsFor = (path: string): FieldFacts => {
 					continue
 				}
 				claimant.set(number, field[0])
-				if (isRepeated && PACKABLE_KINDS.has(field[1])) repeated.add(number)
+				if (isRepeated && PACKABLE_KINDS.has(field[1])) {
+					repeated.add(number)
+					packedWireTypes.set(number, base)
+				}
 				if (nested !== undefined) messages.set(number, nested)
+				if (nested !== undefined) messageNumbers.set(number, nested)
+				if (field[1] === PROTO_FIELD_KIND.string) strings.add(number)
+				wireTypes.set(
+					number,
+					isRepeated && (base === 0 || base === 1 || base === 5) ? new Set([base, 2]) : new Set([base])
+				)
 			}
 		}
 	}
@@ -190,15 +260,109 @@ const factsFor = (path: string): FieldFacts => {
 	for (const number of contested) {
 		repeated.delete(number)
 		messages.delete(number)
+		wireTypes.delete(number)
+		packedWireTypes.delete(number)
+		strings.delete(number)
+		messageNumbers.delete(number)
 	}
 
-	const facts: FieldFacts = { repeated, messages, contested }
+	const facts: FieldFacts = { repeated, messages, contested, wireTypes, packedWireTypes, strings, messageNumbers }
 	fieldFactsByPath.set(path, facts)
 	return facts
 }
 
 /** The numbers more than one field claims on this message. Empty across the schema today. */
 export const contestedFieldNumbers = (path: string): readonly number[] => [...factsFor(path).contested]
+
+/**
+ * Allowed wire types for a field number of `path`, from the cached per-message
+ * facts: the declaration's wire type, plus 2 for a repeated packable field.
+ * Unknown or contested numbers answer undefined, which the validator treats as
+ * skippable rather than invalid — protobuf says unknown fields must be skipped.
+ */
+export const allowedWireTypes = (path: string, field: number): ReadonlySet<number> | undefined =>
+	factsFor(path).wireTypes.get(field)
+
+/** The scalar wire type carried inside a packed repeated field, if any. */
+export const packedWireType = (path: string, field: number): number | undefined =>
+	factsFor(path).packedWireTypes.get(field)
+
+/** True when field number holds a declared `string` of `path`. */
+export const isStringField = (path: string, field: number): boolean => factsFor(path).strings.has(field)
+
+/** The wire schema of each map entry, keyed by the map field's outer number. */
+export interface MapEntrySchema {
+	readonly wireTypes: ReadonlyMap<number, number>
+	/** The message type of entry field 2, when the map value is a message. */
+	readonly valueMessagePath?: string
+}
+
+const mapEntrySchemasByPath = new Map<string, ReadonlyMap<number, MapEntrySchema>>()
+
+/**
+ * Map declarations are repeated length-delimited entry messages. Empty maps
+ * encode to nothing, so recover their outer number with a single-entry probe;
+ * the entry's key is string (all three generated maps today) and its value
+ * comes from the declaration's scalar/message metadata.
+ */
+export const mapEntrySchemas = (path: string): ReadonlyMap<number, MapEntrySchema> => {
+	const cached = mapEntrySchemasByPath.get(path)
+	if (cached !== undefined) return cached
+	const out = new Map<number, MapEntrySchema>()
+	const type = upstreamType(path)
+	if (type) {
+		for (const field of fieldsOfPath(path)) {
+			if ((field[3] & PROTO_FIELD_FLAG.map) === 0) continue
+			const numbers = new Set<number>()
+			for (const encode of [
+				(): Uint8Array | undefined => {
+					for (const probe of [{ probe: {} }, { probe: 'x' }]) {
+						try {
+							const bytes = type.encode({ [field[0]]: probe }).finish()
+							if (bytes.length > 0) return bytes
+						} catch {
+							// Try the other map value shape.
+						}
+					}
+					return undefined
+				},
+				(): Uint8Array | undefined => {
+					for (const probe of [{ probe: {} }, { probe: 'x' }]) {
+						try {
+							const bytes = encodeProto(path, { [field[0]]: probe })
+							if (bytes.length > 0) return bytes
+						} catch {
+							// Try the other map value shape.
+						}
+					}
+					return undefined
+				}
+			]) {
+				const bytes = encode()
+				const number = bytes === undefined ? undefined : firstFieldNumber(bytes)
+				if (number !== undefined) numbers.add(number)
+			}
+			for (const number of numbers) {
+				out.set(number, {
+					wireTypes: new Map([
+						[1, 2],
+						[2, field[1] === PROTO_FIELD_KIND.message ? 2 : field[5]]
+					]),
+					valueMessagePath: messagePathOfField(field)
+				})
+			}
+		}
+	}
+	mapEntrySchemasByPath.set(path, out)
+	return out
+}
+
+/** Field numbers holding a map on `path`. */
+export const mapFieldNumbers = (path: string): ReadonlySet<number> => new Set(mapEntrySchemas(path).keys())
+
+/** The nested message type at a field number of `path`, if the schema places one. */
+export const nestedMessageAt = (path: string, field: number): string | undefined =>
+	factsFor(path).messageNumbers.get(field)
 
 export const schemaAt = (path: string): SchemaContext => ({
 	path,

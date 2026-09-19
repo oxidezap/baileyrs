@@ -128,62 +128,110 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
 /**
  * The keys a decoded object may be missing, qualified by where they sit.
  *
- * Deliberately NOT the leaves of `NOT_ENCODED_FIELDS`, for two reasons that a
- * leaf-name set gets wrong in opposite directions.
+ * Two different absences compose here. `businessBroadcastAssociationAction` is
+ * a gap on exactly one holder and stays path-pinned: a bare leaf would forgive
+ * it anywhere. The other two are decided by holder/schema-field identity, not
+ * by path: `mediaKeyDomain` is unwritten on all six media holders the bridge
+ * schema declares it on (audio, document, image, thumbnail, sticker, video),
+ * and `pollResultSnapshotMessageV3` is field 114 upstream and 115 here, so
+ * any holder carrying it decodes to a field this side does not have. The
+ * wrapper a generative draw reaches them through — `ContextInfo.quotedMessage`
+ * today, `ProtocolMessage.editedMessage` tomorrow — is an accident of the
+ * draw, so the check looks at the last two segments (holder + leaf) rather
+ * than the whole path. A value that differs where both sides hold the key
+ * still fails, as does any other missing key.
  *
- * That list is the *encoder* gap, and three of its entries — `deviceID`,
+ * Deliberately NOT the leaves of `NOT_ENCODED_FIELDS` beyond those two, for
+ * the reason a leaf-name set gets wrong: three of its entries — `deviceID`,
  * `deviceAgentID`, `oldestMessageTimestamp` — are decoded under a renamed
- * property rather than dropped. Taking its leaves would let one valid rename
+ * property rather than dropped. Taking their leaves would let one valid rename
  * stand in for a key genuinely missing somewhere else: a `SyncActionValue`
  * showing the expected `AgentAction.deviceId` alongside a newly absent
  * `ChatAssignmentAction.deviceAgentID` would pass, because `undoRenames`
  * restores the first and the set forgives the second.
- *
- * And a leaf name is not unique. `messageParamsJson` was the live case — a gap
- * on `Message.PaymentExtendedMetadata` while the schema declares another on
- * `Message.InteractiveMessage.NativeFlowMessage`, so a bare leaf accepted at any
- * nesting depth would have excused a new drop of the second as though it were
- * the documented first. Bridge 0.10.0 writes both, which closes that example
- * without closing the hazard: of the leaves left, only `mediaKeyDomain` sits on
- * more than one type, and it is a gap on all six. The first holder to be fixed
- * on its own puts the case straight back, and keying by path is what means it
- * does not have to be noticed for the sweep to catch it.
- *
- * Keyed by `<decoded type>.<key path>` and measured rather than derived: this
- * is the absence the decode targets actually produced. A drop anywhere else,
- * including the same leaf under a different holder, still fails.
  */
 const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 	'SyncActionValue.businessBroadcastAssociationAction',
-	// Measured after the 0.8.0 bump, on a ContextInfo whose quoted message is a
-	// video: `Message.VideoMessage.mediaKeyDomain` is one of the eleven the bridge
-	// never writes, and this is the path a generative draw puts it at. Listed
-	// rather than matched by leaf, so the same field under another holder is still
-	// a drop nobody has looked at.
-	'ContextInfo.quotedMessage.videoMessage.mediaKeyDomain',
-	// Measured after the 0.10.0 bump, all four the same two gaps reached through
-	// paths the older schema did not put a generative draw at. `mediaKeyDomain`
-	// is one of the eleven the bridge never writes; `pollResultSnapshotMessageV3`
-	// is field 114 upstream and 115 here, so upstream's bytes for it are a field
-	// this side does not have. Listed by path, like the video one above, so the
-	// same leaf under a holder nobody has looked at is still a drop.
-	'ContextInfo.quotedMessage.audioMessage.mediaKeyDomain',
-	'ContextInfo.quotedMessage.pollResultSnapshotMessageV3',
-	'Message.ExtendedTextMessage.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
-	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
+	'SyncActionData.value.businessBroadcastAssociationAction'
 ])
+
+/**
+ * Holder/leaf pairs the bridge never writes, whatever wraps the holder.
+ *
+ * The six media holders come from the generated schema — the same six
+ * `NOT_ENCODED_FIELDS` and the presence sweep already pin — and the
+ * renumbered field is one identity wherever it recurses. A gap fixed on one
+ * holder but surviving on another is still excused here until the pair is
+ * edited, which is the documented residual risk; a gap on a holder this list
+ * never named still fails.
+ *
+ * `Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain` is the same
+ * shape of gap one level deeper: the bridge renames the whole
+ * `faviconMMSMetadata` submessage to `faviconMmsMetadata` and drops the
+ * upstream spelling on encode, so the leaf inside it is unreachable rather
+ * than merely unwritten (the smoke seed draws exactly this). It is listed at
+ * its full field path so no other holder is forgiven by it.
+ */
+const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
+	'AudioMessage.mediaKeyDomain',
+	'DocumentMessage.mediaKeyDomain',
+	'ImageMessage.mediaKeyDomain',
+	'MMSThumbnailMetadata.mediaKeyDomain',
+	'StickerMessage.mediaKeyDomain',
+	'VideoMessage.mediaKeyDomain',
+	'ExtendedTextMessage.faviconMMSMetadata',
+	'ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	// Decoded holder aliases are explicit pairs, not a leaf-wide allowance.
+	'audioMessage.mediaKeyDomain',
+	'documentMessage.mediaKeyDomain',
+	'imageMessage.mediaKeyDomain',
+	'mmsThumbnailMetadata.mediaKeyDomain',
+	'stickerMessage.mediaKeyDomain',
+	'videoMessage.mediaKeyDomain',
+	'ptvMessage.mediaKeyDomain',
+	'extendedTextMessage.faviconMMSMetadata',
+	'extendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	'Message.pollResultSnapshotMessageV3',
+	'message.pollResultSnapshotMessageV3',
+	'quotedMessage.pollResultSnapshotMessageV3',
+	'quotedResponse.pollResultSnapshotMessageV3',
+	'editedMessage.pollResultSnapshotMessageV3'
+])
+
+/**
+ * True when a missing key is one of the documented holder/leaf gaps.
+ *
+ * Only the holder (second-to-last segment) and the leaf (last segment) are
+ * consulted, so `ContextInfo.quotedMessage.videoMessage.mediaKeyDomain` and
+ * `ProtocolMessage.editedMessage.videoMessage.mediaKeyDomain` are the same
+ * decided gap. `pollResultSnapshotMessageV3` needs no holder at all — it is
+ * the same renumbered field everywhere — so it matches on the leaf alone.
+ */
+const isDocumentedOmission = (here: string): boolean => {
+	if (DECODE_OMITTED_PATHS.has(here) || DECODE_OMITTED_HOLDERS.has(here)) return true
+	const segments = here.split('.')
+	for (let start = 1; start < segments.length; start++) {
+		if (DECODE_OMITTED_HOLDERS.has(segments.slice(start).join('.'))) return true
+	}
+	return false
+}
 
 /**
  * True when the two decodes agree once the documented absences are allowed on
  * the bridge's side, and nothing else differs.
  *
- * Directional on purpose. Upstream may carry a key this side lacks, and only at
- * a path `DECODE_OMITTED_PATHS` names; this side carrying a key upstream lacks
- * is a decoder inventing a property, which is a different defect. Any value that
- * differs where both sides have the key fails outright, so this can never excuse
- * a misread — only an absence that is already on the record.
+ * Directional on purpose. Upstream may carry a key this side lacks, and only
+ * when `isDocumentedOmission` names it; this side carrying a key upstream
+ * lacks is a decoder inventing a property, which is a different defect. Any
+ * value that differs where both sides have the key fails outright, so this can
+ * never excuse a misread — only an absence that is already on the record.
  */
-const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
+export const hasKnownProtoRename = (local: unknown, upstream: unknown): boolean =>
+	RENAMED_PROTO_FIELDS.some(
+		([upstreamName, bridgeName]) => text(local).includes(bridgeName) && text(upstream).includes(upstreamName)
+	)
+
+export const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
 	if (depth > 12) return sameShape(local, upstream)
 	if (Array.isArray(local) || Array.isArray(upstream)) {
 		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false
@@ -199,7 +247,7 @@ const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: stri
 	for (const key of theirKeys) {
 		const here = `${path}.${key}`
 		if (!Object.hasOwn(ours, key)) {
-			if (!DECODE_OMITTED_PATHS.has(here)) return false
+			if (!isDocumentedOmission(here)) return false
 			continue
 		}
 		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1)) return false
@@ -513,38 +561,6 @@ const withoutKey = (value: unknown, name: string, depth = 0): unknown => {
 		if (key === name) continue
 		Object.defineProperty(out, key, {
 			value: withoutKey(nested, name, depth + 1),
-			enumerable: true,
-			writable: true,
-			configurable: true
-		})
-	}
-	return out
-}
-
-/**
- * Replaces every string with a placeholder, leaving the structure.
- *
- * The two decoders resolve invalid UTF-8 into *different characters*, not into a
- * known substitution — the bridge writes one U+FFFD per bad byte, protobufjs
- * runs its own reader and produces whatever it makes of them. So there is no
- * character class to fold: what can be checked is that the difference is
- * confined to text at all. Masking the strings and requiring the rest to agree
- * rules out a dropped field, a changed number, a different nesting — everything
- * except the text itself.
- *
- * The residual gap is a regression that changed some *other* string field while
- * one field happened to hold invalid UTF-8. Closing that needs the decoders to
- * report which bytes they could not read.
- */
-const maskStrings = (value: unknown, depth = 0): unknown => {
-	if (depth > 12) return value
-	if (typeof value === 'string') return '<text>'
-	if (Array.isArray(value)) return value.map(item => maskStrings(item, depth + 1))
-	if (typeof value !== 'object' || value === null) return value
-	const out: Record<string, unknown> = {}
-	for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-		Object.defineProperty(out, key, {
-			value: maskStrings(nested, depth + 1),
 			enumerable: true,
 			writable: true,
 			configurable: true
@@ -1548,29 +1564,19 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-decode-invalid-utf8',
-		target: 'proto:mutation-agreement',
-		status: 'open',
-		reason:
-			'When a string field carries bytes that are not valid UTF-8, the two decoders produce different strings: the bridge substitutes U+FFFD per undecodable byte, protobufjs runs its own reader and resolves the same bytes into different characters. Both accept the payload, so a peer sending malformed UTF-8 hands the two libraries different text. Same root cause as the lone-surrogate difference on the encode side, and the pair should be decided together.',
-		review: '2026-11-01',
-		// The substitution has to be the *only* difference. A mutated payload can
-		// carry several populated fields, so keying on "a replacement character
-		// appears somewhere" let a decoder regression that also dropped or changed
-		// another field ride alongside one U+FFFD. Both sides have their
-		// undecodable text folded to a single placeholder, and the rest must agree.
-		when: divergence => {
-			if (!text(divergence.local).includes('\uFFFD')) return false
-			return sameShape(maskStrings(normalise(divergence.local)), maskStrings(normalise(divergence.upstream)))
-		}
-	},
-	{
-		id: 'proto-malformed-interpretation',
 		target: 'proto:mutation-interpretation',
 		status: 'intended',
 		reason:
-			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
-		review: '2027-02-01'
+			'When a declared string carries bytes that are not valid UTF-8, the schema validator routes the disagreement to interpretation: the bridge substitutes U+FFFD while protobufjs salvages its own text. The malformed string makes the whole payload an undefined peer input, so this entry is selected by the validator diagnostic even when the same mutation also changes other decoded fields. Wire-type and framing failures have separate entries.',
+		review: '2026-11-01',
+		// The unified validator supplies the reason, so this cannot be reached by
+		// a replacement character in an unrelated ordinary target. Match the
+		// diagnostic rather than the decoded shape: malformed UTF-8 makes the
+		// complete peer payload an interpretation case even when the mutator also
+		// changes another field.
+		when: divergence => (divergence.detail ?? '').includes('not valid UTF-8')
 	},
+
 	{
 		id: 'proto-field-number-mismatch',
 		// `wire:upstream-readable` specifically, not every wire target. That one
@@ -1655,25 +1661,28 @@ export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = [
 	},
 	{
 		id: 'proto-wire-type-mismatch-ignored-upstream',
-		target: 'proto:mutation-agreement',
+		target: 'proto:mutation-interpretation',
 		status: 'intended',
 		reason:
 			"protobufjs ignores the wire type of a field it recognises; the bridge honours it. Minimal case, verified directly: `0a 02 08 20` against SyncActionValue is field 1 (`optional int64 timestamp`) written as wire type 2, wrapping the legal `08 20`. protobufjs runs its generated `case 1: reader.int64()` regardless of the wire type, reads the length byte as the value, then meets the inner `08 20` at the next tag and overwrites it — so the wrapper is flattened away and it reports `timestamp: 32` at any nesting depth. The bridge sees a varint field arriving as length-delimited, treats it as unknown, and reports `{}`. The spec is on the bridge's side: a wire type that does not match the declared one makes the field unknown, and silently reinterpreting it is how a parser reads a value the sender never wrote. The nesting-bomb mutator reaches this on every path whose field 1 is not a message, which is most of them.",
 		review: '2027-02-01',
-		when: divergence =>
-			// The *last* mutator of the chain, not a substring of it. `mutate`
-			// records `nesting-bomb → flip-bit`, and a substring test would excuse
-			// whatever the second mutator produced merely because a nesting bomb ran
-			// first. Reading the tail keeps that out while still covering
-			// `truncate → nesting-bomb`, where the bomb is what shaped the bytes.
-			lastMutator(divergence.input) === 'nesting-bomb' &&
-			// Narrow to the direction the reason argues: the bridge decoded an empty
-			// message, upstream decoded a non-empty one. The reverse, and any
-			// disagreement over a field both sides read, is not this and must still
-			// be reported. `plainObject` rather than a truthiness check so a `null`
-			// or a string from either side falls through instead of being excused.
-			plainObject(normalise(divergence.local))?.length === 0 &&
-			(plainObject(normalise(divergence.upstream))?.length ?? 0) > 0
+		// The unified validator supplies the exact schema reason. Any decoded
+		// disagreement caused by a recognised field arriving at an impossible
+		// wire type is this strictness difference; framing and invalid UTF-8 have
+		// their own entries. Do not key this on the nesting-bomb mutator: other
+		// mutators can produce the same schema-invalid wire spelling.
+		when: divergence => (divergence.detail ?? '').includes('at a wire type the schema never gives')
+	},
+	{
+		id: 'proto-malformed-interpretation',
+		target: 'proto:mutation-interpretation',
+		status: 'intended',
+		reason:
+			'Bytes that do not frame as protobuf at all — a length prefix longer than the buffer, a varint with no terminator — have no defined meaning, so two decoders that both salvage something from them are not required to salvage the same thing. Payloads that *are* well-formed protobuf are held to strict agreement under proto:mutation-agreement, which is where a real decoder bug would land.',
+		review: '2027-02-01',
+		// Wire-type and invalid-UTF-8 failures have dedicated entries above;
+		// this broad fallback is only for bytes that fail protobuf framing.
+		when: divergence => (divergence.detail ?? '').includes('not well-formed protobuf')
 	},
 	{
 		id: 'proto-repeated-scalars-unpacked',

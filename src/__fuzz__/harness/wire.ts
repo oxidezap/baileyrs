@@ -600,6 +600,318 @@ const subsetOf = (source: readonly WireField[], target: readonly WireField[], sc
 	return true
 }
 
+/**
+ * One validation pass over a framed payload: wire types, nesting, and string
+ * encoding, all against the schema.
+ *
+ * Framed is not valid. A known field at a wire type it can never have (a
+ * string field arriving as a varint) fails; a length-delimited field the
+ * schema declares a message is descended into, so a corrupt submessage fails
+ * rather than reading as agreement-worthy; and a declared `string` carrying
+ * bytes that are not valid UTF-8 fails, because a protobuf string *is* UTF-8
+ * while `bytes` fields and submessages carry arbitrary bytes. Unknown field
+ * numbers pass through — protobuf says they must be skipped, not rejected —
+ * as does a nested payload under a number the schema cannot place, where
+ * framing is all that can be said.
+ *
+ * One tree decides classification and diagnostic together: callers read
+ * `valid` for the target and `describeSchemaWire` for the detail, so the two
+ * can never diverge the way two separate analyses did.
+ */
+export type SchemaWireResult =
+	| { readonly valid: true }
+	| {
+			readonly valid: false
+			readonly reason: 'framing' | 'wire-type' | 'invalid-utf8'
+			readonly path: string
+			readonly field?: number
+			readonly actualWireType?: number
+	  }
+
+export interface SchemaWireFacts {
+	/** Allowed wire types per field number, or undefined for unknown numbers. */
+	readonly allowedWireTypes: (path: string, field: number) => ReadonlySet<number> | undefined
+	/** True when the number holds a declared `string` of the message. */
+	readonly isStringField: (path: string, field: number) => boolean
+	/** The nested message type at the number, if the schema places one. */
+	readonly nestedMessageAt: (path: string, field: number) => string | undefined
+	/** The scalar wire type inside a packed repeated field, if any. */
+	readonly packedWireType?: (path: string, field: number) => number | undefined
+	/** The key/value schema of a map entry, if this is a map field. */
+	readonly mapEntrySchema?: (
+		path: string,
+		field: number
+	) => { readonly wireTypes: ReadonlyMap<number, number>; readonly valueMessagePath?: string } | undefined
+}
+
+/**
+ * Strict UTF-8 check over the raw payload slice, without materialising the
+ * string: overlongs, surrogates, out-of-range code points and truncated
+ * sequences all fail. CESU-8-style surrogate-pair encodings (ED A0..BF …)
+ * fail too — they are valid UTF-16 pairs, not valid UTF-8.
+ */
+const isValidUtf8 = (bytes: Uint8Array, start: number, end: number): boolean => {
+	let index = start
+	while (index < end) {
+		const lead = bytes[index]!
+		if (lead < 0x80) {
+			index++
+			continue
+		}
+		let length: number
+		let lower: number
+		let upper: number
+		if (lead >= 0xc2 && lead <= 0xdf) {
+			length = 1
+			lower = 0x80
+			upper = 0xbf
+		} else if (lead === 0xe0) {
+			length = 2
+			lower = 0xa0
+			upper = 0xbf
+		} else if (lead >= 0xe1 && lead <= 0xec) {
+			length = 2
+			lower = 0x80
+			upper = 0xbf
+		} else if (lead === 0xed) {
+			length = 2
+			lower = 0x80
+			upper = 0x9f
+		} else if (lead >= 0xee && lead <= 0xef) {
+			length = 2
+			lower = 0x80
+			upper = 0xbf
+		} else if (lead === 0xf0) {
+			length = 3
+			lower = 0x90
+			upper = 0xbf
+		} else if (lead >= 0xf1 && lead <= 0xf3) {
+			length = 3
+			lower = 0x80
+			upper = 0xbf
+		} else if (lead === 0xf4) {
+			length = 3
+			lower = 0x80
+			upper = 0x8f
+		} else {
+			return false
+		}
+		if (index + length >= end) return false
+		for (let offset = 1; offset <= length; offset++) {
+			const continuation = bytes[index + offset]!
+			const low = offset === 1 ? lower : 0x80
+			const high = offset === 1 ? upper : 0xbf
+			if (continuation < low || continuation > high) return false
+		}
+		index += length + 1
+	}
+	return true
+}
+
+const readRawVarint = (bytes: Uint8Array, cursor: { offset: number }): bigint | undefined => {
+	let result = 0n
+	let shift = 0n
+	for (let index = 0; index < 10; index++) {
+		if (cursor.offset >= bytes.length) return undefined
+		const byte = bytes[cursor.offset++]!
+		if (index === 9 && (byte & 0x7f) > 0x01) return undefined
+		result |= BigInt(byte & 0x7f) << shift
+		if ((byte & 0x80) === 0) return result
+		shift += 7n
+	}
+	return undefined
+}
+
+/** Validates one message's records out of the raw bytes, recursing by schema. */
+const skipGroup = (bytes: Uint8Array, cursor: { offset: number }, end: number, groupField: number): boolean => {
+	while (cursor.offset < end) {
+		const tag = readRawVarint(bytes, cursor)
+		if (tag === undefined) return false
+		const field = Number(tag >> 3n)
+		const wireType = Number(tag & 7n)
+		if (field < 1 || field > 536_870_911) return false
+		if (wireType === 4) return field === groupField
+		if (wireType === 3) {
+			if (!skipGroup(bytes, cursor, end, field)) return false
+		} else if (wireType === 0) {
+			if (readRawVarint(bytes, cursor) === undefined) return false
+		} else if (wireType === 1) {
+			if (cursor.offset + 8 > end) return false
+			cursor.offset += 8
+		} else if (wireType === 2) {
+			const length = readRawVarint(bytes, cursor)
+			if (length === undefined) return false
+			const size = Number(length)
+			if (!Number.isSafeInteger(size) || size < 0 || cursor.offset + size > end) return false
+			cursor.offset += size
+		} else if (wireType === 5) {
+			if (cursor.offset + 4 > end) return false
+			cursor.offset += 4
+		} else {
+			return false
+		}
+	}
+	return false
+}
+
+const validatePacked = (bytes: Uint8Array, start: number, end: number, wireType: number): boolean => {
+	const cursor = { offset: start }
+	while (cursor.offset < end) {
+		if (wireType === 0) {
+			if (readRawVarint(bytes, cursor) === undefined) return false
+		} else {
+			const width = wireType === 1 ? 8 : 4
+			if (cursor.offset + width > end) return false
+			cursor.offset += width
+		}
+	}
+	return cursor.offset === end
+}
+
+const validateRecords = (
+	bytes: Uint8Array,
+	cursor: { offset: number },
+	end: number,
+	path: string,
+	facts: SchemaWireFacts,
+	depth: number,
+	entrySchema?: { readonly wireTypes: ReadonlyMap<number, number>; readonly valueMessagePath?: string }
+): SchemaWireResult => {
+	// Past the recursion budget the payload is unvalidated, not valid: the
+	// nesting-bomb mutator deliberately generates depths of 16 and above, so
+	// calling the remainder valid would misclassify a disagreement caused by a
+	// schema-invalid record below the budget as agreement. Only an empty tail
+	// stays valid — there is nothing left that could disagree.
+	if (depth > 12) return cursor.offset === end ? { valid: true } : { valid: false, reason: 'framing', path }
+	while (cursor.offset < end) {
+		const tag = readRawVarint(bytes, cursor)
+		if (tag === undefined) return { valid: false, reason: 'framing', path }
+		const field = Number(tag >> 3n)
+		const wireType = Number(tag & 7n)
+		if (field < 1 || field > 536_870_911 || wireType > 5) return { valid: false, reason: 'framing', path }
+		const entryWireType = entrySchema?.wireTypes.get(field)
+		const allowed = entrySchema === undefined ? facts.allowedWireTypes(path, field) : undefined
+		if (
+			(entryWireType !== undefined && entryWireType !== wireType) ||
+			(allowed !== undefined && !allowed.has(wireType))
+		) {
+			return { valid: false, reason: 'wire-type', path, field, actualWireType: wireType }
+		}
+		if (wireType === 3) {
+			if (entryWireType !== undefined || allowed !== undefined || !skipGroup(bytes, cursor, end, field)) {
+				return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
+			}
+		} else if (wireType === 4) {
+			return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
+		} else if (wireType === 0) {
+			if (readRawVarint(bytes, cursor) === undefined) return { valid: false, reason: 'framing', path }
+		} else if (wireType === 1) {
+			if (cursor.offset + 8 > end) return { valid: false, reason: 'framing', path }
+			cursor.offset += 8
+		} else if (wireType === 5) {
+			if (cursor.offset + 4 > end) return { valid: false, reason: 'framing', path }
+			cursor.offset += 4
+		} else if (wireType === 2) {
+			const length = readRawVarint(bytes, cursor)
+			if (length === undefined) return { valid: false, reason: 'framing', path }
+			const size = Number(length)
+			if (!Number.isSafeInteger(size) || size < 0 || cursor.offset + size > end) {
+				return { valid: false, reason: 'framing', path }
+			}
+			const start = cursor.offset
+			const stop = start + size
+			const packed = facts.packedWireType?.(path, field)
+			if (packed !== undefined && !validatePacked(bytes, start, stop, packed)) {
+				return { valid: false, reason: 'framing', path, field }
+			}
+			const mapEntry = entrySchema === undefined ? facts.mapEntrySchema?.(path, field) : undefined
+			if (mapEntry !== undefined) {
+				const inner = validateRecords(bytes, { offset: start }, stop, path, facts, depth + 1, mapEntry)
+				if (!inner.valid) return inner
+				cursor.offset = stop
+				continue
+			}
+			const nestedPath =
+				entrySchema !== undefined
+					? field === 2
+						? entrySchema.valueMessagePath
+						: undefined
+					: facts.nestedMessageAt(path, field)
+			if (nestedPath !== undefined) {
+				const inner = validateRecords(bytes, cursor, stop, nestedPath, facts, depth + 1)
+				if (!inner.valid) return inner
+				// A nested message that consumed fewer bytes than its length holds
+				// trailing records the schema cannot place; those stay framing, and
+				// an unknown tail is skippable rather than invalid. Only a hard
+				// framing failure inside fails the payload.
+				cursor.offset = stop
+			} else if (
+				(entrySchema !== undefined && (field === 1 || (field === 2 && nestedPath === undefined))) ||
+				facts.isStringField(path, field)
+			) {
+				if (!isValidUtf8(bytes, start, stop)) {
+					return { valid: false, reason: 'invalid-utf8', path, field }
+				}
+				cursor.offset = stop
+			} else {
+				cursor.offset = stop
+			}
+		} else {
+			return { valid: false, reason: 'framing', path }
+		}
+	}
+	return cursor.offset === end ? { valid: true } : { valid: false, reason: 'framing', path }
+}
+
+/**
+ * Validates a framed payload against the schema: wire types, nesting, and
+ * string encoding. Unframed bytes fail closed as `framing`; unknown field
+ * numbers stay skippable.
+ */
+export const validateSchemaWire = (bytes: Uint8Array, path: string, facts: SchemaWireFacts): SchemaWireResult =>
+	validateRecords(bytes, { offset: 0 }, bytes.length, path, facts, 0)
+
+/** Renders a validation failure for a finding's detail line. */
+export const describeSchemaWire = (result: Extract<SchemaWireResult, { valid: false }>): string => {
+	if (result.reason === 'framing') return 'bytes that are not well-formed protobuf, and read them differently'
+	if (result.reason === 'invalid-utf8') {
+		return `a payload carrying ${result.path}#${result.field} with bytes that are not valid UTF-8 in a declared string, and read it differently`
+	}
+	const where = result.field === undefined ? result.path : `${result.path}#${result.field}`
+	return `a payload carrying field ${where} at a wire type the schema never gives it, and read it differently`
+}
+
+/**
+ * Checks every record of a framed payload against the schema's wire types,
+ * recursively into nested messages the schema places.
+ *
+ * Kept for the byte-level codec targets, which validate only wire types:
+ * unknown field numbers pass through, as does a nested payload under a number
+ * the schema cannot place. Prefer `validateSchemaWire` for new callers — it
+ * additionally checks string encoding and reports the failure.
+ */
+export const schemaValidWire = (
+	bytes: Uint8Array,
+	schema: SchemaContext,
+	expected: (path: string, field: number) => ReadonlySet<number> | undefined
+): boolean => {
+	const fields = scan(bytes, 12, schema)
+	if (fields === undefined) return false
+	const check = (entries: readonly WireField[], path: string, depth: number): boolean => {
+		if (depth > 12) return true
+		for (const entry of entries) {
+			const allowed = expected(path, entry.field)
+			if (allowed !== undefined && !allowed.has(entry.wireType)) return false
+			const nestedPath = schema.messageAt(path, entry.field)
+			if (nestedPath !== undefined && entry.wireType === 2 && entry.nested !== undefined) {
+				if (!check(entry.nested, nestedPath, depth + 1)) return false
+			}
+		}
+		return true
+	}
+	return check(fields, schema.path, 0)
+}
+
 /** Re-reads the rendering produced for a nested message, or undefined for opaque bytes. */
 const parseNested = (value: string): WireField[] | undefined => {
 	if (value === '') return []
