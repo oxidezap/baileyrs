@@ -34,7 +34,15 @@ import {
 } from './harness/wire.ts'
 import { undoRenames, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
-import { firstFieldNumber, sampleFor, schemaAt, upstreamType, type UpstreamType } from './harness/schema-context.ts'
+import {
+	firstFieldNumber,
+	int64KindsOfPath,
+	longToDecimal,
+	sampleFor,
+	schemaAt,
+	upstreamType,
+	type UpstreamType
+} from './harness/schema-context.ts'
 
 /** The kinds protobufjs routes through `Long.fromString`, which rejects `''`. */
 const SIXTY_FOUR_BIT_KINDS: ReadonlySet<number> = new Set([PROTO_FIELD_KIND.signed64, PROTO_FIELD_KIND.unsigned64])
@@ -74,6 +82,38 @@ const isUsableCase = (value: ProtoCase): boolean =>
  * every unset field and the comparison stops being able to see a dropped one.
  */
 const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false, objects: false, oneofs: false }
+
+/**
+ * Reads bytes back the way the round-trip target compares them, minus one
+ * upstream artifact: protobufjs's `toObject` converter renders a `fixed64`
+ * holding `2^64 - 1` as `-1`, while the decoded Long itself carries
+ * `{ low: -1, high: -1, unsigned: true }` — the right triple, read right by
+ * `longToDecimal`. So a 64-bit field is re-read from the raw decode with its
+ * declared signedness, and only the remaining fields go through the converter.
+ * Anything else the two readings disagree on is still a finding: only the
+ * converter's sign artifact is repaired, field by field, and a real value
+ * difference elsewhere still fails the comparison.
+ */
+const readBackUpstream = (type: UpstreamType, path: string, bytes: Uint8Array): Outcome => {
+	const decoded = attempt(() => type.decode(bytes))
+	if (!decoded.ok) return { ok: false, error: (decoded as unknown as { error: string }).error }
+	const converted = attempt(() => type.toObject(decoded.value, TO_OBJECT))
+	if (!converted.ok) return converted
+	const kinds = int64KindsOfPath(path)
+	if (kinds.size === 0) return converted
+	const raw = decoded.value as Record<string, unknown>
+	const fixed = { ...(converted.value as Record<string, unknown>) }
+	let repaired = false
+	for (const [name, kind] of kinds) {
+		if (!Object.hasOwn(raw, name) || !Object.hasOwn(fixed, name)) continue
+		const truth = longToDecimal(raw[name], kind === PROTO_FIELD_KIND.unsigned64)
+		if (truth !== undefined && truth !== fixed[name]) {
+			fixed[name] = truth
+			repaired = true
+		}
+	}
+	return repaired ? { ok: true, value: fixed } : converted
+}
 
 /** One entry in the two finite field sweeps: name and number, per declared field. */
 interface FieldCase {
@@ -972,7 +1012,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				const encodedLocally = attempt(() => encodeProto(path, message))
 				if (encodedLocally.ok) {
 					const bytes = encodedLocally.value as Uint8Array
-					const readBack = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+					const readBack = readBackUpstream(type, path, bytes)
 					if (readBack.ok) {
 						const own = attempt(() => decodeProto(path, bytes))
 						if (own.ok && !compare(own.value, readBack.value)) {
@@ -1013,7 +1053,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					const bytes = encodedUpstream.value as Uint8Array
 					const readBack = attempt(() => decodeProto(path, bytes))
 					if (readBack.ok) {
-						const own = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+						const own = readBackUpstream(type, path, bytes)
 						if (own.ok && !compare(readBack.value, own.value)) {
 							findings.push({
 								target: classify(readBack.value, own.value),
@@ -1052,8 +1092,8 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				// encoders' output — through one decoder, so that a decoder difference
 				// cannot be mistaken for an encoder one.
 				if (encodedLocally.ok && encodedUpstream.ok) {
-					const viaLocal = attempt(() => type.toObject(type.decode(encodedLocally.value as Uint8Array), TO_OBJECT))
-					const viaUpstream = attempt(() => type.toObject(type.decode(encodedUpstream.value as Uint8Array), TO_OBJECT))
+					const viaLocal = readBackUpstream(type, path, encodedLocally.value as Uint8Array)
+					const viaUpstream = readBackUpstream(type, path, encodedUpstream.value as Uint8Array)
 					if (viaLocal.ok && viaUpstream.ok && !compare(viaLocal.value, viaUpstream.value)) {
 						findings.push({
 							target: classify(viaLocal.value, viaUpstream.value),
@@ -1224,6 +1264,29 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 			}
 		})
+	})
+
+	it('reads a full-range fixed64 without flipping its sign', () => {
+		// The deep run on seed 35323852812 reported two `proto:round-trip` findings
+		// that were both this: `SignedPreKeyRecordStructure.timestamp` is
+		// `optional fixed64` — unsigned — holding `2^64 - 1`, which the bridge
+		// decodes as `18446744073709551615` while protobufjs's `toObject`
+		// converter renders `-1` (its fixed64 path always negates the high word).
+		// The decoded Long itself carries the right `{ low, high, unsigned }`
+		// triple, so the oracle now re-reads 64-bit fields from it; this pins the
+		// case that motivated it, in both directions.
+		const type = upstreamType('SignedPreKeyRecordStructure')
+		assert.ok(type, 'expected the upstream SignedPreKeyRecordStructure type to resolve')
+		const message = { timestamp: '18446744073709551615' }
+		const fromBridge = encodeProto('SignedPreKeyRecordStructure', message)
+		const readBridge = readBackUpstream(type, 'SignedPreKeyRecordStructure', fromBridge as Uint8Array)
+		assert.equal(readBridge.ok, true)
+		assert.deepEqual(readBridge.ok ? readBridge.value : undefined, { timestamp: '18446744073709551615' })
+		const fromUpstream = type.encode(message).finish()
+		assert.equal(hex(fromBridge), hex(fromUpstream))
+		const readUpstream = readBackUpstream(type, 'SignedPreKeyRecordStructure', fromUpstream)
+		assert.equal(readUpstream.ok, true)
+		assert.deepEqual(readUpstream.ok ? readUpstream.value : undefined, { timestamp: '18446744073709551615' })
 	})
 
 	it('agrees on 64-bit integer boundaries', async () => {

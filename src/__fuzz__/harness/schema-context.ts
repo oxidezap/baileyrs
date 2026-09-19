@@ -28,6 +28,114 @@ export interface UpstreamType {
 }
 
 /**
+ * Reads a decoded 64-bit word the way `toObject(..., { longs: String })` should:
+ * an unsigned word as its unsigned decimal, a signed one as its signed decimal.
+ *
+ * Upstream's own converter gets `fixed64` wrong — it always negates the high
+ * word, so `2^64 - 1` renders as `-1` — while the decoded Long itself carries
+ * the right `{ low, high, unsigned }` triple. Comparisons that need the truth
+ * ask the value instead of the converter.
+ */
+export const longToDecimal = (value: unknown, unsigned: boolean): string | undefined => {
+	if (typeof value === 'string') return value
+	if (typeof value === 'number') return String(value)
+	if (typeof value === 'bigint') return value.toString()
+	if (typeof value !== 'object' || value === null) return undefined
+	const { low, high } = value as { low?: unknown; high?: unknown }
+	if (typeof low !== 'number' || typeof high !== 'number') return undefined
+	const words = (BigInt(high >>> 0) << 32n) | BigInt(low >>> 0)
+	return (unsigned || high >= 0 ? words : words - (1n << 64n)).toString()
+}
+
+/**
+ * The kind of every 64-bit field under `path`, by property name, at one level.
+ *
+ * The oracle reads fixed-width 64-bit fields back through protobufjs's own
+ * `toObject` converter, which renders them with the wrong sign (see
+ * `longToDecimal`). Re-reading the raw decoded value with the declared
+ * signedness tells a converter artifact apart from a real codec difference.
+ */
+export const int64KindsOfPath = (path: string): ReadonlyMap<string, number> => {
+	const out = new Map<string, number>()
+	for (const field of fieldsOfPath(path)) {
+		if (field[1] === PROTO_FIELD_KIND.signed64 || field[1] === PROTO_FIELD_KIND.unsigned64) {
+			out.set(field[0], field[1])
+		}
+	}
+	return out
+}
+
+/**
+ * The wire types the schema declares for a field number of `path`, when the
+ * number belongs to exactly one field there.
+ *
+ * The robustness fuzzer needs this to tell wire-framed bytes from schema-valid
+ * ones: a payload can frame as protobuf while carrying a known field at a wire
+ * type that field can never have (`MessageKey` field 1 is `string remoteJid`,
+ * so `08 00` — field 1, varint — is framed but meaningless). protobufjs reads
+ * such a field anyway; the bridge treats it as unknown. Only the schema
+ * separates "both decoders read the same valid payload differently" from a
+ * strictness difference on invalid input.
+ *
+ * Packed repeated scalars also arrive as length-delimited, so a packable
+ * repeated field accepts wire types 0 and 2 (varints) or 5 and 2 (fixed32).
+ * A singular scalar accepts only its own wire type: an unpacked varint never
+ * arrives length-delimited on a valid payload.
+ */
+export const expectedWireTypes = (path: string, field: number): ReadonlySet<number> | undefined => {
+	const matches = fieldsOfPath(path).filter(candidate => {
+		if ((candidate[3] & PROTO_FIELD_FLAG.map) !== 0) return false
+		const one =
+			candidate[1] === PROTO_FIELD_KIND.message
+				? {}
+				: candidate[1] === PROTO_FIELD_KIND.string
+					? 'x'
+					: candidate[1] === PROTO_FIELD_KIND.bool
+						? true
+						: candidate[1] === PROTO_FIELD_KIND.bytes
+							? new Uint8Array([1])
+							: 7
+		const repeated = (candidate[3] & PROTO_FIELD_FLAG.repeated) !== 0
+		const sample = repeated ? [one] : one
+		for (const encode of [
+			(): Uint8Array | undefined => {
+				try {
+					return upstreamType(path)
+						?.encode({ [candidate[0]]: sample })
+						.finish()
+				} catch {
+					return undefined
+				}
+			},
+			(): Uint8Array | undefined => {
+				try {
+					return encodeProto(path, { [candidate[0]]: sample })
+				} catch {
+					return undefined
+				}
+			}
+		]) {
+			const bytes = encode()
+			if (bytes !== undefined && bytes.length > 0 && firstFieldNumber(bytes) === field) return true
+		}
+		return false
+	})
+	if (matches.length !== 1) return undefined
+	const found = matches[0]!
+	const repeated = (found[3] & PROTO_FIELD_FLAG.repeated) !== 0
+	switch (found[1]) {
+		case PROTO_FIELD_KIND.string:
+		case PROTO_FIELD_KIND.bytes:
+		case PROTO_FIELD_KIND.message:
+			return new Set([2])
+		case PROTO_FIELD_KIND.float:
+			return new Set(repeated ? [5, 2] : [5])
+		default:
+			return new Set(repeated ? [0, 2] : [0])
+	}
+}
+
+/**
  * protobufjs namespaces nest, so a schema path is a lookup chain.
  *
  * The intermediate segments are *functions*, not objects: `proto.Message` is the

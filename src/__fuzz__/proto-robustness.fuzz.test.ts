@@ -27,8 +27,8 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise } from './harness/compare.ts'
-import { canonicalWire } from './harness/wire.ts'
-import { schemaAt } from './harness/schema-context.ts'
+import { canonicalWire, schemaValidWire } from './harness/wire.ts'
+import { expectedWireTypes, schemaAt } from './harness/schema-context.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, textFieldPredicate, HOT_PROTO_PATHS } from './generators/proto.ts'
@@ -65,6 +65,52 @@ const attempt = (call: () => unknown): Attempt => {
 }
 
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex')
+
+/**
+ * The first `path#field` record whose wire type the schema never gives it, or
+ * undefined when every framed record is schema-plausible.
+ *
+ * Top level only: a mismatched record nested inside a submessage still makes
+ * the payload schema-invalid (which `schemaValidWire` reports), but naming the
+ * outer carrier is enough to route the finding — and descending here would
+ * duplicate the recursion `wire.ts` already owns.
+ */
+const firstMismatchedWireField = (bytes: Uint8Array, schema: ReturnType<typeof schemaAt>): string | undefined => {
+	let cursor = 0
+	while (cursor < bytes.length) {
+		let shift = 0n
+		let tag = 0n
+		while (cursor < bytes.length) {
+			const byte = bytes[cursor++]!
+			tag |= BigInt(byte & 0x7f) << shift
+			if ((byte & 0x80) === 0) break
+			shift += 7n
+		}
+		const field = Number(tag >> 3n)
+		const wireType = Number(tag & 7n)
+		if (field < 1 || wireType > 5) return undefined
+		const allowed = expectedWireTypes(schema.path, field)
+		if (allowed !== undefined && !allowed.has(wireType)) return `${schema.path}#${field}`
+		if (wireType === 0) {
+			while (cursor < bytes.length && (bytes[cursor++]! & 0x80) !== 0) {
+				// Skipping a varint's continuation bytes.
+			}
+		} else if (wireType === 1) cursor += 8
+		else if (wireType === 5) cursor += 4
+		else if (wireType === 2) {
+			let length = 0
+			let lengthShift = 0
+			while (cursor < bytes.length) {
+				const byte = bytes[cursor++]!
+				length |= (byte & 0x7f) << lengthShift
+				if ((byte & 0x80) === 0) break
+				lengthShift += 7
+			}
+			cursor += length
+		} else return undefined
+	}
+	return undefined
+}
 
 /**
  * The tag bytes of a message cycle, per schema path.
@@ -275,15 +321,23 @@ describe('protobuf decoder robustness under mutation', () => {
 				// and belong to the interpretation class the entry beside this one
 				// already calls undefined behaviour. `wire.ts` states the rule — every
 				// caller that has a schema passes it — and this one has `path`.
-				const wellFormed = canonicalWire(bytes, schemaAt(path)) !== undefined
+				const schema = schemaAt(path)
+				const framed = canonicalWire(bytes, schema) !== undefined
+				const mistyped =
+					framed && schemaValidWire(bytes, schema, expectedWireTypes)
+						? undefined
+						: firstMismatchedWireField(bytes, schema)
 				return {
-					target: wellFormed ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
+					target: framed && mistyped === undefined ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
 					input: { path, mutator, bytes: hex(bytes) },
 					local: normalise(local.value),
 					upstream: normalise(remote.value),
-					detail: wellFormed
-						? 'both decoders read the same well-formed payload differently'
-						: 'both decoders accepted bytes that are not well-formed protobuf, and read them differently'
+					detail:
+						framed && mistyped === undefined
+							? 'both decoders read the same well-formed payload differently'
+							: mistyped !== undefined
+								? `both decoders accepted a payload carrying field ${mistyped} at a wire type the schema never gives it, and read it differently`
+								: 'both decoders accepted bytes that are not well-formed protobuf, and read them differently'
 				}
 			}
 		})

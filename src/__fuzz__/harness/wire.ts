@@ -600,6 +600,43 @@ const subsetOf = (source: readonly WireField[], target: readonly WireField[], sc
 	return true
 }
 
+/**
+ * Checks every record of a framed payload against the schema's wire types,
+ * recursively into nested messages the schema places.
+ *
+ * Framed is not valid: a length-delimited field the schema declares a message
+ * is descended into, so a corrupt submessage fails here rather than reading as
+ * agreement-worthy; a known field at a wire type it can never have (a string
+ * field arriving as a varint) fails too. Unknown field numbers pass through —
+ * protobuf says they must be skipped, not rejected — as does a nested payload
+ * under a number the schema cannot place, where framing is all that can be said.
+ *
+ * `expected` answers the wire-type question per message, and `messageAt` the
+ * descent: both come from the caller, which is what keeps this free of an
+ * import cycle back to the schema module.
+ */
+export const schemaValidWire = (
+	bytes: Uint8Array,
+	schema: SchemaContext,
+	expected: (path: string, field: number) => ReadonlySet<number> | undefined
+): boolean => {
+	const fields = scan(bytes, 12, schema)
+	if (fields === undefined) return false
+	const check = (entries: readonly WireField[], path: string, depth: number): boolean => {
+		if (depth > 12) return true
+		for (const entry of entries) {
+			const allowed = expected(path, entry.field)
+			if (allowed !== undefined && !allowed.has(entry.wireType)) return false
+			const nestedPath = schema.messageAt(path, entry.field)
+			if (nestedPath !== undefined && entry.wireType === 2 && entry.nested !== undefined) {
+				if (!check(entry.nested, nestedPath, depth + 1)) return false
+			}
+		}
+		return true
+	}
+	return check(fields, schema.path, 0)
+}
+
 /** Re-reads the rendering produced for a nested message, or undefined for opaque bytes. */
 const parseNested = (value: string): WireField[] | undefined => {
 	if (value === '') return []

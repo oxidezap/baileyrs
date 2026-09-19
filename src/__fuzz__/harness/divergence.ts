@@ -128,8 +128,18 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
 /**
  * The keys a decoded object may be missing, qualified by where they sit.
  *
- * Deliberately NOT the leaves of `NOT_ENCODED_FIELDS`, for two reasons that a
- * leaf-name set gets wrong in opposite directions.
+ * Two of the three documented gaps are themselves compositional. `mediaKeyDomain`
+ * is absent on every one of the six media holders, and only `mediaKeyDomain`
+ * sits on more than one type — so any `<holder>.mediaKeyDomain` the bridge
+ * never writes is the same gap, wherever a generative draw puts it. Likewise
+ * `pollResultSnapshotMessageV3` is field 114 upstream and 115 here, so any
+ * holder carrying it decodes to a field this side does not have. Both are
+ * matched by suffix rather than enumerated by path, and both stay narrow: a
+ * value that differs where both sides hold the key still fails, as does any
+ * other missing key.
+ *
+ * Deliberately NOT the leaves of `NOT_ENCODED_FIELDS` beyond those two, for
+ * two reasons that a leaf-name set gets wrong in opposite directions.
  *
  * That list is the *encoder* gap, and three of its entries — `deviceID`,
  * `deviceAgentID`, `oldestMessageTimestamp` — are decoded under a renamed
@@ -155,6 +165,7 @@ export const undoRenames = (value: unknown, depth = 0): unknown => {
  */
 const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 	'SyncActionValue.businessBroadcastAssociationAction',
+	'SyncActionData.value.businessBroadcastAssociationAction',
 	// Measured after the 0.8.0 bump, on a ContextInfo whose quoted message is a
 	// video: `Message.VideoMessage.mediaKeyDomain` is one of the eleven the bridge
 	// never writes, and this is the path a generative draw puts it at. Listed
@@ -169,9 +180,36 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
 	// same leaf under a holder nobody has looked at is still a drop.
 	'ContextInfo.quotedMessage.audioMessage.mediaKeyDomain',
 	'ContextInfo.quotedMessage.pollResultSnapshotMessageV3',
+	'ContextInfo.quotedMessage.ptvMessage.mediaKeyDomain',
+	'ContextInfo.quotedMessage.documentMessage.mediaKeyDomain',
+	'ContextInfo.quotedMessage.extendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	'ContextInfo.questionReplyQuotedMessage.quotedResponse.pollResultSnapshotMessageV3',
 	'Message.ExtendedTextMessage.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
-	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
+	'Message.ExtendedTextMessage.contextInfo.quotedMessage.videoMessage.mediaKeyDomain',
+	'Message.ExtendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	'Message.ProtocolMessage.editedMessage.audioMessage.mediaKeyDomain',
+	'Message.ProtocolMessage.editedMessage.buttonsMessage.documentMessage.mediaKeyDomain',
+	'Message.ProtocolMessage.editedMessage.documentMessage.mediaKeyDomain',
+	'Message.ProtocolMessage.editedMessage.extendedTextMessage.faviconMMSMetadata.mediaKeyDomain',
+	'Message.MessageHistoryNotice.contextInfo.quotedMessage.pollResultSnapshotMessageV3',
+	'Message.DeviceSentMessage.message.pollResultSnapshotMessageV3'
 ])
+
+/**
+ * The leaves the bridge never writes under any holder, matched by suffix.
+ *
+ * `mediaKeyDomain` is unwritten on all six media holders and
+ * `pollResultSnapshotMessageV3` is renumbered (114 upstream, 115 here), so the
+ * holder a generative draw reaches them through is an accident of the draw —
+ * the second deep seed on the same code produced eight more paths the first
+ * never drew (an audio holder, a ptv holder, a sticker holder, an image holder,
+ * multi-gap compositions of both). Enumerating holders one by one turns every
+ * new draw into a new registry edit; the suffix keeps the entry to what was
+ * actually decided: these two leaves, missing on this side, with equal values
+ * everywhere else. `businessBroadcastAssociationAction` stays path-pinned: it
+ * is a gap on exactly one holder, and a bare leaf would forgive it anywhere.
+ */
+const DECODE_OMITTED_SUFFIXES: readonly string[] = ['.mediaKeyDomain', '.pollResultSnapshotMessageV3']
 
 /**
  * True when the two decodes agree once the documented absences are allowed on
@@ -199,7 +237,9 @@ const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: stri
 	for (const key of theirKeys) {
 		const here = `${path}.${key}`
 		if (!Object.hasOwn(ours, key)) {
-			if (!DECODE_OMITTED_PATHS.has(here)) return false
+			if (!DECODE_OMITTED_PATHS.has(here) && !DECODE_OMITTED_SUFFIXES.some(suffix => here.endsWith(suffix))) {
+				return false
+			}
 			continue
 		}
 		if (!sameExceptUnwrittenFields(ours[key], theirs[key], here, depth + 1)) return false
