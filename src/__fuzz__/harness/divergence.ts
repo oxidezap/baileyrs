@@ -172,14 +172,8 @@ const DECODE_OMITTED_PATHS: ReadonlySet<string> = new Set([
  * than merely unwritten (the smoke seed draws exactly this). It is listed at
  * its full field path so no other holder is forgiven by it.
  */
-const SCHEMA_REFERENCED_MEDIA_HOLDERS = [
-	'quotedQuestion',
-	'noteMessage',
-	'messageAddOn',
-	'quotedStatus',
-	'catalogImage',
-	'productImage'
-] as const
+const SCHEMA_REFERENCED_POLL_HOLDERS = ['quotedQuestion', 'noteMessage', 'messageAddOn', 'quotedStatus'] as const
+const SCHEMA_REFERENCED_MEDIA_HOLDERS = ['catalogImage', 'productImage'] as const
 
 const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
 	'AudioMessage.mediaKeyDomain',
@@ -206,7 +200,8 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
 	'quotedResponse.pollResultSnapshotMessageV3',
 	'editedMessage.pollResultSnapshotMessageV3',
 	// Schema references expose these nested Message/ImageMessage holders under
-	// their bridge spellings; keep the allowance at the holder, not the leaf.
+	// their bridge spellings; keep each allowance at its declaring holder.
+	...SCHEMA_REFERENCED_POLL_HOLDERS.map(holder => `${holder}.pollResultSnapshotMessageV3`),
 	...SCHEMA_REFERENCED_MEDIA_HOLDERS.map(holder => `${holder}.mediaKeyDomain`)
 ])
 
@@ -216,8 +211,8 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
  * Only the holder (second-to-last segment) and the leaf (last segment) are
  * consulted, so `ContextInfo.quotedMessage.videoMessage.mediaKeyDomain` and
  * `ProtocolMessage.editedMessage.videoMessage.mediaKeyDomain` are the same
- * decided gap. `pollResultSnapshotMessageV3` needs no holder at all — it is
- * the same renumbered field everywhere — so it matches on the leaf alone.
+ * decided gap. Poll omissions are scoped to the direct Message holder and the
+ * schema-referenced Message aliases rather than matching the leaf globally.
  */
 const isDocumentedOmission = (here: string): boolean => {
 	if (DECODE_OMITTED_PATHS.has(here) || DECODE_OMITTED_HOLDERS.has(here)) return true

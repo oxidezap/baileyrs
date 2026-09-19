@@ -954,10 +954,11 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			field: 1,
 			actualWireType: 0
 		})
-		// The outer map record may be length-delimited while its key is still
-		// malformed: map entry field 1 is a string, not a varint.
+		// Config.field has uint32 keys: a varint key is valid, while a
+		// length-delimited key is not.
+		assert.equal(validateSchemaWire(Uint8Array.from([0x0a, 0x04, 0x08, 0x01, 0x12, 0x00]), 'Config', facts).valid, true)
 		assert.equal(
-			validateSchemaWire(Uint8Array.from([0x0a, 0x04, 0x08, 0x01, 0x78, 0x00]), 'Config', facts).valid,
+			validateSchemaWire(Uint8Array.from([0x0a, 0x05, 0x0a, 0x01, 0x78, 0x12, 0x00]), 'Config', facts).valid,
 			false
 		)
 	})

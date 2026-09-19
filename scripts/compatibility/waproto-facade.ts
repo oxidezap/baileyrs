@@ -253,6 +253,12 @@ const generatedSchemaContents = () => {
 	])
 	const enumSchemas = enums.map(enumType => [schemaPath(enumType), Object.entries(enumType.values).flat()])
 	const wireTypeSchemas = messageSchemas.map(([path, fields]) => [path, fields.map(([, , , , , wireType]) => wireType)])
+	const mapKeyWireTypeSchemas = messages
+		.map(message => [
+			schemaPath(message),
+			message.fieldsArray.filter(field => field.map).map(field => [field.name, scalarWireType(field.keyType)])
+		])
+		.filter(([, fields]) => fields.length > 0)
 	const publicMessageSchemas = messageSchemas.map(([path, fields]) => [path, fields.map(field => field.slice(0, 5))])
 	const packageMetadata = JSON.parse(readFileSync(upstreamPackage, 'utf8')) as { name: string; version: string }
 	const schemaBytes = readFileSync(upstreamSchema)
@@ -265,12 +271,14 @@ const generatedSchemaContents = () => {
 		`export type ProtoFieldSchema = readonly [name: string, kind: number, reference: number, flags: number, oneof: string]\n` +
 		`export type ProtoMessageSchema = readonly [path: string, fields: readonly ProtoFieldSchema[]]\n` +
 		`export type ProtoWireTypeSchema = readonly [path: string, wireTypes: readonly number[]]\n` +
+		`export type ProtoMapKeyWireTypeSchema = readonly [path: string, fields: readonly (readonly [name: string, wireType: number])[]]\n` +
 		`export type ProtoEnumSchema = readonly [path: string, entries: readonly (string | number)[]]\n` +
 		`export const PROTO_FIELD_KIND = ${JSON.stringify(FIELD_KIND)} as const\n` +
 		`export const PROTO_FIELD_FLAG = ${JSON.stringify(FIELD_FLAG)} as const\n` +
 		`export const PROTO_SCHEMA_SOURCE = ${JSON.stringify(source)}\n` +
 		`export const PROTO_MESSAGE_SCHEMAS = ${JSON.stringify(publicMessageSchemas)} as readonly ProtoMessageSchema[]\n` +
 		`export const PROTO_FIELD_WIRE_TYPES = ${JSON.stringify(wireTypeSchemas)} as readonly ProtoWireTypeSchema[]\n` +
+		`export const PROTO_MAP_KEY_WIRE_TYPES = ${JSON.stringify(mapKeyWireTypeSchemas)} as readonly ProtoMapKeyWireTypeSchema[]\n` +
 		`export const PROTO_ENUM_SCHEMAS = ${JSON.stringify(enumSchemas)} as readonly ProtoEnumSchema[]\n`
 	)
 }

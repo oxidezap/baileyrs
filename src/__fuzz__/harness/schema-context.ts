@@ -15,7 +15,12 @@
  */
 
 import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
-import { PROTO_FIELD_FLAG, PROTO_FIELD_KIND, PROTO_FIELD_WIRE_TYPES } from '../../WAProto/compatibility-schema.ts'
+import {
+	PROTO_FIELD_FLAG,
+	PROTO_FIELD_KIND,
+	PROTO_FIELD_WIRE_TYPES,
+	PROTO_MAP_KEY_WIRE_TYPES
+} from '../../WAProto/compatibility-schema.ts'
 import { fieldsOfPath, messagePathOfField } from '../generators/proto.ts'
 import type { SchemaContext } from './wire.ts'
 
@@ -159,6 +164,9 @@ interface FieldFacts {
 
 const fieldFactsByPath = new Map<string, FieldFacts>()
 const wireTypesByPath = new Map(PROTO_FIELD_WIRE_TYPES)
+const mapKeyWireTypesByPath = new Map(
+	PROTO_MAP_KEY_WIRE_TYPES.map(([path, fields]) => [path, new Map(fields)] as const)
+)
 
 /**
  * Every number a field is written under, asking both encoders rather than one.
@@ -348,10 +356,12 @@ export const mapEntrySchemas = (path: string): ReadonlyMap<number, MapEntrySchem
 			const fieldIndex = fieldsOfPath(path).indexOf(field)
 			const valueWireType = fieldIndex < 0 ? undefined : wireTypesByPath.get(path)?.[fieldIndex]
 			if (valueWireType === undefined) throw new Error(`missing wire type metadata for ${path}.${field[0]}`)
+			const keyWireType = mapKeyWireTypesByPath.get(path)?.get(field[0])
+			if (keyWireType === undefined) throw new Error(`missing map key wire type metadata for ${path}.${field[0]}`)
 			for (const number of numbers) {
 				out.set(number, {
 					wireTypes: new Map([
-						[1, 2],
+						[1, keyWireType],
 						[2, field[1] === PROTO_FIELD_KIND.message ? 2 : valueWireType]
 					]),
 					valueMessagePath: messagePathOfField(field)
