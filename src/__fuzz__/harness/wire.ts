@@ -722,17 +722,21 @@ const readRawVarint = (bytes: Uint8Array, cursor: { offset: number }): bigint | 
 	return undefined
 }
 
-/** Validates one message's records out of the raw bytes, recursing by schema. */
+/** Validates one message's records out of the raw bytes with an explicit group stack. */
 const skipGroup = (bytes: Uint8Array, cursor: { offset: number }, end: number, groupField: number): boolean => {
+	const openGroups = [groupField]
 	while (cursor.offset < end) {
 		const tag = readRawVarint(bytes, cursor)
 		if (tag === undefined) return false
 		const field = Number(tag >> 3n)
 		const wireType = Number(tag & 7n)
 		if (field < 1 || field > 536_870_911) return false
-		if (wireType === 4) return field === groupField
-		if (wireType === 3) {
-			if (!skipGroup(bytes, cursor, end, field)) return false
+		if (wireType === 4) {
+			if (field !== openGroups[openGroups.length - 1]) return false
+			openGroups.pop()
+			if (openGroups.length === 0) return true
+		} else if (wireType === 3) {
+			openGroups.push(field)
 		} else if (wireType === 0) {
 			if (readRawVarint(bytes, cursor) === undefined) return false
 		} else if (wireType === 1) {

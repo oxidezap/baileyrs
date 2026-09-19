@@ -1042,6 +1042,12 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			).valid,
 			false
 		)
+		// Unknown groups can nest deeply without consuming the JS call stack.
+		const deepGroup: number[] = [0x9b, 0x06]
+		for (let depth = 0; depth < 1024; depth++) deepGroup.push(0x9b, 0x06)
+		deepGroup.push(0x08, 0x00)
+		for (let depth = 0; depth <= 1024; depth++) deepGroup.push(0x9c, 0x06)
+		assert.equal(validateSchemaWire(Uint8Array.from(deepGroup), 'MessageKey', facts).valid, true)
 	})
 
 	it('treats undecodable bytes in a declared string as schema-invalid', async () => {
@@ -1191,6 +1197,24 @@ describe('fuzz harness — round-trip omission classification', () => {
 				text
 			),
 			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceID: 1, deviceId: 2 } },
+				{ agentAction: { deviceID: 1 } },
+				'SyncActionValue',
+				text
+			),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceId: 2, deviceID: 1 } },
+				{ agentAction: { deviceID: 1 } },
+				'SyncActionValue',
+				text
+			),
+			'proto:round-trip'
 		)
 		assert.equal(
 			classifyRoundTripDifference(

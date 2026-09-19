@@ -300,6 +300,19 @@ const isRenamedDropPath = (here: string): boolean => {
 	return false
 }
 
+const hasRenameCollision = (value: unknown): boolean => {
+	if (Array.isArray(value)) return value.some(hasRenameCollision)
+	const keys = plainObject(value)
+	if (keys === undefined) return false
+	const record = value as Record<string, unknown>
+	if (
+		RENAMED_PROTO_FIELDS.some(([upstreamName, bridgeName]) => keys.includes(upstreamName) && keys.includes(bridgeName))
+	) {
+		return true
+	}
+	return keys.some(key => hasRenameCollision(record[key]))
+}
+
 /** Classifies only bridge-side, schema-documented omissions as field omissions. */
 export const classifyRoundTripDifference = (
 	local: unknown,
@@ -307,8 +320,11 @@ export const classifyRoundTripDifference = (
 	path: string,
 	options: Pick<NormaliseOptions, 'isTextField'> = {}
 ): 'proto:field-omission' | 'proto:round-trip' => {
-	const a = undoRenames(normalise(local, 0, options))
-	const b = undoRenames(normalise(upstream, 0, options))
+	const normalLocal = normalise(local, 0, options)
+	const normalUpstream = normalise(upstream, 0, options)
+	if (hasRenameCollision(normalLocal) || hasRenameCollision(normalUpstream)) return 'proto:round-trip'
+	const a = undoRenames(normalLocal)
+	const b = undoRenames(normalUpstream)
 	return omitsKeysOnly(a, b, options) && sameExceptUnwrittenFields(a, b, path, 0, true)
 		? 'proto:field-omission'
 		: 'proto:round-trip'
