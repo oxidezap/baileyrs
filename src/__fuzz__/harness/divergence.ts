@@ -243,11 +243,6 @@ const isDocumentedOmission = (here: string): boolean => {
  * value that differs where both sides have the key fails outright, so this can
  * never excuse a misread — only an absence that is already on the record.
  */
-export const hasKnownProtoRename = (local: unknown, upstream: unknown): boolean =>
-	RENAMED_PROTO_FIELDS.some(
-		([upstreamName, bridgeName]) => text(local).includes(bridgeName) && text(upstream).includes(upstreamName)
-	)
-
 export const sameExceptUnwrittenFields = (
 	local: unknown,
 	upstream: unknown,
