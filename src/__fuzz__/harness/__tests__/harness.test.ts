@@ -935,7 +935,7 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		// agreement-worthy — even though the generated value metadata says
 		// nothing about the outer record.
 		const { validateSchemaWire } = await import('../wire.ts')
-		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt, packedWireType } =
+		const { allowedWireTypes, isStringField, mapEntrySchemas, mapFieldNumbers, nestedMessageAt, packedWireType } =
 			await import('../schema-context.ts')
 		const maps = mapFieldNumbers('Config')
 		assert.ok(maps.has(1), 'expected Config field 1 to be a map number')
@@ -944,7 +944,8 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 				maps.has(field) && at === 'Config' ? new Set([2]) : allowedWireTypes(at, field),
 			isStringField,
 			nestedMessageAt,
-			packedWireType
+			packedWireType,
+			mapEntrySchema: (at: string, field: number) => mapEntrySchemas(at).get(field)
 		}
 		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x08, 0x00]), 'Config', facts), {
 			valid: false,
@@ -953,11 +954,17 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			field: 1,
 			actualWireType: 0
 		})
+		// The outer map record may be length-delimited while its key is still
+		// malformed: map entry field 1 is a string, not a varint.
+		assert.equal(
+			validateSchemaWire(Uint8Array.from([0x0a, 0x04, 0x08, 0x01, 0x78, 0x00]), 'Config', facts).valid,
+			false
+		)
 	})
 
 	it('validates nested map fields and packed scalar payloads', async () => {
 		const { validateSchemaWire } = await import('../wire.ts')
-		const { allowedWireTypes, isStringField, mapFieldNumbers, nestedMessageAt, packedWireType } =
+		const { allowedWireTypes, isStringField, mapEntrySchemas, mapFieldNumbers, nestedMessageAt, packedWireType } =
 			await import('../schema-context.ts')
 		const mapsByPath = new Map<string, ReadonlySet<number>>()
 		const mapsAt = (path: string): ReadonlySet<number> => {
@@ -973,7 +980,8 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			isStringField,
 			nestedMessageAt,
 			packedWireType: (path: string, field: number) =>
-				mapsAt(path).has(field) ? undefined : packedWireType(path, field)
+				mapsAt(path).has(field) ? undefined : packedWireType(path, field),
+			mapEntrySchema: (path: string, field: number) => mapEntrySchemas(path).get(field)
 		}
 		// MusicUserIdAction.musicUserIdMap is a nested map; field 2 as a
 		// varint must not fall through as an unknown number.

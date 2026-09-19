@@ -191,6 +191,7 @@ const DECODE_OMITTED_HOLDERS: ReadonlySet<string> = new Set([
 	'mmsThumbnailMetadata.mediaKeyDomain',
 	'stickerMessage.mediaKeyDomain',
 	'videoMessage.mediaKeyDomain',
+	'ptvMessage.mediaKeyDomain',
 	'extendedTextMessage.faviconMMSMetadata',
 	'extendedTextMessage.faviconMMSMetadata.mediaKeyDomain'
 ])
@@ -232,7 +233,12 @@ const isDocumentedOmission = (here: string): boolean => {
  * value that differs where both sides have the key fails outright, so this can
  * never excuse a misread — only an absence that is already on the record.
  */
-const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
+export const hasKnownProtoRename = (local: unknown, upstream: unknown): boolean =>
+	RENAMED_PROTO_FIELDS.some(
+		([upstreamName, bridgeName]) => text(local).includes(bridgeName) && text(upstream).includes(upstreamName)
+	)
+
+export const sameExceptUnwrittenFields = (local: unknown, upstream: unknown, path: string, depth = 0): boolean => {
 	if (depth > 12) return sameShape(local, upstream)
 	if (Array.isArray(local) || Array.isArray(upstream)) {
 		if (!Array.isArray(local) || !Array.isArray(upstream) || local.length !== upstream.length) return false

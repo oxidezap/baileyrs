@@ -637,6 +637,11 @@ export interface SchemaWireFacts {
 	readonly nestedMessageAt: (path: string, field: number) => string | undefined
 	/** The scalar wire type inside a packed repeated field, if any. */
 	readonly packedWireType?: (path: string, field: number) => number | undefined
+	/** The key/value schema of a map entry, if this is a map field. */
+	readonly mapEntrySchema?: (
+		path: string,
+		field: number
+	) => { readonly wireTypes: ReadonlyMap<number, number>; readonly valueMessagePath?: string } | undefined
 }
 
 /**
@@ -769,7 +774,8 @@ const validateRecords = (
 	end: number,
 	path: string,
 	facts: SchemaWireFacts,
-	depth: number
+	depth: number,
+	entrySchema?: { readonly wireTypes: ReadonlyMap<number, number>; readonly valueMessagePath?: string }
 ): SchemaWireResult => {
 	// Past the recursion budget the payload is unvalidated, not valid: the
 	// nesting-bomb mutator deliberately generates depths of 16 and above, so
@@ -783,12 +789,16 @@ const validateRecords = (
 		const field = Number(tag >> 3n)
 		const wireType = Number(tag & 7n)
 		if (field < 1 || field > 536_870_911 || wireType > 5) return { valid: false, reason: 'framing', path }
-		const allowed = facts.allowedWireTypes(path, field)
-		if (allowed !== undefined && !allowed.has(wireType)) {
+		const entryWireType = entrySchema?.wireTypes.get(field)
+		const allowed = entrySchema === undefined ? facts.allowedWireTypes(path, field) : undefined
+		if (
+			(entryWireType !== undefined && entryWireType !== wireType) ||
+			(allowed !== undefined && !allowed.has(wireType))
+		) {
 			return { valid: false, reason: 'wire-type', path, field, actualWireType: wireType }
 		}
 		if (wireType === 3) {
-			if (allowed !== undefined || !skipGroup(bytes, cursor, end, field)) {
+			if (entryWireType !== undefined || allowed !== undefined || !skipGroup(bytes, cursor, end, field)) {
 				return { valid: false, reason: 'framing', path, field, actualWireType: wireType }
 			}
 		} else if (wireType === 4) {
@@ -814,7 +824,14 @@ const validateRecords = (
 			if (packed !== undefined && !validatePacked(bytes, start, stop, packed)) {
 				return { valid: false, reason: 'framing', path, field }
 			}
-			const nestedPath = facts.nestedMessageAt(path, field)
+			const mapEntry = entrySchema === undefined ? facts.mapEntrySchema?.(path, field) : undefined
+			if (mapEntry !== undefined) {
+				const inner = validateRecords(bytes, { offset: start }, stop, path, facts, depth + 1, mapEntry)
+				if (!inner.valid) return inner
+				cursor.offset = stop
+				continue
+			}
+			const nestedPath = entrySchema?.valueMessagePath ?? facts.nestedMessageAt(path, field)
 			if (nestedPath !== undefined) {
 				const inner = validateRecords(bytes, cursor, stop, nestedPath, facts, depth + 1)
 				if (!inner.valid) return inner
@@ -823,7 +840,10 @@ const validateRecords = (
 				// an unknown tail is skippable rather than invalid. Only a hard
 				// framing failure inside fails the payload.
 				cursor.offset = stop
-			} else if (facts.isStringField(path, field)) {
+			} else if (
+				(entrySchema !== undefined && (field === 1 || (field === 2 && nestedPath === undefined))) ||
+				facts.isStringField(path, field)
+			) {
 				if (!isValidUtf8(bytes, start, stop)) {
 					return { valid: false, reason: 'invalid-utf8', path, field }
 				}

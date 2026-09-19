@@ -31,6 +31,7 @@ import { describeSchemaWire, validateSchemaWire, type SchemaWireFacts } from './
 import {
 	allowedWireTypes,
 	isStringField,
+	mapEntrySchemas,
 	mapFieldNumbers,
 	nestedMessageAt,
 	packedWireType
@@ -305,7 +306,8 @@ describe('protobuf decoder robustness under mutation', () => {
 					allowedWireTypes: (at, field) => (mapsAt(at).has(field) ? new Set([2]) : allowedWireTypes(at, field)),
 					isStringField,
 					nestedMessageAt,
-					packedWireType: (at, field) => (mapsAt(at).has(field) ? undefined : packedWireType(at, field))
+					packedWireType: (at, field) => (mapsAt(at).has(field) ? undefined : packedWireType(at, field)),
+					mapEntrySchema: (at, field) => mapEntrySchemas(at).get(field)
 				}
 				const validation = validateSchemaWire(bytes, path, facts)
 				return {

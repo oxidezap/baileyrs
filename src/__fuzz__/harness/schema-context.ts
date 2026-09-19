@@ -290,68 +290,75 @@ export const packedWireType = (path: string, field: number): number | undefined 
 /** True when field number holds a declared `string` of `path`. */
 export const isStringField = (path: string, field: number): boolean => factsFor(path).strings.has(field)
 
+/** The wire schema of each map entry, keyed by the map field's outer number. */
+export interface MapEntrySchema {
+	readonly wireTypes: ReadonlyMap<number, number>
+	/** The message type of entry field 2, when the map value is a message. */
+	readonly valueMessagePath?: string
+}
+
+const mapEntrySchemasByPath = new Map<string, ReadonlyMap<number, MapEntrySchema>>()
+
 /**
- * Field numbers holding a map on `path`.
- *
- * Maps encode as a repeated length-delimited entry message, so the outer
- * record is always wire type 2. factsFor skips map entries (their generated
- * `wireType` metadata describes the value, not the outer record), so their
- * numbers are collected here instead — through the same both-encoder number
- * recovery the rest of the facts use.
+ * Map declarations are repeated length-delimited entry messages. Empty maps
+ * encode to nothing, so recover their outer number with a single-entry probe;
+ * the entry's key is string (all three generated maps today) and its value
+ * comes from the declaration's scalar/message metadata.
  */
-export const mapFieldNumbers = (path: string): ReadonlySet<number> => {
-	// An empty map encodes to nothing on both encoders, so the number is
-	// recovered with a single-entry map instead — the same both-encoder number
-	// recovery the rest of the facts use.
-	const out = new Set<number>()
+export const mapEntrySchemas = (path: string): ReadonlyMap<number, MapEntrySchema> => {
+	const cached = mapEntrySchemasByPath.get(path)
+	if (cached !== undefined) return cached
+	const out = new Map<number, MapEntrySchema>()
 	const type = upstreamType(path)
-	if (!type) return out
-	for (const field of fieldsOfPath(path)) {
-		if ((field[3] & PROTO_FIELD_FLAG.map) === 0) continue
-		for (const encode of [
-			(): Uint8Array | undefined => {
-				try {
-					// A non-empty map encodes its entries; one entry suffices.
-					// The value shape depends on the entry: a message entry
-					// takes an object, a string-valued entry a string.
+	if (type) {
+		for (const field of fieldsOfPath(path)) {
+			if ((field[3] & PROTO_FIELD_FLAG.map) === 0) continue
+			const numbers = new Set<number>()
+			for (const encode of [
+				(): Uint8Array | undefined => {
 					for (const probe of [{ probe: {} }, { probe: 'x' }]) {
 						try {
 							const bytes = type.encode({ [field[0]]: probe }).finish()
 							if (bytes.length > 0) return bytes
 						} catch {
-							// Wrong value shape for this entry; try the next.
+							// Try the other map value shape.
 						}
 					}
 					return undefined
-				} catch {
-					return undefined
-				}
-			},
-			(): Uint8Array | undefined => {
-				try {
+				},
+				(): Uint8Array | undefined => {
 					for (const probe of [{ probe: {} }, { probe: 'x' }]) {
 						try {
 							const bytes = encodeProto(path, { [field[0]]: probe })
-							if ((bytes as Uint8Array).length > 0) return bytes as Uint8Array
+							if (bytes.length > 0) return bytes
 						} catch {
-							// Wrong value shape for this entry; try the next.
+							// Try the other map value shape.
 						}
 					}
 					return undefined
-				} catch {
-					return undefined
 				}
+			]) {
+				const bytes = encode()
+				const number = bytes === undefined ? undefined : firstFieldNumber(bytes)
+				if (number !== undefined) numbers.add(number)
 			}
-		]) {
-			const bytes = encode()
-			if (bytes !== undefined && bytes.length > 0) {
-				const number = firstFieldNumber(bytes)
-				if (number !== undefined) out.add(number)
+			for (const number of numbers) {
+				out.set(number, {
+					wireTypes: new Map([
+						[1, 2],
+						[2, field[1] === PROTO_FIELD_KIND.message ? 2 : field[5]]
+					]),
+					valueMessagePath: messagePathOfField(field)
+				})
 			}
 		}
 	}
+	mapEntrySchemasByPath.set(path, out)
 	return out
 }
+
+/** Field numbers holding a map on `path`. */
+export const mapFieldNumbers = (path: string): ReadonlySet<number> => new Set(mapEntrySchemas(path).keys())
 
 /** The nested message type at a field number of `path`, if the schema places one. */
 export const nestedMessageAt = (path: string, field: number): string | undefined =>
