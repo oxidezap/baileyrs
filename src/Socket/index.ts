@@ -1132,5 +1132,5 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
  */
 export const makeNodeWASocket = createWASocketFactory(nodeRuntime)
 export const createWASocketFactoryFor = createWASocketFactory
-export const makeWASocket = makeNodeWASocket
+const makeWASocket = makeNodeWASocket
 export default makeWASocket
