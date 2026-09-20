@@ -34,7 +34,14 @@ const HOST_NEUTRAL = new Set(
 		'src/Compatibility/history-sync-admission.ts',
 		'src/Compatibility/media-type.ts',
 		'src/Compatibility/message-relay.ts',
-		'src/Compatibility/newsletter-results.ts'
+		'src/Compatibility/newsletter-results.ts',
+		'src/Compatibility/proto-runtime.ts',
+		'src/Runtime/bridge.ts',
+		'src/Runtime/bytes.ts',
+		'src/Runtime/types.ts',
+		'src/Socket/events.ts',
+		'src/Utils/process-history-message.ts',
+		'src/Utils/process-message.ts'
 	].map(p => resolve(root, p))
 )
 

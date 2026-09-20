@@ -13,7 +13,7 @@ import {
 	decodeMessageWireBatch,
 	decodeReceiptWireBatch,
 	decodeServerAckWireBatch
-} from '@oxidezap/whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge/host'
 import type {
 	HistorySyncWireBatch,
 	MessageWireBatch,
