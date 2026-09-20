@@ -11,9 +11,8 @@ import type {
 	WAMessageKey
 } from '../Types/index.ts'
 import { WAMessageStatus } from '../Types/index.ts'
-import { trimUndefined } from './generics.ts'
+import { trimUndefined, updateMessageWithReaction, updateMessageWithReceipt } from '../Media/mutations.ts'
 import type { ILogger } from './logger.ts'
-import { updateMessageWithReaction, updateMessageWithReceipt } from './messages.ts'
 import { isRealMessage, shouldIncrementChatUnread } from './process-message.ts'
 
 const BUFFERABLE_EVENTS = [

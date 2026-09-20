@@ -3,7 +3,7 @@ import type {
 	DevicePlatformType,
 	RunCompletionResult,
 	UploadMediaResult
-} from '@oxidezap/whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge/host'
 import type { BaileysRuntime } from '../Runtime/types.ts'
 import { base64UrlEncode, unrefTimer } from '../Runtime/bytes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
