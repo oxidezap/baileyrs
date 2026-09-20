@@ -64,6 +64,7 @@
     "compat:sync-waproto": "node scripts/compatibility/waproto-facade.ts --sync",
     "compat:check-waproto": "node scripts/compatibility/waproto-facade.ts --check",
     "compat:layers": "node scripts/compatibility/check-layer-boundaries.ts",
+    "check:host-boundaries": "node scripts/check-host-boundaries.ts",
     "example": "node ./Example/example.ts",
     "format": "oxfmt src Example",
     "format:check": "oxfmt --check src Example",
