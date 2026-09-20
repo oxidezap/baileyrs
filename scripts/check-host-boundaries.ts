@@ -42,6 +42,7 @@ const HOST_NEUTRAL = new Set(
 		'src/Runtime/bytes.ts',
 		'src/Runtime/types.ts',
 		'src/Media/core.ts',
+		'src/Socket/core.ts',
 		'src/Socket/events.ts',
 		'src/Socket/transport.ts',
 		'src/Compatibility/tagged-message-waiter.ts',
