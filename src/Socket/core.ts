@@ -293,6 +293,19 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 				disconnected = false
 			}
 
+			// Disconnect may schedule the final store callback on later ticks;
+			// drain those callbacks before the last durability flush.
+			if (disconnected) {
+				await new Promise<void>(resolve => {
+					if (runtime.setImmediate) runtime.setImmediate(() => resolve())
+					else runtime.setTimeout(() => resolve(), 0)
+				})
+				await new Promise<void>(resolve => {
+					if (runtime.setImmediate) runtime.setImmediate(() => resolve())
+					else runtime.setTimeout(() => resolve(), 0)
+				})
+			}
+
 			// Teardown already flushed, but only after its own disconnect
 			// attempts. If those all failed and this one succeeded, the
 			// closing-session ratchet writes it enqueues arrived after that
@@ -593,6 +606,11 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 		// client to `starting` (init failure after adopt): the client is being
 		// released by that path, and `run()` below would reconnect a freed
 		// handle forever, so stop the same way.
+		// Bridge 0.23 can finish the constructor before its initial store
+		// enumeration has settled. If teardown won the race, wait on a normal
+		// client operation before releasing the refused client so that this
+		// initialization work cannot outlive async disposal.
+		if (owner.isClosing()) await created.getJid().catch(() => undefined)
 		if (!owner.adopt(created)) return owner.settled()
 
 		// Fallback for standalone helpers like `downloadContentFromMessage`
