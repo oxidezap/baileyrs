@@ -1,5 +1,5 @@
 import type Long from 'long'
-import LongRuntime from 'long'
+import LongRuntime from '../Runtime/long.ts'
 import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge/host'
 import { base64Decode, base64Encode } from '../Runtime/bytes.ts'
 import {
@@ -278,10 +278,36 @@ const bytesToBase64 = (value: unknown): string => {
 }
 
 const bytesFromObject = (value: unknown): unknown => {
-	if (typeof value === 'string') return base64Decode(value)
+	if (typeof value === 'string') return nodeBytesFromBase64(value)
 	if (isObject(value) && typeof value.length === 'number') return value
 	if (Array.isArray(value)) return value
 	return undefined
+}
+
+/**
+ * Upstream protobufjs materializes `bytes` fields as Node `Buffer` on Node
+ * (`protobuf.util.Buffer`), and the compatibility contract asserts
+ * `deepStrictEqual` against that — `Buffer` vs `Uint8Array` fails even with
+ * identical contents. The host-neutral graph cannot import `node:buffer`,
+ * so the base64 decode stays portable and only the wrapping is Node-only,
+ * resolved lazily through `process.getBuiltinModule('buffer')` (same
+ * lazy-builtin shape `Utils/browser-utils.ts` uses for `node:os`): no
+ * static `node:` import, `Buffer.from(u8)` on Node, the plain `Uint8Array`
+ * on hosts where there is no upstream-Buffer constraint to keep.
+ */
+const nodeBytesFromBase64 = (value: string): unknown => {
+	const bytes = base64Decode(value)
+	try {
+		const proc = (globalThis as { process?: unknown }).process as
+			| { getBuiltinModule?: (id: string) => unknown }
+			| undefined
+		const bufferModule = proc?.getBuiltinModule?.('buffer') as
+			| { Buffer?: { from?: (input: Uint8Array) => unknown } }
+			| undefined
+		return bufferModule?.Buffer?.from?.(bytes) ?? bytes
+	} catch {
+		return bytes
+	}
 }
 
 const oneofName = (field: ProtoFieldSchema): string | undefined => {
