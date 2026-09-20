@@ -81,8 +81,10 @@ const base64Value = (char: string): number => {
 }
 
 export const base64Decode = (text: string): Uint8Array => {
-	const clean = text.replace(/[\s]/g, '')
-	if (clean.length % 4 !== 0) throw new RangeError('base64 string length must be a multiple of 4')
+	let clean = text.replace(/[\s]/g, '')
+	// Tolerate unpadded input the way Buffer.from(…, 'base64') does (auth
+	// mirrors store 43-char unpadded digests); canonical padding otherwise.
+	while (clean.length % 4 !== 0) clean += '='
 	const pad = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
 	const out = new Uint8Array((clean.length / 4) * 3 - pad)
 	let offset = 0

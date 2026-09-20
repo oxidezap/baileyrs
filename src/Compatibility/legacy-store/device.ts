@@ -1,12 +1,11 @@
 // Device credential projection for legacy Baileys authentication states.
-import { Buffer } from 'node:buffer'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
+import { base64Decode, base64Encode } from '../../Runtime/bytes.ts'
 import { WA_DEFAULT_VERSION } from '../../Defaults/index.ts'
 import type { AuthenticationCreds } from '../../Types/index.ts'
 import { jidDecode, jidEncode, type JidServer } from '../../WABinary/jid-utils.ts'
 import {
 	DeviceRecordKey,
-	JsonByteEncoding,
 	SignalDomain,
 	SignalKeyLength,
 	TimeValue,
@@ -111,7 +110,7 @@ function deviceFromCreds(creds: AuthenticationCreds): Uint8Array | null {
 			? bytesToNumbers(creds.signedPreKey.signature)
 			: Array<number>(SignalKeyLength.SIGNATURE).fill(0),
 		adv_secret_key: creds.advSecretKey
-			? bytesToNumbers(Buffer.from(creds.advSecretKey, JsonByteEncoding.BASE64))
+			? bytesToNumbers(base64Decode(creds.advSecretKey))
 			: Array<number>(SignalKeyLength.ADV_SECRET).fill(0),
 		account: null,
 		push_name: creds.me.name ?? '',
@@ -197,10 +196,10 @@ function prepareNativeDevice(payload: Uint8Array): (creds: AuthenticationCreds) 
 			}
 		}
 		if (advSecret?.some(byte => byte !== 0)) {
-			creds.advSecretKey = Buffer.from(advSecret).toString(JsonByteEncoding.BASE64)
+			creds.advSecretKey = base64Encode(new Uint8Array(advSecret))
 		}
 		if (routingInfo === null) creds.routingInfo = undefined
-		else if (routingInfo) creds.routingInfo = Buffer.from(routingInfo)
+		else if (routingInfo) creds.routingInfo = new Uint8Array(routingInfo) as Buffer
 	}
 }
 
