@@ -1,5 +1,4 @@
-import { EventEmitter } from 'node:events'
-import { URL } from 'node:url'
+import { EventEmitter } from 'events'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX } from '../Defaults/index.ts'
 import type { SocketConfig } from '../Types/index.ts'

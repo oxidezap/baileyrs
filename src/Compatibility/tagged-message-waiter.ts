@@ -1,4 +1,4 @@
-import type { EventEmitter } from 'node:events'
+import type { EventEmitter } from 'events'
 import { DisconnectReason } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { ILogger } from '../Utils/logger.ts'
