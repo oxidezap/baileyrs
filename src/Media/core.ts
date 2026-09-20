@@ -27,7 +27,7 @@ import { proto } from '../WAProto/runtime.ts'
 import { base64Decode, base64Encode, randomBytes, utf8Encode } from '../Runtime/bytes.ts'
 import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generic-utils.ts'
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
-import { aesDecryptGCM, aesEncryptGCM } from '../Utils/crypto.ts'
+import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
 import { Boom } from '../Utils/boom.ts'
 
 export const hkdfInfoKey = (type: MediaType): string => `WhatsApp ${MEDIA_HKDF_KEY_MAPPING[type]} Keys`
@@ -82,7 +82,7 @@ export const encryptMediaRetryRequest = (
 ): BinaryNode => {
 	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
 	const iv = randomBytes(12)
-	const ciphertext = aesEncryptGCM(receiptBuffer, getMediaRetryKey(mediaKey), iv, utf8Encode(key.id!))
+	const ciphertext = aesGcm256EncryptPortable(getMediaRetryKey(mediaKey), iv, utf8Encode(key.id!), receiptBuffer)
 	return {
 		tag: 'receipt',
 		attrs: { id: key.id!, to: jidNormalizedUser(meId), type: 'server-error' },
@@ -149,4 +149,6 @@ export const decryptMediaRetryData = (
 	mediaKey: Uint8Array,
 	msgId: string
 ): proto.MediaRetryNotification =>
-	proto.MediaRetryNotification.decode(aesDecryptGCM(ciphertext, getMediaRetryKey(mediaKey), iv, utf8Encode(msgId)))
+	proto.MediaRetryNotification.decode(
+		aesGcm256DecryptPortable(getMediaRetryKey(mediaKey), iv, utf8Encode(msgId), ciphertext)
+	)

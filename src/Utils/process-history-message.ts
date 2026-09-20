@@ -18,7 +18,8 @@ import { WAProto } from '../Types/index.ts'
 import { isHostedLidUser, isHostedPnUser, isLidUser, isPnUser } from '../WABinary/jid-utils.ts'
 import { toNumber } from './generics.ts'
 import type { ILogger } from './logger.ts'
-import { downloadContentFromMessage, normalizeMessageContent } from './messages.ts'
+import { normalizeMessageContent } from '../Media/content.ts'
+import { downloadContentFromMessage } from './messages.ts'
 import { createSparseArray } from './sparse-array.ts'
 
 const STUB = WAProto.WebMessageInfo.StubType

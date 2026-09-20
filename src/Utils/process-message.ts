@@ -13,7 +13,7 @@ import {
 	jidNormalizedUser
 } from '../WABinary/index.ts'
 import { Boom } from './boom.ts'
-import { getContentType, normalizeMessageContent } from './messages.ts'
+import { getContentType, normalizeMessageContent } from '../Media/content.ts'
 
 const REAL_MSG_STUB_TYPES = new Set([
 	WAMessageStubType.CALL_MISSED_GROUP_VIDEO,

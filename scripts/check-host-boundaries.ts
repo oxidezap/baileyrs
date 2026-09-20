@@ -41,6 +41,7 @@ const HOST_NEUTRAL = new Set(
 		'src/Runtime/bridge.ts',
 		'src/Runtime/bytes.ts',
 		'src/Runtime/types.ts',
+		'src/Media/content.ts',
 		'src/Media/core.ts',
 		'src/Socket/core.ts',
 		'src/Socket/events.ts',
