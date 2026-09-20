@@ -11,7 +11,7 @@
  */
 
 import type { WAMessageContent } from '../Types/index.ts'
-import { proto } from '../WAProto/runtime.ts'
+import type { proto } from '../WAProto/runtime.ts'
 
 /**
  * The content keys that carry almost every message on a live socket, settled by
