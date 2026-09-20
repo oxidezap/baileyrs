@@ -195,10 +195,18 @@ for (const file of hostClosure) {
 	lines.forEach((line, index) => {
 		const trimmed = line.trim()
 		if (trimmed.startsWith('//') || trimmed.startsWith('*')) return
-		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(line)
+		// Doc examples after `//` are comments, not imports (src/host.ts
+		// shows the Node-side readFileSync handshake in a comment).
+		const code = line.split('//')[0]!
+		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(code)
 		const specifier = importMatch?.[1]
 		if (!specifier) return
-		const isTypeOnly = /^\s*(import|export)\s+type\b/.test(line)
+		// `import type { Buffer }` / `import type { Agent }` vanish at emit
+		// and cannot pull a Node loader into a bundle; only value imports
+		// of runtime modules count here.
+		const isTypeOnly =
+			/^\s*(import|export)\s+type\b/.test(code) ||
+			/^\s*import\s+type\s*\{[^}]*\}\s*from\s*['"]node:(buffer|https)['"]/.test(code)
 		if (specifier === '@oxidezap/whatsapp-rust-bridge' && !isTypeOnly) {
 			report(file, index + 1, line, 'host closure pulls the bare bridge root (use /host)')
 		}
