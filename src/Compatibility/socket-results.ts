@@ -3,7 +3,7 @@ import type {
 	BusinessProfileResult,
 	MembershipRequestResult,
 	ParticipantChangeResult
-} from '@oxidezap/whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge/host'
 import type { BinaryNode, WABusinessHoursConfig, WABusinessProfile } from '../Types/index.ts'
 
 export type ParticipantUpdateResult = {
