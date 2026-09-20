@@ -1,4 +1,5 @@
 import type { EventEmitter } from 'events'
+import { unrefTimer } from '../Runtime/bytes.ts'
 import { DisconnectReason } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import type { ILogger } from '../Utils/logger.ts'
@@ -7,7 +8,7 @@ import type { ILogger } from '../Utils/logger.ts'
 export const makeTaggedMessageWaiter = (ws: EventEmitter, logger: ILogger, defaultTimeoutMs?: number) =>
 	async function waitForMessage<T>(msgId: string, timeoutMs = defaultTimeoutMs): Promise<T | undefined> {
 		const tag = `TAG:${msgId}`
-		let timer: NodeJS.Timeout | undefined
+		let timer: ReturnType<typeof setTimeout> | undefined
 		let onRecv: ((data: T) => void) | undefined
 		let onError: ((error?: unknown) => void) | undefined
 
@@ -25,11 +26,12 @@ export const makeTaggedMessageWaiter = (ws: EventEmitter, logger: ILogger, defau
 				ws.on('error', onError)
 
 				if (timeoutMs) {
-					timer = setTimeout(
-						() => reject(new Boom('Timed out waiting for message', { statusCode: DisconnectReason.timedOut })),
-						timeoutMs
-					)
-					timer.unref()
+					timer = unrefTimer(
+						setTimeout(
+							() => reject(new Boom('Timed out waiting for message', { statusCode: DisconnectReason.timedOut })),
+							timeoutMs
+						)
+					) as typeof timer
 				}
 			})
 		} catch (error) {

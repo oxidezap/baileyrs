@@ -227,3 +227,20 @@ export const sha256Sync = (data: Uint8Array): Uint8Array => {
 /** Alias kept for call sites migrating off `node:crypto`. */
 export const bytesToUtf8 = utf8Decode
 export const utf8ToBytes = utf8Encode
+
+/** Timer handle with duck-typed `unref` (present on Node, absent on hosts). */
+export type PortableTimer = { unref?: () => void; ref?: () => void }
+
+/**
+ * Arm a one-shot timer, unref'ing on runtimes that support it so a pending
+ * timeout never keeps the process alive past its last socket. Host timers
+ * without `unref` simply stay referenced for their (short) duration.
+ */
+export const unrefTimer = (timer: unknown): unknown => {
+	try {
+		;(timer as PortableTimer | undefined)?.unref?.()
+	} catch {
+		/* a throwing unref must not break the arming call site */
+	}
+	return timer
+}

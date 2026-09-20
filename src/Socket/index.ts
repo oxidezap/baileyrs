@@ -6,7 +6,7 @@ import type {
 	UploadMediaResult
 } from '@oxidezap/whatsapp-rust-bridge'
 import type { BaileysRuntime } from '../Runtime/types.ts'
-import { base64UrlEncode } from '../Runtime/bytes.ts'
+import { base64UrlEncode, unrefTimer } from '../Runtime/bytes.ts'
 import { nodeRuntime } from '../Runtime/node.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
@@ -840,13 +840,14 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 
 			ev.on('connection.update', listener)
 			if (timeoutMs) {
-				timeout = setTimeout(() => {
-					cleanup()
-					reject(new Boom('Timed out waiting for connection update', { statusCode: 408 }))
-				}, timeoutMs)
-				// Don't keep the process alive if the caller has already stopped
-				// awaiting (e.g. sock.end() during shutdown with in-flight queries).
-				timeout.unref?.()
+				timeout = unrefTimer(
+					setTimeout(() => {
+						cleanup()
+						reject(new Boom('Timed out waiting for connection update', { statusCode: 408 }))
+					}, timeoutMs)
+					// Don't keep the process alive if the caller has already stopped
+					// awaiting (e.g. sock.end() during shutdown with in-flight queries).
+				) as typeof timeout
 			}
 		})
 	}

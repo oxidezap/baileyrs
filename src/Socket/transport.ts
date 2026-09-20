@@ -1,4 +1,5 @@
 import type { JsHttpClientConfig, JsTransportCallbacks, JsTransportHandle } from '@oxidezap/whatsapp-rust-bridge'
+import { unrefTimer } from '../Runtime/bytes.ts'
 import type { ILogger } from '../Utils/logger.ts'
 
 interface TransportConfig {
@@ -167,7 +168,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			}
 			// Bound the wait so a pathological close (e.g. half-open TCP peer
 			// never acking FIN) can't hang shutdown beyond a short grace period.
-			await Promise.race([closed, new Promise<void>(r => setTimeout(r, 500).unref())])
+			await Promise.race([closed, new Promise<void>(r => unrefTimer(setTimeout(r, 500)))])
 		}
 	}
 }
