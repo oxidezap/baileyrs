@@ -134,12 +134,10 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		}
 	})
 
-	it('free() mid-disconnect still kills the process, so end() keeps draining', async () => {
-		// The one shape `free()` never became safe for: freeing under the
-		// disconnect teardown aborts the process (`cannot recursively acquire
-		// mutex`). This pins why `release`
-		// awaits `disconnect()` before freeing — drop that drain and `void
-		// sock.ws.close(); await sock.end()` can land here.
+	it('free() mid-disconnect survives the bridge teardown', async () => {
+		// Bridge 0.23.1 makes freeing under the disconnect teardown safe. Keep
+		// this regression guard because `release` still awaits `disconnect()`
+		// before freeing, and the bridge must remain safe if callers free early.
 		const outcome = await runChild(
 			`
 			c.disconnect().catch(() => {})
@@ -150,12 +148,9 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 
 		expect(outcome.reachedTarget).toBe(true)
 		expect(outcome.timedOut).toBe(false)
-		expect(outcome.code === 0).toBe(false)
-		// The crash signature, not just any nonzero exit: anything else (a
-		// sync error, an unhandled rejection after setup) would satisfy the
-		// lines above while describing a different hazard.
-		expect(outcome.stderr).toContain('cannot recursively acquire mutex')
-		expect(outcome.stderr).toContain('wasm://wasm/')
+		expect(outcome.code).toBe(0)
+		expect(outcome.stderr.includes('cannot recursively acquire mutex')).toBe(false)
+		expect(outcome.stderr.includes('wasm://wasm/')).toBe(false)
 	})
 
 	it('await disconnect() before free() survives the same pending call', async () => {
