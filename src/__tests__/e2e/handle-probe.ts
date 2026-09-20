@@ -91,15 +91,25 @@ function instrument(source: string): string {
 export async function loadInstrumentedBridge(): Promise<InstrumentedBridge> {
 	// The bridge is ESM-only, so resolution goes through `import.meta.resolve`
 	// rather than `createRequire`, which cannot see an import-only `exports` map.
+	// The public entry (`index.js`) is a thin facade over the wasm-bindgen glue
+	// (`bridge.js`), where the closure helpers live. Since the facade resolves
+	// both the glue and the `.wasm` relative to its own URL, the instrumented
+	// copy is laid out the same way: the glue is instrumented, the facade is
+	// copied verbatim, and both sit next to the `.wasm`.
 	const entry = fileURLToPath(await import.meta.resolve('@oxidezap/whatsapp-rust-bridge'))
 	const dist = dirname(entry)
+	const glueFile = readFileSync(entry, 'utf8').includes('cnt:1') ? entry : join(dist, 'bridge.js')
 	const dir = mkdtempSync(join(tmpdir(), 'baileyrs-handle-probe-'))
 
 	copyFileSync(join(dist, 'whatsapp_rust_bridge_bg.wasm'), join(dir, 'whatsapp_rust_bridge_bg.wasm'))
-	const copy = join(dir, 'index.js')
-	writeFileSync(copy, instrument(readFileSync(entry, 'utf8')))
+	if (glueFile === entry) {
+		writeFileSync(join(dir, 'index.js'), instrument(readFileSync(entry, 'utf8')))
+	} else {
+		writeFileSync(join(dir, 'bridge.js'), instrument(readFileSync(glueFile, 'utf8')))
+		copyFileSync(entry, join(dir, 'index.js'))
+	}
 
-	const bridge = (await import(pathToFileURL(copy).href)) as Record<string, unknown>
+	const bridge = (await import(pathToFileURL(join(dir, 'index.js')).href)) as Record<string, unknown>
 	const state = globalThis.__handleProbe as {
 		made: number
 		freed: number
