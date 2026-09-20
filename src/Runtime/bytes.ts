@@ -12,6 +12,12 @@ const HEX_DIGITS = '0123456789abcdef'
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
 /** Concatenate byte views without copying through Buffer. */
+/** Preserve Node's historical Buffer shape when that optional global exists. */
+export const publicBytes = (bytes: Uint8Array): Uint8Array => {
+	const BufferCtor = (globalThis as typeof globalThis & { Buffer?: { from(value: Uint8Array): Uint8Array } }).Buffer
+	return BufferCtor ? BufferCtor.from(bytes) : bytes
+}
+
 export const concatBytes = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
 	let total = 0
 	for (const part of parts) total += part.length

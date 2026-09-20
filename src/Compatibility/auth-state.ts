@@ -81,8 +81,8 @@ const hydrateFromStore = async (store: JsStoreCallbacks, creds: AuthenticationCr
 		if (!payload) continue
 		try {
 			projection.prepare(record, payload)()
-		} catch {
-			/* a record we cannot read leaves that part of the mirror at its default */
+		} catch (error) {
+			throw new Error(`failed to hydrate persisted auth record '${record}'`, { cause: error })
 		}
 	}
 }

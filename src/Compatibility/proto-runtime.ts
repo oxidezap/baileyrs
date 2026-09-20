@@ -1,7 +1,7 @@
 import type Long from 'long'
 import LongRuntime from '../Runtime/long.ts'
 import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge/host'
-import { base64Decode, base64Encode } from '../Runtime/bytes.ts'
+import { base64Decode, base64Encode, publicBytes } from '../Runtime/bytes.ts'
 import {
 	PROTO_ENUM_SCHEMAS,
 	PROTO_FIELD_FLAG,
@@ -982,7 +982,7 @@ class ProtoCompatibilityRuntime {
 			case PROTO_FIELD_KIND.bool:
 				return false
 			case PROTO_FIELD_KIND.bytes:
-				return options.bytes === String ? '' : options.bytes === Array ? [] : new Uint8Array(0)
+				return options.bytes === String ? '' : options.bytes === Array ? [] : publicBytes(new Uint8Array(0))
 			case PROTO_FIELD_KIND.signed64:
 			case PROTO_FIELD_KIND.unsigned64:
 				return options.longs === String
@@ -1008,7 +1008,7 @@ class ProtoCompatibilityRuntime {
 					? bytesToBase64(value)
 					: options.bytes === Array
 						? Array.prototype.slice.call(value)
-						: value
+						: publicBytes(value instanceof Uint8Array ? value : new Uint8Array(value as ArrayLike<number>))
 			case PROTO_FIELD_KIND.float:
 				return options.json && !Number.isFinite(value) ? String(value) : value
 			case PROTO_FIELD_KIND.signed64:

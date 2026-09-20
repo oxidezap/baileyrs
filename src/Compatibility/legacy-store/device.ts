@@ -1,6 +1,6 @@
 // Device credential projection for legacy Baileys authentication states.
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
-import { base64Decode, base64Encode } from '../../Runtime/bytes.ts'
+import { base64Decode, base64Encode, publicBytes } from '../../Runtime/bytes.ts'
 import { WA_DEFAULT_VERSION } from '../../Defaults/index.ts'
 import type { AuthenticationCreds } from '../../Types/index.ts'
 import { jidDecode, jidEncode, type JidServer } from '../../WABinary/jid-utils.ts'
@@ -193,7 +193,7 @@ function prepareNativeDevice(payload: Uint8Array): (creds: AuthenticationCreds) 
 			creds.advSecretKey = base64Encode(new Uint8Array(advSecret))
 		}
 		if (routingInfo === null) creds.routingInfo = undefined
-		else if (routingInfo) creds.routingInfo = new Uint8Array(routingInfo) as Buffer
+		else if (routingInfo) creds.routingInfo = publicBytes(new Uint8Array(routingInfo)) as Buffer
 	}
 }
 

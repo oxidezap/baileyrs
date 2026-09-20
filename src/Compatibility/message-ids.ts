@@ -26,7 +26,10 @@ const writeAsciiInto = (target: Uint8Array, text: string, offset: number): void 
 const jidUser = (jid: string): string | undefined => {
 	const at = jid.indexOf('@')
 	const user = at < 0 ? jid : jid.slice(0, at)
-	return user.length > 0 ? user : undefined
+	// Baileys hashes the bare user, not the device/agent suffix of a
+	// multi-device JID (`user:device` or `user-agent`).
+	const bareUser = user.split(':', 1)[0]!.split('-', 1)[0]!
+	return bareUser.length > 0 ? bareUser : undefined
 }
 
 export const generateMessageIDV2Portable = (userId?: string): string => {

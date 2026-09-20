@@ -1,5 +1,3 @@
-import { createRequire } from 'node:module'
-
 /** Resolution and loading behind {@link loadOptionalPeer}. Injected in tests. */
 export interface PeerLoader {
 	resolveSpecifier(specifier: string): string
@@ -8,7 +6,11 @@ export interface PeerLoader {
 
 /** Filesystem-backed loader, rooted at the importing module. */
 export const nodePeerLoader = (baseUrl: string): PeerLoader => {
-	const requireFrom = createRequire(baseUrl)
+	const getBuiltinModule = (globalThis as typeof globalThis & {
+		process?: { getBuiltinModule?: (name: string) => { createRequire(url: string): NodeRequire } }
+	}).process?.getBuiltinModule
+	if (!getBuiltinModule) throw new Error('optional peer loading requires Node compatibility')
+	const requireFrom = getBuiltinModule('module').createRequire(baseUrl)
 	return {
 		resolveSpecifier: specifier => requireFrom.resolve(specifier),
 		requireSpecifier: specifier => requireFrom(specifier)
