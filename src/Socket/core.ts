@@ -137,7 +137,6 @@ export const createWASocketFactory =
 		createWASocketFactoryInner(runtime, config)
 
 const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingSocketConfig) => {
-	let wasmInitialized = false
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { logger } = fullConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
@@ -500,9 +499,25 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 	})
 
 	const init = async () => {
-		if (!wasmInitialized) {
+		// `initWasmEngine` reads `logger.level` synchronously while installing
+		// the Rust-side logger: a consumer logger without the pino shape
+		// (notably the throwing test double, which has no `level` at all)
+		// throws here, before any socket exists. That throw is inside `init()`,
+		// so without this guard it becomes an `initError` and `getClient()`
+		// reports "Bridge client failed to initialize" instead of connecting.
+		// The engine keeps its previous logger in that case, which is fine:
+		// Rust-side log routing is process-global and outlives any one socket.
+		// A throwing `logger.error` here would surface as an unhandled
+		// rejection on a chain the caller never sees, so the fallback call is
+		// guarded too.
+		try {
 			runtime.bridge.initWasmEngine(logger, runtime.nativeCrypto)
-			wasmInitialized = true
+		} catch (err) {
+			try {
+				logger.error({ err }, 'failed to install the bridge logger')
+			} catch {
+				/* a consumer logger cannot prevent the socket from starting */
+			}
 		}
 
 		// Defer to a microtask so callers have a turn to attach listeners
@@ -574,6 +589,10 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 		// against a socket the caller already disposed.
 		// `adopt` starts releasing the refused client; joining it here keeps
 		// that work inside `initPromise`, which `Symbol.asyncDispose` awaits.
+		// `adopt` also refuses when `discard()` already reset a half-built
+		// client to `starting` (init failure after adopt): the client is being
+		// released by that path, and `run()` below would reconnect a freed
+		// handle forever, so stop the same way.
 		if (!owner.adopt(created)) return owner.settled()
 
 		// Fallback for standalone helpers like `downloadContentFromMessage`
@@ -717,7 +736,13 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 	// of ours can reach it. Ordering it here makes the dependency structural.
 	const initPromise = init().catch(err => {
 		initError = err instanceof Error ? err : new Error(String(err))
-		logger.error({ err }, 'failed to initialize bridge client')
+		try {
+			logger.error({ err }, 'failed to initialize bridge client')
+		} catch {
+			// A consumer logger cannot prevent the half-built-client
+			// cleanup below — and an unguarded throw here surfaces as an
+			// unhandled rejection on a chain the caller never sees.
+		}
 
 		// A client adopted before the failure outlives a read loop that never
 		// started: `getClient()` correctly rejects, but the standalone

@@ -209,7 +209,7 @@ const CASES: DomainCase[] = [
 		parameter: 'type',
 		values: ['available', 'unavailable', 'composing', 'recording', 'paused'],
 		call: (sock, value) => sock.sendPresenceUpdate(arg(value), USER),
-		source: 'index.ts:sendPresenceUpdate:type'
+		source: 'core.ts:sendPresenceUpdate:type'
 	},
 	{
 		label: 'profilePictureUrl',
@@ -238,7 +238,7 @@ const CASES: DomainCase[] = [
 		parameter: 'mediaType',
 		values: MEDIA_TYPES,
 		call: (sock, value) => sock.waUploadToServer(new Uint8Array([1, 2, 3]), { mediaType: arg(value) }),
-		source: 'index.ts:waUploadToServer:mediaType'
+		source: 'core.ts:waUploadToServer:mediaType'
 	},
 	{
 		label: 'sendReceipt',
