@@ -5,7 +5,7 @@
  * implementations are byte-identical.
  */
 
-import { Buffer } from 'node:buffer'
+import { hexEncode, utf8Decode } from '../Runtime/bytes.ts'
 import type { BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { proto } from '../WAProto/runtime.ts'
@@ -29,16 +29,18 @@ export const getAllBinaryNodeChildren = ({ content }: BinaryNode): BinaryNode[] 
 
 export const getBinaryNodeChildBuffer = (node: BinaryNode | undefined, childTag: string): Uint8Array | undefined => {
 	const child = getBinaryNodeChild(node, childTag)?.content
-	if (Buffer.isBuffer(child) || child instanceof Uint8Array) return child
+	// Buffer subclasses Uint8Array, so one check covers both; anything else
+	// (string content, nested nodes) is genuinely not bytes.
+	if (child instanceof Uint8Array) return child
 }
 
 export const getBinaryNodeChildString = (node: BinaryNode | undefined, childTag: string): string | undefined => {
 	const child = getBinaryNodeChild(node, childTag)?.content
-	if (Buffer.isBuffer(child) || child instanceof Uint8Array) return Buffer.from(child).toString('utf8')
+	if (child instanceof Uint8Array) return utf8Decode(child)
 	if (typeof child === 'string') return child
 }
 
-const bufferToUInt = (value: Uint8Array | Buffer, length: number): number => {
+const bufferToUInt = (value: Uint8Array, length: number): number => {
 	let result = 0
 	for (let index = 0; index < length; index++) result = 256 * result + value[index]!
 	return result
@@ -98,7 +100,7 @@ const tabs = (count: number) => '\t'.repeat(count)
 export function binaryNodeToString(node: BinaryNode | BinaryNode['content'], i = 0): string {
 	if (!node) return node!
 	if (typeof node === 'string') return tabs(i) + node
-	if (node instanceof Uint8Array) return tabs(i) + Buffer.from(node).toString('hex')
+	if (node instanceof Uint8Array) return tabs(i) + hexEncode(node)
 	if (Array.isArray(node)) return node.map(child => tabs(i + 1) + binaryNodeToString(child, i + 1)).join('\n')
 
 	const children = binaryNodeToString(node.content, i + 1)
