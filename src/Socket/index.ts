@@ -1,13 +1,13 @@
 import { Buffer } from 'node:buffer'
-import { randomBytes } from 'node:crypto'
-import {
-	createWhatsAppClient,
-	type WasmWhatsAppClient,
-	type DevicePlatformType,
-	initWasmEngine,
-	type RunCompletionResult,
-	type UploadMediaResult
+import type {
+	WasmWhatsAppClient,
+	DevicePlatformType,
+	RunCompletionResult,
+	UploadMediaResult
 } from '@oxidezap/whatsapp-rust-bridge'
+import type { BaileysRuntime } from '../Runtime/types.ts'
+import { base64UrlEncode } from '../Runtime/bytes.ts'
+import { nodeRuntime } from '../Runtime/node.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
@@ -46,7 +46,6 @@ import {
 	MEDIA_DOWNLOAD_TYPES,
 	type MediaDownloadType
 } from '../Utils/messages.ts'
-import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import {
 	makeHistorySyncAdmission,
 	resolveHistorySyncPolicy,
@@ -82,7 +81,6 @@ import type { SocketContext } from './types.ts'
 import { makeWithClient } from './client-operations.ts'
 import { makeUSyncMethods } from './usync.ts'
 
-let wasmInitialized = false
 
 /**
  * Default mapping for the legacy `browser[1]` slot — preserved so users on the
@@ -136,7 +134,13 @@ const completionFailureCode = (reason: string): number | undefined => {
 }
 
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
-const makeWASocket = (config: UserFacingSocketConfig) => {
+export const createWASocketFactory =
+	(runtime: BaileysRuntime) =>
+	(config: UserFacingSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
+		createWASocketFactoryInner(runtime, config)
+
+const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingSocketConfig) => {
+	let wasmInitialized = false
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { logger } = fullConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
@@ -235,8 +239,14 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				// Without this barrier the flushes below run before the bridge
 				// has finished writing — a race that loses the last few sets
 				// (typically the closing-session ratchet step).
-				await new Promise(resolve => setImmediate(resolve))
-				await new Promise(resolve => setImmediate(resolve))
+				await new Promise<void>(resolve => {
+					if (runtime.setImmediate) runtime.setImmediate(() => resolve())
+					else runtime.setTimeout(() => resolve(), 0)
+				})
+				await new Promise<void>(resolve => {
+					if (runtime.setImmediate) runtime.setImmediate(() => resolve())
+					else runtime.setTimeout(() => resolve(), 0)
+				})
 			}
 
 			const firstFlushError = await flushStores()
@@ -317,7 +327,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	// implementation) collided in test loops and worker pools — every
 	// socket started at `tagEpoch=0` and a tagged message-id collision
 	// breaks waitForMessage routing.
-	const tagPrefix = `${randomBytes(6).toString('base64url')}.`
+	const tagPrefix = `${base64UrlEncode(runtime.randomBytes(6))}.`
 	const generateMessageTag = () => `${tagPrefix}${tagEpoch++}`
 
 	let pairedAccount: { platform?: string; businessName?: string } | undefined
@@ -494,7 +504,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 
 	const init = async () => {
 		if (!wasmInitialized) {
-			initWasmEngine(logger, makeNativeCryptoProvider())
+			runtime.bridge.initWasmEngine(logger, runtime.nativeCrypto)
 			wasmInitialized = true
 		}
 
@@ -509,7 +519,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		// got to enter, then crash when the next state ('open' / 'close')
 		// references prerequisites that the missed event was supposed to set
 		// up.
-		queueMicrotask(() =>
+		runtime.queueMicrotask(() =>
 			ev.emit('connection.update', {
 				connection: 'connecting',
 				receivedPendingNotifications: false,
@@ -544,7 +554,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		}
 		if (useNativeMemory) logger.debug('auth: using socket-local native memory backend')
 
-		const created = await createWhatsAppClient(
+		const created = await runtime.bridge.createWhatsAppClient(
 			makeTransport(fullConfig),
 			makeHttpClient(fullConfig),
 			eventHandlers,
@@ -804,7 +814,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 		timeoutMs?: number
 	) => {
 		return new Promise<void>((resolve, reject) => {
-			let timeout: NodeJS.Timeout | undefined
+			let timeout: ReturnType<typeof setTimeout> | undefined
 			const cleanup = () => {
 				ev.off('connection.update', listener)
 				if (timeout) clearTimeout(timeout)
@@ -836,7 +846,7 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 				}, timeoutMs)
 				// Don't keep the process alive if the caller has already stopped
 				// awaiting (e.g. sock.end() during shutdown with in-flight queries).
-				timeout.unref()
+				timeout.unref?.()
 			}
 		})
 	}
@@ -1115,4 +1125,12 @@ const makeWASocket = (config: UserFacingSocketConfig) => {
 	return sock
 }
 
+/**
+ * Node entrypoint: same factory every consumer has always called, bound to
+ * the Node runtime (bare bridge entrypoint, node:crypto randomness,
+ * node:events emitter, OpenSSL native crypto, stdout logger sink).
+ */
+export const makeNodeWASocket = createWASocketFactory(nodeRuntime)
+export const createWASocketFactoryFor = createWASocketFactory
+export const makeWASocket = makeNodeWASocket
 export default makeWASocket

@@ -83,6 +83,7 @@
   },
   "dependencies": {
     "@oxidezap/whatsapp-rust-bridge": "0.23.0",
+    "events": "^3.3.0",
     "long": "^5.3.2"
   },
   "devDependencies": {
