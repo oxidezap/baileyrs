@@ -154,9 +154,67 @@ for (const file of HOST_NEUTRAL) {
 	}
 }
 
+// Second gate: the host entry closure. Walk relative imports from
+// `src/host.ts` and fail on any runtime `node:` import or bare bridge-root
+// value import — those would bundle Node-only code into the portable
+// graph. Type-only imports (`import type`, `export type`) vanish at emit
+// and are exempt, as are comments.
+const hostClosure = new Set<string>()
+const resolveRelative = (fromFile: string, specifier: string): string | undefined => {
+	const base = resolve(dirname(fromFile), specifier)
+	const candidates = [`${base}.ts`, join(base, 'index.ts'), base]
+	for (const candidate of candidates) {
+		try {
+			if (!statSync(candidate).isDirectory()) return candidate
+		} catch {
+			/* try the next candidate */
+		}
+	}
+	return undefined
+}
+const visitHostFile = (file: string): void => {
+	if (hostClosure.has(file)) return
+	hostClosure.add(file)
+	let source: string
+	try {
+		source = readFileSync(file, 'utf8')
+	} catch {
+		return
+	}
+	for (const line of source.split(/\r?\n/u)) {
+		const match = /(?:import|export)[^'"]*from\s*['"](\.[^'"]+)['"]/.exec(line)
+		if (!match) continue
+		const next = resolveRelative(file, match[1]!)
+		if (next && next.endsWith('.ts')) visitHostFile(next)
+	}
+}
+visitHostFile(resolve(src, 'host.ts'))
+for (const file of hostClosure) {
+	if (!file.endsWith('.ts')) continue
+	const lines = readFileSync(file, 'utf8').split(/\r?\n/u)
+	lines.forEach((line, index) => {
+		const trimmed = line.trim()
+		if (trimmed.startsWith('//') || trimmed.startsWith('*')) return
+		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(line)
+		const specifier = importMatch?.[1]
+		if (!specifier) return
+		const isTypeOnly = /^\s*(import|export)\s+type\b/.test(line)
+		if (specifier === '@oxidezap/whatsapp-rust-bridge' && !isTypeOnly) {
+			report(file, index + 1, line, 'host closure pulls the bare bridge root (use /host)')
+		}
+		for (const forbidden of FORBIDDEN_NODE) {
+			if (specifier === forbidden || specifier.startsWith(`${forbidden}/`)) {
+				report(file, index + 1, line, `host closure pulls runtime import ${forbidden}`)
+			}
+		}
+	})
+}
+
 if (violations.length > 0) {
 	for (const violation of violations) console.error(violation)
 	console.error(`\nhost-boundary gate: ${violations.length} violation(s)`)
 	process.exit(1)
 }
-console.log(`host-boundary gate: ${listSourceFiles(src).length} source files checked, ${HOST_NEUTRAL.size} host-neutral, clean`)
+console.log(
+	`host-boundary gate: ${listSourceFiles(src).length} source files checked, ${HOST_NEUTRAL.size} host-neutral, host closure ${hostClosure.size} files, clean`
+)
