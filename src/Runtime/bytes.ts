@@ -109,11 +109,9 @@ export const base64UrlDecode = (text: string): Uint8Array => {
 	return base64Decode(padded)
 }
 
-export const readU16BE = (bytes: Uint8Array, offset = 0): number =>
-	((bytes[offset]! << 8) | bytes[offset + 1]!) >>> 0
+export const readU16BE = (bytes: Uint8Array, offset = 0): number => ((bytes[offset]! << 8) | bytes[offset + 1]!) >>> 0
 
-export const writeU16BE = (value: number): Uint8Array =>
-	new Uint8Array([(value >>> 8) & 0xff, value & 0xff])
+export const writeU16BE = (value: number): Uint8Array => new Uint8Array([(value >>> 8) & 0xff, value & 0xff])
 
 /** Big-endian 64-bit write as two 32-bit words (registration ids stay numeric). */
 export const writeU64BE = (high: number, low: number): Uint8Array =>

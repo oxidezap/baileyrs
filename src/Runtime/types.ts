@@ -21,7 +21,6 @@ import type {
 	JsStoreCallbacks
 } from '@oxidezap/whatsapp-rust-bridge/host'
 import type Long from 'long'
-import type { ILogger } from '../Utils/logger.ts'
 
 /** Subset of the bridge surface the socket core touches. */
 export interface BridgeRuntime {

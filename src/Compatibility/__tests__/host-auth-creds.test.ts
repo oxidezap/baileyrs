@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 // The host entrypoint needs an explicit initSync before any bridge call.
 // The bare root auto-initializes from disk; importing it here is the test
 // harness equivalent of the host's initSync({ module: wasm }).
-import '@oxidezap/whatsapp-rust-bridge'
+import { generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import { generateSignalPubKey } from '../../Utils/crypto.ts'
 import { verifySignature } from '@oxidezap/whatsapp-rust-bridge/host'
 import { initHostAuthCreds } from '../auth-state.ts'
@@ -11,6 +11,12 @@ import { initAuthCreds } from '../../Utils/generics.ts'
 import { expect } from '../../__tests__/expect.ts'
 
 describe('host auth creds', () => {
+	it('shares the initialized bridge engine with the host entrypoint', () => {
+		// The bare root auto-initializes the wasm from disk; the host
+		// entrypoint needs initSync({ module: wasm }). Calling keygen
+		// through /host proves the engine is live for host consumers.
+		expect(generateKeyPair().privKey).toHaveLength(32)
+	})
 	it('matches the Node initAuthCreds field contract', () => {
 		const host = initHostAuthCreds()
 		const node = initAuthCreds()
