@@ -1,5 +1,5 @@
 import type { AuthenticationState, NativeAuthenticationState } from '../../Types/index.ts'
-import { initAuthCreds } from '../../Utils/generics.ts'
+import { initHostAuthCreds } from '../auth-state.ts'
 import { projectNativeStore } from '../legacy-store/native-projection.ts'
 
 /**
@@ -16,7 +16,7 @@ export const normalizeSocketAuthenticationState = (
 	}
 
 	const store = input.store
-	const creds = input.creds ?? (store ? initAuthCreds() : undefined)
+	const creds = input.creds ?? (store ? initHostAuthCreds() : undefined)
 	const keys = input.keys ?? (store && creds ? projectNativeStore(store, creds) : undefined)
 
 	if (!creds || !keys) {
