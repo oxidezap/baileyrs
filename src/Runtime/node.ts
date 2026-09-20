@@ -9,7 +9,7 @@
  */
 
 import { randomBytes as nodeRandomBytesSource } from 'node:crypto'
-import EventEmitter from 'node:events'
+import EventEmitter from 'events'
 import { platform, release } from 'node:os'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import Long from 'long'
