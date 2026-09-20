@@ -7,8 +7,8 @@ export { useMemoryStore } from './Utils/use-memory-store.ts'
 export { hostRuntime } from './Runtime/host.ts'
 export { setPlatformInfo } from './Utils/browser-utils.ts'
 export { setLoggerSink } from './Utils/logger.ts'
-export { createWASocketFactory } from './Socket/index.ts'
-import { createWASocketFactory } from './Socket/index.ts'
+export { createWASocketFactory } from './Socket/core.ts'
+import { createWASocketFactory } from './Socket/core.ts'
 import { hostRuntime } from './Runtime/host.ts'
 
 /** Host-bound socket factory: global WebSocket/fetch/WebCrypto, Rust crypto, no fs. */
