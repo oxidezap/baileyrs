@@ -772,6 +772,8 @@ const DISPATCHERS: DispatcherMap = {
 		// Mirrors upstream `chat-utils.ts:852`: read=true → unreadCount=0,
 		// read=false (mark as unread) → -1 sentinel.
 		ctx.ev.emit('chats.update', [{ id: evt.jid, unreadCount: evt.read ? 0 : -1 }]),
+	// Upstream `chat-utils.ts:819` emits `chats.lock` from `lockChatAction.locked`.
+	lockChatUpdate: (evt, { ctx }) => ctx.ev.emit('chats.lock', { id: evt.jid, locked: evt.locked }),
 	labelEdit: (evt, { ctx }) =>
 		// Upstream `labels.edit` carries a `Label`. A delete arrives with
 		// `deleted: true` (consumers remove it from their store).

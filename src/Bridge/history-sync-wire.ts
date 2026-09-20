@@ -1,4 +1,4 @@
-import { BinaryReader, type HistorySyncWireBatch, type WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
+import { BinaryReader, type HistorySyncWireBatch, type WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge/host'
 import { proto as WAProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
 import { isConversationHistorySync } from '../Utils/process-history-message.ts'

@@ -349,6 +349,11 @@ const ADAPTERS = {
 		if (!jid) return null
 		return { type: 'markChatAsReadUpdate', jid, read: asBoolOr(extractAction(data)?.read, true) }
 	},
+	lock_chat_update: data => {
+		const jid = asJidString(data?.jid)
+		if (!jid) return null
+		return { type: 'lockChatUpdate', jid, locked: asBoolOr(extractAction(data)?.locked, true) }
+	},
 	label_edit_update: data => {
 		const labelId = asString(data?.label_id)
 		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }

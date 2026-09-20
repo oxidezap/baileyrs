@@ -1,4 +1,4 @@
-import { encodeProto } from '@oxidezap/whatsapp-rust-bridge'
+import { encodeProto } from '@oxidezap/whatsapp-rust-bridge/host'
 import { projectProtoMessage, repairProtoMessage } from './proto-runtime.ts'
 
 /**
