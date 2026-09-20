@@ -79,7 +79,6 @@ import type { SocketContext } from './types.ts'
 import { makeWithClient } from './client-operations.ts'
 import { makeUSyncMethods } from './usync.ts'
 
-
 /**
  * Default mapping for the legacy `browser[1]` slot — preserved so users on the
  * existing `Browsers.macOS('Chrome')` style get the same `DeviceProps.platformType`

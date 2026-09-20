@@ -72,14 +72,9 @@ export function extensionForMediaMessage(message: WAMessageContent): string {
 	return getExtension((message[type] as WAGenericMediaMessage).mimetype!)!
 }
 
-const getMediaRetryKey = (mediaKey: Uint8Array) =>
-	hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
+const getMediaRetryKey = (mediaKey: Uint8Array) => hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
 
-export const encryptMediaRetryRequest = (
-	key: WAMessageKey,
-	mediaKey: Uint8Array,
-	meId: string
-): BinaryNode => {
+export const encryptMediaRetryRequest = (key: WAMessageKey, mediaKey: Uint8Array, meId: string): BinaryNode => {
 	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
 	const iv = randomBytes(12)
 	const ciphertext = aesGcm256EncryptPortable(getMediaRetryKey(mediaKey), iv, utf8Encode(key.id!), receiptBuffer)

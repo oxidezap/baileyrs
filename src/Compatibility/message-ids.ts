@@ -43,8 +43,7 @@ export const generateMessageIDV2Portable = (userId?: string): string => {
 }
 
 /** `3EB0` + 36 uppercase hex chars from 18 random bytes (matches `generateMessageID`). */
-export const generateMessageIDPortable = (): string =>
-	`3EB0${hexEncode(randomBytes(18)).toUpperCase()}`
+export const generateMessageIDPortable = (): string => `3EB0${hexEncode(randomBytes(18)).toUpperCase()}`
 
 /** Concatenate without Buffer (pad helper for the portable graph). */
 export const concatMessageBytes = (parts: ReadonlyArray<Uint8Array>): Uint8Array => concatBytes(parts)

@@ -21,7 +21,11 @@ export const Browsers: BrowsersMap = {
 	baileys: browser => ['Baileys', browser, '6.5.0'],
 	windows: browser => ['Windows', browser, '10.0.22631'],
 	android: osVersion => [osVersion, 'Android', ''],
-	appropriate: browser => [PLATFORM_MAP[resolvePlatform() as keyof typeof PLATFORM_MAP] || 'Ubuntu', browser, resolveRelease()]
+	appropriate: browser => [
+		PLATFORM_MAP[resolvePlatform() as keyof typeof PLATFORM_MAP] || 'Ubuntu',
+		browser,
+		resolveRelease()
+	]
 }
 
 /**

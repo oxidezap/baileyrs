@@ -4,13 +4,7 @@ import { base64Decode, base64Encode } from '../../Runtime/bytes.ts'
 import { WA_DEFAULT_VERSION } from '../../Defaults/index.ts'
 import type { AuthenticationCreds } from '../../Types/index.ts'
 import { jidDecode, jidEncode, type JidServer } from '../../WABinary/jid-utils.ts'
-import {
-	DeviceRecordKey,
-	SignalDomain,
-	SignalKeyLength,
-	TimeValue,
-	type DeviceRecordKeyName
-} from './constants.ts'
+import { DeviceRecordKey, SignalDomain, SignalKeyLength, TimeValue, type DeviceRecordKeyName } from './constants.ts'
 import { bytesToNumbers, fromJsonBytes, toJsonBytes } from './common.ts'
 import { isAllZero, requireByteArray, requireSafeUnsignedInteger } from './validation.ts'
 
