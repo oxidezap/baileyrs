@@ -16,7 +16,7 @@ import { proto } from '../WAProto/runtime.ts'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import { WAProto } from '../Types/index.ts'
 import { isHostedLidUser, isHostedPnUser, isLidUser, isPnUser } from '../WABinary/jid-utils.ts'
-import { toNumber } from './generics.ts'
+import { asInt64 } from '../Bridge/primitives.ts'
 import type { ILogger } from './logger.ts'
 import { normalizeMessageContent } from '../Media/content.ts'
 import { downloadContentFromMessage } from './messages.ts'
@@ -158,7 +158,10 @@ export const processHistoryMessage = (item: proto.IHistorySync, logger?: ILogger
 				}
 
 				if (!message.key?.fromMe && !chat.lastMessageRecvTimestamp) {
-					chat.lastMessageRecvTimestamp = toNumber(message.messageTimestamp)
+					// `messageTimestamp` is always set on a decoded message; a
+					// value past 2^53 would round, so absence beats a wrong
+					// instant here (same contract as the adapter layer).
+					chat.lastMessageRecvTimestamp = asInt64(message.messageTimestamp) ?? 0
 				}
 
 				// Extract verifiedName side-channel when WhatsApp sent a
