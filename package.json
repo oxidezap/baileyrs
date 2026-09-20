@@ -34,6 +34,14 @@
       "types": "./lib/Utils/logger.d.ts",
       "default": "./lib/Utils/logger.js"
     },
+    "./host": {
+      "types": "./lib/host.d.ts",
+      "default": "./lib/host.js"
+    },
+    "./wasm": {
+      "types": "./lib/wasm.d.ts",
+      "default": "./lib/wasm.js"
+    },
     "./lib/*": {
       "types": "./lib/*.d.ts",
       "default": "./lib/*.js"
