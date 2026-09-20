@@ -62,7 +62,10 @@ function instrument(source: string): string {
 		/function\s+([\w$]+)\s*\([\w$]+\s*,\s*[\w$]+\s*,\s*[\w$]+\s*\)\s*\{\s*(?:let|var|const)\s+([\w$]+)\s*=\s*\{a\s*:\s*[\w$]+\s*,\s*b\s*:\s*[\w$]+\s*,\s*cnt\s*:\s*1\s*\}/
 	)
 	if (!created) throw new Error('handle probe: closure helper not found in the bridge bundle')
-	let out = source.replace(created[0], created[0].replace(/\{\s*(?:let|var|const)\s+/, '{globalThis.__handleProbe.made++;let '))
+	let out = source.replace(
+		created[0],
+		created[0].replace(/\{\s*(?:let|var|const)\s+/, '{globalThis.__handleProbe.made++;let ')
+	)
 
 	// The record is only in scope after the helper's declarations, so tracing
 	// hooks in at the unref assignment that follows them. That assignment sits
