@@ -33,6 +33,7 @@ const HOST_NEUTRAL = new Set(
 		'src/Compatibility/group-metadata.ts',
 		'src/Compatibility/history-sync-admission.ts',
 		'src/Compatibility/media-type.ts',
+		'src/Compatibility/message-ids.ts',
 		'src/Compatibility/message-relay.ts',
 		'src/Compatibility/auth-state.ts',
 		'src/Compatibility/newsletter-results.ts',

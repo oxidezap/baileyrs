@@ -1,7 +1,7 @@
 import type { MessageRetransmissionInput } from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode, MessageRelayOptions } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
-import { generateMessageIDV2 } from '../Utils/generics.ts'
+import { generateMessageIDV2Portable as generateMessageIDV2 } from './message-ids.ts'
 import { areJidsSameUser, isJidBroadcast, isJidGroup, isJidNewsletter } from '../WABinary/index.ts'
 
 export const EMPTY_RELAY_NODES: BinaryNode[] = []
