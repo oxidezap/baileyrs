@@ -210,9 +210,11 @@ for (const file of hostClosure) {
 		if (specifier === '@oxidezap/whatsapp-rust-bridge' && !isTypeOnly) {
 			report(file, index + 1, line, 'host closure pulls the bare bridge root (use /host)')
 		}
-		for (const forbidden of FORBIDDEN_NODE) {
-			if (specifier === forbidden || specifier.startsWith(`${forbidden}/`)) {
-				report(file, index + 1, line, `host closure pulls runtime import ${forbidden}`)
+		if (!isTypeOnly) {
+			for (const forbidden of FORBIDDEN_NODE) {
+				if (specifier === forbidden || specifier.startsWith(`${forbidden}/`)) {
+					report(file, index + 1, line, `host closure pulls runtime import ${forbidden}`)
+				}
 			}
 		}
 	})
