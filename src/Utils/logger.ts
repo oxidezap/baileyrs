@@ -278,6 +278,25 @@ const noteFallbackDelivered = (): void => {
 	}
 }
 
+/**
+ * Where fallback lines go. Node writes stdout (preserving the
+ * drain-aware flush contract); hosts call `setLoggerSink()` once (console
+ * by default) instead of branching on runtimes at every call site.
+ */
+let loggerSink: ((line: string, delivered: () => void) => void) | undefined
+
+export const setLoggerSink = (sink: ((line: string, delivered: () => void) => void) | undefined): void => {
+	loggerSink = sink
+}
+
+const defaultSink = (line: string, delivered: () => void): void => {
+	try {
+		process.stdout.write(`${line}\n`, delivered)
+	} catch {
+		delivered()
+	}
+}
+
 const writeFallbackLine = (line: string): void => {
 	fallbackPendingWrites++
 	let settled = false
@@ -287,7 +306,7 @@ const writeFallbackLine = (line: string): void => {
 		noteFallbackDelivered()
 	}
 	try {
-		process.stdout.write(`${line}\n`, delivered)
+		;(loggerSink ?? defaultSink)(line, delivered)
 	} catch {
 		delivered()
 	}
