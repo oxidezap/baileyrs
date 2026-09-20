@@ -1,12 +1,6 @@
-import type { AuthenticationState } from '../../Types/index.ts'
+import type { AuthenticationState, NativeAuthenticationState } from '../../Types/index.ts'
 import { initAuthCreds } from '../../Utils/generics.ts'
 import { projectNativeStore } from '../legacy-store/native-projection.ts'
-
-type NativeAuthenticationState = {
-	store: NonNullable<AuthenticationState['store']>
-	creds?: AuthenticationState['creds']
-	keys?: AuthenticationState['keys']
-}
 
 /**
  * Complete the public authentication view used by the socket when callers use
