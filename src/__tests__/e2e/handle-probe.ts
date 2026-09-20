@@ -56,9 +56,13 @@ function instrument(source: string): string {
 	// `[\w$]` rather than `\w`: `$` is a valid identifier character and the
 	// minifier does emit it, so a name like `h$` slipped past a `\w+` and read
 	// as a wasm-bindgen shape change that had not happened.
-	const created = source.match(/function ([\w$]+)\([\w$]+,[\w$]+,[\w$]+\)\{let ([\w$]+)=\{a:[\w$]+,b:[\w$]+,cnt:1\}/)
+	// Keep this tolerant of harmless formatter/minifier changes in the generated
+	// glue. The closure record's `cnt:1` is the stable wasm-bindgen marker.
+	const created = source.match(
+		/function\s+([\w$]+)\s*\([\w$]+\s*,\s*[\w$]+\s*,\s*[\w$]+\s*\)\s*\{\s*(?:let|var|const)\s+([\w$]+)\s*=\s*\{a\s*:\s*[\w$]+\s*,\s*b\s*:\s*[\w$]+\s*,\s*cnt\s*:\s*1\s*\}/
+	)
 	if (!created) throw new Error('handle probe: closure helper not found in the bridge bundle')
-	let out = source.replace(created[0], created[0].replace('{let ', '{globalThis.__handleProbe.made++;let '))
+	let out = source.replace(created[0], created[0].replace(/\{\s*(?:let|var|const)\s+/, '{globalThis.__handleProbe.made++;let '))
 
 	// The record is only in scope after the helper's declarations, so tracing
 	// hooks in at the unref assignment that follows them. That assignment sits
