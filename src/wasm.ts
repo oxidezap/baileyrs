@@ -13,8 +13,10 @@
  *
  * ```ts
  * import { readFileSync } from 'node:fs'
+ * import { fileURLToPath } from 'node:url'
  * import { initSync } from '@oxidezap/whatsapp-rust-bridge/host'
- * initSync({ module: readFileSync(require.resolve('@oxidezap/baileyrs/wasm')) })
+ * const wasmUrl = await import.meta.resolve('@oxidezap/whatsapp-rust-bridge/wasm')
+ * initSync({ module: readFileSync(fileURLToPath(wasmUrl)) })
  * ```
  *
  * The static `export ... from` below keeps the subpath working on bundlers
