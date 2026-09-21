@@ -26,6 +26,8 @@ import type {
 	Contact,
 	ReachoutTimelockState,
 	SignalKeyStoreWithTransaction,
+	SocketConfig,
+	HostSocketConfig,
 	UserFacingSocketConfig,
 	WABusinessProfile,
 	WAMessage,
@@ -134,7 +136,7 @@ const completionFailureCode = (reason: string): number | undefined => {
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
 export const createWASocketFactory = (runtime: BaileysRuntime) => {
 	let engineInitialized = false
-	return (config: UserFacingSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
+	return (config: UserFacingSocketConfig | HostSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
 		createWASocketFactoryInner(runtime, config, () => {
 			if (engineInitialized) return false
 			engineInitialized = true
@@ -144,15 +146,15 @@ export const createWASocketFactory = (runtime: BaileysRuntime) => {
 
 const createWASocketFactoryInner = (
 	runtime: BaileysRuntime,
-	config: UserFacingSocketConfig,
+	config: UserFacingSocketConfig | HostSocketConfig,
 	claimEngineInitialization: () => boolean
 ) => {
 	setLoggerSink((line, delivered) => {
 		runtime.loggerSink(line)
 		delivered()
 	})
-	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
-	const { logger } = fullConfig
+	const mergedConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
+	const { logger } = mergedConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
 	// is worth naming. Merging the defaults first would report every unsupported
 	// option on every socket, including the ones nobody chose.
@@ -166,7 +168,8 @@ const createWASocketFactoryInner = (
 			'⚠️ DANGER: DISABLING ALL SYNC BY shouldSyncHistoryMsg PREVENTS BAILEYS FROM ACCESSING INITIAL LID MAPPINGS, LEADING TO INSTABILIY AND SESSION ERRORS'
 		)
 	}
-	const auth = normalizeSocketAuthenticationState(fullConfig.auth)
+	const auth = normalizeSocketAuthenticationState(mergedConfig.auth)
+	const fullConfig = { ...mergedConfig, auth } as SocketConfig
 	const getExposedKeys = makeLazyTransactionKeyStore(auth.keys, logger, fullConfig.transactionOpts)
 
 	const ev = makeEventBuffer(logger)

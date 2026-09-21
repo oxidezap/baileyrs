@@ -10,7 +10,7 @@ export type {
 	DevicePropsInput
 } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { ILogger } from '../Utils/logger.ts'
-import type { AuthenticationState, LIDMapping, NativeAuthenticationState, SignalAuthState } from './Auth.ts'
+import type { AuthenticationState, LIDMapping, SignalAuthState } from './Auth.ts'
 import type { GroupMetadata } from './GroupMetadata.ts'
 import type { MediaConnInfo, WAMessageKey } from './Message.ts'
 import type { SignalRepositoryWithLIDStore } from './Signal.ts'
@@ -66,7 +66,7 @@ export type SocketConfig = {
 	/** Custom media upload hosts. */
 	customUploadHosts: MediaConnInfo['hosts']
 	/** provide an auth state object to maintain the auth state */
-	auth: AuthenticationState | NativeAuthenticationState
+	auth: AuthenticationState
 	/**
 	 * Returns if a jid should be ignored,
 	 * no event for that jid will be triggered.

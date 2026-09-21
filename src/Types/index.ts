@@ -18,8 +18,11 @@ import type { DisconnectReason as DisconnectReasonType } from '../Compatibility/
 import type { AuthenticationState, NativeAuthenticationState } from './Auth.ts'
 import type { SocketConfig } from './Socket.ts'
 
-export type UserFacingSocketConfig = Omit<Partial<SocketConfig>, 'auth'> & {
-	auth: AuthenticationState | NativeAuthenticationState
+export type UserFacingSocketConfig = Partial<SocketConfig> & { auth: AuthenticationState }
+
+/** Host-only socket config; store-first auth is intentionally not part of the Node API. */
+export type HostSocketConfig = Omit<Partial<SocketConfig>, 'auth'> & {
+	auth: NativeAuthenticationState | AuthenticationState
 }
 
 export type BrowsersMap = {
