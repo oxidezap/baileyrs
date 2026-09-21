@@ -4,6 +4,7 @@ type FileBytes = { toString: (encoding?: string) => string }
 
 /** Optional filesystem/process media capabilities. Node installs these; hosts never do. */
 export const nodeMedia: {
+	getImageProcessingLibrary: () => Promise<unknown>
 	tempDir: () => string
 	execFile: (command: string, args: string[], callback: (error: unknown) => void) => void
 	createReadStream: (path: string | URL) => Readable
@@ -13,6 +14,7 @@ export const nodeMedia: {
 		unlink: (path: string) => Promise<void>
 	}
 } = {
+	getImageProcessingLibrary: async () => ({}),
 	tempDir: () => '/tmp',
 	execFile: () => {
 		throw new Error('ffmpeg is unavailable on this host')

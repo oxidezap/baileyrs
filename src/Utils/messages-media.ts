@@ -31,20 +31,19 @@ const isNodeReadable = (value: unknown): value is Readable => isReadable(value)
 
 const getTmpFilesDirectory = () => nodeMedia.tempDir()
 
-const getImageProcessingLibrary = async () => {
-	//@ts-ignore
-	const [jimp, sharp] = await Promise.all([import('jimp').catch(() => {}), import('sharp').catch(() => {})])
-
-	if (sharp) {
-		return { sharp }
-	}
-
-	if (jimp) {
-		return { jimp }
-	}
-
-	throw new Boom('No image processing library available')
+type ImageProcessor = {
+	metadata: () => Promise<{ width?: number; height?: number }>
+	resize: (...args: unknown[]) => ImageProcessor
+	jpeg: (options: unknown) => ImageProcessor
+	toBuffer: () => Promise<Buffer>
 }
+type ImageProcessingLibrary = {
+	sharp?: { default?: (input: unknown) => ImageProcessor }
+	jimp?: { Jimp?: unknown; ResizeStrategy: { BILINEAR: unknown } }
+}
+
+const getImageProcessingLibrary = async (): Promise<ImageProcessingLibrary> =>
+	(await nodeMedia.getImageProcessingLibrary()) as ImageProcessingLibrary
 
 export const hkdfInfoKey = (type: MediaType): string => `WhatsApp ${MEDIA_HKDF_KEY_MAPPING[type]} Keys`
 

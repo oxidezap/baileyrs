@@ -21,10 +21,12 @@ import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { setReadableRuntime } from './stream.ts'
 import { nodeMedia } from './node-media.ts'
+import { loadImageProcessingLibrary } from './node-media-processors.ts'
 import { setBufferRuntime } from './buffer.ts'
 
 setBufferRuntime(Buffer)
 
+nodeMedia.getImageProcessingLibrary = loadImageProcessingLibrary
 nodeMedia.tempDir = tmpdir
 nodeMedia.execFile = execFile as never
 nodeMedia.createReadStream = createReadStream as never
