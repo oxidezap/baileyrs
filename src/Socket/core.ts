@@ -8,6 +8,7 @@ import type { BaileysRuntime } from '../Runtime/types.ts'
 import { base64UrlEncode, unrefTimer } from '../Runtime/bytes.ts'
 import { encodeProtoCompat as encodeProtoCompatCore } from '../Compatibility/encode-proto-core.ts'
 import { normalizeHostAuthenticationState } from '../Compatibility/internal/host-auth-state.ts'
+import { makeHistoryRuntime } from '../Runtime/bridge.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
@@ -488,54 +489,61 @@ const createWASocketFactoryInner = (
 		communityFetchAllParticipating: communityMethods.communityFetchAllParticipating
 	})
 
-	const eventHandlers = makeEventHandlers(ctx, {
-		onPairSuccess: data => {
-			pairedAccount = data
-			owner
-				.peek()
-				?.getAccount?.()
-				.then((acc: proto.IADVSignedDeviceIdentity | undefined) => {
-					cachedAccount = acc ?? undefined
-				})
-				.catch(() => {})
+	const eventHandlers = makeEventHandlers(
+		ctx,
+		{
+			onPairSuccess: data => {
+				pairedAccount = data
+				owner
+					.peek()
+					?.getAccount?.()
+					.then((acc: proto.IADVSignedDeviceIdentity | undefined) => {
+						cachedAccount = acc ?? undefined
+					})
+					.catch(() => {})
+			},
+			onIncomingCall: event => {
+				const { callId, callCreator, type } = event.action
+				if (type === 'reject' || type === 'accept' || type === 'timeout' || type === 'terminate') {
+					activeCallContexts.delete(callId)
+				} else if (callCreator) {
+					activeCallContexts.set(callId, { peer: event.from, callCreator })
+				}
+			},
+			onDirtyState: event => refreshParticipating(event.dirtyType),
+			/**
+			 * The engine has stopped reconnecting, so this client is dead weight
+			 * that only `free()` reclaims — `run()` returns `void`, so its loop
+			 * exiting is otherwise invisible from here.
+			 *
+			 * Tearing down and reporting are both handed to the reporter: the close
+			 * has to reach the consumer exactly once and only after this socket has
+			 * released what it owns, or a replacement built in response overlaps it
+			 * on the same auth folder.
+			 */
+			onTerminalClose: (error, publish) => {
+				// `owner.close()`, not `end()`. `end()` short-circuits when called
+				// from inside an end handler — it has to, or the handler awaits the
+				// teardown waiting for it — and a terminal event raised from one of
+				// those would then publish against an already-resolved promise,
+				// letting a close listener build a replacement while the old client
+				// is still owned. This waits for the real teardown, and cannot
+				// deadlock because `reportAfter` runs it detached; nothing in the
+				// teardown is waiting on this.
+				reportTerminalClose(error, publish)
+			},
+			isAutoReconnectEnabled: () => autoReconnectEnabled,
+			// Timers the dispatcher armed outlive the events that armed them, and
+			// only the terminal-close path clears them. Ending the socket any other
+			// way — `sock.end()`, an `await using` scope exiting — has to as well,
+			// or one fires from a socket whose client is already freed.
+			onCleanup: cleanup => socketEndHandlers.push(cleanup)
 		},
-		onIncomingCall: event => {
-			const { callId, callCreator, type } = event.action
-			if (type === 'reject' || type === 'accept' || type === 'timeout' || type === 'terminate') {
-				activeCallContexts.delete(callId)
-			} else if (callCreator) {
-				activeCallContexts.set(callId, { peer: event.from, callCreator })
-			}
-		},
-		onDirtyState: event => refreshParticipating(event.dirtyType),
-		/**
-		 * The engine has stopped reconnecting, so this client is dead weight
-		 * that only `free()` reclaims — `run()` returns `void`, so its loop
-		 * exiting is otherwise invisible from here.
-		 *
-		 * Tearing down and reporting are both handed to the reporter: the close
-		 * has to reach the consumer exactly once and only after this socket has
-		 * released what it owns, or a replacement built in response overlaps it
-		 * on the same auth folder.
-		 */
-		onTerminalClose: (error, publish) => {
-			// `owner.close()`, not `end()`. `end()` short-circuits when called
-			// from inside an end handler — it has to, or the handler awaits the
-			// teardown waiting for it — and a terminal event raised from one of
-			// those would then publish against an already-resolved promise,
-			// letting a close listener build a replacement while the old client
-			// is still owned. This waits for the real teardown, and cannot
-			// deadlock because `reportAfter` runs it detached; nothing in the
-			// teardown is waiting on this.
-			reportTerminalClose(error, publish)
-		},
-		isAutoReconnectEnabled: () => autoReconnectEnabled,
-		// Timers the dispatcher armed outlive the events that armed them, and
-		// only the terminal-close path clears them. Ending the socket any other
-		// way — `sock.end()`, an `await using` scope exiting — has to as well,
-		// or one fires from a socket whose client is already freed.
-		onCleanup: cleanup => socketEndHandlers.push(cleanup)
-	})
+		{
+			...makeHistoryRuntime(runtime),
+			BinaryReader: runtime.bridge.BinaryReader
+		} as never
+	)
 
 	const init = async () => {
 		// `initWasmEngine` reads `logger.level` synchronously while installing

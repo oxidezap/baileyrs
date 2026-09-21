@@ -9,10 +9,10 @@
 
 import Long from 'long'
 import {
-	BinaryReader,
-	decodeMessageWireBatch,
-	decodeReceiptWireBatch,
-	decodeServerAckWireBatch
+	BinaryReader as DefaultBinaryReader,
+	decodeMessageWireBatch as defaultDecodeMessageWireBatch,
+	decodeReceiptWireBatch as defaultDecodeReceiptWireBatch,
+	decodeServerAckWireBatch as defaultDecodeServerAckWireBatch
 } from '@oxidezap/whatsapp-rust-bridge/host'
 import type {
 	HistorySyncWireBatch,
@@ -57,6 +57,12 @@ import { extractMessageCappingPayload } from './message-capping.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { isReconnectableConnectFailure, mapConnectFailureToDisconnect } from './terminal-close.ts'
 import type { SocketContext } from './types.ts'
+type EventBridgeRuntime = {
+	BinaryReader: typeof DefaultBinaryReader
+	decodeMessageWireBatch: typeof defaultDecodeMessageWireBatch
+	decodeReceiptWireBatch: typeof defaultDecodeReceiptWireBatch
+	decodeServerAckWireBatch: typeof defaultDecodeServerAckWireBatch
+}
 
 const CANONICAL_MESSAGE_EVENT = 'message'
 const MESSAGE_UPSERT_APPEND = 'append'
@@ -1110,7 +1116,16 @@ const dispatchCanonicalBatch = (
  * the batch capability when adjacent messages are already queued, while this
  * layer owns all Baileys-specific translation and EventEmitter aggregation.
  */
-export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks): WhatsAppEventCallbacks => {
+export const makeEventHandlers = (
+	ctx: SocketContext,
+	callbacks?: EventCallbacks,
+	runtime: EventBridgeRuntime = {
+		BinaryReader: DefaultBinaryReader,
+		decodeMessageWireBatch: defaultDecodeMessageWireBatch,
+		decodeReceiptWireBatch: defaultDecodeReceiptWireBatch,
+		decodeServerAckWireBatch: defaultDecodeServerAckWireBatch
+	}
+): WhatsAppEventCallbacks => {
 	const dispatchCtx: DispatchCtx = {
 		ctx,
 		callbacks,
@@ -1130,7 +1145,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		// construction.
 		let view: MessageWireBatchView
 		try {
-			view = decodeMessageWireBatch(batch)
+			view = runtime.decodeMessageWireBatch(batch)
 		} catch (err) {
 			ctx.reportUnexpectedError(err, 'decoding the message wire batch')
 			return
@@ -1144,7 +1159,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 		// cost on the hot path. Lenient like the history-sync decoder: one
 		// malformed payload is skipped, not fatal to the batch.
 		const messages: unknown[] = Array.from({ length: infos.length })
-		const reader = new BinaryReader(messageData)
+		const reader = new runtime.BinaryReader(messageData)
 		for (let index = 0; index < infos.length; index++) {
 			try {
 				const start = messageOffsets[index]!
@@ -1172,7 +1187,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 	const onReceiptBatch = (batch: ReceiptWireBatch) => {
 		let receipts: ReceiptWireData[]
 		try {
-			receipts = decodeReceiptWireBatch(batch)
+			receipts = runtime.decodeReceiptWireBatch(batch)
 		} catch (err) {
 			ctx.reportUnexpectedError(err, 'decoding the receipt wire batch')
 			return
@@ -1185,7 +1200,7 @@ export const makeEventHandlers = (ctx: SocketContext, callbacks?: EventCallbacks
 	const onServerAckBatch = (batch: ServerAckWireBatch) => {
 		let acks: ServerAckWireData[]
 		try {
-			acks = decodeServerAckWireBatch(batch)
+			acks = runtime.decodeServerAckWireBatch(batch)
 		} catch (err) {
 			ctx.reportUnexpectedError(err, 'decoding the server-ack wire batch')
 			return
