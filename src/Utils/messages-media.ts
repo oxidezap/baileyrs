@@ -1,7 +1,6 @@
 import type * as musicMetadataTypes from 'music-metadata'
 import type { Buffer } from 'node:buffer'
 import { BufferRuntime } from '../Runtime/buffer.ts'
-import { hkdf } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { MEDIA_HKDF_KEY_MAPPING, type MediaType } from '../Defaults/index.ts'
@@ -54,7 +53,7 @@ export async function getMediaKeys(
 	if (!buffer) throw new Boom('Cannot derive from empty media key')
 	if (typeof buffer === 'string')
 		buffer = BufferRuntime.from(buffer.replace('data:;base64,', ''), 'base64') as unknown as Buffer
-	const expandedMediaKey = hkdf(buffer, 112, { info: hkdfInfoKey(mediaType) })
+	const expandedMediaKey = nodeMedia.hkdf(buffer, 112, { info: hkdfInfoKey(mediaType) })
 	return {
 		iv: expandedMediaKey.slice(0, 16),
 		cipherKey: expandedMediaKey.slice(16, 48),
@@ -367,7 +366,7 @@ export function extensionForMediaMessage(message: WAMessageContent): string {
 }
 
 const getMediaRetryKey = (mediaKey: Buffer | Uint8Array) =>
-	hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
+	nodeMedia.hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
 
 export const encryptMediaRetryRequest = (
 	key: WAMessageKey,

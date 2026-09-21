@@ -13,6 +13,9 @@ import * as bridge from '@oxidezap/whatsapp-rust-bridge/host'
 import Long from 'long'
 import { randomBytes } from './bytes.ts'
 import type { BaileysRuntime } from './types.ts'
+import { nodeMedia } from './node-media.ts'
+
+nodeMedia.hkdf = bridge.hkdf
 
 /** Stable fallback: Ubuntu 22.04, matching `Browsers.ubuntu()` output shape. */
 export const HOST_PLATFORM_FALLBACK = { os: 'Ubuntu', release: '22.04.4' } as const

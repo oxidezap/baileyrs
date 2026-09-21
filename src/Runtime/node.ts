@@ -27,6 +27,7 @@ import { setBufferRuntime } from './buffer.ts'
 setBufferRuntime(Buffer)
 
 nodeMedia.getImageProcessingLibrary = loadImageProcessingLibrary
+nodeMedia.hkdf = bridge.hkdf
 nodeMedia.tempDir = tmpdir
 nodeMedia.execFile = execFile as never
 nodeMedia.createReadStream = createReadStream as never
