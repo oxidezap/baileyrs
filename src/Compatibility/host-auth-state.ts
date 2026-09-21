@@ -3,6 +3,7 @@ import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge/host'
 import { calculateSignature, generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { AuthenticationCreds, AuthenticationState, KeyPair } from '../Types/index.ts'
 import { base64Encode, concatBytes, randomBytes, readU16BE, utf8Decode } from '../Runtime/bytes.ts'
+import { jidEncode } from '../WABinary/jid-utils.ts'
 
 const pair = (): KeyPair => {
 	const value = generateKeyPair()
@@ -48,9 +49,22 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 	const mutable = creds as { -readonly [K in keyof AuthenticationCreds]: AuthenticationCreds[K] }
 	const registration = record.registration_id
 	if (typeof registration === 'number') mutable.registrationId = registration
-	if (typeof record.push_name === 'string')
-		mutable.me = { id: String((record.pn as { user?: string } | undefined)?.user ?? ''), name: record.push_name }
+	const pn = record.pn as { user?: string; server?: string; device?: number } | undefined
+	const lid = record.lid as { user?: string; server?: string; device?: number } | undefined
+	if (pn?.user && pn.server) {
+		const id = jidEncode(pn.user, pn.server as never, pn.device)
+		mutable.me = {
+			id,
+			name: typeof record.push_name === 'string' ? record.push_name : undefined,
+			...(lid?.user && lid.server ? { lid: jidEncode(lid.user, lid.server as never, lid.device) } : {})
+		} as never
+	} else if (typeof record.push_name === 'string') {
+		mutable.me = { id: '', name: record.push_name } as never
+	}
 	if (mutable.me?.id) mutable.registered = true
+	if (typeof record.platform === 'string') (mutable as never as { platform?: string }).platform = record.platform
+	if (Array.isArray(record.edge_routing_info))
+		mutable.routingInfo = new Uint8Array(record.edge_routing_info as number[]) as unknown as typeof mutable.routingInfo
 }
 
 /** Build host auth from the caller-owned native byte store. Rust remains the Signal authority. */
