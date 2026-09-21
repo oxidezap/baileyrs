@@ -1,12 +1,6 @@
 import type { Readable } from 'node:stream'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 
-try {
-	bridge.initWasmEngine()
-} catch {
-	/* Socket setup may initialize the engine with its configured logger. */
-}
-
 type FileBytes = { toString: (encoding?: string) => string }
 
 /** Optional filesystem/process media capabilities. Node installs these; hosts never do. */
@@ -23,7 +17,14 @@ export const nodeMedia: {
 	}
 } = {
 	getImageProcessingLibrary: async () => ({}),
-	hkdf: bridge.hkdf,
+	hkdf: (input, length, options) => {
+		try {
+			return bridge.hkdf(input, length, options)
+		} catch {
+			bridge.initWasmEngine()
+			return bridge.hkdf(input, length, options)
+		}
+	},
 	tempDir: () => '/tmp',
 	execFile: () => {
 		throw new Error('ffmpeg is unavailable on this host')
