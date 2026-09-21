@@ -198,12 +198,18 @@ for (const file of hostClosure) {
 	const lines = readFileSync(file, 'utf8').split(/\r?\n/u)
 	lines.forEach((line, index) => {
 		const trimmed = line.trim()
-		if (trimmed.startsWith('//') || trimmed.startsWith('*')) return
+		if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
 		// Doc examples after `//` are comments, not imports (src/host.ts
 		// shows the Node-side readFileSync handshake in a comment).
 		const code = line.split('//')[0]!
 		if (/\bprocess\.(env|stdout|stderr|exit|argv|cwd)\b/.test(code)) {
 			report(file, index + 1, line, 'host closure reads a process global')
+		}
+		if (/\bBuffer\s*(?:[.(])/u.test(code) && !/\bBufferRuntime\b/u.test(code)) {
+			report(file, index + 1, line, 'host closure uses the Node Buffer global')
+		}
+		if (/\brequire\s*\(|\b(?:__dirname|__filename)\b/u.test(code)) {
+			report(file, index + 1, line, 'host closure uses a Node-only global')
 		}
 		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(code)
 		const dynamicImport = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(code)

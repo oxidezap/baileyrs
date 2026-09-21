@@ -36,8 +36,8 @@ const loadCjsLongConstructor = (): LongConstructor | undefined => {
 			| undefined
 		const createRequire = nodeModule?.createRequire
 		if (typeof createRequire !== 'function') return undefined
-		const require = createRequire(import.meta.url)
-		const loaded: unknown = require('long')
+		const loadModule = createRequire(import.meta.url)
+		const loaded: unknown = loadModule('long')
 		if (typeof loaded === 'function') return loaded as LongConstructor
 		const namespaced = (loaded as { default?: unknown } | undefined)?.default
 		if (typeof namespaced === 'function') return namespaced as LongConstructor
