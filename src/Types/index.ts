@@ -15,14 +15,15 @@ export * from './Signal.ts'
 
 import { makeNumericEnum } from '../Compatibility/internal/numeric-enum.ts'
 import type { DisconnectReason as DisconnectReasonType } from '../Compatibility/public-api/enum-types.ts'
-import type { AuthenticationState, NativeAuthenticationState } from './Auth.ts'
+import type { AuthenticationState } from './Auth.ts'
 import type { SocketConfig } from './Socket.ts'
 
 export type UserFacingSocketConfig = Partial<SocketConfig> & { auth: AuthenticationState }
 
 /** Host-only socket config; store-first auth is intentionally not part of the Node API. */
 export type HostSocketConfig = Omit<Partial<SocketConfig>, 'auth'> & {
-	auth: NativeAuthenticationState | AuthenticationState
+	/** Build with `await createAuthenticationState(store)`; raw `{ store }` is not a valid host auth value. */
+	auth: AuthenticationState
 }
 
 export type BrowsersMap = {
