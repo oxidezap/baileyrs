@@ -48,8 +48,37 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 		throw new Error("failed to hydrate persisted auth record 'device'", { cause: error })
 	}
 	const mutable = creds as { -readonly [K in keyof AuthenticationCreds]: AuthenticationCreds[K] }
+	const asBytes = (value: unknown): Uint8Array | undefined =>
+		Array.isArray(value) && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+			? new Uint8Array(value)
+			: undefined
+	const keyPair = (value: unknown): KeyPair | undefined => {
+		const bytes = asBytes(value)
+		if (!bytes || bytes.length !== 64 || bytes.every(byte => byte === 0)) return undefined
+		return { private: bytes.slice(0, 32), public: bytes.slice(32, 64) }
+	}
 	const registration = record.registration_id
 	if (typeof registration === 'number') mutable.registrationId = registration
+	const noiseKey = keyPair(record.noise_key)
+	const identityKey = keyPair(record.identity_key)
+	const signedPreKey = keyPair(record.signed_pre_key)
+	if (noiseKey) mutable.noiseKey = noiseKey
+	if (identityKey) mutable.signedIdentityKey = identityKey
+	if (signedPreKey) {
+		const signature = asBytes(record.signed_pre_key_signature)
+		mutable.signedPreKey = {
+			keyPair: signedPreKey,
+			keyId: typeof record.signed_pre_key_id === 'number' ? record.signed_pre_key_id : mutable.signedPreKey.keyId,
+			signature: signature ?? mutable.signedPreKey.signature
+		}
+	}
+	const advSecret = asBytes(record.adv_secret_key)
+	if (advSecret) mutable.advSecretKey = base64Encode(advSecret)
+	if (typeof record.next_pre_key_id === 'number') {
+		mutable.nextPreKeyId = record.next_pre_key_id
+		mutable.firstUnuploadedPreKeyId = record.next_pre_key_id
+	}
+	if (typeof record.props_hash === 'string') mutable.lastPropHash = record.props_hash
 	const pn = record.pn as { user?: string; server?: string; device?: number } | undefined
 	const lid = record.lid as { user?: string; server?: string; device?: number } | undefined
 	if (pn?.user && pn.server) {
