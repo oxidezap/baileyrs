@@ -39,7 +39,6 @@ import { DisconnectReason, WA_PRESENCES } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
-import { setLoggerSink } from '../Utils/logger.ts'
 import {
 	_registerActiveBridgeClient,
 	_unregisterActiveBridgeClient,
@@ -149,10 +148,6 @@ const createWASocketFactoryInner = (
 	config: UserFacingSocketConfig | HostSocketConfig,
 	claimEngineInitialization: () => boolean
 ) => {
-	setLoggerSink((line, delivered) => {
-		runtime.loggerSink(line)
-		delivered()
-	})
 	const mergedConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { logger } = mergedConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
