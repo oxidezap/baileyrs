@@ -198,6 +198,9 @@ for (const file of hostClosure) {
 		// Doc examples after `//` are comments, not imports (src/host.ts
 		// shows the Node-side readFileSync handshake in a comment).
 		const code = line.split('//')[0]!
+		if (/\bprocess\.(env|stdout|stderr|exit|argv|cwd)\b/.test(code)) {
+			report(file, index + 1, line, 'host closure reads a process global')
+		}
 		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(code)
 		const specifier = importMatch?.[1]
 		if (!specifier) return

@@ -37,6 +37,7 @@ import { DisconnectReason, WA_PRESENCES } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { makeEventBuffer } from '../Utils/event-buffer.ts'
+import { setLoggerSink } from '../Utils/logger.ts'
 import {
 	_registerActiveBridgeClient,
 	_unregisterActiveBridgeClient,
@@ -137,6 +138,10 @@ export const createWASocketFactory =
 		createWASocketFactoryInner(runtime, config)
 
 const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingSocketConfig) => {
+	setLoggerSink((line, delivered) => {
+		runtime.loggerSink(line)
+		delivered()
+	})
 	const fullConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { logger } = fullConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed

@@ -291,7 +291,15 @@ export const setLoggerSink = (sink: ((line: string, delivered: () => void) => vo
 
 const defaultSink = (line: string, delivered: () => void): void => {
 	try {
-		process.stdout.write(`${line}\n`, delivered)
+		const stdout = (
+			globalThis as typeof globalThis & { process?: { stdout?: { write(text: string, cb: () => void): void } } }
+		).process?.stdout
+		if (!stdout) {
+			console.log(line)
+			delivered()
+			return
+		}
+		stdout.write(`${line}\n`, delivered)
 	} catch {
 		delivered()
 	}
@@ -404,7 +412,9 @@ let rootLogger: Logger | undefined
 
 const resolveRootLogger = (): Logger => {
 	if (!rootLogger) {
-		const configuredLevel = process.env.BAILEYRS_LOG_LEVEL || DEFAULT_LEVEL
+		const configuredLevel =
+			(globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } }).process?.env
+				?.BAILEYRS_LOG_LEVEL || DEFAULT_LEVEL
 		const peer = loadPinoPeer()
 		rootLogger = peer
 			? peer({
