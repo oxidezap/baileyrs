@@ -31,6 +31,16 @@ export const concatBytes = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
 }
 
 /** Constant-shape equality (length check first, then byte compare). */
+export const toNumber = (
+	t: { toNumber?: () => number; low?: number; high?: number } | number | null | undefined
+): number => {
+	if (t == null) return 0
+	if (typeof t === 'number') return t
+	if (typeof t.toNumber === 'function') return t.toNumber()
+	if (typeof t.low === 'number') return (t.high ?? 0) * 0x100000000 + (t.low >>> 0)
+	return 0
+}
+
 export const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
 	if (a.length !== b.length) return false
 	for (let i = 0; i < a.length; i++) {

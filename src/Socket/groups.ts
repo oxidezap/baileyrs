@@ -13,7 +13,8 @@ import {
 	type WAMessageKey
 } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
-import { generateMessageIDV2, toNumber, unixTimestampSeconds } from '../Utils/generics.ts'
+import { generateMessageIDV2Portable } from '../Compatibility/message-ids.ts'
+import { toNumber } from '../Runtime/bytes.ts'
 import { proto } from '../WAProto/runtime.ts'
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import type { SocketContext } from './types.ts'
@@ -99,14 +100,14 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 					{
 						key: {
 							remoteJid: inviteMessage.groupJid,
-							id: generateMessageIDV2(ctx.getUser()?.id),
+							id: generateMessageIDV2Portable(ctx.getUser()?.id),
 							fromMe: false,
 							participant: messageKey.remoteJid
 						},
 						messageStubType: WAMessageStubType.GROUP_PARTICIPANT_ADD,
 						messageStubParameters: [JSON.stringify(ctx.getMe())!],
 						participant: messageKey.remoteJid,
-						messageTimestamp: unixTimestampSeconds()
+						messageTimestamp: Math.floor(Date.now() / 1000)
 					}
 				],
 				{ type: 'notify' }
