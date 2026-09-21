@@ -31,9 +31,14 @@ import { proto } from '../WAProto/runtime.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
 import { assertArgumentDomain } from './argument-domain.ts'
 import { Boom } from './boom.ts'
-import { randomBytes } from 'node:crypto'
-import { sha256 } from './crypto.ts'
-import { getKeyAuthor, toNumber, unixTimestampSeconds } from './generics.ts'
+import {
+	getKeyAuthorPortable,
+	randomBytes,
+	sha256Sync,
+	toNumber,
+	unixTimestampSeconds,
+	utf8Encode
+} from '../Runtime/bytes.ts'
 import type { ILogger } from './logger.ts'
 import {
 	generateThumbnail,
@@ -1181,7 +1186,7 @@ export function getAggregateVotesInPollMessage(
 	const voteHashMap: Record<string, VoteAggregation> = {}
 	for (const opt of opts) {
 		const name = opt.optionName || ''
-		voteHashMap[sha256(Buffer.from(name)).toString()] = { name, voters: [] }
+		voteHashMap[Buffer.from(sha256Sync(utf8Encode(name))).toString('hex')] = { name, voters: [] }
 	}
 
 	for (const update of pollUpdates || []) {
@@ -1192,7 +1197,7 @@ export function getAggregateVotesInPollMessage(
 			const hash = Buffer.from(optionHash).toString()
 			let aggregate = voteHashMap[hash]
 			if (!aggregate) aggregate = voteHashMap[hash] = { name: 'Unknown', voters: [] }
-			aggregate.voters.push(getKeyAuthor(update.pollUpdateMessageKey, meId))
+			aggregate.voters.push(getKeyAuthorPortable(update.pollUpdateMessageKey, meId))
 		}
 	}
 
@@ -1213,7 +1218,7 @@ export function getAggregateResponsesInEventMessage(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const responseType = (update as any).eventResponse || 'UNKNOWN'
 		if (responseType !== 'UNKNOWN' && responseMap[responseType]) {
-			responseMap[responseType].responders.push(getKeyAuthor(update.eventResponseMessageKey, meId))
+			responseMap[responseType].responders.push(getKeyAuthorPortable(update.eventResponseMessageKey, meId))
 		}
 	}
 	return Object.values(responseMap)
@@ -1241,8 +1246,8 @@ export const updateMessageWithReceipt = (msg: Pick<WAMessage, 'userReceipt'>, re
 
 /** Replace the previous reaction from the same author, then append the latest. */
 export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, reaction: proto.IReaction): void => {
-	const author = getKeyAuthor(reaction.key || {})
-	const reactions = (msg.reactions || []).filter(item => getKeyAuthor(item.key || {}) !== author)
+	const author = getKeyAuthorPortable(reaction.key || {})
+	const reactions = (msg.reactions || []).filter(item => getKeyAuthorPortable(item.key || {}) !== author)
 	reaction.text = reaction.text || ''
 	reactions.push(reaction)
 	msg.reactions = reactions
@@ -1250,8 +1255,8 @@ export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, rea
 
 /** Replace the previous poll update from the same author. Empty votes remove it. */
 export const updateMessageWithPollUpdate = (msg: Pick<WAMessage, 'pollUpdates'>, update: proto.IPollUpdate): void => {
-	const author = getKeyAuthor(update.pollUpdateMessageKey)
-	const pollUpdates = (msg.pollUpdates || []).filter(item => getKeyAuthor(item.pollUpdateMessageKey) !== author)
+	const author = getKeyAuthorPortable(update.pollUpdateMessageKey)
+	const pollUpdates = (msg.pollUpdates || []).filter(item => getKeyAuthorPortable(item.pollUpdateMessageKey) !== author)
 	if (update.vote?.selectedOptions?.length) pollUpdates.push(update)
 	msg.pollUpdates = pollUpdates
 }
@@ -1261,8 +1266,10 @@ export const updateMessageWithEventResponse = (
 	msg: Pick<WAMessage, 'eventResponses'>,
 	update: proto.IEventResponse
 ): void => {
-	const author = getKeyAuthor(update.eventResponseMessageKey)
-	const responses = (msg.eventResponses || []).filter(item => getKeyAuthor(item.eventResponseMessageKey) !== author)
+	const author = getKeyAuthorPortable(update.eventResponseMessageKey)
+	const responses = (msg.eventResponses || []).filter(
+		item => getKeyAuthorPortable(item.eventResponseMessageKey) !== author
+	)
 	responses.push(update)
 	msg.eventResponses = responses
 }

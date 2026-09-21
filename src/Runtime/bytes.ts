@@ -31,6 +31,14 @@ export const concatBytes = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
 }
 
 /** Constant-shape equality (length check first, then byte compare). */
+export const unixTimestampSeconds = (timestamp: number | Date = Date.now()): number =>
+	Math.floor((timestamp instanceof Date ? timestamp.getTime() : timestamp) / 1000)
+
+export const getKeyAuthorPortable = (
+	key: { fromMe?: boolean | null; participant?: string | null; remoteJid?: string | null } | null | undefined,
+	meId = 'me'
+): string => (key?.fromMe ? meId : (key?.participant ?? key?.remoteJid ?? meId))
+
 export const toNumber = (
 	t: { toNumber?: () => number; low?: number; high?: number } | number | null | undefined
 ): number => {
