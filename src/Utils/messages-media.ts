@@ -1,7 +1,6 @@
 import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { createReadStream, promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,6 +22,7 @@ import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generi
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
 import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto.ts'
+import { randomBytes } from '../Runtime/bytes.ts'
 import type { ILogger } from './logger.ts'
 
 const randomId = () => globalThis.crypto.randomUUID()
