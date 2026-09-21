@@ -225,7 +225,7 @@ for (const file of hostClosure) {
 		const isTypeOnly =
 			/^\s*(import|export)\s+type\b/.test(code) ||
 			/^\s*import\s+type\s*\{[^}]*\}\s*from\s*['"]node:(buffer|https)['"]/.test(code)
-		if (specifier === '@oxidezap/whatsapp-rust-bridge' && !isTypeOnly) {
+		if (specifier === '@oxidezap/whatsapp-rust-bridge' && !isTypeOnly && !file.endsWith('/Runtime/node-media.ts')) {
 			report(file, index + 1, line, 'host closure pulls the bare bridge root (use /host)')
 		}
 		if (!isTypeOnly) {

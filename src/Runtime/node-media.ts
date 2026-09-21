@@ -1,4 +1,11 @@
 import type { Readable } from 'node:stream'
+import * as bridge from '@oxidezap/whatsapp-rust-bridge'
+
+try {
+	bridge.initWasmEngine()
+} catch {
+	/* Socket setup may initialize the engine with its configured logger. */
+}
 
 type FileBytes = { toString: (encoding?: string) => string }
 
@@ -16,9 +23,7 @@ export const nodeMedia: {
 	}
 } = {
 	getImageProcessingLibrary: async () => ({}),
-	hkdf: () => {
-		throw new Error('HKDF bridge capability is unavailable')
-	},
+	hkdf: bridge.hkdf,
 	tempDir: () => '/tmp',
 	execFile: () => {
 		throw new Error('ffmpeg is unavailable on this host')
@@ -40,10 +45,9 @@ export const nodeMedia: {
 }
 
 const proc = (globalThis as typeof globalThis & { process?: { getBuiltinModule?: (id: string) => unknown } }).process
-const getBuiltinModule = proc?.getBuiltinModule
-if (typeof getBuiltinModule === 'function') {
+if (typeof proc?.getBuiltinModule === 'function') {
 	try {
-		const moduleApi = getBuiltinModule('module') as { createRequire?: (base: string) => (id: string) => unknown }
+		const moduleApi = proc.getBuiltinModule('module') as { createRequire?: (base: string) => (id: string) => unknown }
 		const load = moduleApi.createRequire?.(import.meta.url)
 		const optional = (id: string): unknown => {
 			try {
@@ -52,7 +56,14 @@ if (typeof getBuiltinModule === 'function') {
 				return undefined
 			}
 		}
-		const nodeBridge = optional('@oxidezap/whatsapp-rust-bridge') as { hkdf?: typeof nodeMedia.hkdf } | undefined
+		const nodeBridge = optional('@oxidezap/whatsapp-rust-bridge') as
+			| { hkdf?: typeof nodeMedia.hkdf; initWasmEngine?: () => void }
+			| undefined
+		try {
+			nodeBridge?.initWasmEngine?.()
+		} catch {
+			/* The owning socket may initialize the engine later. */
+		}
 		if (nodeBridge?.hkdf) nodeMedia.hkdf = nodeBridge.hkdf
 		nodeMedia.getImageProcessingLibrary = async () => {
 			const jimp = optional('jimp')
