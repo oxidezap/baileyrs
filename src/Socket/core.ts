@@ -66,7 +66,7 @@ import { mapConnectFailureToDisconnect } from './terminal-close.ts'
 import { makeEventHandlers } from './events.ts'
 import { makeGroupMethods } from './groups.ts'
 import { makeInternalMethods, makeUnexpectedErrorReporter } from './internals.ts'
-import { makeMessageMethods } from './messages.ts'
+import { makeMessageMethodsCore } from './messages-core.ts'
 import { makeNewsletterMethods } from './newsletter.ts'
 import { makePreKeyMethods } from './prekeys.ts'
 import { makePresenceMethods } from './presence.ts'
@@ -1156,7 +1156,7 @@ const createWASocketFactoryInner = (
 			const bytes = ctx.encodeProto!('Message', message)
 			return ctx.withClient(client => client.sendStatusMessageBytes(bytes, recipients))
 		},
-		...makeMessageMethods(ctx),
+		...makeMessageMethodsCore(ctx, ctx.encodeProto!),
 		...groupMethods,
 		...communityMethods,
 		...makeContactMethods(ctx),
