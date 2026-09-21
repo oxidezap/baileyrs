@@ -1,5 +1,6 @@
 import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
+import { hkdf } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { MEDIA_HKDF_KEY_MAPPING, type MediaType } from '../Defaults/index.ts'
@@ -17,7 +18,7 @@ import { proto } from '../WAProto/runtime.ts'
 import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generic-utils.ts'
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
-import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto.ts'
+import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
 import { randomBytes } from '../Runtime/bytes.ts'
 import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
 import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
@@ -372,7 +373,7 @@ export const encryptMediaRetryRequest = (
 ): BinaryNode => {
 	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
 	const iv = randomBytes(12)
-	const ciphertext = aesEncryptGCM(receiptBuffer, getMediaRetryKey(mediaKey), iv, Buffer.from(key.id!))
+	const ciphertext = aesGcm256EncryptPortable(getMediaRetryKey(mediaKey), iv, Buffer.from(key.id!), receiptBuffer)
 	return {
 		tag: 'receipt',
 		attrs: { id: key.id!, to: jidNormalizedUser(meId), type: 'server-error' },
@@ -439,4 +440,6 @@ export const decryptMediaRetryData = (
 	mediaKey: Uint8Array,
 	msgId: string
 ): proto.MediaRetryNotification =>
-	proto.MediaRetryNotification.decode(aesDecryptGCM(ciphertext, getMediaRetryKey(mediaKey), iv, Buffer.from(msgId)))
+	proto.MediaRetryNotification.decode(
+		aesGcm256DecryptPortable(getMediaRetryKey(mediaKey), iv, Buffer.from(msgId), ciphertext)
+	)
