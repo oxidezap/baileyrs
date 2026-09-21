@@ -26,7 +26,7 @@
 import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
-import { processHistoryMessage } from '../Utils/process-history-message.ts'
+import { processHistoryMessage } from '../Utils/process-history-message-core.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
 import type {
 	CanonicalCallAction,

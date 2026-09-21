@@ -50,7 +50,7 @@ const HOST_NEUTRAL = new Set(
 		'src/Socket/transport.ts',
 		'src/Compatibility/tagged-message-waiter.ts',
 		'src/Utils/browser-utils.ts',
-		'src/Utils/process-history-message.ts',
+		'src/Utils/process-history-message-core.ts',
 		'src/Utils/process-message.ts'
 	].map(p => resolve(root, p))
 )

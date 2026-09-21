@@ -43,7 +43,7 @@ import { DisconnectReason, WAMessageStatus, WAProto } from '../Types/index.ts'
 import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
 import { toNumber } from '../Runtime/bytes.ts'
-import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message.ts'
+import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message-core.ts'
 import { isJidBroadcast, isJidGroup } from '../WABinary/jid-utils.ts'
 import {
 	buildGroupCreateStubMessage,
