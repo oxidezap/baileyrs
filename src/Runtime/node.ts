@@ -11,10 +11,14 @@
 import { randomBytes as nodeRandomBytesSource } from 'node:crypto'
 import EventEmitter from 'events'
 import { platform, release } from 'node:os'
+import { Readable } from 'node:stream'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import Long from 'long'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
+import { setReadableFromWeb } from './stream.ts'
+
+setReadableFromWeb(stream => Readable.fromWeb(stream as never))
 import { makeLazyTransactionKeyStore } from '../Compatibility/internal/signal-key-store.ts'
 import type { BaileysRuntime } from './types.ts'
 

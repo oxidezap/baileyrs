@@ -2,8 +2,6 @@ import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import { createReadStream, promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { MEDIA_HKDF_KEY_MAPPING, type MediaType } from '../Defaults/index.ts'
@@ -23,11 +21,12 @@ import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
 import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto.ts'
 import { randomBytes } from '../Runtime/bytes.ts'
+import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
 import type { ILogger } from './logger.ts'
 
 const randomId = () => globalThis.crypto.randomUUID()
 
-const getTmpFilesDirectory = () => tmpdir()
+const getTmpFilesDirectory = () => runtimeTempDir()
 
 const getImageProcessingLibrary = async () => {
 	//@ts-ignore
@@ -297,14 +296,14 @@ export async function generateThumbnail(
 		let filePath: string
 		let needsCleanup = false
 		if (Buffer.isBuffer(bufferOrPath)) {
-			filePath = join(getTmpFilesDirectory(), 'vid-' + randomId())
+			filePath = runtimeJoinPath(getTmpFilesDirectory(), 'vid-' + randomId())
 			await fs.writeFile(filePath, bufferOrPath)
 			needsCleanup = true
 		} else {
 			filePath = bufferOrPath
 		}
 
-		const imgFilename = join(getTmpFilesDirectory(), randomId() + '.jpg')
+		const imgFilename = runtimeJoinPath(getTmpFilesDirectory(), randomId() + '.jpg')
 		try {
 			await extractVideoThumb(filePath, imgFilename, '00:00:00', { width: 32, height: 32 })
 			const buff = await fs.readFile(imgFilename)

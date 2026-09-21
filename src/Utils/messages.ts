@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer'
 import LongRuntime from 'long'
-import { Readable } from 'node:stream'
+import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
 import type { UploadMediaResult, WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
@@ -39,6 +39,7 @@ import {
 	unixTimestampSeconds,
 	utf8Encode
 } from '../Runtime/bytes.ts'
+import { readableFromWeb } from '../Runtime/stream.ts'
 import type { ILogger } from './logger.ts'
 import {
 	generateThumbnail,
@@ -1039,7 +1040,7 @@ export const downloadMediaMessage = async <Type extends MediaDownloadType>(
 
 		// Stream mode: Web ReadableStream from Rust → Node.js Readable
 		const webStream = withClient.waClient.downloadMediaStream(...args)
-		return Readable.fromWeb(webStream as WebReadableStream)
+		return readableFromWeb(webStream as WebReadableStream) as Readable
 	}
 }
 

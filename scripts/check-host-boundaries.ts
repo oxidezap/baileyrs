@@ -184,6 +184,10 @@ const visitHostFile = (file: string): void => {
 	for (const line of source.split(/\r?\n/u)) {
 		const match = /(?:import|export)[^'"]*from\s*['"](\.[^'"]+)['"]/.exec(line)
 		if (!match) continue
+		// Type-only imports are erased and cannot pull Node runtime code into
+		// the host bundle. The first gate already applies the same rule to
+		// bare bridge imports.
+		if (/^\s*import\s+type\b/u.test(line)) continue
 		const next = resolveRelative(file, match[1]!)
 		if (next && next.endsWith('.ts')) visitHostFile(next)
 	}
