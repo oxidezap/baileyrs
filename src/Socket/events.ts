@@ -1177,7 +1177,7 @@ export const makeEventHandlers = (
 	}
 
 	const onHistorySyncBatch = (batch: HistorySyncWireBatch) => {
-		const decoded = decodeHistorySyncWireBatch(batch, ctx.logger)
+		const decoded = decodeHistorySyncWireBatch(batch, ctx.logger, runtime.BinaryReader)
 		onEvent(decoded.event)
 		return decoded.skippedConversations
 	}

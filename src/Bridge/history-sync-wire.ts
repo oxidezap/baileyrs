@@ -1,4 +1,8 @@
-import { BinaryReader, type HistorySyncWireBatch, type WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge/host'
+import {
+	BinaryReader as DefaultBinaryReader,
+	type HistorySyncWireBatch,
+	type WhatsAppEvent
+} from '@oxidezap/whatsapp-rust-bridge/host'
 import { proto as WAProto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
 import { isConversationHistorySync } from '../Utils/process-history-message-core.ts'
@@ -18,7 +22,8 @@ export interface DecodedHistorySyncWireBatch {
  */
 export const decodeHistorySyncWireBatch = (
 	batch: HistorySyncWireBatch,
-	logger: ILogger
+	logger: ILogger,
+	Reader: typeof DefaultBinaryReader = DefaultBinaryReader
 ): DecodedHistorySyncWireBatch => {
 	const wireData = batch.conversationData
 	const wireOffsets = batch.conversationOffsets
@@ -31,7 +36,7 @@ export const decodeHistorySyncWireBatch = (
 	let skippedConversations = 0
 
 	if (shouldDecodeConversations) {
-		const reader = new BinaryReader(wireData)
+		const reader = new Reader(wireData)
 		for (let index = 0; index < conversationCount; index++) {
 			try {
 				const start = wireOffsets[index]!
