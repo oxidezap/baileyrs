@@ -1,6 +1,5 @@
 import { sendReportingUpstreamFailure } from '../Compatibility/all-encryptions-failed.ts'
 import { sendDroppingDerivedNodes } from '../Compatibility/derived-stanza-nodes.ts'
-import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { EMPTY_RELAY_NODES, planMessageRelay, resolveMessageId } from '../Compatibility/message-relay.ts'
 import { receiptMessageKeys } from '../Compatibility/message-keys.ts'
 import type {
@@ -47,7 +46,11 @@ const getNormalizedUserJid = (ctx: SocketContext): string | undefined => {
 }
 
 export const makeMessageMethods = (ctx: SocketContext) => {
-	const encode = ctx.encodeProto ?? encodeProtoCompat
+	const encode =
+		ctx.encodeProto ??
+		((path: string, _message: unknown) => {
+			throw new Error(`codec runtime is not configured for ${path}`)
+		})
 	return {
 		sendMessage: async (
 			jid: string,

@@ -6,7 +6,7 @@ import type {
 } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { BaileysRuntime } from '../Runtime/types.ts'
 import { base64UrlEncode, unrefTimer } from '../Runtime/bytes.ts'
-import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
+import { encodeProtoCompat as encodeProtoCompatCore } from '../Compatibility/encode-proto-core.ts'
 import { normalizeHostAuthenticationState } from '../Compatibility/internal/host-auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
@@ -413,7 +413,8 @@ const createWASocketFactoryInner = (
 		ev,
 		logger,
 		fullConfig,
-		encodeProto: (path, message) => encodeProtoCompat(path, message, runtime.bridge.encodeProto.bind(runtime.bridge)),
+		encodeProto: (path, message) =>
+			encodeProtoCompatCore(path, message, runtime.bridge.encodeProto.bind(runtime.bridge)),
 		ws,
 		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,

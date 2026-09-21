@@ -29,7 +29,7 @@ const HOST_NEUTRAL = new Set(
 		'src/Bridge/primitives.ts',
 		'src/Bridge/schema.ts',
 		'src/Bridge/types.ts',
-		'src/Compatibility/encode-proto.ts',
+		'src/Compatibility/encode-proto-core.ts',
 		'src/Compatibility/group-metadata.ts',
 		'src/Compatibility/history-sync-admission.ts',
 		'src/Compatibility/media-type.ts',
