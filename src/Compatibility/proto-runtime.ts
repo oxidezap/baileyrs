@@ -1008,7 +1008,7 @@ class ProtoCompatibilityRuntime {
 					? bytesToBase64(value)
 					: options.bytes === Array
 						? Array.prototype.slice.call(value)
-						: publicBytes(value instanceof Uint8Array ? value : new Uint8Array(value as ArrayLike<number>))
+						: value
 			case PROTO_FIELD_KIND.float:
 				return options.json && !Number.isFinite(value) ? String(value) : value
 			case PROTO_FIELD_KIND.signed64:

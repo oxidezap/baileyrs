@@ -27,8 +27,8 @@ const jidUser = (jid: string): string | undefined => {
 	const at = jid.indexOf('@')
 	const user = at < 0 ? jid : jid.slice(0, at)
 	// Baileys hashes the bare user, not the device/agent suffix of a
-	// multi-device JID (`user:device` or `user-agent`).
-	const bareUser = user.split(':', 1)[0]!.split('-', 1)[0]!
+	// multi-device JID (`user:device` or `user_agent`).
+	const bareUser = user.split('_', 1)[0]!.split(':', 1)[0]!
 	return bareUser.length > 0 ? bareUser : undefined
 }
 
