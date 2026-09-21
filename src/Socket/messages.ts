@@ -47,6 +47,7 @@ const getNormalizedUserJid = (ctx: SocketContext): string | undefined => {
 }
 
 export const makeMessageMethods = (ctx: SocketContext) => {
+	const encode = ctx.encodeProto ?? encodeProtoCompat
 	return {
 		sendMessage: async (
 			jid: string,
@@ -117,7 +118,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 					}
 				}
 
-				const msgBytes = encodeProtoCompat('Message', msg as Record<string, unknown>)
+				const msgBytes = encode('Message', msg as Record<string, unknown>)
 				// The with-options sends are the same core send as the plain ones, with
 				// the stanza id supplied by the caller instead of drawn by the engine.
 				// The id resolves through the same place `relayMessage` resolves it.
@@ -218,7 +219,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 				// The message goes to the bridge as the caller built it: the core settles
 				// messageSecret / reportingTokenVersion itself, reusing a caller-set secret
 				// rather than replacing it, so nothing here has to be dropped.
-				const bytes = encodeProtoCompat('Message', message)
+				const bytes = encode('Message', message)
 				if (plan.kind === 'retransmission') {
 					await client.retransmitMessageBytes(jid, bytes, plan.input)
 					return plan.messageId
@@ -365,7 +366,7 @@ export const makeMessageMethods = (ctx: SocketContext) => {
 				}
 			}
 
-			const bytes = encodeProtoCompat('Message', message)
+			const bytes = encode('Message', message)
 			return ctx.withClient(client => client.relayMessageBytes(messageKey.remoteJid!, bytes, null))
 		}
 	}

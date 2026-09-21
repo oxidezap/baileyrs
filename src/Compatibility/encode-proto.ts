@@ -30,13 +30,17 @@ import { projectProtoMessage, repairProtoMessage } from './proto-runtime.ts'
  * for a message that was already going to throw. `encodeProto` returns finished
  * bytes rather than a lazy writer, so one try/catch covers it.
  */
-export const encodeProtoCompat = (path: string, message: unknown): Uint8Array => {
+export const encodeProtoCompat = (
+	path: string,
+	message: unknown,
+	encode: (path: string, message: unknown) => Uint8Array = encodeProto
+): Uint8Array => {
 	// The codec drops a key it does not know without throwing, so a public spelling has
 	// to be translated before the encode: a repair after a throw never runs. Same
 	// reference when nothing is aliased.
 	const projected = projectProtoMessage(path, message)
 	try {
-		return encodeProto(path, projected)
+		return encode(path, projected)
 	} catch (error) {
 		// Repaired from the caller's message: this repair walks the schema this library
 		// publishes, so the projected names would not be found and the failure would
@@ -45,6 +49,6 @@ export const encodeProtoCompat = (path: string, message: unknown): Uint8Array =>
 		// Reference equality: nothing was coerced, so the failure is something this
 		// does not explain and it has to keep propagating rather than be retried.
 		if (repaired === message) throw error
-		return encodeProto(path, projectProtoMessage(path, repaired))
+		return encode(path, projectProtoMessage(path, repaired))
 	}
 }

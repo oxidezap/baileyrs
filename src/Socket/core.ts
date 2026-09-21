@@ -413,6 +413,7 @@ const createWASocketFactoryInner = (
 		ev,
 		logger,
 		fullConfig,
+		encodeProto: (path, message) => encodeProtoCompat(path, message, runtime.bridge.encodeProto.bind(runtime.bridge)),
 		ws,
 		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,
@@ -1058,7 +1059,7 @@ const createWASocketFactoryInner = (
 					{ statusCode: 501 }
 				)
 			}
-			const bytes = encodeProtoCompat('Message', message as Record<string, unknown>)
+			const bytes = ctx.encodeProto!('Message', message as Record<string, unknown>)
 			return ctx.withClient(client => client.createParticipantNodesBytes(jids, bytes, extraAttrs ?? {}))
 		},
 		signalRepository,
@@ -1151,7 +1152,7 @@ const createWASocketFactoryInner = (
 			)
 		},
 		sendStatusMessage: async (message: Record<string, unknown>, recipients: string[]): Promise<string> => {
-			const bytes = encodeProtoCompat('Message', message)
+			const bytes = ctx.encodeProto!('Message', message)
 			return ctx.withClient(client => client.sendStatusMessageBytes(bytes, recipients))
 		},
 		...makeMessageMethods(ctx),
