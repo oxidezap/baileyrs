@@ -17,7 +17,8 @@ const portableBuffer = {
 } as unknown as BufferConstructor
 
 /** Node installs its real Buffer; hosts use the Uint8Array-compatible fallback. */
-export let BufferRuntime: BufferConstructor = portableBuffer
+export let BufferRuntime: BufferConstructor =
+	(globalThis as typeof globalThis & { Buffer?: BufferConstructor }).Buffer ?? portableBuffer
 
 export const setBufferRuntime = (buffer: BufferConstructor): void => {
 	BufferRuntime = buffer
