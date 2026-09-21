@@ -52,7 +52,6 @@ import {
 	isHistorySyncFullyDisabled
 } from '../Compatibility/history-sync-admission.ts'
 import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
-import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
@@ -582,8 +581,9 @@ const createWASocketFactoryInner = (
 		const useNativeMemory = auth.store ? isNativeMemoryStore(auth.store) : false
 		let bridgeStore = useNativeMemory ? null : (auth.store ?? null)
 		if (!bridgeStore && !useNativeMemory && auth.creds && auth.keys) {
+			if (!runtime.wrapLegacyStore) throw new Error('legacy auth requires the Node runtime')
 			const legacyState = { creds: auth.creds, keys: auth.keys }
-			const wrapped = await wrapLegacyStore(
+			const wrapped = await runtime.wrapLegacyStore(
 				legacyState,
 				async () => {
 					ev.emit('creds.update', auth.creds!)

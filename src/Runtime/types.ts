@@ -102,6 +102,8 @@ export interface BaileysRuntime {
 	loggerSink(line: string): void
 	/** Log level: Node reads `BAILEYRS_LOG_LEVEL`, hosts use config/default. */
 	logLevel(): string | undefined
+	/** Node-only legacy auth adapter; absent on host runtimes. */
+	wrapLegacyStore?: (state: unknown, onCredsUpdate: () => Promise<void>, logger: unknown) => Promise<JsStoreCallbacks>
 	/** 64-bit integer constructor identity for this runtime's module graph. */
 	Long: typeof Long
 }
