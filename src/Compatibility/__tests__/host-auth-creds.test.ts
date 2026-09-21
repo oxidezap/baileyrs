@@ -6,7 +6,8 @@ import { describe, it } from 'node:test'
 import { generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import { generateSignalPubKey } from '../../Utils/crypto.ts'
 import { verifySignature } from '@oxidezap/whatsapp-rust-bridge/host'
-import { initHostAuthCreds } from '../auth-state.ts'
+import { createAuthenticationState, initHostAuthCreds } from '../host-auth-state.ts'
+import { useMemoryStore } from '../../Utils/use-memory-store.ts'
 import { initAuthCreds } from '../../Utils/generics.ts'
 import { expect } from '../../__tests__/expect.ts'
 
@@ -29,6 +30,12 @@ describe('host auth creds', () => {
 		}
 		expect(host.signedPreKey.signature).toHaveLength(64)
 		expect(host.signedPreKey.keyId).toBe(1)
+	})
+
+	it('builds host auth from a native store without legacy projection', async () => {
+		const auth = await createAuthenticationState(useMemoryStore())
+		expect(auth.creds.registered).toBe(false)
+		expect(auth.store).toBeDefined()
 	})
 
 	it('signs the prefixed public key like the Node path', () => {
