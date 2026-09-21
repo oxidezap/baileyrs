@@ -10,6 +10,7 @@
  * pick `nodeRuntime` or `hostRuntime` (or a custom one) per socket.
  */
 
+import type { AuthenticationState, NativeAuthenticationState } from '../Types/Auth.ts'
 import type {
 	BinaryReader as BridgeBinaryReader,
 	JsHttpClientConfig,
@@ -102,6 +103,8 @@ export interface BaileysRuntime {
 	loggerSink(line: string): void
 	/** Log level: Node reads `BAILEYRS_LOG_LEVEL`, hosts use config/default. */
 	logLevel(): string | undefined
+	/** Normalize auth while preserving the root Node projection or host native store. */
+	normalizeAuth?: (input: AuthenticationState | NativeAuthenticationState) => AuthenticationState
 	/** Node-only legacy auth adapter; absent on host runtimes. */
 	wrapLegacyStore?: (state: unknown, onCredsUpdate: () => Promise<void>, logger: unknown) => Promise<JsStoreCallbacks>
 	/** Node-only Baileys transaction facade; native host stores do not need it. */

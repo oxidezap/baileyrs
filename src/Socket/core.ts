@@ -7,7 +7,7 @@ import type {
 import type { BaileysRuntime } from '../Runtime/types.ts'
 import { base64UrlEncode, unrefTimer } from '../Runtime/bytes.ts'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
-import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
+import { normalizeHostAuthenticationState } from '../Compatibility/internal/host-auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
@@ -169,7 +169,7 @@ const createWASocketFactoryInner = (
 			'⚠️ DANGER: DISABLING ALL SYNC BY shouldSyncHistoryMsg PREVENTS BAILEYS FROM ACCESSING INITIAL LID MAPPINGS, LEADING TO INSTABILIY AND SESSION ERRORS'
 		)
 	}
-	const auth = normalizeSocketAuthenticationState(mergedConfig.auth)
+	const auth = (runtime.normalizeAuth ?? normalizeHostAuthenticationState)(mergedConfig.auth)
 	const fullConfig = { ...mergedConfig, auth } as SocketConfig
 	const getExposedKeys = runtime.makeTransactionKeyStore
 		? (runtime.makeTransactionKeyStore(
