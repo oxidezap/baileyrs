@@ -49,6 +49,8 @@ export const toNumber = (
 	return 0
 }
 
+export const isBytes = <T extends Uint8Array = Uint8Array>(value: unknown): value is T => value instanceof Uint8Array
+
 export const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
 	if (a.length !== b.length) return false
 	for (let i = 0; i < a.length; i++) {

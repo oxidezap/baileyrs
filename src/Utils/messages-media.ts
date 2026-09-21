@@ -1,5 +1,5 @@
 import type * as musicMetadataTypes from 'music-metadata'
-import { Buffer } from 'node:buffer'
+import type { Buffer } from 'node:buffer'
 import { hkdf } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
@@ -19,7 +19,7 @@ import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generi
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
 import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
-import { randomBytes } from '../Runtime/bytes.ts'
+import { base64Decode, base64Encode, concatBytes, isBytes, randomBytes } from '../Runtime/bytes.ts'
 import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
 import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
 import { nodeMedia } from '../Runtime/node-media.ts'
@@ -52,7 +52,7 @@ export async function getMediaKeys(
 	mediaType: MediaType
 ): Promise<MediaDecryptionKeyInfo> {
 	if (!buffer) throw new Boom('Cannot derive from empty media key')
-	if (typeof buffer === 'string') buffer = Buffer.from(buffer.replace('data:;base64,', ''), 'base64')
+	if (typeof buffer === 'string') buffer = base64Decode(buffer.replace('data:;base64,', '')) as unknown as Buffer
 	const expandedMediaKey = hkdf(buffer, 112, { info: hkdfInfoKey(mediaType) })
 	return {
 		iv: expandedMediaKey.slice(0, 16),
@@ -134,7 +134,7 @@ export const generateProfilePicture = async (
 	mediaUpload: WAMediaUpload,
 	dimensions?: { width: number; height: number }
 ): Promise<{ img: Buffer }> => {
-	const buffer = Buffer.isBuffer(mediaUpload) ? mediaUpload : await toBuffer((await getStream(mediaUpload)).stream)
+	const buffer = isBytes<Buffer>(mediaUpload) ? mediaUpload : await toBuffer((await getStream(mediaUpload)).stream)
 	const { width = 640, height = 640 } = dimensions || {}
 	const lib = await getImageProcessingLibrary()
 	if ('sharp' in lib && typeof lib.sharp?.default === 'function') {
@@ -156,7 +156,7 @@ export const generateProfilePicture = async (
 
 export const mediaMessageSHA256B64 = (message: WAMessageContent): string | null | undefined => {
 	const media = Object.values(message)[0] as WAGenericMediaMessage
-	return media?.fileSha256 && Buffer.from(media.fileSha256).toString('base64')
+	return media?.fileSha256 && base64Encode(media.fileSha256)
 }
 
 /** Returns audio duration in seconds, parsed via `music-metadata`. */
@@ -177,7 +177,7 @@ export async function getAudioDuration(buffer: Buffer | string | Readable) {
 	const options = {
 		duration: true
 	}
-	if (Buffer.isBuffer(buffer)) {
+	if (isBytes<Buffer>(buffer)) {
 		metadata = await musicMetadata.parseBuffer(buffer, undefined, options)
 	} else if (typeof buffer === 'string') {
 		metadata = await musicMetadata.parseFile(buffer, options)
@@ -196,13 +196,13 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 		// @ts-ignore
 		const { default: decoder } = await import('audio-decode')
 		let audioData: Buffer
-		if (Buffer.isBuffer(buffer)) {
-			audioData = buffer
+		if (isBytes<Buffer>(buffer)) {
+			audioData = buffer as unknown as Buffer
 		} else if (typeof buffer === 'string') {
 			const rStream = nodeMedia.createReadStream(buffer)
-			audioData = await toBuffer(rStream)
+			audioData = (await toBuffer(rStream)) as unknown as Buffer
 		} else {
-			audioData = await toBuffer(buffer)
+			audioData = (await toBuffer(buffer)) as unknown as Buffer
 		}
 
 		const audioBuffer = await decoder(audioData)
@@ -248,11 +248,11 @@ export const toBuffer = async (stream: Readable) => {
 	}
 
 	stream.destroy()
-	return Buffer.concat(chunks)
+	return concatBytes(chunks) as unknown as Buffer
 }
 
 export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxContentLength?: number }) => {
-	if (Buffer.isBuffer(item)) {
+	if (isBytes<Buffer>(item)) {
 		return { stream: toReadable(item), type: 'buffer' } as const
 	}
 
@@ -263,7 +263,7 @@ export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxC
 	const urlStr = item.url.toString()
 
 	if (urlStr.startsWith('data:')) {
-		const buffer = Buffer.from(urlStr.split(',')[1]!, 'base64')
+		const buffer = base64Decode(urlStr.split(',')[1]!) as unknown as Buffer
 		return { stream: toReadable(buffer), type: 'buffer' } as const
 	}
 
@@ -297,7 +297,7 @@ export async function generateThumbnail(
 		// Video thumbnails need ffmpeg + file on disk
 		let filePath: string
 		let needsCleanup = false
-		if (Buffer.isBuffer(bufferOrPath)) {
+		if (isBytes<Buffer>(bufferOrPath)) {
 			filePath = runtimeJoinPath(getTmpFilesDirectory(), 'vid-' + randomId())
 			await nodeMedia.fs.writeFile(filePath, bufferOrPath)
 			needsCleanup = true
@@ -373,7 +373,12 @@ export const encryptMediaRetryRequest = (
 ): BinaryNode => {
 	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
 	const iv = randomBytes(12)
-	const ciphertext = aesGcm256EncryptPortable(getMediaRetryKey(mediaKey), iv, Buffer.from(key.id!), receiptBuffer)
+	const ciphertext = aesGcm256EncryptPortable(
+		getMediaRetryKey(mediaKey),
+		iv,
+		new TextEncoder().encode(key.id!),
+		receiptBuffer
+	)
 	return {
 		tag: 'receipt',
 		attrs: { id: key.id!, to: jidNormalizedUser(meId), type: 'server-error' },
@@ -441,5 +446,5 @@ export const decryptMediaRetryData = (
 	msgId: string
 ): proto.MediaRetryNotification =>
 	proto.MediaRetryNotification.decode(
-		aesGcm256DecryptPortable(getMediaRetryKey(mediaKey), iv, Buffer.from(msgId), ciphertext)
+		aesGcm256DecryptPortable(getMediaRetryKey(mediaKey), iv, new TextEncoder().encode(msgId), ciphertext)
 	)

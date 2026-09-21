@@ -1,4 +1,4 @@
-import { Buffer } from 'node:buffer'
+import type { Buffer } from 'node:buffer'
 import LongRuntime from 'long'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
@@ -37,7 +37,10 @@ import {
 	sha256Sync,
 	toNumber,
 	unixTimestampSeconds,
-	utf8Encode
+	utf8Decode,
+	utf8Encode,
+	base64Decode,
+	hexEncode
 } from '../Runtime/bytes.ts'
 import { readableFromWeb } from '../Runtime/stream.ts'
 import type { ILogger } from './logger.ts'
@@ -234,7 +237,7 @@ export const prepareWAMessageMedia = async (
 	// extraction time) so values arriving via `processMedia`, link-preview
 	// builders, or direct user input go through the same coercion.
 	if (typeof uploadData.jpegThumbnail === 'string') {
-		uploadData.jpegThumbnail = Buffer.from(uploadData.jpegThumbnail, 'base64')
+		uploadData.jpegThumbnail = base64Decode(uploadData.jpegThumbnail) as unknown as Buffer
 	}
 
 	const obj = WAProto.Message.fromObject({
@@ -492,7 +495,7 @@ export const generateWAMessageContent = async (
 			if (pfpUrl) {
 				const resp = await fetch(pfpUrl, { method: 'GET', dispatcher: options?.options?.dispatcher })
 				if (resp.ok) {
-					const buf = Buffer.from(await resp.arrayBuffer())
+					const buf = new Uint8Array(await resp.arrayBuffer())
 					m.groupInviteMessage.jpegThumbnail = buf
 				}
 			}
@@ -1035,7 +1038,7 @@ export const downloadMediaMessage = async <Type extends MediaDownloadType>(
 
 		if (type === 'buffer') {
 			const data = await withClient.waClient.downloadMedia(...args)
-			return Buffer.from(data)
+			return new Uint8Array(data)
 		}
 
 		// Stream mode: Web ReadableStream from Rust → Node.js Readable
@@ -1187,7 +1190,7 @@ export function getAggregateVotesInPollMessage(
 	const voteHashMap: Record<string, VoteAggregation> = {}
 	for (const opt of opts) {
 		const name = opt.optionName || ''
-		voteHashMap[Buffer.from(sha256Sync(utf8Encode(name))).toString('hex')] = { name, voters: [] }
+		voteHashMap[hexEncode(sha256Sync(utf8Encode(name)))] = { name, voters: [] }
 	}
 
 	for (const update of pollUpdates || []) {
@@ -1195,7 +1198,7 @@ export function getAggregateVotesInPollMessage(
 		if (!vote?.selectedOptions?.length) continue
 
 		for (const optionHash of vote.selectedOptions) {
-			const hash = Buffer.from(optionHash).toString()
+			const hash = utf8Decode(optionHash)
 			let aggregate = voteHashMap[hash]
 			if (!aggregate) aggregate = voteHashMap[hash] = { name: 'Unknown', voters: [] }
 			aggregate.voters.push(getKeyAuthorPortable(update.pollUpdateMessageKey, meId))
