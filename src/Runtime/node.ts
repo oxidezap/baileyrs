@@ -11,6 +11,7 @@
 import { randomBytes as nodeRandomBytesSource } from 'node:crypto'
 import EventEmitter from 'events'
 import { platform, release } from 'node:os'
+import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import { execFile } from 'node:child_process'
 import { createReadStream, promises as fs } from 'node:fs'
@@ -20,6 +21,9 @@ import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { setReadableRuntime } from './stream.ts'
 import { nodeMedia } from './node-media.ts'
+import { setBufferRuntime } from './buffer.ts'
+
+setBufferRuntime(Buffer)
 
 nodeMedia.execFile = execFile as never
 nodeMedia.createReadStream = createReadStream as never

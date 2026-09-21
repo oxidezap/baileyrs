@@ -1,5 +1,6 @@
 import type * as musicMetadataTypes from 'music-metadata'
 import type { Buffer } from 'node:buffer'
+import { BufferRuntime } from '../Runtime/buffer.ts'
 import { hkdf } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
@@ -19,7 +20,7 @@ import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generi
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
 import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
-import { base64Decode, base64Encode, concatBytes, isBytes, randomBytes } from '../Runtime/bytes.ts'
+import { base64Encode, isBytes, randomBytes } from '../Runtime/bytes.ts'
 import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
 import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
 import { nodeMedia } from '../Runtime/node-media.ts'
@@ -52,7 +53,8 @@ export async function getMediaKeys(
 	mediaType: MediaType
 ): Promise<MediaDecryptionKeyInfo> {
 	if (!buffer) throw new Boom('Cannot derive from empty media key')
-	if (typeof buffer === 'string') buffer = base64Decode(buffer.replace('data:;base64,', '')) as unknown as Buffer
+	if (typeof buffer === 'string')
+		buffer = BufferRuntime.from(buffer.replace('data:;base64,', ''), 'base64') as unknown as Buffer
 	const expandedMediaKey = hkdf(buffer, 112, { info: hkdfInfoKey(mediaType) })
 	return {
 		iv: expandedMediaKey.slice(0, 16),
@@ -248,7 +250,7 @@ export const toBuffer = async (stream: Readable) => {
 	}
 
 	stream.destroy()
-	return concatBytes(chunks) as unknown as Buffer
+	return BufferRuntime.concat(chunks) as unknown as Buffer
 }
 
 export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxContentLength?: number }) => {
@@ -263,7 +265,7 @@ export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxC
 	const urlStr = item.url.toString()
 
 	if (urlStr.startsWith('data:')) {
-		const buffer = base64Decode(urlStr.split(',')[1]!) as unknown as Buffer
+		const buffer = BufferRuntime.from(urlStr.split(',')[1]!, 'base64') as unknown as Buffer
 		return { stream: toReadable(buffer), type: 'buffer' } as const
 	}
 

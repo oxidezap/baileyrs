@@ -1,4 +1,5 @@
 import type { Buffer } from 'node:buffer'
+import { BufferRuntime } from '../Runtime/buffer.ts'
 import LongRuntime from 'long'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
@@ -495,7 +496,7 @@ export const generateWAMessageContent = async (
 			if (pfpUrl) {
 				const resp = await fetch(pfpUrl, { method: 'GET', dispatcher: options?.options?.dispatcher })
 				if (resp.ok) {
-					const buf = new Uint8Array(await resp.arrayBuffer())
+					const buf = BufferRuntime.from(await resp.arrayBuffer())
 					m.groupInviteMessage.jpegThumbnail = buf
 				}
 			}
@@ -1038,7 +1039,7 @@ export const downloadMediaMessage = async <Type extends MediaDownloadType>(
 
 		if (type === 'buffer') {
 			const data = await withClient.waClient.downloadMedia(...args)
-			return new Uint8Array(data)
+			return BufferRuntime.from(data)
 		}
 
 		// Stream mode: Web ReadableStream from Rust → Node.js Readable
