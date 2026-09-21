@@ -104,6 +104,8 @@ export interface BaileysRuntime {
 	logLevel(): string | undefined
 	/** Node-only legacy auth adapter; absent on host runtimes. */
 	wrapLegacyStore?: (state: unknown, onCredsUpdate: () => Promise<void>, logger: unknown) => Promise<JsStoreCallbacks>
+	/** Node-only Baileys transaction facade; native host stores do not need it. */
+	makeTransactionKeyStore?: (state: unknown, logger: unknown, options: unknown) => () => unknown
 	/** 64-bit integer constructor identity for this runtime's module graph. */
 	Long: typeof Long
 }

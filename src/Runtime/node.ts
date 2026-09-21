@@ -15,6 +15,7 @@ import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import Long from 'long'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
+import { makeLazyTransactionKeyStore } from '../Compatibility/internal/signal-key-store.ts'
 import type { BaileysRuntime } from './types.ts'
 
 export const nodeRandomBytes = (length: number): Uint8Array => {
@@ -49,5 +50,6 @@ export const nodeRuntime: BaileysRuntime = {
 	loggerSink: nodeLoggerSink,
 	logLevel: () => process.env.BAILEYRS_LOG_LEVEL,
 	Long,
-	wrapLegacyStore: wrapLegacyStore as never
+	wrapLegacyStore: wrapLegacyStore as never,
+	makeTransactionKeyStore: makeLazyTransactionKeyStore as never
 }

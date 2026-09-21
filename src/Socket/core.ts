@@ -10,7 +10,6 @@ import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
 import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
-import { makeLazyTransactionKeyStore } from '../Compatibility/internal/signal-key-store.ts'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
 import { bindSignalRepositoryContext, makeDefaultSignalRepository } from '../Compatibility/signal-repository.ts'
 import { bridgeBusinessProfileToBaileys } from '../Compatibility/socket-results.ts'
@@ -172,7 +171,13 @@ const createWASocketFactoryInner = (
 	}
 	const auth = normalizeSocketAuthenticationState(mergedConfig.auth)
 	const fullConfig = { ...mergedConfig, auth } as SocketConfig
-	const getExposedKeys = makeLazyTransactionKeyStore(auth.keys, logger, fullConfig.transactionOpts)
+	const getExposedKeys = runtime.makeTransactionKeyStore
+		? (runtime.makeTransactionKeyStore(
+				auth.keys,
+				logger,
+				fullConfig.transactionOpts
+			) as () => SignalKeyStoreWithTransaction)
+		: () => auth.keys as SignalKeyStoreWithTransaction
 
 	const ev = makeEventBuffer(logger)
 	// Upstream mutates authState.creds before notifying user listeners. Register
