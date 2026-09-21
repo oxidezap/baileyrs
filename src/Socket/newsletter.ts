@@ -1,4 +1,4 @@
-import { Buffer } from 'node:buffer'
+import { base64Decode } from '../Runtime/bytes.ts'
 import { bridgeNewsletterMetadataToBaileys } from '../Compatibility/newsletter-results.ts'
 import type { NewsletterMetadataResult } from '@oxidezap/whatsapp-rust-bridge'
 import type { NewsletterMetadata, NewsletterUpdate } from '../Types/Newsletter.ts'
@@ -48,7 +48,7 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 				if (updates.picture === '') {
 					result = await client.newsletterRemovePicture(jid)
 				} else if (updates.picture !== undefined) {
-					result = await client.newsletterSetPicture(jid, new Uint8Array(Buffer.from(updates.picture, 'base64')))
+					result = await client.newsletterSetPicture(jid, base64Decode(updates.picture))
 				}
 				// Only when the delta asked for nothing: every write above already
 				// answers with the refreshed metadata, so reading it would be a round
