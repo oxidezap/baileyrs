@@ -45,8 +45,20 @@ if (typeof getBuiltinModule === 'function') {
 	try {
 		const moduleApi = getBuiltinModule('module') as { createRequire?: (base: string) => (id: string) => unknown }
 		const load = moduleApi.createRequire?.(import.meta.url)
-		const nodeBridge = load?.('@oxidezap/whatsapp-rust-bridge') as { hkdf?: typeof nodeMedia.hkdf } | undefined
+		const optional = (id: string): unknown => {
+			try {
+				return load?.(id)
+			} catch {
+				return undefined
+			}
+		}
+		const nodeBridge = optional('@oxidezap/whatsapp-rust-bridge') as { hkdf?: typeof nodeMedia.hkdf } | undefined
 		if (nodeBridge?.hkdf) nodeMedia.hkdf = nodeBridge.hkdf
+		nodeMedia.getImageProcessingLibrary = async () => {
+			const jimp = optional('jimp')
+			const sharp = optional('sharp')
+			return sharp ? { sharp } : jimp ? { jimp } : {}
+		}
 	} catch {
 		/* A host has no Node bridge loader; its runtime installs this capability. */
 	}
