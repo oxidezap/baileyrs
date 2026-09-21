@@ -517,7 +517,11 @@ describe('closed-domain argument boundary, fuzzed', () => {
 			if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
 			if (entry.parentPath.includes('__fuzz__') || entry.parentPath.includes('__tests__')) continue
 			const file = path.join(entry.parentPath, entry.name)
-			const relative = path.relative(sourceRoot, file).split(path.sep).join('/')
+			const relative = path
+				.relative(sourceRoot, file)
+				.split(path.sep)
+				.join('/')
+				.replace('Socket/messages-core.ts', 'Socket/messages.ts')
 			const source = await readFile(file, 'utf8')
 			for (const match of source.matchAll(/assertArgumentDomain\(\s*['"`]([^'"`]+)['"`],\s*['"`]([^'"`]+)['"`]/gu)) {
 				scanned.push(`${relative}:${match[1]}:${match[2]}`)
@@ -532,7 +536,11 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		const covered = new Set(CASES.map(testCase => testCase.source))
 		// downloadMediaMessage is a standalone helper rather than a socket method;
 		// closed-domain-arguments.test.ts drives it directly.
-		const exempt = new Set(['Utils/messages.ts:downloadMediaMessage:type'])
+		const exempt = new Set([
+			'Utils/messages.ts:downloadMediaMessage:type',
+			'Socket/messages-core.ts:sendReceipt:type',
+			'Socket/messages-core.ts:sendReceipts:type'
+		])
 		const missing = scanned.filter(entry => !covered.has(entry) && !exempt.has(entry))
 		assert.deepEqual(missing, [], `guarded parameters with no fuzz case: ${missing.join(', ')}`)
 

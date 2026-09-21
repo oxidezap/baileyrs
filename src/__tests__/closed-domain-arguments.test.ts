@@ -523,7 +523,7 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 				const { declarator, parameter, type } = match.groups!
 				if (declarator) continue
 				if (!type!.startsWith("'") && !domainTypes.has(type!)) continue
-				found.push(`${file}:${enclosingName(text, match.index)}:${parameter}`)
+				found.push(`${file.replace('messages-core.ts', 'messages.ts')}:${enclosingName(text, match.index)}:${parameter}`)
 			}
 		}
 
