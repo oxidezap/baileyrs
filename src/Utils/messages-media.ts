@@ -243,19 +243,20 @@ export const toReadable = (buffer: Buffer) => {
 	return readable
 }
 
-export const toBuffer = async (stream: Readable) => {
+export const toBuffer = async (stream: Readable | Uint8Array) => {
+	if (isBytes<Buffer>(stream)) return stream
 	const chunks: Buffer[] = []
 	for await (const chunk of stream) {
 		chunks.push(chunk)
 	}
 
-	stream.destroy()
+	;(stream as Readable).destroy()
 	return BufferRuntime.concat(chunks) as unknown as Buffer
 }
 
 export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxContentLength?: number }) => {
 	if (isBytes<Buffer>(item)) {
-		return { stream: toReadable(item), type: 'buffer' } as const
+		return { stream: item, type: 'buffer' } as const
 	}
 
 	if ('stream' in item) {
@@ -266,7 +267,7 @@ export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxC
 
 	if (urlStr.startsWith('data:')) {
 		const buffer = BufferRuntime.from(urlStr.split(',')[1]!, 'base64') as unknown as Buffer
-		return { stream: toReadable(buffer), type: 'buffer' } as const
+		return { stream: buffer, type: 'buffer' } as const
 	}
 
 	if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
