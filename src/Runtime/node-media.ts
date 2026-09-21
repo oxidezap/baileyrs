@@ -44,20 +44,19 @@ if (nodeProcess) {
 	try {
 		const bridgePackage = ['@oxidezap', 'whatsapp-rust-bridge'].join('/')
 		const nodeBridge = await import(bridgePackage)
-		nodeBridge.initWasmEngine()
+		try {
+			nodeBridge.initWasmEngine()
+		} catch {
+			/* The owning socket may already have initialized the engine. */
+		}
 		nodeMedia.hkdf = nodeBridge.hkdf
-		const moduleApi = (nodeProcess as { getBuiltinModule?: (id: string) => unknown }).getBuiltinModule?.('module') as
-			| { createRequire?: (base: string) => (id: string) => unknown }
-			| undefined
-		const load = moduleApi?.createRequire?.(import.meta.url)
 		nodeMedia.getImageProcessingLibrary = async () => {
-			try {
-				const jimp = load?.('jimp')
-				const sharp = load?.('sharp')
-				return sharp ? { sharp: { default: sharp } } : jimp ? { jimp } : {}
-			} catch {
-				return {}
-			}
+			// @ts-ignore Optional peer dependency discovered only in Node.
+			const jimpImport = import('jimp').catch(() => undefined)
+			// @ts-ignore Optional peer dependency discovered only in Node.
+			const sharpImport = import('sharp').catch(() => undefined)
+			const [jimp, sharp] = await Promise.all([jimpImport, sharpImport])
+			return sharp ? { sharp } : jimp ? { jimp } : {}
 		}
 	} catch {
 		/* A host has no Node bridge loader; its runtime installs this capability. */
