@@ -250,7 +250,8 @@ export const toBuffer = async (stream: Readable | Uint8Array) => {
 		chunks.push(chunk)
 	}
 
-	;(stream as Readable).destroy()
+	const destroy = (stream as Readable & { destroy?: () => void }).destroy
+	if (typeof destroy === 'function') destroy.call(stream)
 	return BufferRuntime.concat(chunks) as unknown as Buffer
 }
 
