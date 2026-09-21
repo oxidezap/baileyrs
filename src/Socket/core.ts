@@ -136,17 +136,25 @@ const completionFailureCode = (reason: string): number | undefined => {
 export const createWASocketFactory = (runtime: BaileysRuntime) => {
 	let engineInitialized = false
 	return (config: UserFacingSocketConfig | HostSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
-		createWASocketFactoryInner(runtime, config, () => {
-			if (engineInitialized) return false
-			engineInitialized = true
-			return true
-		})
+		createWASocketFactoryInner(
+			runtime,
+			config,
+			() => {
+				if (engineInitialized) return false
+				engineInitialized = true
+				return true
+			},
+			() => {
+				engineInitialized = false
+			}
+		)
 }
 
 const createWASocketFactoryInner = (
 	runtime: BaileysRuntime,
 	config: UserFacingSocketConfig | HostSocketConfig,
-	claimEngineInitialization: () => boolean
+	claimEngineInitialization: () => boolean,
+	resetEngineInitialization: () => void
 ) => {
 	const mergedConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
 	const { logger } = mergedConfig
@@ -538,6 +546,7 @@ const createWASocketFactoryInner = (
 		try {
 			if (claimEngineInitialization()) runtime.bridge.initWasmEngine(logger, runtime.nativeCrypto)
 		} catch (err) {
+			resetEngineInitialization()
 			try {
 				logger.error({ err }, 'failed to install the bridge logger')
 			} catch {
