@@ -100,7 +100,7 @@ export interface BaileysRuntime {
 	/** Native AES/HMAC fast path; absent on hosts (Rust/WASM fallback). */
 	nativeCrypto?: unknown
 	/** Where core log lines go: Node writes stdout, hosts console. */
-	loggerSink(line: string): void
+	loggerSink(line: string, delivered?: () => void): void
 	/** Log level: Node reads `BAILEYRS_LOG_LEVEL`, hosts use config/default. */
 	logLevel(): string | undefined
 	/** Normalize auth while preserving the root Node projection or host native store. */

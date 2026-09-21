@@ -548,14 +548,23 @@ const createWASocketFactoryInner = (
 		// rejection on a chain the caller never sees, so the fallback call is
 		// guarded too.
 		try {
-			if (claimEngineInitialization()) runtime.bridge.initWasmEngine(logger, runtime.nativeCrypto)
+			if (claimEngineInitialization()) {
+				const bridgeLogger =
+					typeof logger.level === 'string'
+						? logger
+						: {
+								level: 'silent',
+								trace: () => {},
+								debug: () => {},
+								info: () => {},
+								warn: () => {},
+								error: () => {}
+							}
+				runtime.bridge.initWasmEngine(bridgeLogger, runtime.nativeCrypto)
+			}
 		} catch (err) {
 			resetEngineInitialization()
-			try {
-				logger.error({ err }, 'failed to install the bridge logger')
-			} catch {
-				/* a consumer logger cannot prevent the socket from starting */
-			}
+			throw err
 		}
 
 		// Defer to a microtask so callers have a turn to attach listeners

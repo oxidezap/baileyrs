@@ -48,10 +48,11 @@ export const nodeRandomBytes = (length: number): Uint8Array => {
 	return out
 }
 
-export const nodeLoggerSink = (line: string): void => {
+export const nodeLoggerSink = (line: string, delivered: () => void): void => {
 	try {
-		process.stdout.write(`${line}\n`)
+		process.stdout.write(`${line}\n`, delivered)
 	} catch {
+		delivered()
 		/* logging must not crash the process it observes */
 	}
 }
