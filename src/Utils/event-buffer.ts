@@ -13,7 +13,7 @@ import type {
 import { WAMessageStatus } from '../Types/index.ts'
 import { trimUndefined, updateMessageWithReaction, updateMessageWithReceipt } from '../Media/mutations.ts'
 import type { ILogger } from './logger.ts'
-import { isRealMessage, shouldIncrementChatUnread } from './process-message.ts'
+import { isRealMessage, shouldIncrementChatUnread } from './process-message-core.ts'
 
 const BUFFERABLE_EVENTS = [
 	'messaging-history.set',
