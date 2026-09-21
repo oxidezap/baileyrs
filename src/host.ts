@@ -26,3 +26,4 @@
  * filesystem auth, no media processors, no `Buffer`/`Readable` inputs.
  */
 export * from './host-surface.ts'
+export { default } from './host-surface.ts'
