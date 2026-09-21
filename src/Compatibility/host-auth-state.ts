@@ -62,15 +62,21 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 	const noiseKey = keyPair(record.noise_key)
 	const identityKey = keyPair(record.identity_key)
 	const signedPreKey = keyPair(record.signed_pre_key)
+	const hasSigningRecord = ['identity_key', 'signed_pre_key', 'signed_pre_key_id', 'signed_pre_key_signature'].some(
+		field => field in record
+	)
+	const signature = asBytes(record.signed_pre_key_signature)
+	const keyId = record.signed_pre_key_id
+	if (
+		hasSigningRecord &&
+		(!identityKey || !signedPreKey || !signature || signature.length !== 64 || typeof keyId !== 'number')
+	) {
+		throw new Error('persisted auth record contains an incomplete signing bundle')
+	}
 	if (noiseKey) mutable.noiseKey = noiseKey
-	if (identityKey) mutable.signedIdentityKey = identityKey
-	if (signedPreKey) {
-		const signature = asBytes(record.signed_pre_key_signature)
-		mutable.signedPreKey = {
-			keyPair: signedPreKey,
-			keyId: typeof record.signed_pre_key_id === 'number' ? record.signed_pre_key_id : mutable.signedPreKey.keyId,
-			signature: signature ?? mutable.signedPreKey.signature
-		}
+	if (hasSigningRecord) {
+		mutable.signedIdentityKey = identityKey!
+		mutable.signedPreKey = { keyPair: signedPreKey!, keyId: keyId as number, signature: signature! }
 	}
 	const advSecret = asBytes(record.adv_secret_key)
 	if (advSecret) mutable.advSecretKey = base64Encode(advSecret)

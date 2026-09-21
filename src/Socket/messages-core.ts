@@ -167,9 +167,11 @@ export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) 
 				}
 
 				const key = message.key
+				if (!key.id || !key.remoteJid)
+					throw new Boom('Media message key requires id and remoteJid', { statusCode: 400 })
 				const newDirectPath = await client.requestMediaReupload(
-					key.id!,
-					key.remoteJid!,
+					key.id,
+					key.remoteJid,
 					mediaKey instanceof Uint8Array ? mediaKey : new Uint8Array(mediaKey),
 					!!key.fromMe,
 					key.participant ?? null
@@ -366,8 +368,10 @@ export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) 
 				}
 			}
 
+			const remoteJid = messageKey.remoteJid
+			if (!remoteJid) throw new Boom('Placeholder resend requires remoteJid', { statusCode: 400 })
 			const bytes = encode('Message', message)
-			return ctx.withClient(client => client.relayMessageBytes(messageKey.remoteJid!, bytes, null))
+			return ctx.withClient(client => client.relayMessageBytes(remoteJid, bytes, null))
 		}
 	}
 }
