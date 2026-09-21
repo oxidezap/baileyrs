@@ -474,7 +474,8 @@ const createDeferredLogger = (
 		pendingLevel ??
 		childOptions?.level ??
 		parent?.level() ??
-		process.env.BAILEYRS_LOG_LEVEL ??
+		(globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } }).process?.env
+			?.BAILEYRS_LOG_LEVEL ??
 		DEFAULT_LEVEL
 	const self: DeferredParent = { level: peekLevel, resolve }
 	// Hoisted so `logger.child` keeps the stable identity a plain property has.

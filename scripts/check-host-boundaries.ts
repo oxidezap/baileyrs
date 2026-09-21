@@ -202,7 +202,12 @@ for (const file of hostClosure) {
 			report(file, index + 1, line, 'host closure reads a process global')
 		}
 		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(code)
-		const specifier = importMatch?.[1]
+		const dynamicImport = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(code)
+		const specifier = importMatch?.[1] ?? dynamicImport?.[1]
+		if (dynamicImport && specifier?.startsWith('.')) {
+			const next = resolveRelative(file, specifier)
+			if (next && next.endsWith('.ts')) visitHostFile(next)
+		}
 		if (!specifier) return
 		// `import type { Buffer }` / `import type { Agent }` vanish at emit
 		// and cannot pull a Node loader into a bundle; only value imports

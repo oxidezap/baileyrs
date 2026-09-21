@@ -32,18 +32,22 @@ const isAbsent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.
  * peer, so a damaged installation is never silently hidden behind the
  * fallback.
  */
-export const loadOptionalPeer = <Module>(
-	specifier: string,
-	loader: PeerLoader = nodePeerLoader(import.meta.url)
-): Module | undefined => {
+export const loadOptionalPeer = <Module>(specifier: string, loader?: PeerLoader): Module | undefined => {
+	const effectiveLoader =
+		loader ??
+		(typeof (globalThis as typeof globalThis & { process?: { getBuiltinModule?: unknown } }).process
+			?.getBuiltinModule === 'function'
+			? nodePeerLoader(import.meta.url)
+			: undefined)
+	if (!effectiveLoader) return undefined
 	try {
-		loader.resolveSpecifier(`${specifier}/package.json`)
+		effectiveLoader.resolveSpecifier(`${specifier}/package.json`)
 	} catch (error) {
 		if (isAbsent(error)) return undefined
 		throw error
 	}
 	try {
-		return loader.requireSpecifier(specifier) as Module
+		return effectiveLoader.requireSpecifier(specifier) as Module
 	} catch (error) {
 		throw new Error(
 			`Failed to load optional peer '${specifier}': it is installed but broken. ` +

@@ -132,12 +132,21 @@ const completionFailureCode = (reason: string): number | undefined => {
 }
 
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
-export const createWASocketFactory =
-	(runtime: BaileysRuntime) =>
-	(config: UserFacingSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
-		createWASocketFactoryInner(runtime, config)
+export const createWASocketFactory = (runtime: BaileysRuntime) => {
+	let engineInitialized = false
+	return (config: UserFacingSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
+		createWASocketFactoryInner(runtime, config, () => {
+			if (engineInitialized) return false
+			engineInitialized = true
+			return true
+		})
+}
 
-const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingSocketConfig) => {
+const createWASocketFactoryInner = (
+	runtime: BaileysRuntime,
+	config: UserFacingSocketConfig,
+	claimEngineInitialization: () => boolean
+) => {
 	setLoggerSink((line, delivered) => {
 		runtime.loggerSink(line)
 		delivered()
@@ -529,7 +538,7 @@ const createWASocketFactoryInner = (runtime: BaileysRuntime, config: UserFacingS
 		// rejection on a chain the caller never sees, so the fallback call is
 		// guarded too.
 		try {
-			runtime.bridge.initWasmEngine(logger, runtime.nativeCrypto)
+			if (claimEngineInitialization()) runtime.bridge.initWasmEngine(logger, runtime.nativeCrypto)
 		} catch (err) {
 			try {
 				logger.error({ err }, 'failed to install the bridge logger')
