@@ -36,9 +36,21 @@ export type HostSocketConfig = {
 	[key: string]: unknown
 }
 
-/** Minimal host-facing socket contract; protocol-specific methods remain runtime-discovered. */
+export type HostEventEmitter = {
+	on(event: string, listener: (...args: unknown[]) => void): HostEventEmitter
+	off(event: string, listener: (...args: unknown[]) => void): HostEventEmitter
+	emit(event: string, ...args: unknown[]): boolean
+}
+
+/** Host-facing operations retain callable types without importing Node Baileys declarations. */
 export type HostWASocket = {
-	ev: unknown
+	ev: HostEventEmitter
 	end: (error?: unknown) => Promise<void> | void
-	[key: string]: unknown
+	sendMessage: (...args: unknown[]) => Promise<unknown>
+	logout: (...args: unknown[]) => Promise<void>
+	query: (...args: unknown[]) => Promise<unknown>
+	sendNode: (...args: unknown[]) => Promise<unknown>
+	relayMessage: (...args: unknown[]) => Promise<unknown>
+	downloadMediaMessage: (...args: unknown[]) => Promise<unknown>
+	profilePictureUrl: (...args: unknown[]) => Promise<unknown>
 }
