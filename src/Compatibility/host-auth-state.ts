@@ -1,7 +1,8 @@
 /** Host-only auth bootstrap. It deliberately does not import legacy-store codecs. */
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge/host'
 import { calculateSignature, generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
-import type { AuthenticationCreds, AuthenticationState, KeyPair } from '../Types/index.ts'
+import type { AuthenticationCreds, KeyPair } from '../Types/index.ts'
+import type { HostAuthenticationState } from '../host-types.ts'
 import { base64Encode, concatBytes, randomBytes, readU16BE, utf8Decode } from '../Runtime/bytes.ts'
 import { jidEncode } from '../WABinary/jid-utils.ts'
 
@@ -15,7 +16,7 @@ const signed = (identity: KeyPair) => {
 	return { keyPair, keyId: 1, signature: new Uint8Array(calculateSignature(identity.private, publicKey)) }
 }
 
-export const initHostAuthCreds = (): AuthenticationCreds => {
+export const initHostAuthCreds = (): HostAuthenticationState['creds'] => {
 	const identity = pair()
 	return {
 		noiseKey: pair(),
@@ -34,7 +35,7 @@ export const initHostAuthCreds = (): AuthenticationCreds => {
 		lastPropHash: undefined,
 		routingInfo: undefined,
 		additionalData: undefined
-	}
+	} as unknown as HostAuthenticationState['creds']
 }
 
 const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Promise<void> => {
@@ -68,16 +69,8 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 }
 
 /** Build host auth from the caller-owned native byte store. Rust remains the Signal authority. */
-export const createAuthenticationState = async (store: JsStoreCallbacks): Promise<AuthenticationState> => {
+export const createAuthenticationState = async (store: JsStoreCallbacks): Promise<HostAuthenticationState> => {
 	const creds = initHostAuthCreds()
-	await hydrate(store, creds)
-	const keys = {
-		get: async () => {
-			throw new Error('legacy SignalKeyStore is not available on the host surface')
-		},
-		set: async () => {
-			throw new Error('legacy SignalKeyStore is not available on the host surface')
-		}
-	} as unknown as AuthenticationState['keys']
-	return { creds, keys, store: store as AuthenticationState['store'] }
+	await hydrate(store, creds as unknown as AuthenticationCreds)
+	return { creds: creds as unknown as HostAuthenticationState['creds'], store }
 }
