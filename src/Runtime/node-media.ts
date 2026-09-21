@@ -1,5 +1,4 @@
 import type { Readable } from 'node:stream'
-import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 
 type FileBytes = { toString: (encoding?: string) => string }
 
@@ -17,13 +16,8 @@ export const nodeMedia: {
 	}
 } = {
 	getImageProcessingLibrary: async () => ({}),
-	hkdf: (input, length, options) => {
-		try {
-			return bridge.hkdf(input, length, options)
-		} catch {
-			bridge.initWasmEngine()
-			return bridge.hkdf(input, length, options)
-		}
+	hkdf: () => {
+		throw new Error('HKDF bridge capability is unavailable')
 	},
 	tempDir: () => '/tmp',
 	execFile: () => {
@@ -45,31 +39,25 @@ export const nodeMedia: {
 	}
 }
 
-const proc = (globalThis as typeof globalThis & { process?: { getBuiltinModule?: (id: string) => unknown } }).process
-if (typeof proc?.getBuiltinModule === 'function') {
+const nodeProcess = (globalThis as typeof globalThis & { process?: unknown }).process
+if (nodeProcess) {
 	try {
-		const moduleApi = proc.getBuiltinModule('module') as { createRequire?: (base: string) => (id: string) => unknown }
-		const load = moduleApi.createRequire?.(import.meta.url)
-		const optional = (id: string): unknown => {
-			try {
-				return load?.(id)
-			} catch {
-				return undefined
-			}
-		}
-		const nodeBridge = optional('@oxidezap/whatsapp-rust-bridge') as
-			| { hkdf?: typeof nodeMedia.hkdf; initWasmEngine?: () => void }
+		const bridgePackage = ['@oxidezap', 'whatsapp-rust-bridge'].join('/')
+		const nodeBridge = await import(bridgePackage)
+		nodeBridge.initWasmEngine()
+		nodeMedia.hkdf = nodeBridge.hkdf
+		const moduleApi = (nodeProcess as { getBuiltinModule?: (id: string) => unknown }).getBuiltinModule?.('module') as
+			| { createRequire?: (base: string) => (id: string) => unknown }
 			| undefined
-		try {
-			nodeBridge?.initWasmEngine?.()
-		} catch {
-			/* The owning socket may initialize the engine later. */
-		}
-		if (nodeBridge?.hkdf) nodeMedia.hkdf = nodeBridge.hkdf
+		const load = moduleApi?.createRequire?.(import.meta.url)
 		nodeMedia.getImageProcessingLibrary = async () => {
-			const jimp = optional('jimp')
-			const sharp = optional('sharp')
-			return sharp ? { sharp } : jimp ? { jimp } : {}
+			try {
+				const jimp = load?.('jimp')
+				const sharp = load?.('sharp')
+				return sharp ? { sharp: { default: sharp } } : jimp ? { jimp } : {}
+			} catch {
+				return {}
+			}
 		}
 	} catch {
 		/* A host has no Node bridge loader; its runtime installs this capability. */

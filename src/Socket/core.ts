@@ -79,6 +79,8 @@ import { makeHttpClient, makeTransport } from './transport.ts'
 import type { SocketContext } from './types.ts'
 import { makeWithClient } from './client-operations.ts'
 import { makeUSyncMethods } from './usync.ts'
+import defaultLogger from '../Utils/logger.ts'
+import { setLoggerSink } from '../Utils/logger.ts'
 
 /**
  * Default mapping for the legacy `browser[1]` slot — preserved so users on the
@@ -133,6 +135,9 @@ const completionFailureCode = (reason: string): number | undefined => {
 
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
 export const createWASocketFactory = (runtime: BaileysRuntime) => {
+	setLoggerSink((line, delivered) => runtime.loggerSink(line, delivered))
+	const configuredLevel = runtime.logLevel()
+	if (configuredLevel) defaultLogger.level = configuredLevel
 	let engineInitialized = false
 	return (config: UserFacingSocketConfig | HostSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
 		createWASocketFactoryInner(
