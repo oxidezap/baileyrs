@@ -44,12 +44,14 @@ if (nodeProcess) {
 	try {
 		const bridgePackage = ['@oxidezap', 'whatsapp-rust-bridge'].join('/')
 		const nodeBridge = await import(bridgePackage)
-		try {
-			nodeBridge.initWasmEngine()
-		} catch {
-			/* The owning socket may already have initialized the engine. */
+		nodeMedia.hkdf = (input, length, options) => {
+			try {
+				return nodeBridge.hkdf(input, length, options)
+			} catch {
+				nodeBridge.initWasmEngine()
+				return nodeBridge.hkdf(input, length, options)
+			}
 		}
-		nodeMedia.hkdf = nodeBridge.hkdf
 		nodeMedia.getImageProcessingLibrary = async () => {
 			// @ts-ignore Optional peer dependency discovered only in Node.
 			const jimpImport = import('jimp').catch(() => undefined)
