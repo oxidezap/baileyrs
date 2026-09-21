@@ -79,6 +79,9 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 		mutable.signedPreKey = { keyPair: signedPreKey!, keyId: keyId as number, signature: signature! }
 	}
 	const advSecret = asBytes(record.adv_secret_key)
+	if ('adv_secret_key' in record && (!advSecret || advSecret.length !== 32)) {
+		throw new Error('persisted auth record contains an invalid adv secret')
+	}
 	if (advSecret) mutable.advSecretKey = base64Encode(advSecret)
 	if (typeof record.next_pre_key_id === 'number') {
 		mutable.nextPreKeyId = record.next_pre_key_id

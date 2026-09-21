@@ -30,6 +30,21 @@ export type HostAuthenticationState = {
 	store: JsStoreCallbacks
 }
 
+export type HostRuntime = {
+	bridge: object
+	randomBytes: (length: number) => Uint8Array
+	setTimeout: (callback: () => void, ms: number) => unknown
+	clearTimeout: (handle: unknown) => void
+	setImmediate?: (callback: () => void) => unknown
+	queueMicrotask: (callback: () => void) => void
+	events: object
+	platformInfo?: () => { os: string; release: string }
+	nativeCrypto?: unknown
+	loggerSink: (line: string, delivered?: () => void) => void
+	logLevel: () => string | undefined
+	Long: unknown
+}
+
 export type HostSocketConfig = {
 	auth: HostAuthenticationState
 	logger?: ILogger

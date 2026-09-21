@@ -118,7 +118,7 @@ const base64Value = (char: string): number => {
 }
 
 export const base64Decode = (text: string): Uint8Array => {
-	let clean = text.replace(/[\s]/g, '')
+	let clean = text.replace(/[\s]/g, '').replace(/-/g, '+').replace(/_/g, '/')
 	// Tolerate unpadded input the way Buffer.from(…, 'base64') does (auth
 	// mirrors store 43-char unpadded digests); canonical padding otherwise.
 	while (clean.length % 4 !== 0) clean += '='
