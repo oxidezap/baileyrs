@@ -1,7 +1,5 @@
 import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
-import { execFile } from 'node:child_process'
-import { createReadStream, promises as fs } from 'node:fs'
 import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { MEDIA_HKDF_KEY_MAPPING, type MediaType } from '../Defaults/index.ts'
@@ -23,6 +21,7 @@ import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto.ts'
 import { randomBytes } from '../Runtime/bytes.ts'
 import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
 import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
+import { nodeMedia } from '../Runtime/node-media.ts'
 import type { ILogger } from './logger.ts'
 
 const randomId = () => globalThis.crypto.randomUUID()
@@ -69,10 +68,10 @@ const extractVideoThumb = async (
 	size: { width: number; height: number }
 ) =>
 	new Promise<void>((resolve, reject) => {
-		execFile(
+		nodeMedia.execFile(
 			'ffmpeg',
 			['-ss', time, '-i', path, '-y', '-vf', `scale=${size.width}:-1`, '-vframes', '1', '-f', 'image2', destPath],
-			err => {
+			(err: unknown) => {
 				if (err) {
 					reject(err)
 				} else {
@@ -199,7 +198,7 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 		if (Buffer.isBuffer(buffer)) {
 			audioData = buffer
 		} else if (typeof buffer === 'string') {
-			const rStream = createReadStream(buffer)
+			const rStream = nodeMedia.createReadStream(buffer)
 			audioData = await toBuffer(rStream)
 		} else {
 			audioData = await toBuffer(buffer)
@@ -271,7 +270,7 @@ export const getStream = async (item: WAMediaUpload, opts?: RequestInit & { maxC
 		return { stream: await getHttpStream(item.url, opts), type: 'remote' } as const
 	}
 
-	return { stream: createReadStream(item.url), type: 'file' } as const
+	return { stream: nodeMedia.createReadStream(item.url), type: 'file' } as const
 }
 
 /** generates a thumbnail for a given media, if required */
@@ -299,7 +298,7 @@ export async function generateThumbnail(
 		let needsCleanup = false
 		if (Buffer.isBuffer(bufferOrPath)) {
 			filePath = runtimeJoinPath(getTmpFilesDirectory(), 'vid-' + randomId())
-			await fs.writeFile(filePath, bufferOrPath)
+			await nodeMedia.fs.writeFile(filePath, bufferOrPath)
 			needsCleanup = true
 		} else {
 			filePath = bufferOrPath
@@ -308,17 +307,17 @@ export async function generateThumbnail(
 		const imgFilename = runtimeJoinPath(getTmpFilesDirectory(), randomId() + '.jpg')
 		try {
 			await extractVideoThumb(filePath, imgFilename, '00:00:00', { width: 32, height: 32 })
-			const buff = await fs.readFile(imgFilename)
+			const buff = await nodeMedia.fs.readFile(imgFilename)
 			thumbnail = buff.toString('base64')
 
-			await fs.unlink(imgFilename)
+			await nodeMedia.fs.unlink(imgFilename)
 		} catch (err) {
 			options.logger?.debug('could not generate video thumb: ' + err)
 		}
 
 		if (needsCleanup) {
 			try {
-				await fs.unlink(filePath)
+				await nodeMedia.fs.unlink(filePath)
 			} catch {
 				/* ignore */
 			}

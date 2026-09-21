@@ -12,11 +12,18 @@ import { randomBytes as nodeRandomBytesSource } from 'node:crypto'
 import EventEmitter from 'events'
 import { platform, release } from 'node:os'
 import { Readable } from 'node:stream'
+import { execFile } from 'node:child_process'
+import { createReadStream, promises as fs } from 'node:fs'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import Long from 'long'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { setReadableRuntime } from './stream.ts'
+import { nodeMedia } from './node-media.ts'
+
+nodeMedia.execFile = execFile as never
+nodeMedia.createReadStream = createReadStream as never
+nodeMedia.fs = fs as never
 
 setReadableRuntime({
 	fromWeb: stream => Readable.fromWeb(stream as never),
