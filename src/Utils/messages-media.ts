@@ -2,7 +2,7 @@ import type * as musicMetadataTypes from 'music-metadata'
 import { Buffer } from 'node:buffer'
 import { execFile } from 'node:child_process'
 import { createReadStream, promises as fs } from 'node:fs'
-import { Readable } from 'node:stream'
+import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { MEDIA_HKDF_KEY_MAPPING, type MediaType } from '../Defaults/index.ts'
 import type {
@@ -22,9 +22,11 @@ import { Boom } from './boom.ts'
 import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto.ts'
 import { randomBytes } from '../Runtime/bytes.ts'
 import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
+import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
 import type { ILogger } from './logger.ts'
 
 const randomId = () => globalThis.crypto.randomUUID()
+const isNodeReadable = (value: unknown): value is Readable => isReadable(value)
 
 const getTmpFilesDirectory = () => runtimeTempDir()
 
@@ -83,7 +85,7 @@ const extractVideoThumb = async (
 export const extractImageThumb = async (bufferOrFilePath: Readable | Buffer | string, width = 32) => {
 	// TODO: Move entirely to sharp, removing jimp as it supports readable streams
 	// This will have positive speed and performance impacts as well as minimizing RAM usage.
-	if (bufferOrFilePath instanceof Readable) {
+	if (isNodeReadable(bufferOrFilePath)) {
 		bufferOrFilePath = await toBuffer(bufferOrFilePath)
 	}
 
@@ -233,7 +235,7 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 }
 
 export const toReadable = (buffer: Buffer) => {
-	const readable = new Readable({ read: () => {} })
+	const readable = createReadable() as Readable
 	readable.push(buffer)
 	readable.push(null)
 	return readable
@@ -340,7 +342,9 @@ export const getHttpStream = async (url: string | URL, options: RequestInit & { 
 	}
 
 	// @ts-ignore Node18+ Readable.fromWeb exists
-	return response.body instanceof Readable ? response.body : Readable.fromWeb(response.body as WebReadableStream)
+	return isNodeReadable(response.body)
+		? response.body
+		: (readableFromWeb(response.body as WebReadableStream) as Readable)
 }
 
 export type MediaDownloadOptions = {

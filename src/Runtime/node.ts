@@ -16,9 +16,13 @@ import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import Long from 'long'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
-import { setReadableFromWeb } from './stream.ts'
+import { setReadableRuntime } from './stream.ts'
 
-setReadableFromWeb(stream => Readable.fromWeb(stream as never))
+setReadableRuntime({
+	fromWeb: stream => Readable.fromWeb(stream as never),
+	isReadable: value => value instanceof Readable,
+	createReadable: () => new Readable({ read: () => {} })
+})
 import { makeLazyTransactionKeyStore } from '../Compatibility/internal/signal-key-store.ts'
 import type { BaileysRuntime } from './types.ts'
 
