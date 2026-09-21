@@ -8,7 +8,7 @@
 export type { BaileysRuntime, BridgeRuntime } from './Runtime/types.ts'
 export { makeProtoRuntime, makeHistoryRuntime, makeSocketCryptoRuntime, makeSocketRuntime } from './Runtime/bridge.ts'
 export * from './Runtime/bytes.ts'
-export { createAuthenticationState, initHostAuthCreds } from './Compatibility/auth-state.ts'
+export { createAuthenticationState, initHostAuthCreds } from './Compatibility/host-auth-state.ts'
 export { generateMessageIDPortable, generateMessageIDV2Portable } from './Compatibility/message-ids.ts'
 export * from './Media/core.ts'
 export * from './Bridge/index.ts'
