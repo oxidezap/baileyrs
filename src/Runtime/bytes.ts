@@ -35,9 +35,18 @@ export const unixTimestampSeconds = (timestamp: number | Date = Date.now()): num
 	Math.floor((timestamp instanceof Date ? timestamp.getTime() : timestamp) / 1000)
 
 export const getKeyAuthorPortable = (
-	key: { fromMe?: boolean | null; participant?: string | null; remoteJid?: string | null } | null | undefined,
+	key:
+		| {
+				fromMe?: boolean | null
+				participantAlt?: string | null
+				remoteJidAlt?: string | null
+				participant?: string | null
+				remoteJid?: string | null
+		  }
+		| null
+		| undefined,
 	meId = 'me'
-): string => (key?.fromMe ? meId : (key?.participant ?? key?.remoteJid ?? meId))
+): string => (key?.fromMe ? meId : key?.participantAlt || key?.remoteJidAlt || key?.participant || key?.remoteJid) || ''
 
 export const toNumber = (
 	t: { toNumber?: () => number; low?: number; high?: number } | number | null | undefined

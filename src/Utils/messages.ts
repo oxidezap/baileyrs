@@ -38,7 +38,6 @@ import {
 	sha256Sync,
 	toNumber,
 	unixTimestampSeconds,
-	utf8Decode,
 	utf8Encode,
 	base64Decode,
 	hexEncode
@@ -583,7 +582,7 @@ export const generateWAMessageContent = async (
 		// this cannot silently drop a field a later change puts there.
 		m.messageContextInfo = {
 			...m.messageContextInfo,
-			messageSecret: message.event.messageSecret || randomBytes(32)
+			messageSecret: message.event.messageSecret || (BufferRuntime.from(randomBytes(32)) as Buffer)
 		}
 	} else if (hasNonNullishProperty(message, 'poll')) {
 		message.poll.selectableCount ||= 0
@@ -639,7 +638,7 @@ export const generateWAMessageContent = async (
 		// `mentionedJid` at all.
 		m.messageContextInfo = {
 			...m.messageContextInfo,
-			messageSecret: message.poll.messageSecret || randomBytes(32)
+			messageSecret: message.poll.messageSecret || (BufferRuntime.from(randomBytes(32)) as Buffer)
 		}
 	} else if (hasNonNullishProperty(message, 'sharePhoneNumber')) {
 		m.protocolMessage = {
@@ -1199,7 +1198,7 @@ export function getAggregateVotesInPollMessage(
 		if (!vote?.selectedOptions?.length) continue
 
 		for (const optionHash of vote.selectedOptions) {
-			const hash = utf8Decode(optionHash)
+			const hash = hexEncode(optionHash)
 			let aggregate = voteHashMap[hash]
 			if (!aggregate) aggregate = voteHashMap[hash] = { name: 'Unknown', voters: [] }
 			aggregate.voters.push(getKeyAuthorPortable(update.pollUpdateMessageKey, meId))

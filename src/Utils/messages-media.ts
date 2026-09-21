@@ -21,7 +21,7 @@ import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
 import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
 import { base64Encode, isBytes, randomBytes } from '../Runtime/bytes.ts'
-import { runtimeJoinPath, runtimeTempDir } from '../Runtime/paths.ts'
+import { runtimeJoinPath } from '../Runtime/paths.ts'
 import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
 import { nodeMedia } from '../Runtime/node-media.ts'
 import type { ILogger } from './logger.ts'
@@ -29,7 +29,7 @@ import type { ILogger } from './logger.ts'
 const randomId = () => globalThis.crypto.randomUUID()
 const isNodeReadable = (value: unknown): value is Readable => isReadable(value)
 
-const getTmpFilesDirectory = () => runtimeTempDir()
+const getTmpFilesDirectory = () => nodeMedia.tempDir()
 
 const getImageProcessingLibrary = async () => {
 	//@ts-ignore
