@@ -44,8 +44,36 @@ export type HostAuthenticationState = {
 	store: HostStoreCallbacks
 }
 
+export type HostBridgeRuntime = {
+	createWhatsAppClient: (...args: never[]) => Promise<unknown>
+	initWasmEngine: (...args: never[]) => void
+	encodeProto(path: string, message: unknown): Uint8Array
+	decodeProto(path: string, data: Uint8Array): unknown
+	inflateZlib(data: Uint8Array, maxOutputBytes?: number | null): Uint8Array
+	BinaryReader: new (...args: never[]) => object
+	decodeMessageWireBatch(data: Uint8Array): unknown
+	decodeReceiptWireBatch(data: Uint8Array): unknown
+	decodeServerAckWireBatch(data: Uint8Array): unknown
+	decryptPollVotePayload(
+		encPayload: Uint8Array,
+		encIv: Uint8Array,
+		messageSecret: Uint8Array,
+		stanzaId: string,
+		pollCreatorJid: string,
+		voterJid: string
+	): Uint8Array
+	decryptEventResponsePayload(
+		encPayload: Uint8Array,
+		encIv: Uint8Array,
+		messageSecret: Uint8Array,
+		stanzaId: string,
+		eventCreatorJid: string,
+		responderJid: string
+	): Uint8Array
+}
+
 export type HostRuntime = {
-	bridge: object
+	bridge: HostBridgeRuntime
 	randomBytes: (length: number) => Uint8Array
 	setTimeout: (callback: () => void, ms: number) => unknown
 	clearTimeout: (handle: unknown) => void
@@ -76,7 +104,10 @@ export type HostEventEmitter = {
 	removeAllListeners(event?: string | symbol): HostEventEmitter
 	eventNames(): (string | symbol)[]
 	rawListeners(event: string | symbol): Array<(...args: unknown[]) => void>
+	listeners(event: string | symbol): Array<(...args: unknown[]) => void>
+	listenerCount(event: string | symbol, listener?: (...args: unknown[]) => void): number
 	setMaxListeners(count: number): HostEventEmitter
+	getMaxListeners(): number
 	emit(event: string | symbol, ...args: unknown[]): boolean
 }
 

@@ -38,6 +38,7 @@ export type { HostSocketFactory } from './host-surface.ts'
 export type {
 	HostAuthenticationCreds,
 	HostAuthenticationState,
+	HostBridgeRuntime,
 	HostEventEmitter,
 	HostKeyPair,
 	HostRuntime,

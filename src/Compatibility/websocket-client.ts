@@ -173,10 +173,26 @@ export class WebSocketClient extends EventEmitter {
 		return this.emitter ? (this.emitter.rawListeners(eventName) as EventListener[]) : super.rawListeners(eventName)
 	}
 
+	override listeners(eventName: string | symbol): EventListener[] {
+		return this.emitter ? (this.emitter.listeners(eventName) as EventListener[]) : super.listeners(eventName)
+	}
+
+	override listenerCount(eventName: string | symbol, listener?: EventListener): number {
+		return this.emitter
+			? listener === undefined
+				? this.emitter.listenerCount(eventName)
+				: this.emitter.listenerCount(eventName, listener as never)
+			: super.listenerCount(eventName, listener)
+	}
+
 	override setMaxListeners(count: number): this {
 		if (!this.emitter) return super.setMaxListeners(count)
 		this.emitter.setMaxListeners(count)
 		return this
+	}
+
+	override getMaxListeners(): number {
+		return this.emitter ? this.emitter.getMaxListeners() : super.getMaxListeners()
 	}
 
 	connect(): void {

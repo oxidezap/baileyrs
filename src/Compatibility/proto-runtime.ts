@@ -296,18 +296,21 @@ const bytesFromObject = (value: unknown): unknown => {
  * on hosts where there is no upstream-Buffer constraint to keep.
  */
 const nodeBytesFromBase64 = (value: string): unknown => {
-	const bytes = base64Decode(value)
 	try {
 		const proc = (globalThis as { process?: unknown }).process as
 			| { getBuiltinModule?: (id: string) => unknown }
 			| undefined
 		const bufferModule = proc?.getBuiltinModule?.('buffer') as
-			| { Buffer?: { from?: (input: Uint8Array) => unknown } }
+			| { Buffer?: { from?: (input: string, encoding: string) => unknown } }
 			| undefined
-		return bufferModule?.Buffer?.from?.(bytes) ?? bytes
+		// protobufjs delegates string coercion to Buffer.from(), including its
+		// permissive handling of excess padding and ignored non-alphabet bytes.
+		const nodeBytes = bufferModule?.Buffer?.from?.(value, 'base64')
+		if (nodeBytes !== undefined) return nodeBytes
 	} catch {
-		return bytes
+		/* host runtimes use the strict portable decoder below */
 	}
+	return base64Decode(value)
 }
 
 const oneofName = (field: ProtoFieldSchema): string | undefined => {

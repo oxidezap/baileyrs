@@ -14,6 +14,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import * as ts from 'typescript-compat-auditor'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const src = join(root, 'src')
@@ -102,36 +103,76 @@ const violations: string[] = []
 const report = (file: string, line: number, text: string, message: string) =>
 	violations.push(`${relative(root, file)}:${line}: ${message}: ${text.trim()}`)
 
+type ModuleReference = { specifier: string; typeOnly: boolean; dynamic: boolean; line: number; text: string }
+
+const moduleReferences = (file: string, source: string): ModuleReference[] => {
+	const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+	const lines = source.split(/\r?\n/u)
+	const references: ModuleReference[] = []
+	const add = (node: ts.Node, specifier: string, typeOnly: boolean, dynamic = false) => {
+		const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+		references.push({ specifier, typeOnly, dynamic, line, text: lines[line - 1] ?? '' })
+	}
+	const visit = (node: ts.Node): void => {
+		if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+			const clause = node.importClause
+			const named = clause?.namedBindings
+			const typeOnly =
+				!!clause?.isTypeOnly ||
+				(!!named && ts.isNamedImports(named) && !clause?.name && named.elements.every(element => element.isTypeOnly))
+			add(node, node.moduleSpecifier.text, typeOnly)
+		} else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+			const clause = node.exportClause
+			const typeOnly =
+				node.isTypeOnly ||
+				(!!clause && ts.isNamedExports(clause) && clause.elements.every(element => element.isTypeOnly))
+			add(node, node.moduleSpecifier.text, typeOnly)
+		} else if (
+			ts.isCallExpression(node) &&
+			node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+			node.arguments.length === 1 &&
+			ts.isStringLiteral(node.arguments[0]!)
+		) {
+			add(node, node.arguments[0]!.text, false, true)
+		}
+		ts.forEachChild(node, visit)
+	}
+	visit(sourceFile)
+	return references
+}
+
+const multilineProbe = moduleReferences(
+	'host-boundary-multiline-probe.ts',
+	"import {\n\tvalue\n} from './multiline-value.ts'\nimport type {\n\tTypeOnly\n} from './multiline-type.ts'\n"
+)
+if (
+	multilineProbe[0]?.specifier !== './multiline-value.ts' ||
+	multilineProbe[0].typeOnly ||
+	multilineProbe[1]?.specifier !== './multiline-type.ts' ||
+	!multilineProbe[1].typeOnly
+) {
+	violations.push('scripts/check-host-boundaries.ts: module parser failed its multiline import self-check')
+}
+
 for (const file of listSourceFiles(src)) {
-	const lines = readFileSync(file, 'utf8').split(/\r?\n/u)
-	lines.forEach((line, index) => {
-		const lineNo = index + 1
-		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(line)
-		const sideEffectMatch = /import\s*['"]([^'"]+)['"]/.exec(line)
-		const specifier = importMatch?.[1] ?? sideEffectMatch?.[1]
-		if (specifier) {
-			// Bare bridge root is the Node entrypoint (reads the wasm off
-			// disk with node:fs). Host/shared code must use
-			// `@oxidezap/whatsapp-rust-bridge/host` (host-supplied wasm via
-			// initSync) instead. Type-only root imports are exempt: they
-			// vanish at emit and cannot pull the Node loader into a bundle.
-			if (specifier === '@oxidezap/whatsapp-rust-bridge') {
-				const isTypeOnly = /^\s*import\s+type\b/.test(line)
-				if (!isTypeOnly && HOST_NEUTRAL.has(file)) {
-					report(file, lineNo, line, 'bare bridge root import in host-neutral surface (use /host)')
-				}
-			}
-			for (const forbidden of FORBIDDEN_NODE) {
-				if (specifier === forbidden || specifier.startsWith(`${forbidden}/`)) {
-					if (HOST_NEUTRAL.has(file)) report(file, lineNo, line, `runtime import ${forbidden} in host-neutral file`)
-				}
-			}
-			// The portable `events` package replaces `node:events`. A bare
-			// `events` import in neutral code is the migration target shape.
-			if (specifier === 'events' && !HOST_NEUTRAL.has(file)) {
-				// Not a violation — placeholder for the Commit 8 audit.
+	const source = readFileSync(file, 'utf8')
+	const lines = source.split(/\r?\n/u)
+	for (const reference of moduleReferences(file, source)) {
+		if (reference.typeOnly) continue
+		if (reference.specifier === '@oxidezap/whatsapp-rust-bridge' && HOST_NEUTRAL.has(file)) {
+			report(file, reference.line, reference.text, 'bare bridge root import in host-neutral surface (use /host)')
+		}
+		for (const forbidden of FORBIDDEN_NODE) {
+			if (
+				(reference.specifier === forbidden || reference.specifier.startsWith(`${forbidden}/`)) &&
+				HOST_NEUTRAL.has(file)
+			) {
+				report(file, reference.line, reference.text, `runtime import ${forbidden} in host-neutral file`)
 			}
 		}
+	}
+	lines.forEach((line, index) => {
+		const lineNo = index + 1
 		// Legacy `require()` of a runtime module, in case one creeps in.
 		const requireMatch = /require\(\s*['"]([^'"]+)['"]\s*\)/.exec(line)
 		if (requireMatch?.[1] && (FORBIDDEN_NODE as string[]).includes(requireMatch[1])) {
@@ -181,26 +222,20 @@ const visitHostFile = (file: string): void => {
 	} catch {
 		return
 	}
-	for (const line of source.split(/\r?\n/u)) {
-		const match = /(?:import|export)[^'"]*from\s*['"](\.[^'"]+)['"]/.exec(line)
-		if (!match) continue
-		// Type-only imports are erased and cannot pull Node runtime code into
-		// the host bundle. The first gate already applies the same rule to
-		// bare bridge imports.
-		if (/^\s*import\s+type\b/u.test(line)) continue
-		const next = resolveRelative(file, match[1]!)
+	for (const reference of moduleReferences(file, source)) {
+		if (reference.typeOnly || !reference.specifier.startsWith('.')) continue
+		const next = resolveRelative(file, reference.specifier)
 		if (next && next.endsWith('.ts')) visitHostFile(next)
 	}
 }
 visitHostFile(resolve(src, 'host.ts'))
 for (const file of hostClosure) {
 	if (!file.endsWith('.ts')) continue
-	const lines = readFileSync(file, 'utf8').split(/\r?\n/u)
+	const source = readFileSync(file, 'utf8')
+	const lines = source.split(/\r?\n/u)
 	lines.forEach((line, index) => {
 		const trimmed = line.trim()
 		if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
-		// Doc examples after `//` are comments, not imports (src/host.ts
-		// shows the Node-side readFileSync handshake in a comment).
 		const code = line.split('//')[0]!
 		if (/\bprocess\.(env|stdout|stderr|exit|argv|cwd)\b/.test(code)) {
 			report(file, index + 1, line, 'host closure reads a process global')
@@ -211,31 +246,18 @@ for (const file of hostClosure) {
 		if (/\brequire\s*\(|\b(?:__dirname|__filename)\b/u.test(code)) {
 			report(file, index + 1, line, 'host closure uses a Node-only global')
 		}
-		const importMatch = /(?:import|export)[^'"]*from\s*['"]([^'"]+)['"]/.exec(code)
-		const dynamicImport = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(code)
-		const specifier = importMatch?.[1] ?? dynamicImport?.[1]
-		if (dynamicImport && specifier?.startsWith('.')) {
-			const next = resolveRelative(file, specifier)
-			if (next && next.endsWith('.ts')) visitHostFile(next)
+	})
+	for (const reference of moduleReferences(file, source)) {
+		if (reference.typeOnly) continue
+		if (reference.specifier === '@oxidezap/whatsapp-rust-bridge') {
+			report(file, reference.line, reference.text, 'host closure pulls the bare bridge root (use /host)')
 		}
-		if (!specifier) return
-		// `import type { Buffer }` / `import type { Agent }` vanish at emit
-		// and cannot pull a Node loader into a bundle; only value imports
-		// of runtime modules count here.
-		const isTypeOnly =
-			/^\s*(import|export)\s+type\b/.test(code) ||
-			/^\s*import\s+type\s*\{[^}]*\}\s*from\s*['"]node:(buffer|https)['"]/.test(code)
-		if (specifier === '@oxidezap/whatsapp-rust-bridge' && !isTypeOnly) {
-			report(file, index + 1, line, 'host closure pulls the bare bridge root (use /host)')
-		}
-		if (!isTypeOnly) {
-			for (const forbidden of FORBIDDEN_NODE) {
-				if (specifier === forbidden || specifier.startsWith(`${forbidden}/`)) {
-					report(file, index + 1, line, `host closure pulls runtime import ${forbidden}`)
-				}
+		for (const forbidden of FORBIDDEN_NODE) {
+			if (reference.specifier === forbidden || reference.specifier.startsWith(`${forbidden}/`)) {
+				report(file, reference.line, reference.text, `host closure pulls runtime import ${forbidden}`)
 			}
 		}
-	})
+	}
 }
 
 if (violations.length > 0) {

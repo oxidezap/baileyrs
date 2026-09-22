@@ -112,8 +112,12 @@ describe('native WebSocket compatibility facade', () => {
 		})
 
 		assert.deepEqual(emitter.eventNames(), ['CB:injected'])
+		assert.equal(ws.listenerCount('CB:injected'), 1)
+		assert.equal(ws.listeners('CB:injected').length, 1)
+		assert.equal(ws.getMaxListeners(), 0)
 		ws.emit('CB:injected')
 		assert.equal(delivered, true)
+		assert.equal(ws.listenerCount('CB:injected'), 0)
 		assert.deepEqual(rawForwardingCalls, [true, false])
 	})
 

@@ -74,7 +74,10 @@ export interface RuntimeEventEmitter {
 	removeAllListeners(event?: string | symbol): unknown
 	eventNames(): (string | symbol)[]
 	rawListeners(event: string | symbol): Array<(...args: never[]) => void>
+	listeners(event: string | symbol): Array<(...args: never[]) => void>
+	listenerCount(event: string | symbol, listener?: (...args: never[]) => void): number
 	setMaxListeners(count: number): unknown
+	getMaxListeners(): number
 	emit(event: string | symbol, ...args: never[]): boolean
 }
 
