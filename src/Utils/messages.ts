@@ -50,7 +50,7 @@ import {
 	getStream,
 	type MediaDownloadOptions,
 	toBuffer
-} from './messages-media.ts'
+} from './messages-media-core.ts'
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
 type RequireKey<T, K extends keyof T> = T & {

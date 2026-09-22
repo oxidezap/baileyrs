@@ -52,7 +52,7 @@ import {
 	resolveHistorySyncPolicy,
 	isHistorySyncFullyDisabled
 } from '../Compatibility/history-sync-admission.ts'
-import type { MediaDownloadOptions } from '../Utils/messages-media.ts'
+import type { MediaDownloadOptions } from '../Utils/messages-media-core.ts'
 import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'

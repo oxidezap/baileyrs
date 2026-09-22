@@ -49,6 +49,7 @@ export type {
 	HostRuntime,
 	HostSignedKeyPair,
 	HostSocketConfig,
+	HostSocketEventEmitter,
 	HostStoreCallbacks,
 	HostWASocket,
 	HostWebSocketClient

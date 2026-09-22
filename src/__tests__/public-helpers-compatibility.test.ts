@@ -188,7 +188,9 @@ describe('public helper compatibility', () => {
 		)
 		assert.equal(request.tag, 'receipt')
 		assert.equal(request.attrs.to, '5511888888888@s.whatsapp.net')
-		assert.equal((request.content as BinaryNode[])[0]?.tag, 'encrypt')
+		const encryptNode = (request.content as BinaryNode[])[0]!
+		assert.equal(encryptNode.tag, 'encrypt')
+		for (const child of encryptNode.content as BinaryNode[]) assert.equal(Buffer.isBuffer(child.content), true)
 
 		const decoded = decodeMediaRetryNode({
 			tag: 'notification',

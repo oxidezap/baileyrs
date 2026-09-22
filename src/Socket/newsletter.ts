@@ -5,7 +5,7 @@ import type { NewsletterMetadata, NewsletterUpdate } from '../Types/Newsletter.t
 import type { WAMediaUpload } from '../Types/index.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
-import { generateProfilePicture } from '../Utils/messages-media.ts'
+import { generateProfilePicture } from '../Utils/messages-media-core.ts'
 import type { SocketContext } from './types.ts'
 
 export const NEWSLETTER_KEY_TYPES = ['invite', 'jid'] as const

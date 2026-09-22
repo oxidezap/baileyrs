@@ -102,11 +102,10 @@ export const hydrateHostAuthCreds = async (
 		throw new Error('invalid persisted registration id')
 	}
 	if (safeUnsigned(registration)) mutable.registrationId = registration
-	const noiseBytes = asBytes(record.noise_key)
-	if ('noise_key' in record && (!noiseBytes || noiseBytes.length !== 64)) {
+	const noiseKey = keyPair(record.noise_key)
+	if ('noise_key' in record && !noiseKey) {
 		throw new Error('persisted auth record contains an invalid noise key')
 	}
-	const noiseKey = keyPair(record.noise_key)
 	const identityKey = keyPair(record.identity_key)
 	const signedPreKey = keyPair(record.signed_pre_key)
 	const hasSigningRecord = ['identity_key', 'signed_pre_key', 'signed_pre_key_id', 'signed_pre_key_signature'].some(

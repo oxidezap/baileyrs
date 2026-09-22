@@ -48,7 +48,10 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 	})
 	const typedListener = (update: HostConnectionUpdate) => void update.qr
 	socket.ev.on('connection.update', typedListener)
+	socket.ev.on('messages.upsert', upsert => void upsert.messages[0]?.key.id)
 	socket.ev.on('consumer.extension', (payload: { ready: boolean }) => void payload.ready)
+	// @ts-expect-error The buffered socket facade does not expose EventEmitter.once().
+	socket.ev.once('connection.update', () => undefined)
 }
 
 describe('host socket declarations', () => {

@@ -54,6 +54,16 @@ describe('host auth creds', () => {
 		}
 	})
 
+	it('rejects a persisted all-zero noise key', async () => {
+		const store = useMemoryStore()
+		await store.set(
+			'device',
+			'device',
+			new TextEncoder().encode(JSON.stringify({ noise_key: Array<number>(64).fill(0) }))
+		)
+		await assert.rejects(createAuthenticationState(store), /invalid noise key/)
+	})
+
 	it('rejects persisted registration IDs outside the 14-bit domain', async () => {
 		for (const registration_id of [-1, 16_384, Number.MAX_SAFE_INTEGER]) {
 			const store = useMemoryStore()

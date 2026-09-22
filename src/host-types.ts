@@ -1,4 +1,5 @@
 import type { ILogger } from './Utils/logger.ts'
+import type { WAMessage } from './host-shared.ts'
 import type { HostSocketOperationName } from './host-socket-operations.ts'
 
 export type HostStoreCallbacks = {
@@ -202,7 +203,7 @@ export type HostBaileysEventMap = {
 	'connection.update': HostConnectionUpdate
 	'creds.update': Partial<HostAuthenticationCreds>
 	'messages.upsert': {
-		messages: Array<Record<string, unknown>>
+		messages: WAMessage[]
 		type: 'append' | 'notify'
 		requestId?: string
 	}
@@ -243,6 +244,15 @@ export type HostEventEmitter = {
 }
 
 /** Host-facing operations retain callable types without importing Node Baileys declarations. */
+export type HostSocketEventEmitter = Pick<HostEventEmitter, 'on' | 'off' | 'removeAllListeners' | 'emit'> & {
+	process(handler: (events: Partial<HostBaileysEventMap> & Record<string, unknown>) => void | Promise<void>): () => void
+	buffer(): void
+	flush(force?: boolean): boolean
+	isBuffering(): boolean
+	createBufferedFunction<A extends unknown[], R>(work: (...args: A) => Promise<R>): (...args: A) => Promise<R>
+	destroy(): void
+}
+
 export type HostWebSocketClient = HostEventEmitter & {
 	url: URL
 	config: unknown
@@ -258,7 +268,7 @@ export type HostWebSocketClient = HostEventEmitter & {
 type HostMutex = { mutex<T>(work: () => Promise<T> | T): Promise<T> }
 
 type HostWASocketBase = {
-	ev: HostEventEmitter
+	ev: HostSocketEventEmitter
 	logger: ILogger
 	ws: HostWebSocketClient
 	type: 'md'
