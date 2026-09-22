@@ -117,6 +117,8 @@ export interface BaileysRuntime {
 	normalizeAuth?: (input: AuthenticationState | NativeAuthenticationState) => AuthenticationState
 	/** Await asynchronous credential hydration required by a runtime's native store adapter. */
 	waitForAuthState?: (state: AuthenticationState) => Promise<void>
+	/** Refresh the public credential mirror after the native engine persists pairing state. */
+	refreshAuthState?: (state: AuthenticationState) => Promise<void>
 	/** Node-only legacy auth adapter; absent on host runtimes. */
 	wrapLegacyStore?: (state: unknown, onCredsUpdate: () => Promise<void>, logger: unknown) => Promise<JsStoreCallbacks>
 	/** Node-only Baileys transaction facade; native host stores do not need it. */

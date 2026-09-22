@@ -532,10 +532,12 @@ const createWASocketFactoryInner = (
 						cachedAccount = acc ?? undefined
 					})
 					.catch(() => {})
-				if (!auth.keys && auth.store) {
-					void hydrateHostAuthCreds(auth.store, auth.creds).then(
+				if (auth.store) {
+					const refreshAuthState =
+						runtime.refreshAuthState ?? (state => hydrateHostAuthCreds(state.store!, state.creds).then(() => undefined))
+					void refreshAuthState(auth).then(
 						() => ev.emit('creds.update', auth.creds),
-						error => ctx.reportUnexpectedError(error, 'refreshing host credentials after pairing')
+						error => ctx.reportUnexpectedError(error, 'refreshing credentials after pairing')
 					)
 				}
 			},

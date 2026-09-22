@@ -106,7 +106,9 @@ export const hydrateHostAuthCreds = async (
 	const safeUnsigned = (value: unknown): value is number =>
 		typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 	const registration = record.registration_id
-	if ('registration_id' in record && !safeUnsigned(registration)) throw new Error('invalid persisted registration id')
+	if ('registration_id' in record && (!safeUnsigned(registration) || registration >= 16_384)) {
+		throw new Error('invalid persisted registration id')
+	}
 	if (safeUnsigned(registration)) mutable.registrationId = registration
 	const noiseBytes = asBytes(record.noise_key)
 	if ('noise_key' in record && (!noiseBytes || noiseBytes.length !== 64)) {

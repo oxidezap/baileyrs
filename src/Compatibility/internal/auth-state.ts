@@ -20,6 +20,12 @@ const preserveNodeCredentialBytes = (creds: AuthenticationCreds): void => {
 	if (creds.routingInfo) creds.routingInfo = Buffer.from(creds.routingInfo)
 }
 
+export const refreshSocketAuthenticationState = async (state: AuthenticationState): Promise<void> => {
+	if (!state.store) return
+	await hydrateHostAuthCreds(state.store, state.creds as never)
+	preserveNodeCredentialBytes(state.creds)
+}
+
 export const waitForSocketAuthenticationState = (state: AuthenticationState): Promise<void> =>
 	hydrationByState.get(state) ?? Promise.resolve()
 
@@ -46,7 +52,7 @@ export const normalizeSocketAuthenticationState = (
 
 	const state = { creds, keys, ...(store ? { store } : {}) }
 	if (store && !input.creds) {
-		const hydration = hydrateHostAuthCreds(store, creds as never).then(() => preserveNodeCredentialBytes(creds))
+		const hydration = refreshSocketAuthenticationState(state)
 		// The socket initialization awaits the original promise. Attach a
 		// rejection observer immediately so a synchronously rejecting store does
 		// not become an unhandled rejection before init reaches its first await.

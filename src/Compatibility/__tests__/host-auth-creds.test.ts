@@ -52,6 +52,14 @@ describe('host auth creds', () => {
 		}
 	})
 
+	it('rejects persisted registration IDs outside the 14-bit domain', async () => {
+		for (const registration_id of [-1, 16_384, Number.MAX_SAFE_INTEGER]) {
+			const store = useMemoryStore()
+			await store.set('device', 'device', new TextEncoder().encode(JSON.stringify({ registration_id })))
+			await assert.rejects(createAuthenticationState(store), /invalid persisted registration id/)
+		}
+	})
+
 	it('signs the prefixed public key like the Node path', () => {
 		const host = initHostAuthCreds()
 		expect(

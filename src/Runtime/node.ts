@@ -43,6 +43,7 @@ setReadableRuntime({
 import { makeLazyTransactionKeyStore } from '../Compatibility/internal/signal-key-store.ts'
 import {
 	normalizeSocketAuthenticationState,
+	refreshSocketAuthenticationState,
 	waitForSocketAuthenticationState
 } from '../Compatibility/internal/auth-state.ts'
 import type { BaileysRuntime } from './types.ts'
@@ -83,5 +84,6 @@ export const nodeRuntime: BaileysRuntime = {
 	wrapLegacyStore: wrapLegacyStore as never,
 	makeTransactionKeyStore: makeLazyTransactionKeyStore as never,
 	normalizeAuth: normalizeSocketAuthenticationState,
-	waitForAuthState: waitForSocketAuthenticationState
+	waitForAuthState: waitForSocketAuthenticationState,
+	refreshAuthState: refreshSocketAuthenticationState
 }
