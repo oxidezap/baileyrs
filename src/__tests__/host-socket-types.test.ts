@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import * as hostBridge from '@oxidezap/whatsapp-rust-bridge/host'
-import type { HostBridgeRuntime, HostRuntime, HostWASocket } from '../host-types.ts'
+import Long from 'long'
+import type { HostBridgeRuntime, HostLongConstructor, HostRuntime, HostWASocket } from '../host-types.ts'
 
 const bridgeSurface: HostBridgeRuntime = hostBridge
+const longSurface: HostLongConstructor = Long
 
 // @ts-expect-error A custom host runtime must provide the bridge operations the socket calls.
 const incompleteBridge: HostRuntime['bridge'] = {}
+// @ts-expect-error The event path requires Long.fromValue and Long instances.
+const incompleteLong: HostRuntime['Long'] = {}
 
 const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 	void socket.groupLeave('120@g.us')
@@ -14,12 +18,20 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 	void socket.groupAcceptInvite('invite')
 	void socket.communityFetchLinkedGroups('120@g.us')
 	void socket.newsletterFollow('123@newsletter')
+	void socket.user?.name
+	void socket.authState.creds.registered
+	void socket.isConnected
+	void socket.isLoggedIn
+	void socket.waClient
+	void socket.ws.listenerCount('close')
 }
 
 describe('host socket declarations', () => {
 	it('include the complete callable operation surface', () => {
 		assert.equal(typeof acceptsCompleteHostSocketSurface, 'function')
 		assert.deepEqual(incompleteBridge, {})
+		assert.deepEqual(incompleteLong, {})
 		assert.equal(typeof bridgeSurface.initWasmEngine, 'function')
+		assert.equal(typeof longSurface.fromValue, 'function')
 	})
 })

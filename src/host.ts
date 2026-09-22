@@ -41,10 +41,13 @@ export type {
 	HostBridgeRuntime,
 	HostEventEmitter,
 	HostKeyPair,
+	HostLongConstructor,
+	HostLongValue,
 	HostRuntime,
 	HostSignedKeyPair,
 	HostSocketConfig,
 	HostStoreCallbacks,
-	HostWASocket
+	HostWASocket,
+	HostWebSocketClient
 } from './host-types.ts'
 export { default } from './host-surface.ts'

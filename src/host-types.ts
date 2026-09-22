@@ -72,6 +72,19 @@ export type HostBridgeRuntime = {
 	): Uint8Array
 }
 
+export type HostLongValue = {
+	low: number
+	high: number
+	unsigned: boolean
+	toNumber(): number
+	toString(radix?: number): string
+}
+
+export type HostLongConstructor = {
+	new (...args: never[]): HostLongValue
+	fromValue(value: never): HostLongValue
+}
+
 export type HostRuntime = {
 	bridge: HostBridgeRuntime
 	randomBytes: (length: number) => Uint8Array
@@ -85,7 +98,7 @@ export type HostRuntime = {
 	defaultLogger?: ILogger
 	loggerSink: (line: string, delivered?: () => void) => void
 	logLevel: () => string | undefined
-	Long: unknown
+	Long: HostLongConstructor
 }
 
 export type HostSocketConfig = {
@@ -112,8 +125,38 @@ export type HostEventEmitter = {
 }
 
 /** Host-facing operations retain callable types without importing Node Baileys declarations. */
+export type HostWebSocketClient = HostEventEmitter & {
+	url: URL
+	config: unknown
+	readonly isOpen: boolean
+	readonly isClosed: boolean
+	readonly isClosing: boolean
+	readonly isConnecting: boolean
+	connect(): void
+	close(): Promise<void>
+	send(data: string | Uint8Array, callback?: (error?: Error) => void): boolean
+}
+
+type HostMutex = { mutex<T>(work: () => Promise<T> | T): Promise<T> }
+
 type HostWASocketBase = {
 	ev: HostEventEmitter
+	logger: ILogger
+	ws: HostWebSocketClient
+	type: 'md'
+	user: { id: string; lid?: string; name?: string; verifiedName?: string; phoneNumber?: string } | undefined
+	waClient: unknown | undefined
+	readonly isConnected: boolean
+	readonly isLoggedIn: boolean
+	readonly authState: { creds: HostAuthenticationCreds; keys?: unknown }
+	signalRepository: unknown
+	messageRetryManager: null
+	devicesMutex: HostMutex
+	messageMutex: HostMutex
+	receiptMutex: HostMutex
+	appStatePatchMutex: HostMutex
+	notificationMutex: HostMutex
+	[Symbol.asyncDispose](): Promise<void>
 	end: (error?: unknown) => Promise<void> | void
 	sendMessage: (...args: unknown[]) => Promise<unknown>
 	logout: (...args: unknown[]) => Promise<void>
