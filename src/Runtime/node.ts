@@ -10,7 +10,7 @@
 
 import { randomBytes as nodeRandomBytesSource } from 'node:crypto'
 import EventEmitter from 'events'
-import { platform, release, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import { execFile } from 'node:child_process'
@@ -70,7 +70,6 @@ export const nodeRuntime: BaileysRuntime = {
 	events: {
 		createEmitter: () => new EventEmitter() as never
 	},
-	platformInfo: () => ({ os: platform(), release: release() }),
 	nativeCrypto: makeNativeCryptoProvider(),
 	loggerSink: nodeLoggerSink,
 	logLevel: () => process.env.BAILEYRS_LOG_LEVEL,

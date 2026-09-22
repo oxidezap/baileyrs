@@ -32,7 +32,10 @@ const jidUser = (jid: string): string | undefined => {
 	return bareUser.length > 0 ? bareUser : undefined
 }
 
-export const generateMessageIDV2Portable = (userId?: string): string => {
+export const generateMessageIDV2Portable = (
+	userId?: string,
+	randomSource: (length: number) => Uint8Array = randomBytes
+): string => {
 	const data = new Uint8Array(MESSAGE_ID_BYTES)
 	const seconds = Math.floor(Date.now() / 1000)
 	data.set(writeU64BE(0, seconds >>> 0), 0)
@@ -41,12 +44,13 @@ export const generateMessageIDV2Portable = (userId?: string): string => {
 		writeAsciiInto(data, user, 8)
 		writeAsciiInto(data, '@c.us', 8 + utf8Encode(user).length)
 	}
-	data.set(randomBytes(16), RANDOM_OFFSET)
+	data.set(randomSource(16), RANDOM_OFFSET)
 	return `${MESSAGE_ID_PREFIX}${hexEncode(sha256Sync(data)).toUpperCase().slice(0, 18)}`
 }
 
 /** `3EB0` + 36 uppercase hex chars from 18 random bytes (matches `generateMessageID`). */
-export const generateMessageIDPortable = (): string => `3EB0${hexEncode(randomBytes(18)).toUpperCase()}`
+export const generateMessageIDPortable = (randomSource: (length: number) => Uint8Array = randomBytes): string =>
+	`3EB0${hexEncode(randomSource(18)).toUpperCase()}`
 
 /** Concatenate without Buffer (pad helper for the portable graph). */
 export const concatMessageBytes = (parts: ReadonlyArray<Uint8Array>): Uint8Array => concatBytes(parts)

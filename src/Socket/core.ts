@@ -65,7 +65,7 @@ import { warnUnsupportedConfig } from './unsupported-config.ts'
 import { wrapBridgeClient } from './bridge-error-boundary.ts'
 import { makeTerminalCloseReporter } from './terminal-close-reporter.ts'
 import { mapConnectFailureToDisconnect } from './terminal-close.ts'
-import { makeEventHandlers } from './events.ts'
+import { makeEventHandlers } from './events-core.ts'
 import { makeGroupMethods } from './groups.ts'
 import { makeInternalMethods, makeUnexpectedErrorReporter } from './internals.ts'
 import { makeMessageMethodsCore } from './messages-core.ts'
@@ -163,7 +163,13 @@ const createWASocketFactoryInner = (
 	resetEngineInitialization: () => void,
 	runtimeLogger: ReturnType<typeof createRuntimeLogger>
 ) => {
-	const mergedConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config, logger: config.logger ?? runtimeLogger }
+	const platform = config.browser === undefined ? runtime.platformInfo?.() : undefined
+	const mergedConfig = {
+		...DEFAULT_CONNECTION_CONFIG,
+		...config,
+		...(platform ? { browser: [platform.os, 'Chrome', platform.release] as [string, string, string] } : {}),
+		logger: config.logger ?? runtimeLogger
+	}
 	const { logger } = mergedConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
 	// is worth naming. Merging the defaults first would report every unsupported
@@ -424,6 +430,7 @@ const createWASocketFactoryInner = (
 		fullConfig,
 		encodeProto: (path, message) =>
 			encodeProtoCompatCore(path, message, runtime.bridge.encodeProto.bind(runtime.bridge)),
+		randomBytes: runtime.randomBytes,
 		ws,
 		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,

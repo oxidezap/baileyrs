@@ -100,7 +100,7 @@ export const makeGroupMethods = (ctx: SocketContext) => {
 					{
 						key: {
 							remoteJid: inviteMessage.groupJid,
-							id: generateMessageIDV2Portable(ctx.getUser()?.id),
+							id: generateMessageIDV2Portable(ctx.getUser()?.id, ctx.randomBytes),
 							fromMe: false,
 							participant: messageKey.remoteJid
 						},

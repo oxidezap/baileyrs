@@ -401,9 +401,11 @@ function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is W
 	return typeof obj === 'object' && obj !== null && key in obj && (obj as Record<PropertyKey, unknown>)[key] !== null
 }
 
+type RuntimeRandomOptions = { runtimeRandomBytes?: (length: number) => Uint8Array }
+
 export const generateWAMessageContent = async (
 	message: AnyMessageContent,
-	options: MessageContentGenerationOptions
+	options: MessageContentGenerationOptions & RuntimeRandomOptions
 ) => {
 	let m: WAMessageContent = {}
 	if (hasNonNullishProperty(message, 'text')) {
@@ -581,7 +583,8 @@ export const generateWAMessageContent = async (
 		// this cannot silently drop a field a later change puts there.
 		m.messageContextInfo = {
 			...m.messageContextInfo,
-			messageSecret: message.event.messageSecret || (BufferRuntime.from(randomBytes(32)) as Buffer)
+			messageSecret:
+				message.event.messageSecret || (BufferRuntime.from((options.runtimeRandomBytes ?? randomBytes)(32)) as Buffer)
 		}
 	} else if (hasNonNullishProperty(message, 'poll')) {
 		message.poll.selectableCount ||= 0
@@ -637,7 +640,8 @@ export const generateWAMessageContent = async (
 		// `mentionedJid` at all.
 		m.messageContextInfo = {
 			...m.messageContextInfo,
-			messageSecret: message.poll.messageSecret || (BufferRuntime.from(randomBytes(32)) as Buffer)
+			messageSecret:
+				message.poll.messageSecret || (BufferRuntime.from((options.runtimeRandomBytes ?? randomBytes)(32)) as Buffer)
 		}
 	} else if (hasNonNullishProperty(message, 'sharePhoneNumber')) {
 		m.protocolMessage = {
@@ -799,7 +803,11 @@ export const generateWAMessageFromContent = (
 	return wm
 }
 
-export const generateWAMessage = async (jid: string, content: AnyMessageContent, options: MessageGenerationOptions) => {
+export const generateWAMessage = async (
+	jid: string,
+	content: AnyMessageContent,
+	options: MessageGenerationOptions & RuntimeRandomOptions
+) => {
 	const contentOptions =
 		options.messageId && options.logger
 			? { ...options, logger: options.logger.child({ msgId: options.messageId }) }

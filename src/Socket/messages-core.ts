@@ -13,6 +13,7 @@ import type {
 	WAMessageKey
 } from '../Types/index.ts'
 import { MESSAGE_RECEIPT_TYPES, WAProto } from '../Types/index.ts'
+import { randomBytes } from '../Runtime/bytes.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
@@ -48,6 +49,7 @@ const getNormalizedUserJid = (ctx: SocketContext): string | undefined => {
 export type EncodeProto = (path: string, message: unknown) => Uint8Array
 
 export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) => {
+	const randomSource = ctx.randomBytes ?? randomBytes
 	return {
 		sendMessage: async (
 			jid: string,
@@ -62,8 +64,11 @@ export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) 
 				// large object graph and repeated dozens of property writes per send.
 				// `options` is the one generation default shared with the socket; every
 				// other generation knob belongs to this call's typed options.
-				const generationOptions: MessageGenerationOptions = {
+				const generationOptions: MessageGenerationOptions & {
+					runtimeRandomBytes: (length: number) => Uint8Array
+				} = {
 					...options,
+					runtimeRandomBytes: randomSource,
 					options: options?.options ?? ctx.fullConfig.options,
 					logger: ctx.logger,
 					userJid,
@@ -122,7 +127,7 @@ export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) 
 				// The with-options sends are the same core send as the plain ones, with
 				// the stanza id supplied by the caller instead of drawn by the engine.
 				// The id resolves through the same place `relayMessage` resolves it.
-				const messageId = resolveMessageId(ctx.getUser(), options?.messageId)
+				const messageId = resolveMessageId(ctx.getUser(), options?.messageId, randomSource)
 				const msgId = await sendReportingUpstreamFailure(() =>
 					jid === 'status@broadcast' && options?.statusJidList?.length
 						? client.sendStatusMessageBytesWithOptions(
@@ -207,7 +212,7 @@ export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) 
 		 */
 		relayMessage: async (jid: string, message: WAProto.IMessage, options: MessageRelayOptions): Promise<string> => {
 			return ctx.withClient(async client => {
-				const plan = planMessageRelay(jid, options, ctx.getUser())
+				const plan = planMessageRelay(jid, options, ctx.getUser(), randomSource)
 				ctx.logger.debug(
 					{
 						jid,

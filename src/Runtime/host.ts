@@ -20,6 +20,8 @@ nodeMedia.hkdf = bridge.hkdf
 /** Stable fallback: Ubuntu 22.04, matching `Browsers.ubuntu()` output shape. */
 export const HOST_PLATFORM_FALLBACK = { os: 'Ubuntu', release: '22.04.4' } as const
 
+export const hostPlatformInfo = () => ({ ...HOST_PLATFORM_FALLBACK })
+
 export const hostLoggerSink = (line: string, delivered?: () => void): void => {
 	try {
 		console.log(line)
@@ -39,10 +41,9 @@ export const hostRuntime: BaileysRuntime = {
 	events: {
 		createEmitter: () => new EventEmitter() as never
 	},
+	platformInfo: hostPlatformInfo,
 	nativeCrypto: undefined,
 	loggerSink: hostLoggerSink,
 	logLevel: () => undefined,
 	Long
 }
-
-export const hostPlatformInfo = () => ({ ...HOST_PLATFORM_FALLBACK })

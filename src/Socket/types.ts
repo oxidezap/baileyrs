@@ -10,6 +10,7 @@ export interface SocketContext extends ClientOperations {
 	logger: ILogger
 	fullConfig: SocketConfig
 	encodeProto?: (path: string, message: unknown) => Uint8Array
+	randomBytes?: (length: number) => Uint8Array
 	getUser: () => { id?: string; lid?: string } | undefined
 	getMe: () => Contact | undefined
 	setUser: (u: { id?: string; lid?: string }) => void
