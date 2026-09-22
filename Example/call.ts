@@ -268,7 +268,7 @@ export const processInboundCallAudioFrame = (
 /** Wrap bare Opus packets in Ogg pages for ffplay's stdin. */
 export const muxOggOpus = (): {
 	headerPages(): Uint8Array[]
-	page(packet: Uint8Array, gapSamples48k?: number): Uint8Array
+	page(packet: Uint8Array, gapSamples48k?: number, frameSamples48k?: number): Uint8Array
 } => {
 	const serial = (Math.random() * 0xffffffff) >>> 0
 	let sequence = 0
@@ -315,8 +315,8 @@ export const muxOggOpus = (): {
 			const second = framePage(tags, 0, 0x00)
 			return [first, second]
 		},
-		page(packet: Uint8Array, gapSamples48k = 0): Uint8Array {
-			granule += gapSamples48k + getOpusSamples48k(packet)
+		page(packet: Uint8Array, gapSamples48k = 0, frameSamples48k?: number): Uint8Array {
+			granule += gapSamples48k + (frameSamples48k ?? getOpusSamples48k(packet))
 			return framePage(packet, granule, 0x00)
 		}
 	}
@@ -555,27 +555,34 @@ const seqDiff = (a: number, b: number): number => {
 
 interface AudioJitterBufferOptions {
 	preRoll: number
-	maxDelay: number
 	onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
 }
 
 /**
  * Playout jitter buffer and RTP sequence reorderer.
- * Smooths out network inter-arrival jitter, re-orders datagrams delivered out-of-order,
- * and advances the timeline when packets are lost so Ogg Opus PLC can interpolate cleanly.
+ * Releases one frame per playout tick after preRoll, so arrival bursts and
+ * reordering drain at the media rate instead of racing into ffplay, and lost
+ * slots advance the timeline with gap samples for Ogg Opus PLC.
  */
 export class AudioJitterBuffer {
 	private readonly preRoll: number
-	private readonly maxDelay: number
 	private readonly onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
 	private readonly buffer: CallAudioFrame[] = []
 	private expectedSeq: number | null = null
 	private primed = false
+	private pendingGapSamples = 0
+	private frameSamples48k = 2880
+	private lastRtpSeq: number | null = null
+	private lastRtpTimestamp: number | null = null
+	private timer: ReturnType<typeof setTimeout> | undefined
 
 	constructor(options: AudioJitterBufferOptions) {
 		this.preRoll = options.preRoll
-		this.maxDelay = options.maxDelay
 		this.onPacket = options.onPacket
+	}
+
+	get frameDurationSamples(): number {
+		return this.frameSamples48k
 	}
 
 	push(frame: CallAudioFrame): void {
@@ -586,8 +593,10 @@ export class AudioJitterBuffer {
 
 		const diff = seqDiff(seq, this.expectedSeq)
 		if (diff < 0) {
-			// Stale packet that arrived after playback window passed
-			return
+			// Before playback starts, an earlier arrival simply moves the
+			// starting sequence; after the window has passed, the packet is stale.
+			if (this.primed) return
+			this.expectedSeq = seq
 		}
 
 		// Insert sorted by sequence number
@@ -601,49 +610,73 @@ export class AudioJitterBuffer {
 			}
 		}
 		this.buffer.splice(insertIdx, 0, frame)
+		this.learnFrameSamples(frame)
 
-		if (!this.primed) {
-			if (this.buffer.length >= this.preRoll) {
-				this.primed = true
-				this.drain()
-			}
-			return
+		if (!this.primed && this.buffer.length >= this.preRoll) {
+			this.primed = true
+			this.scheduleTick()
 		}
-
-		this.drain()
 	}
 
-	private drain(): void {
-		while (this.buffer.length > 0) {
-			const next = this.buffer[0]!
-			const diff = seqDiff(next.sequenceNumber, this.expectedSeq!)
-
-			if (diff === 0) {
-				this.buffer.shift()
-				this.expectedSeq = (this.expectedSeq! + 1) & 0xffff
-				this.onPacket(next, 0)
-			} else if (diff > 0) {
-				// Packet missing (loss or late arrival). If buffer depth reaches maxDelay,
-				// do not stall playout any longer: advance past the lost packets.
-				if (this.buffer.length >= this.maxDelay) {
-					const lostCount = diff
-					const gapSamples = lostCount * 2880
-					this.buffer.shift()
-					this.expectedSeq = (next.sequenceNumber + 1) & 0xffff
-					this.onPacket(next, gapSamples)
-				} else {
-					break
+	private learnFrameSamples(frame: CallAudioFrame): void {
+		if (this.lastRtpSeq !== null && this.lastRtpTimestamp !== null) {
+			const seqDelta = seqDiff(frame.sequenceNumber, this.lastRtpSeq)
+			if (seqDelta > 0) {
+				const tsDelta = (frame.timestamp - this.lastRtpTimestamp) >>> 0
+				const perFrame = Math.round(tsDelta / seqDelta)
+				if (perFrame >= 120 && perFrame <= 48000) {
+					this.frameSamples48k = perFrame
 				}
-			} else {
-				this.buffer.shift()
 			}
 		}
+		this.lastRtpSeq = frame.sequenceNumber
+		this.lastRtpTimestamp = frame.timestamp
+	}
+
+	private scheduleTick(): void {
+		this.timer = setTimeout(() => {
+			this.timer = undefined
+			if (!this.primed) return
+			this.tick()
+			if (this.primed) this.scheduleTick()
+		}, this.frameSamples48k / 48)
+	}
+
+	private tick(): void {
+		if (this.expectedSeq === null) return
+		if (this.buffer.length === 0) return
+
+		const head = this.buffer[0]!
+		let diff = seqDiff(head.sequenceNumber, this.expectedSeq)
+		if (diff < 0) {
+			this.buffer.shift()
+			return
+		}
+		if (diff > 0) {
+			// A later frame already arrived, so the missing ones are lost:
+			// book their duration now and play the survivor this tick.
+			this.pendingGapSamples += diff * this.frameSamples48k
+			this.expectedSeq = head.sequenceNumber
+		}
+
+		this.buffer.shift()
+		this.expectedSeq = (this.expectedSeq + 1) & 0xffff
+		const gap = this.pendingGapSamples
+		this.pendingGapSamples = 0
+		this.onPacket(head, gap)
 	}
 
 	clear(): void {
+		if (this.timer !== undefined) {
+			clearTimeout(this.timer)
+			this.timer = undefined
+		}
 		this.buffer.length = 0
+		this.pendingGapSamples = 0
 		this.expectedSeq = null
 		this.primed = false
+		this.lastRtpSeq = null
+		this.lastRtpTimestamp = null
 	}
 }
 
