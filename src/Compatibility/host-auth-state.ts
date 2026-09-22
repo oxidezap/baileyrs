@@ -115,8 +115,13 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 	}
 	if (mutable.me?.id) mutable.registered = true
 	if (typeof record.platform === 'string') (mutable as never as { platform?: string }).platform = record.platform
-	if (Array.isArray(record.edge_routing_info))
-		mutable.routingInfo = new Uint8Array(record.edge_routing_info as number[]) as unknown as typeof mutable.routingInfo
+	const routingInfo = record.edge_routing_info
+	const routingBytes = asBytes(routingInfo)
+	if ('edge_routing_info' in record && routingInfo !== null && !routingBytes) {
+		throw new Error('persisted auth record contains invalid routing info')
+	}
+	if (routingInfo === null) mutable.routingInfo = undefined
+	else if (routingBytes) mutable.routingInfo = routingBytes as unknown as typeof mutable.routingInfo
 	if (accountPayload) creds.account = proto.ADVSignedDeviceIdentity.decode(accountPayload)
 }
 

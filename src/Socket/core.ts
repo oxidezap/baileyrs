@@ -904,10 +904,10 @@ const createWASocketFactoryInner = (
 		timeoutMs?: number
 	) => {
 		return new Promise<void>((resolve, reject) => {
-			let timeout: ReturnType<typeof setTimeout> | undefined
+			let timeout: unknown
 			const cleanup = () => {
 				ev.off('connection.update', listener)
-				if (timeout) clearTimeout(timeout)
+				if (timeout !== undefined) runtime.clearTimeout(timeout)
 			}
 			const listener = async (update: Partial<ConnectionState>) => {
 				if (update.connection === 'close') {
@@ -931,13 +931,13 @@ const createWASocketFactoryInner = (
 			ev.on('connection.update', listener)
 			if (timeoutMs) {
 				timeout = unrefTimer(
-					setTimeout(() => {
+					runtime.setTimeout(() => {
 						cleanup()
 						reject(new Boom('Timed out waiting for connection update', { statusCode: 408 }))
 					}, timeoutMs)
 					// Don't keep the process alive if the caller has already stopped
 					// awaiting (e.g. sock.end() during shutdown with in-flight queries).
-				) as typeof timeout
+				)
 			}
 		})
 	}
