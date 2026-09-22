@@ -1210,7 +1210,7 @@ const createWASocketFactoryInner = (
 			const bytes = ctx.encodeProto!('Message', message)
 			return ctx.withClient(client => client.sendStatusMessageBytes(bytes, recipients))
 		},
-		...makeMessageMethodsCore(ctx, ctx.encodeProto!),
+		...makeMessageMethodsCore(ctx, ctx.encodeProto!, runtime.Long),
 		...groupMethods,
 		...communityMethods,
 		...makeContactMethods(ctx),

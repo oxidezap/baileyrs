@@ -402,6 +402,7 @@ function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is W
 }
 
 type RuntimeRandomOptions = { runtimeRandomBytes?: (length: number) => Uint8Array }
+type RuntimeLongOptions = { runtimeLong?: Pick<typeof LongRuntime, 'fromValue'> }
 
 export const generateWAMessageContent = async (
 	message: AnyMessageContent,
@@ -713,7 +714,7 @@ export const generateWAMessageContent = async (
 export const generateWAMessageFromContent = (
 	jid: string,
 	message: WAMessageContent,
-	options: MessageGenerationOptionsFromContent
+	options: MessageGenerationOptionsFromContent & RuntimeLongOptions
 ) => {
 	const innerMessage = normalizeMessageContent(message)!
 	const timestamp = unixTimestampSeconds(options.timestamp)
@@ -795,7 +796,9 @@ export const generateWAMessageFromContent = (
 	const wm = new WAProto.WebMessageInfo() as WAMessage
 	wm.key = messageKey
 	wm.message = message
-	wm.messageTimestamp = LongRuntime.fromValue(timestamp) as unknown as WAMessage['messageTimestamp']
+	wm.messageTimestamp = (options.runtimeLong ?? LongRuntime).fromValue(
+		timestamp
+	) as unknown as WAMessage['messageTimestamp']
 	// TODO: Add support for LIDs
 	const participant = isJidGroup(jid) || isJidStatusBroadcast(jid) ? userJid : undefined
 	if (participant !== undefined) wm.participant = participant
@@ -806,7 +809,7 @@ export const generateWAMessageFromContent = (
 export const generateWAMessage = async (
 	jid: string,
 	content: AnyMessageContent,
-	options: MessageGenerationOptions & RuntimeRandomOptions
+	options: MessageGenerationOptions & RuntimeRandomOptions & RuntimeLongOptions
 ) => {
 	const contentOptions =
 		options.messageId && options.logger

@@ -128,6 +128,17 @@ describe('generateWAMessageFromContent — content key branches', () => {
 
 	const textContent = () => WAProto.Message.create({ extendedTextMessage: { text: 'pong' } }) as WAMessageContent
 
+	it('uses the selected runtime Long for the outbound timestamp', () => {
+		const timestamp = { runtime: 'custom-long' }
+		const runtimeLong = { fromValue: () => timestamp }
+		const wm = generateWAMessageFromContent(jid, textContent(), {
+			userJid,
+			timestamp: new Date(123_000),
+			runtimeLong: runtimeLong as never
+		})
+		expect(wm.messageTimestamp as unknown).toBe(timestamp)
+	})
+
 	it('leaves a plain send untouched', () => {
 		const wm = generateWAMessageFromContent(jid, textContent(), { userJid })
 		expect(wm.message?.extendedTextMessage?.text).toBe('pong')

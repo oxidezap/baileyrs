@@ -14,6 +14,7 @@ import type {
 } from '../Types/index.ts'
 import { MESSAGE_RECEIPT_TYPES, WAProto } from '../Types/index.ts'
 import { randomBytes } from '../Runtime/bytes.ts'
+import type { BaileysRuntime } from '../Runtime/types.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
 import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
@@ -48,7 +49,11 @@ const getNormalizedUserJid = (ctx: SocketContext): string | undefined => {
 
 export type EncodeProto = (path: string, message: unknown) => Uint8Array
 
-export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) => {
+export const makeMessageMethodsCore = (
+	ctx: SocketContext,
+	encode: EncodeProto,
+	runtimeLong?: Pick<BaileysRuntime['Long'], 'fromValue'>
+) => {
 	const randomSource = ctx.randomBytes ?? randomBytes
 	return {
 		sendMessage: async (
@@ -66,9 +71,11 @@ export const makeMessageMethodsCore = (ctx: SocketContext, encode: EncodeProto) 
 				// other generation knob belongs to this call's typed options.
 				const generationOptions: MessageGenerationOptions & {
 					runtimeRandomBytes: (length: number) => Uint8Array
+					runtimeLong?: Pick<BaileysRuntime['Long'], 'fromValue'>
 				} = {
 					...options,
 					runtimeRandomBytes: randomSource,
+					...(runtimeLong ? { runtimeLong } : {}),
 					options: options?.options ?? ctx.fullConfig.options,
 					logger: ctx.logger,
 					userJid,
