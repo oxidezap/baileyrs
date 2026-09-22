@@ -68,11 +68,11 @@ describe('getOpusSamples48k', () => {
 })
 
 describe('AudioJitterBuffer', () => {
-	it('clears queued frames without playing them', () => {
+	it('clears queued frames without playing them', t => {
+		t.mock.timers.enable({ apis: ['setTimeout'] })
 		const played: number[] = []
 		const buffer = new AudioJitterBuffer({
 			preRoll: 3,
-			maxDelay: 8,
 			onPacket: frame => played.push(frame.sequenceNumber)
 		})
 		const frame = (sequenceNumber: number): CallAudioFrame => ({
@@ -92,7 +92,13 @@ describe('AudioJitterBuffer', () => {
 		buffer.push(frame(10))
 		buffer.push(frame(11))
 		buffer.push(frame(12))
+		expect(played).toEqual([])
 
+		t.mock.timers.tick(60)
+		expect(played).toEqual([10])
+		t.mock.timers.tick(60)
+		expect(played).toEqual([10, 11])
+		t.mock.timers.tick(60)
 		expect(played).toEqual([10, 11, 12])
 	})
 })
@@ -143,6 +149,185 @@ describe('muxOggOpus', () => {
 		const view2 = new DataView(page2.buffer, page2.byteOffset)
 		const granule2 = view2.getBigUint64(6, true)
 		expect(granule2).toBe(3840n) // 2880 + 960
+	})
+
+	it('advances granule by gap plus an explicit frame duration for silent pages', () => {
+		const muxer = muxOggOpus()
+		muxer.headerPages()
+		const page = muxer.page(new Uint8Array(0), 5760, 2880)
+		const granule = new DataView(page.buffer, page.byteOffset).getBigUint64(6, true)
+		expect(granule).toBe(8640n) // gap 5760 + one 60ms frame, not gap + 960
+	})
+})
+
+const audioFrame = (sequenceNumber: number, timestamp = sequenceNumber * 2880): CallAudioFrame => ({
+	callId: 'test-call',
+	codec: 'opus',
+	format: 'opus',
+	data: new Uint8Array([0x58, 0x01, 0x02, 0x03]),
+	marker: false,
+	payloadType: 111,
+	sequenceNumber,
+	timestamp
+})
+
+interface Release {
+	sequenceNumber: number
+	gapSamples48k: number
+}
+
+const withMockedClock = (name: string, fn: (tick: (ms: number) => void) => void): void => {
+	it(name, t => {
+		t.mock.timers.enable({ apis: ['setTimeout'] })
+		fn(ms => t.mock.timers.tick(ms))
+	})
+}
+
+describe('AudioJitterBuffer', () => {
+	withMockedClock('releases in sequence order after preRoll, paced by the clock', tick => {
+		const releases: Release[] = []
+		const buffer = new AudioJitterBuffer({
+			preRoll: 3,
+			onPacket: (frame, gapSamples48k) => releases.push({ sequenceNumber: frame.sequenceNumber, gapSamples48k })
+		})
+
+		buffer.push(audioFrame(0))
+		buffer.push(audioFrame(1))
+		expect(releases).toHaveLength(0)
+
+		buffer.push(audioFrame(2))
+		expect(releases).toHaveLength(0)
+
+		tick(60)
+		expect(releases).toHaveLength(1)
+		expect(releases[0]!.sequenceNumber).toBe(0)
+		expect(releases[0]!.gapSamples48k).toBe(0)
+
+		buffer.push(audioFrame(4))
+		buffer.push(audioFrame(5))
+		buffer.push(audioFrame(3))
+		expect(releases).toHaveLength(1)
+
+		tick(60)
+		expect(releases).toHaveLength(2)
+		expect(releases[1]!.sequenceNumber).toBe(1)
+
+		tick(60)
+		expect(releases).toHaveLength(3)
+		expect(releases[2]!.sequenceNumber).toBe(2)
+
+		tick(60)
+		expect(releases).toHaveLength(4)
+		expect(releases[3]!.sequenceNumber).toBe(3)
+		expect(releases[3]!.gapSamples48k).toBe(0)
+
+		tick(60)
+		expect(releases).toHaveLength(5)
+		expect(releases[4]!.sequenceNumber).toBe(4)
+
+		tick(60)
+		expect(releases).toHaveLength(6)
+		expect(releases[5]!.sequenceNumber).toBe(5)
+	})
+
+	withMockedClock('advances the gap for lost frames when a later frame arrives', tick => {
+		const releases: Release[] = []
+		const buffer = new AudioJitterBuffer({
+			preRoll: 2,
+			onPacket: (frame, gapSamples48k) => releases.push({ sequenceNumber: frame.sequenceNumber, gapSamples48k })
+		})
+
+		buffer.push(audioFrame(10))
+		buffer.push(audioFrame(11))
+		tick(60)
+		expect(releases).toHaveLength(1)
+
+		buffer.push(audioFrame(14))
+		buffer.push(audioFrame(15))
+		expect(releases).toHaveLength(1)
+
+		tick(60)
+		expect(releases).toHaveLength(2)
+		expect(releases[1]!.sequenceNumber).toBe(11)
+
+		tick(60)
+		expect(releases).toHaveLength(3)
+		expect(releases[2]!.sequenceNumber).toBe(14)
+		expect(releases[2]!.gapSamples48k).toBe(5760)
+
+		tick(60)
+		expect(releases).toHaveLength(4)
+		expect(releases[3]!.sequenceNumber).toBe(15)
+		expect(releases[3]!.gapSamples48k).toBe(0)
+	})
+
+	withMockedClock('clear discards the remainder and stops the clock', tick => {
+		const releases: Release[] = []
+		const buffer = new AudioJitterBuffer({
+			preRoll: 2,
+			onPacket: (frame, gapSamples48k) => releases.push({ sequenceNumber: frame.sequenceNumber, gapSamples48k })
+		})
+
+		buffer.push(audioFrame(0))
+		buffer.push(audioFrame(1))
+		buffer.push(audioFrame(2))
+		buffer.push(audioFrame(3))
+		buffer.push(audioFrame(4))
+		buffer.push(audioFrame(5))
+		expect(releases).toHaveLength(0)
+
+		tick(60)
+		expect(releases).toHaveLength(1)
+		tick(60)
+		expect(releases).toHaveLength(2)
+		tick(60)
+		expect(releases).toHaveLength(3)
+
+		buffer.clear()
+		expect(releases).toHaveLength(3)
+		tick(60)
+		expect(releases).toHaveLength(3)
+	})
+
+	withMockedClock('accepts an earlier packet that arrives before priming completes', tick => {
+		const releases: Release[] = []
+		const buffer = new AudioJitterBuffer({
+			preRoll: 3,
+			onPacket: (frame, gapSamples48k) => releases.push({ sequenceNumber: frame.sequenceNumber, gapSamples48k })
+		})
+
+		buffer.push(audioFrame(101))
+		buffer.push(audioFrame(100))
+		buffer.push(audioFrame(102))
+		expect(releases).toHaveLength(0)
+
+		tick(60)
+		expect(releases).toHaveLength(1)
+		expect(releases[0]!.sequenceNumber).toBe(100)
+		tick(60)
+		expect(releases[1]!.sequenceNumber).toBe(101)
+		tick(60)
+		expect(releases[2]!.sequenceNumber).toBe(102)
+	})
+
+	withMockedClock('paces a 20 ms stream from learned RTP timestamps', tick => {
+		const releases: Release[] = []
+		const buffer = new AudioJitterBuffer({
+			preRoll: 2,
+			onPacket: (frame, gapSamples48k) => releases.push({ sequenceNumber: frame.sequenceNumber, gapSamples48k })
+		})
+
+		buffer.push(audioFrame(7, 7 * 960))
+		buffer.push(audioFrame(8, 8 * 960))
+		buffer.push(audioFrame(9, 9 * 960))
+		expect(buffer.frameDurationSamples).toBe(960)
+
+		tick(20)
+		expect(releases).toHaveLength(1)
+		tick(20)
+		expect(releases).toHaveLength(2)
+		tick(20)
+		expect(releases).toHaveLength(3)
 	})
 })
 
