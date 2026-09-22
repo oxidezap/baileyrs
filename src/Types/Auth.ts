@@ -146,3 +146,15 @@ export type AuthenticationState = {
 		flush?(): Promise<void>
 	}
 }
+
+/**
+ * Store-first auth input: a caller-owned byte store is enough — the socket
+ * completes the public view (credential mirror + key facade) from it.
+ * `makeWASocket({ auth: { store } })` works without `fs`, without legacy
+ * `{ creds, keys }`, without `Buffer`.
+ */
+export type NativeAuthenticationState = {
+	store: NonNullable<AuthenticationState['store']>
+	creds?: AuthenticationState['creds']
+	keys?: AuthenticationState['keys']
+}

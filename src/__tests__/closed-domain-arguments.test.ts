@@ -209,7 +209,7 @@ const CASES: DomainCase[] = [
 		parameter: 'type',
 		values: ['available', 'unavailable', 'composing', 'recording', 'paused'],
 		call: (sock, value) => sock.sendPresenceUpdate(arg(value), USER),
-		source: 'index.ts:sendPresenceUpdate:type'
+		source: 'core.ts:sendPresenceUpdate:type'
 	},
 	{
 		label: 'profilePictureUrl',
@@ -238,7 +238,7 @@ const CASES: DomainCase[] = [
 		parameter: 'mediaType',
 		values: MEDIA_TYPES,
 		call: (sock, value) => sock.waUploadToServer(new Uint8Array([1, 2, 3]), { mediaType: arg(value) }),
-		source: 'index.ts:waUploadToServer:mediaType'
+		source: 'core.ts:waUploadToServer:mediaType'
 	},
 	{
 		label: 'sendReceipt',
@@ -523,7 +523,9 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 				const { declarator, parameter, type } = match.groups!
 				if (declarator) continue
 				if (!type!.startsWith("'") && !domainTypes.has(type!)) continue
-				found.push(`${file}:${enclosingName(text, match.index)}:${parameter}`)
+				found.push(
+					`${file.replace('messages-core.ts', 'messages.ts')}:${enclosingName(text, match.index)}:${parameter}`
+				)
 			}
 		}
 

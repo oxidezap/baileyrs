@@ -1,4 +1,4 @@
-import EventEmitter from 'node:events'
+import EventEmitter from 'events'
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type {
 	BaileysEvent,
@@ -11,10 +11,11 @@ import type {
 	WAMessageKey
 } from '../Types/index.ts'
 import { WAMessageStatus } from '../Types/index.ts'
-import { trimUndefined } from './generics.ts'
+import { trimUndefined, updateMessageWithReaction, updateMessageWithReceipt } from '../Media/mutations.ts'
 import type { ILogger } from './logger.ts'
-import { updateMessageWithReaction, updateMessageWithReceipt } from './messages.ts'
-import { isRealMessage, shouldIncrementChatUnread } from './process-message.ts'
+import { unrefTimer } from '../Runtime/bytes.ts'
+import type { RuntimeEventEmitter } from '../Runtime/types.ts'
+import { isRealMessage, shouldIncrementChatUnread } from './process-message-core.ts'
 
 const BUFFERABLE_EVENTS = [
 	'messaging-history.set',
@@ -416,14 +417,28 @@ const consolidateEvents = (data: BufferedEventData): BaileysEventData => {
  * Upstream-compatible event buffer. Non-buffered events stay synchronous;
  * bufferable events are consolidated and released as one `process()` map.
  */
-export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter => {
-	const ev = new EventEmitter()
+export type EventBufferTimers = {
+	setTimeout(callback: () => void, ms: number): unknown
+	clearTimeout(handle: unknown): void
+}
+
+const defaultEventBufferTimers: EventBufferTimers = {
+	setTimeout: (callback, ms) => setTimeout(callback, ms),
+	clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>)
+}
+
+export const makeEventBuffer = (
+	logger: ILogger,
+	timers: EventBufferTimers = defaultEventBufferTimers,
+	emitter: RuntimeEventEmitter = new EventEmitter() as never
+): BaileysBufferableEventEmitter => {
+	const ev = emitter as unknown as EventEmitter
 	const historyCache = new Set<string>()
 	let data = makeBufferData()
 	let buffering = false
 	let bufferCount = 0
-	let bufferTimeout: ReturnType<typeof setTimeout> | undefined
-	let flushPendingTimeout: ReturnType<typeof setTimeout> | undefined
+	let bufferTimeout: unknown
+	let flushPendingTimeout: unknown
 
 	ev.on('event', (events: BaileysEventData) => {
 		for (const event of Object.keys(events) as BaileysEvent[]) {
@@ -464,8 +479,8 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		if (!buffering) return false
 		buffering = false
 		bufferCount = 0
-		if (bufferTimeout) clearTimeout(bufferTimeout)
-		if (flushPendingTimeout) clearTimeout(flushPendingTimeout)
+		if (bufferTimeout !== undefined) timers.clearTimeout(bufferTimeout)
+		if (flushPendingTimeout !== undefined) timers.clearTimeout(flushPendingTimeout)
 		bufferTimeout = undefined
 		flushPendingTimeout = undefined
 		if (historyCache.size > 10_000) historyCache.clear()
@@ -490,14 +505,15 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		if (!buffering) {
 			buffering = true
 			bufferCount = 0
-			if (bufferTimeout) clearTimeout(bufferTimeout)
-			bufferTimeout = setTimeout(() => {
-				if (buffering) {
-					logger.warn('Buffer timeout reached, auto-flushing')
-					flush()
-				}
-			}, 30_000)
-			bufferTimeout.unref?.()
+			if (bufferTimeout !== undefined) timers.clearTimeout(bufferTimeout)
+			bufferTimeout = unrefTimer(
+				timers.setTimeout(() => {
+					if (buffering) {
+						logger.warn('Buffer timeout reached, auto-flushing')
+						flush()
+					}
+				}, 30_000)
+			)
 		}
 		bufferCount += 1
 	}
@@ -534,7 +550,8 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 			ev.off(event, listener)
 		},
 		removeAllListeners: event => {
-			ev.removeAllListeners(event)
+			if (event === undefined) ev.removeAllListeners()
+			else ev.removeAllListeners(event)
 		},
 		buffer,
 		flush,
@@ -546,16 +563,15 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 					return await work(...args)
 				} finally {
 					bufferCount = Math.max(0, bufferCount - 1)
-					if (bufferCount === 0 && !flushPendingTimeout) {
-						flushPendingTimeout = setTimeout(flush, 100)
-						flushPendingTimeout.unref?.()
+					if (bufferCount === 0 && flushPendingTimeout === undefined) {
+						flushPendingTimeout = unrefTimer(timers.setTimeout(flush, 100))
 					}
 				}
 			}
 		},
 		destroy() {
-			if (bufferTimeout) clearTimeout(bufferTimeout)
-			if (flushPendingTimeout) clearTimeout(flushPendingTimeout)
+			if (bufferTimeout !== undefined) timers.clearTimeout(bufferTimeout)
+			if (flushPendingTimeout !== undefined) timers.clearTimeout(flushPendingTimeout)
 			historyCache.clear()
 			data = makeBufferData()
 			buffering = false

@@ -64,7 +64,7 @@ error handling, memory monitoring, and more.
 
 ## Installation
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.3 or newer for the Node API. A runtime-neutral `/host` entrypoint is available for Workers, Deno, and browser-like hosts.
 
 ### New project
 
@@ -75,6 +75,26 @@ npm install @oxidezap/baileyrs
 ```ts
 import makeWASocket from '@oxidezap/baileyrs'
 ```
+
+### Host-neutral entrypoint
+
+For Workers, Deno, or browser-like runtimes, import `/host` and initialize the bridge
+WASM before creating a socket. Provide a caller-owned `JsStoreCallbacks` auth store;
+this path does not use filesystem auth or Node streams.
+
+```ts
+import makeWASocket, { createAuthenticationState, useMemoryStore } from '@oxidezap/baileyrs/host'
+import wasm from '@oxidezap/baileyrs/wasm'
+import { initSync } from '@oxidezap/whatsapp-rust-bridge/host'
+
+initSync({ module: wasm })
+const store = useMemoryStore()
+const auth = await createAuthenticationState(store)
+const socket = makeWASocket({ auth })
+```
+
+Node consumers should continue using the root entrypoint and
+`useMultiFileAuthState` unchanged.
 
 ### Drop-in replacement for upstream Baileys
 

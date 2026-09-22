@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { describe, it } from 'node:test'
@@ -108,6 +109,14 @@ describe('generated protobuf runtime facade', () => {
 				(expected as { toJSON(): Record<string, unknown> }).toJSON(),
 				path
 			)
+		}
+	})
+
+	it('preserves protobufjs Buffer base64 coercion for noncanonical strings', () => {
+		const local = messageType(localProto, 'Message.ImageMessage')
+		for (const mediaKey of ['AQID====', 'AQ!ID']) {
+			const actual = local.fromObject({ mediaKey }) as { mediaKey: Uint8Array }
+			assert.deepEqual([...actual.mediaKey], [...Buffer.from(mediaKey, 'base64')])
 		}
 	})
 

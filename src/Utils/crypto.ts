@@ -109,6 +109,8 @@ export function hmacSign(
 	return Buffer.from(hmacDigest(variant, key, buffer))
 }
 
+export { sha256Sync as sha256Portable } from '../Runtime/bytes.ts'
+
 export function sha256(buffer: Buffer): Buffer<ArrayBufferLike> {
 	return createHash('sha256').update(buffer).digest()
 }

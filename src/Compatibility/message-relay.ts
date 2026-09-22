@@ -1,7 +1,7 @@
 import type { MessageRetransmissionInput } from '@oxidezap/whatsapp-rust-bridge'
 import type { BinaryNode, MessageRelayOptions } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
-import { generateMessageIDV2 } from '../Utils/generics.ts'
+import { generateMessageIDV2Portable as generateMessageIDV2 } from './message-ids.ts'
 import { areJidsSameUser, isJidBroadcast, isJidGroup, isJidNewsletter } from '../WABinary/index.ts'
 
 export const EMPTY_RELAY_NODES: BinaryNode[] = []
@@ -13,8 +13,11 @@ export type OwnRelayIdentity = { id?: string; lid?: string } | undefined
  * Every send path resolves through here, so `messageId` means the same thing
  * on `sendMessage` and on `relayMessage`.
  */
-export const resolveMessageId = (own: OwnRelayIdentity, messageId?: string): string =>
-	messageId || generateMessageIDV2(own?.id)
+export const resolveMessageId = (
+	own: OwnRelayIdentity,
+	messageId?: string,
+	randomBytes?: (length: number) => Uint8Array
+): string => messageId || generateMessageIDV2(own?.id, randomBytes)
 
 export type MessageRelayPlan =
 	| {
@@ -56,7 +59,8 @@ const isOwnDevice = (jid: string, own: OwnRelayIdentity): boolean =>
 export const planMessageRelay = (
 	jid: string,
 	options: MessageRelayOptions,
-	own: OwnRelayIdentity
+	own: OwnRelayIdentity,
+	randomBytes?: (length: number) => Uint8Array
 ): MessageRelayPlan => {
 	const {
 		messageId,
@@ -76,7 +80,7 @@ export const planMessageRelay = (
 		})
 	}
 
-	const id = resolveMessageId(own, messageId)
+	const id = resolveMessageId(own, messageId, randomBytes)
 	const refreshGroupMetadata = useCachedGroupMetadata === false
 	if (participant) {
 		const requesterIsOwnDevice = isDirectConversation(jid) && isOwnDevice(participant.jid, own)

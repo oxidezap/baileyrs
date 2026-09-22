@@ -60,6 +60,7 @@ const FIELD_NAMES = [
 	'removed',
 	'picture_id',
 	'muted',
+	'locked',
 	'archived',
 	'pinned',
 	'starred',
@@ -293,6 +294,7 @@ const SHAPED: Record<string, (random: Random) => Record<string, unknown>> = {
 		action: { starred: random.bool() }
 	}),
 	mark_chat_as_read_update: random => ({ jid: jidField(random), action: { read: random.bool() } }),
+	lock_chat_update: random => ({ jid: jidField(random), action: { locked: random.bool() } }),
 	incoming_call: random => ({
 		from: jidField(random),
 		action: callAction(random),

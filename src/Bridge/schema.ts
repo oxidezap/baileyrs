@@ -26,7 +26,7 @@
 import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { ILogger } from '../Utils/logger.ts'
-import { processHistoryMessage } from '../Utils/process-history-message.ts'
+import { processHistoryMessage } from '../Utils/process-history-message-core.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
 import type {
 	CanonicalCallAction,
@@ -348,6 +348,11 @@ const ADAPTERS = {
 		const jid = asJidString(data?.jid)
 		if (!jid) return null
 		return { type: 'markChatAsReadUpdate', jid, read: asBoolOr(extractAction(data)?.read, true) }
+	},
+	lock_chat_update: data => {
+		const jid = asJidString(data?.jid)
+		if (!jid) return null
+		return { type: 'lockChatUpdate', jid, locked: asBoolOr(extractAction(data)?.locked, true) }
 	},
 	label_edit_update: data => {
 		const labelId = asString(data?.label_id)

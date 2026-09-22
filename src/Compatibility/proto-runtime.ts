@@ -1,7 +1,7 @@
-import { Buffer } from 'node:buffer'
-import { createRequire } from 'node:module'
 import type Long from 'long'
-import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge'
+import LongRuntime from '../Runtime/long.ts'
+import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge/host'
+import { base64Decode, base64Encode, publicBytes } from '../Runtime/bytes.ts'
 import {
 	PROTO_ENUM_SCHEMAS,
 	PROTO_FIELD_FLAG,
@@ -73,10 +73,6 @@ const EMPTY_ARRAY = Object.freeze([]) as readonly unknown[]
 const EMPTY_OBJECT = Object.freeze({}) as Readonly<Record<string, never>>
 const JSON_OPTIONS = Object.freeze({ longs: String, enums: String, bytes: String, json: true })
 const WORD_BASE = 1n << 32n
-// protobufjs resolves the CommonJS Long constructor internally. Loading that
-// same export keeps `instanceof` and prototype identity aligned without
-// loading protobufjs itself or adding a second wire runtime.
-const LongRuntime = createRequire(import.meta.url)('long') as typeof Long
 
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key)
 
@@ -276,16 +272,45 @@ const longToNumber = (value: unknown, unsigned: boolean): number => {
 
 const bytesToBase64 = (value: unknown): string => {
 	if (value instanceof Uint8Array) {
-		return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')
+		return base64Encode(value)
 	}
-	return Buffer.from(value as ArrayLike<number>).toString('base64')
+	return base64Encode(Uint8Array.from(value as ArrayLike<number>))
 }
 
 const bytesFromObject = (value: unknown): unknown => {
-	if (typeof value === 'string') return Buffer.from(value, 'base64')
+	if (typeof value === 'string') return nodeBytesFromBase64(value)
 	if (isObject(value) && typeof value.length === 'number') return value
 	if (Array.isArray(value)) return value
 	return undefined
+}
+
+/**
+ * Upstream protobufjs materializes `bytes` fields as Node `Buffer` on Node
+ * (`protobuf.util.Buffer`), and the compatibility contract asserts
+ * `deepStrictEqual` against that — `Buffer` vs `Uint8Array` fails even with
+ * identical contents. The host-neutral graph cannot import `node:buffer`,
+ * so the base64 decode stays portable and only the wrapping is Node-only,
+ * resolved lazily through `process.getBuiltinModule('buffer')` (same
+ * lazy-builtin shape `Utils/browser-utils.ts` uses for `node:os`): no
+ * static `node:` import, `Buffer.from(u8)` on Node, the plain `Uint8Array`
+ * on hosts where there is no upstream-Buffer constraint to keep.
+ */
+const nodeBytesFromBase64 = (value: string): unknown => {
+	try {
+		const proc = (globalThis as { process?: unknown }).process as
+			| { getBuiltinModule?: (id: string) => unknown }
+			| undefined
+		const bufferModule = proc?.getBuiltinModule?.('buffer') as
+			| { Buffer?: { from?: (input: string, encoding: string) => unknown } }
+			| undefined
+		// protobufjs delegates string coercion to Buffer.from(), including its
+		// permissive handling of excess padding and ignored non-alphabet bytes.
+		const nodeBytes = bufferModule?.Buffer?.from?.(value, 'base64')
+		if (nodeBytes !== undefined) return nodeBytes
+	} catch {
+		/* host runtimes use the strict portable decoder below */
+	}
+	return base64Decode(value)
 }
 
 const oneofName = (field: ProtoFieldSchema): string | undefined => {
@@ -960,7 +985,7 @@ class ProtoCompatibilityRuntime {
 			case PROTO_FIELD_KIND.bool:
 				return false
 			case PROTO_FIELD_KIND.bytes:
-				return options.bytes === String ? '' : options.bytes === Array ? [] : Buffer.alloc(0)
+				return options.bytes === String ? '' : options.bytes === Array ? [] : publicBytes(new Uint8Array(0))
 			case PROTO_FIELD_KIND.signed64:
 			case PROTO_FIELD_KIND.unsigned64:
 				return options.longs === String

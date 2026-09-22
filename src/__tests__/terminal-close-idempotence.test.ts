@@ -83,7 +83,12 @@ const makeHarness = (): Harness => {
 	harness.closes = []
 	harness.teardowns = 0
 	harness.releaseTeardown = () => releaseTeardown()
-	harness.reporter = makeTerminalCloseReporter({ logger: noopLogger as never, publishTimeoutMs: 1000 })
+	harness.reporter = makeTerminalCloseReporter({
+		logger: noopLogger as never,
+		publishTimeoutMs: 1000,
+		setTimeout: (callback, ms) => setTimeout(callback, ms),
+		clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>)
+	})
 	ev.on('connection.update', (update: Partial<ConnectionState>) => {
 		if (update.connection === 'close') harness.closes.push(update)
 	})
@@ -232,7 +237,12 @@ describe('terminal close idempotence: dispatcher + reporter', () => {
 				return throwingLogger
 			}
 		} as never
-		const reporter = makeTerminalCloseReporter({ logger: throwingLogger, publishTimeoutMs: 1000 })
+		const reporter = makeTerminalCloseReporter({
+			logger: throwingLogger,
+			publishTimeoutMs: 1000,
+			setTimeout: (callback, ms) => setTimeout(callback, ms),
+			clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>)
+		})
 		let publishes = 0
 
 		reporter.reportAfter(

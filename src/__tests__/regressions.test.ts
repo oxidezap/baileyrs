@@ -185,6 +185,21 @@ describe('adapter: archive_update', () => {
 	})
 })
 
+describe('adapter: lock_chat_update', () => {
+	const evt = (locked: boolean) => ({
+		type: 'lock_chat_update',
+		data: { jid: jid('5511'), action: { locked } }
+	})
+
+	it('propagates locked=true (upstream chats.lock parity)', () => {
+		expect(adapt(evt(true), 'lockChatUpdate').locked).toBe(true)
+	})
+
+	it('propagates locked=false on unlock', () => {
+		expect(adapt(evt(false), 'lockChatUpdate').locked).toBe(false)
+	})
+})
+
 describe('adapter: mark_chat_as_read_update', () => {
 	const evt = (read: boolean) => ({
 		type: 'mark_chat_as_read_update',
@@ -580,6 +595,21 @@ describe('dispatch: archive_update → chats.update', () => {
 		)
 		expect(archived[0]?.[0]?.archived).toBe(true)
 		expect(unarchived[0]?.[0]?.archived).toBe(false)
+	})
+})
+
+describe('dispatch: lock_chat_update → chats.lock', () => {
+	it('emits locked flag verbatim (upstream chat-utils.ts:819 parity)', () => {
+		const locked = collect(
+			{ type: 'lock_chat_update', data: { jid: jid('5511'), action: { locked: true } } },
+			'chats.lock'
+		)
+		const unlocked = collect(
+			{ type: 'lock_chat_update', data: { jid: jid('5511'), action: { locked: false } } },
+			'chats.lock'
+		)
+		expect(locked[0]).toEqual({ id: '5511@s.whatsapp.net', locked: true })
+		expect(unlocked[0]).toEqual({ id: '5511@s.whatsapp.net', locked: false })
 	})
 })
 

@@ -34,6 +34,14 @@
       "types": "./lib/Utils/logger.d.ts",
       "default": "./lib/Utils/logger.js"
     },
+    "./host": {
+      "types": "./lib/host.d.ts",
+      "default": "./lib/host.js"
+    },
+    "./wasm": {
+      "types": "./lib/wasm.d.ts",
+      "default": "./lib/wasm.js"
+    },
     "./lib/*": {
       "types": "./lib/*.d.ts",
       "default": "./lib/*.js"
@@ -64,6 +72,7 @@
     "compat:sync-waproto": "node scripts/compatibility/waproto-facade.ts --sync",
     "compat:check-waproto": "node scripts/compatibility/waproto-facade.ts --check",
     "compat:layers": "node scripts/compatibility/check-layer-boundaries.ts",
+    "check:host-boundaries": "node scripts/check-host-boundaries.ts",
     "example": "node ./Example/example.ts",
     "format": "oxfmt src Example",
     "format:check": "oxfmt --check src Example",
@@ -82,7 +91,8 @@
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts"
   },
   "dependencies": {
-    "@oxidezap/whatsapp-rust-bridge": "0.22.0",
+    "@oxidezap/whatsapp-rust-bridge": "0.24.0",
+    "events": "^3.3.0",
     "long": "^5.3.2"
   },
   "devDependencies": {
@@ -139,6 +149,6 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.3.0"
   }
 }

@@ -100,8 +100,10 @@ export const makeTerminalCloseReporter = (opts: {
 	logger: ILogger
 	/** Overridable for tests; production uses the constant above. */
 	publishTimeoutMs?: number
+	setTimeout: (callback: () => void, ms: number) => unknown
+	clearTimeout: (handle: unknown) => void
 }): TerminalCloseReporter => {
-	const { logger } = opts
+	const { logger, setTimeout: schedule, clearTimeout: cancel } = opts
 	const publishTimeoutMs = opts.publishTimeoutMs ?? TERMINAL_CLOSE_PUBLISH_TIMEOUT_MS
 
 	/**
@@ -156,13 +158,13 @@ export const makeTerminalCloseReporter = (opts: {
 			// built the replacement never runs, which is what this guards.
 			// Cleared the moment teardown settles, so it holds the loop only
 			// while one is in flight.
-			const watchdog = setTimeout(() => {
+			const watchdog = schedule(() => {
 				logger.error({ afterMs: publishTimeoutMs }, 'socket teardown is still running; reporting the close anyway')
 				publishOnce()
 			}, publishTimeoutMs)
 
 			const finish = (err?: unknown) => {
-				clearTimeout(watchdog)
+				cancel(watchdog)
 				if (err) logger.error({ err }, 'socket teardown failed after a terminal disconnect')
 				publishOnce()
 			}

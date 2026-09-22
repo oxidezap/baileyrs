@@ -43,13 +43,10 @@ describe('bundler export surface', () => {
 		expect(manifest.peerDependenciesMeta?.['music-metadata']?.optional).toBe(true)
 	})
 
-	it('keeps the music-metadata import opaque to bundlers', () => {
-		// Webpack turns a statically analyzable `import('music-metadata')`
-		// into a hard error when the optional peer is absent, but only warns
-		// on a non-literal specifier. The `as string` cast is what keeps the
-		// published build warning-only, so a change dropping it must fail here.
-		const source = readFileSync(resolve(repoRoot, 'src/Utils/messages-media.ts'), 'utf8')
-		expect(source.includes("import('music-metadata' as string)")).toBe(true)
-		expect(source.includes("await import('music-metadata')")).toBe(false)
+	it('keeps music-metadata behind the Node-only media boundary', () => {
+		const sharedSource = readFileSync(resolve(repoRoot, 'src/Utils/messages-media.ts'), 'utf8')
+		const nodeProcessor = readFileSync(resolve(repoRoot, 'src/Runtime/node-media-processors.ts'), 'utf8')
+		expect(sharedSource.includes('music-metadata')).toBe(false)
+		expect(nodeProcessor.includes("await import('music-metadata')")).toBe(true)
 	})
 })
