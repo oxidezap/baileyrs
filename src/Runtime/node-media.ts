@@ -5,6 +5,7 @@ type FileBytes = { toString: (encoding?: string) => string }
 /** Optional filesystem/process media capabilities. Node installs these; hosts never do. */
 export const nodeMedia: {
 	getImageProcessingLibrary: () => Promise<unknown>
+	decodeAudio: (input: Uint8Array) => Promise<{ getChannelData(channel: number): Float32Array }>
 	hkdf: (input: Uint8Array, length: number, options: { salt?: Uint8Array; info?: string }) => Uint8Array
 	tempDir: () => string
 	execFile: (command: string, args: string[], callback: (error: unknown) => void) => void
@@ -16,6 +17,9 @@ export const nodeMedia: {
 	}
 } = {
 	getImageProcessingLibrary: async () => ({}),
+	decodeAudio: async () => {
+		throw new Error('audio decoding is unavailable on this host')
+	},
 	hkdf: () => {
 		throw new Error('HKDF bridge capability is unavailable')
 	},
@@ -53,12 +57,20 @@ if (nodeProcess) {
 			}
 		}
 		nodeMedia.getImageProcessingLibrary = async () => {
-			// @ts-ignore Optional peer dependency discovered only in Node.
-			const jimpImport = import('jimp').catch(() => undefined)
-			// @ts-ignore Optional peer dependency discovered only in Node.
-			const sharpImport = import('sharp').catch(() => undefined)
-			const [jimp, sharp] = await Promise.all([jimpImport, sharpImport])
+			const jimpPackage = ['ji', 'mp'].join('')
+			const sharpPackage = ['sha', 'rp'].join('')
+			const [jimp, sharp] = await Promise.all([
+				import(jimpPackage).catch(() => undefined),
+				import(sharpPackage).catch(() => undefined)
+			])
 			return sharp ? { sharp } : jimp ? { jimp } : {}
+		}
+		nodeMedia.decodeAudio = async input => {
+			const audioPackage = ['audio', 'decode'].join('-')
+			const loaded = (await import(audioPackage)) as {
+				default: (bytes: Uint8Array) => Promise<{ getChannelData(channel: number): Float32Array }>
+			}
+			return loaded.default(input)
 		}
 	} catch {
 		/* A host has no Node bridge loader; its runtime installs this capability. */

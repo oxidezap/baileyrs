@@ -193,8 +193,6 @@ export async function getAudioDuration(buffer: Buffer | string | Readable) {
  */
 export async function getAudioWaveform(buffer: Buffer | string | Readable, logger?: ILogger) {
 	try {
-		// @ts-ignore
-		const { default: decoder } = await import('audio-decode')
 		let audioData: Buffer
 		if (isBytes<Buffer>(buffer)) {
 			audioData = buffer as unknown as Buffer
@@ -205,7 +203,7 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 			audioData = (await toBuffer(buffer)) as unknown as Buffer
 		}
 
-		const audioBuffer = await decoder(audioData)
+		const audioBuffer = await nodeMedia.decodeAudio(audioData)
 
 		const rawData = audioBuffer.getChannelData(0) // We only need to work with one channel of data
 		const samples = 64 // Number of samples we want to have in our final data set
@@ -215,7 +213,7 @@ export async function getAudioWaveform(buffer: Buffer | string | Readable, logge
 			const blockStart = blockSize * i // the location of the first sample in the block
 			let sum = 0
 			for (let j = 0; j < blockSize; j++) {
-				sum = sum + Math.abs(rawData[blockStart + j]) // find the sum of all the samples in the block
+				sum = sum + Math.abs(rawData[blockStart + j]!) // find the sum of all the samples in the block
 			}
 
 			filteredData.push(sum / blockSize) // divide the sum by the block size to get the average

@@ -1,6 +1,7 @@
 /** Host-only auth bootstrap. It deliberately does not import legacy-store codecs. */
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge/host'
 import { calculateSignature, generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
+import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { AuthenticationCreds, KeyPair } from '../Types/index.ts'
 import type { HostAuthenticationState } from '../host-types.ts'
 import { base64Encode, concatBytes, randomBytes, readU16BE, utf8Decode } from '../Runtime/bytes.ts'
@@ -39,8 +40,11 @@ export const initHostAuthCreds = (): HostAuthenticationState['creds'] => {
 }
 
 const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Promise<void> => {
-	const payload = await store.get('device', 'device')
-	if (!payload) return
+	const [payload, accountPayload] = await Promise.all([store.get('device', 'device'), store.get('device', 'account')])
+	if (!payload) {
+		if (accountPayload) creds.account = proto.ADVSignedDeviceIdentity.decode(accountPayload)
+		return
+	}
 	let record: Record<string, unknown>
 	try {
 		record = JSON.parse(utf8Decode(payload)) as Record<string, unknown>
@@ -62,6 +66,10 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 	const registration = record.registration_id
 	if ('registration_id' in record && !safeUnsigned(registration)) throw new Error('invalid persisted registration id')
 	if (safeUnsigned(registration)) mutable.registrationId = registration
+	const noiseBytes = asBytes(record.noise_key)
+	if ('noise_key' in record && (!noiseBytes || noiseBytes.length !== 64)) {
+		throw new Error('persisted auth record contains an invalid noise key')
+	}
 	const noiseKey = keyPair(record.noise_key)
 	const identityKey = keyPair(record.identity_key)
 	const signedPreKey = keyPair(record.signed_pre_key)
@@ -109,6 +117,7 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 	if (typeof record.platform === 'string') (mutable as never as { platform?: string }).platform = record.platform
 	if (Array.isArray(record.edge_routing_info))
 		mutable.routingInfo = new Uint8Array(record.edge_routing_info as number[]) as unknown as typeof mutable.routingInfo
+	if (accountPayload) creds.account = proto.ADVSignedDeviceIdentity.decode(accountPayload)
 }
 
 /** Build host auth from the caller-owned native byte store. Rust remains the Signal authority. */

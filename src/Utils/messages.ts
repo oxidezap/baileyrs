@@ -39,7 +39,6 @@ import {
 	toNumber,
 	unixTimestampSeconds,
 	utf8Encode,
-	base64Decode,
 	hexEncode
 } from '../Runtime/bytes.ts'
 import { readableFromWeb } from '../Runtime/stream.ts'
@@ -237,7 +236,7 @@ export const prepareWAMessageMedia = async (
 	// extraction time) so values arriving via `processMedia`, link-preview
 	// builders, or direct user input go through the same coercion.
 	if (typeof uploadData.jpegThumbnail === 'string') {
-		uploadData.jpegThumbnail = base64Decode(uploadData.jpegThumbnail) as unknown as Buffer
+		uploadData.jpegThumbnail = BufferRuntime.from(uploadData.jpegThumbnail, 'base64')
 	}
 
 	const obj = WAProto.Message.fromObject({
