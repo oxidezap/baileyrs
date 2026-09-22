@@ -586,6 +586,7 @@ const createWASocketFactoryInner = (
 	)
 
 	const init = async () => {
+		await runtime.waitForAuthState?.(auth)
 		// `initWasmEngine` reads `logger.level` synchronously while installing
 		// the Rust-side logger: a consumer logger without the pino shape
 		// (notably the throwing test double, which has no `level` at all)

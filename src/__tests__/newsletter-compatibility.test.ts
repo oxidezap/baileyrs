@@ -230,6 +230,15 @@ describe('newsletterUpdate dispatches the picture field', () => {
 		expect(calls.map(c => c[0])).toEqual(['newsletterMetadata'])
 	})
 
+	it('keeps Node Buffer base64 coercion for noncanonical pictures', async () => {
+		for (const picture of ['SlBFR0JZVEVT====', 'SlBF!R0JZVEVT']) {
+			const { calls, methods } = makeHarness()
+			await methods.newsletterUpdate(JID, { picture })
+			const setCall = calls.find(c => c[0] === 'newsletterSetPicture')!
+			expect(Buffer.from(setCall[1][1] as Uint8Array)).toEqual(Buffer.from(picture, 'base64'))
+		}
+	})
+
 	it('a base64 picture is decoded to bytes, not forwarded as a string', async () => {
 		const { calls, methods } = makeHarness()
 

@@ -101,10 +101,90 @@ export type HostRuntime = {
 	Long: HostLongConstructor
 }
 
+export type HostCacheStore = {
+	get<T>(key: string): Promise<T | undefined> | T | undefined
+	set<T>(key: string, value: T): Promise<void> | void | number | boolean
+	del(key: string): Promise<void> | void | number | boolean
+	flushAll(): Promise<void> | void
+	close?(): void
+}
+
+type HostNativeCacheStore = {
+	get(namespace: string, key: string): Promise<Uint8Array | null>
+	set(namespace: string, key: string, value: Uint8Array, ttlSecs?: number): Promise<void>
+	delete(namespace: string, key: string): Promise<void>
+	clear(namespace: string): Promise<void>
+}
+
+type HostCacheEntryConfig = { ttlSecs?: number; capacity?: number; store?: HostNativeCacheStore }
+
+type HostSocketCacheConfig = {
+	store?: HostNativeCacheStore
+	group?: HostCacheEntryConfig
+	device?: HostCacheEntryConfig
+	deviceRegistry?: HostCacheEntryConfig
+	lidPn?: HostCacheEntryConfig
+	retriedGroupMessages?: HostCacheEntryConfig
+	recentMessages?: HostCacheEntryConfig
+	messageRetry?: HostCacheEntryConfig
+}
+
 export type HostSocketConfig = {
 	auth: HostAuthenticationState
 	logger?: ILogger
-	[key: string]: unknown
+	waWebSocketUrl?: string | URL
+	connectTimeoutMs?: number
+	defaultQueryTimeoutMs?: number
+	keepAliveIntervalMs?: number
+	version?: [number, number, number]
+	browser?: [os: string, browser: string, version: string]
+	pushName?: string
+	emitOwnEvents?: boolean
+	customUploadHosts?: Array<{ hostname: string; maxContentLengthBytes: number }>
+	shouldIgnoreJid?: (jid: string) => boolean | undefined
+	options?: RequestInit
+	cache?: HostSocketCacheConfig
+	deviceProps?: Record<string, unknown>
+	wantedPreKeyCount?: number
+	dangerSkipCertChainVerify?: boolean
+	qrTimeout?: number
+	maxMsgRetryCount?: number
+	retryRequestDelayMs?: number
+	generateHighQualityLinkPreview?: boolean
+	linkPreviewImageThumbnailWidth?: number
+	enableAutoSessionRecreation?: boolean
+	enableRecentMessageCache?: boolean
+	markOnlineOnConnect?: boolean
+	transactionOpts?: { maxCommitRetries: number; delayBetweenTriesMs: number }
+	syncFullHistory?: boolean
+	fireInitQueries?: boolean
+	countryCode?: string
+	downloadHistory?: boolean
+	shouldSyncHistoryMessage?: (message: {
+		syncType?: number | null
+		chunkOrder?: number | null
+		progress?: number | null
+		fileLength?: number | string | { low: number; high: number; unsigned?: boolean } | null
+		peerDataRequestSessionId?: string | null
+	}) => boolean
+	printQRInTerminal?: boolean
+	ignoreOfflineMessages?: boolean
+	mediaCache?: HostCacheStore
+	msgRetryCounterCache?: HostCacheStore
+	userDevicesCache?: HostCacheStore
+	callOfferCache?: HostCacheStore
+	placeholderResendCache?: HostCacheStore
+	patchMessageBeforeSending?: (
+		message: Record<string, unknown>,
+		recipientJids?: string[]
+	) =>
+		| Promise<Record<string, unknown> | Record<string, unknown>[]>
+		| Record<string, unknown>
+		| Record<string, unknown>[]
+	appStateMacVerification?: { patch: boolean; snapshot: boolean }
+	getMessage?: (key: { remoteJid?: string | null; id?: string | null; fromMe?: boolean | null }) => Promise<unknown>
+	cachedGroupMetadata?: (jid: string) => Promise<Record<string, unknown> | undefined>
+	makeSignalRepository?: (...args: never[]) => unknown
 }
 
 export type HostEventEmitter = {

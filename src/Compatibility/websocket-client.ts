@@ -154,7 +154,8 @@ export class WebSocketClient extends EventEmitter {
 		return this.mutateListeners(() => {
 			if (!this.emitter)
 				return eventName === undefined ? super.removeAllListeners() : super.removeAllListeners(eventName)
-			this.emitter.removeAllListeners(eventName)
+			if (eventName === undefined) this.emitter.removeAllListeners()
+			else this.emitter.removeAllListeners(eventName)
 			return this
 		})
 	}

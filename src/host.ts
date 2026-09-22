@@ -39,6 +39,7 @@ export type {
 	HostAuthenticationCreds,
 	HostAuthenticationState,
 	HostBridgeRuntime,
+	HostCacheStore,
 	HostEventEmitter,
 	HostKeyPair,
 	HostLongConstructor,

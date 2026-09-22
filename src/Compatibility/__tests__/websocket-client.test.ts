@@ -119,6 +119,12 @@ describe('native WebSocket compatibility facade', () => {
 		assert.equal(delivered, true)
 		assert.equal(ws.listenerCount('CB:injected'), 0)
 		assert.deepEqual(rawForwardingCalls, [true, false])
+
+		ws.on('message', () => undefined)
+		ws.on('TAG:cleanup', () => undefined)
+		ws.removeAllListeners()
+		assert.deepEqual(emitter.eventNames(), [])
+		assert.deepEqual(rawForwardingCalls, [true, false, true, false])
 	})
 
 	it('returns false when the native client is not ready', () => {

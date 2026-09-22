@@ -41,7 +41,10 @@ setReadableRuntime({
 	createReadable: () => new Readable({ read: () => {} })
 })
 import { makeLazyTransactionKeyStore } from '../Compatibility/internal/signal-key-store.ts'
-import { normalizeSocketAuthenticationState } from '../Compatibility/internal/auth-state.ts'
+import {
+	normalizeSocketAuthenticationState,
+	waitForSocketAuthenticationState
+} from '../Compatibility/internal/auth-state.ts'
 import type { BaileysRuntime } from './types.ts'
 
 export const nodeRandomBytes = (length: number): Uint8Array => {
@@ -79,5 +82,6 @@ export const nodeRuntime: BaileysRuntime = {
 	Long,
 	wrapLegacyStore: wrapLegacyStore as never,
 	makeTransactionKeyStore: makeLazyTransactionKeyStore as never,
-	normalizeAuth: normalizeSocketAuthenticationState
+	normalizeAuth: normalizeSocketAuthenticationState,
+	waitForAuthState: waitForSocketAuthenticationState
 }

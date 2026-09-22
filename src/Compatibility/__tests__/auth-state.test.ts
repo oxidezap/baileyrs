@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer'
 import { describe, it } from 'node:test'
 import { initAuthCreds } from '../../Utils/generics.ts'
 import { useMemoryStore } from '../../Utils/use-memory-store.ts'
-import { normalizeSocketAuthenticationState } from '../internal/auth-state.ts'
+import { normalizeSocketAuthenticationState, waitForSocketAuthenticationState } from '../internal/auth-state.ts'
 
 const makeKeys = () => ({
 	get: async () => ({}),
@@ -32,6 +32,25 @@ describe('socket authentication normalization', () => {
 		assert.equal(typeof normalized.keys.get, 'function')
 		assert.equal(typeof normalized.keys.set, 'function')
 		assert.deepEqual(await normalized.keys.get('pre-key', ['7']), {})
+	})
+
+	it('hydrates returning store-only credentials before socket initialization', async () => {
+		const store = useMemoryStore()
+		await store.set(
+			'device',
+			'device',
+			new TextEncoder().encode(
+				JSON.stringify({ registration_id: 42, pn: { user: '15551234567', server: 's.whatsapp.net', device: 2 } })
+			)
+		)
+		const normalized = normalizeSocketAuthenticationState({ store })
+		await waitForSocketAuthenticationState(normalized)
+
+		assert.equal(normalized.creds.registrationId, 42)
+		assert.equal(normalized.creds.registered, true)
+		assert.equal(normalized.creds.me?.id, '15551234567:2@s.whatsapp.net')
+		assert.equal(Buffer.isBuffer(normalized.creds.noiseKey.private), true)
+		assert.equal(Buffer.isBuffer(normalized.creds.signedIdentityKey.public), true)
 	})
 
 	it('rejects an incomplete legacy state without a native store', () => {

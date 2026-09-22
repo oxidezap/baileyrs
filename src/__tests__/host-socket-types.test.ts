@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import * as hostBridge from '@oxidezap/whatsapp-rust-bridge/host'
 import Long from 'long'
-import type { HostBridgeRuntime, HostLongConstructor, HostRuntime, HostWASocket } from '../host-types.ts'
+import type {
+	HostAuthenticationState,
+	HostBridgeRuntime,
+	HostLongConstructor,
+	HostRuntime,
+	HostSocketConfig,
+	HostWASocket
+} from '../host-types.ts'
 
 const bridgeSurface: HostBridgeRuntime = hostBridge
 const longSurface: HostLongConstructor = Long
@@ -11,6 +18,15 @@ const longSurface: HostLongConstructor = Long
 const incompleteBridge: HostRuntime['bridge'] = {}
 // @ts-expect-error The event path requires Long.fromValue and Long instances.
 const incompleteLong: HostRuntime['Long'] = {}
+
+const rejectsMalformedHostConfig = (auth: HostAuthenticationState): void => {
+	// @ts-expect-error browser must retain the three-string Baileys tuple.
+	const invalidBrowser: HostSocketConfig = { auth, browser: 42 }
+	// @ts-expect-error unknown and misspelled socket options are not accepted.
+	const misspelledOption: HostSocketConfig = { auth, connectTimoutMs: 10 }
+	void invalidBrowser
+	void misspelledOption
+}
 
 const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 	void socket.groupLeave('120@g.us')
@@ -29,6 +45,7 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 describe('host socket declarations', () => {
 	it('include the complete callable operation surface', () => {
 		assert.equal(typeof acceptsCompleteHostSocketSurface, 'function')
+		assert.equal(typeof rejectsMalformedHostConfig, 'function')
 		assert.deepEqual(incompleteBridge, {})
 		assert.deepEqual(incompleteLong, {})
 		assert.equal(typeof bridgeSurface.initWasmEngine, 'function')
