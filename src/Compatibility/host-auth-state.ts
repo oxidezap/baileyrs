@@ -57,8 +57,11 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 		if (!bytes || bytes.length !== 64 || bytes.every(byte => byte === 0)) return undefined
 		return { private: bytes.slice(0, 32), public: bytes.slice(32, 64) }
 	}
+	const safeUnsigned = (value: unknown): value is number =>
+		typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 	const registration = record.registration_id
-	if (typeof registration === 'number') mutable.registrationId = registration
+	if ('registration_id' in record && !safeUnsigned(registration)) throw new Error('invalid persisted registration id')
+	if (safeUnsigned(registration)) mutable.registrationId = registration
 	const noiseKey = keyPair(record.noise_key)
 	const identityKey = keyPair(record.identity_key)
 	const signedPreKey = keyPair(record.signed_pre_key)
@@ -69,7 +72,7 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 	const keyId = record.signed_pre_key_id
 	if (
 		hasSigningRecord &&
-		(!identityKey || !signedPreKey || !signature || signature.length !== 64 || typeof keyId !== 'number')
+		(!identityKey || !signedPreKey || !signature || signature.length !== 64 || !safeUnsigned(keyId))
 	) {
 		throw new Error('persisted auth record contains an incomplete signing bundle')
 	}
@@ -83,7 +86,9 @@ const hydrate = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Pro
 		throw new Error('persisted auth record contains an invalid adv secret')
 	}
 	if (advSecret) mutable.advSecretKey = base64Encode(advSecret)
-	if (typeof record.next_pre_key_id === 'number') {
+	if ('next_pre_key_id' in record && !safeUnsigned(record.next_pre_key_id))
+		throw new Error('invalid persisted pre-key counter')
+	if (safeUnsigned(record.next_pre_key_id)) {
 		mutable.nextPreKeyId = record.next_pre_key_id
 		mutable.firstUnuploadedPreKeyId = record.next_pre_key_id
 	}

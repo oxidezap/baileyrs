@@ -119,8 +119,22 @@ const base64Value = (char: string): number => {
 
 export const base64Decode = (text: string): Uint8Array => {
 	let clean = text.replace(/[\s]/g, '').replace(/-/g, '+').replace(/_/g, '/')
-	// Tolerate unpadded input the way Buffer.from(…, 'base64') does (auth
-	// mirrors store 43-char unpadded digests); canonical padding otherwise.
+	const firstPadding = clean.indexOf('=')
+	if (firstPadding >= 0) {
+		const padding = clean.length - firstPadding
+		if (
+			padding > 2 ||
+			clean
+				.slice(firstPadding)
+				.split('')
+				.some(char => char !== '=')
+		)
+			throw new RangeError('invalid base64 padding')
+		if (clean.length % 4 !== 0 || firstPadding % 4 < 2) throw new RangeError('invalid base64 padding')
+	} else if (clean.length % 4 === 1) {
+		throw new RangeError('invalid base64 length')
+	}
+	// Tolerate valid unpadded input the way Buffer.from(…, 'base64') does.
 	while (clean.length % 4 !== 0) clean += '='
 	const pad = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
 	const out = new Uint8Array((clean.length / 4) * 3 - pad)

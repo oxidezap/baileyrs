@@ -20,11 +20,13 @@ nodeMedia.hkdf = bridge.hkdf
 /** Stable fallback: Ubuntu 22.04, matching `Browsers.ubuntu()` output shape. */
 export const HOST_PLATFORM_FALLBACK = { os: 'Ubuntu', release: '22.04.4' } as const
 
-export const hostLoggerSink = (line: string): void => {
+export const hostLoggerSink = (line: string, delivered?: () => void): void => {
 	try {
 		console.log(line)
 	} catch {
 		/* logging must not crash the host it observes */
+	} finally {
+		delivered?.()
 	}
 }
 
