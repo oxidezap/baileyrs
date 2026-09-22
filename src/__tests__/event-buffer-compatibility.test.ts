@@ -29,6 +29,24 @@ describe('event buffer — upstream process() contract', () => {
 		expect(processed).toEqual(['group.join-request', 'group.member-tag.update'])
 	})
 
+	it('uses the injected scheduler for buffer and deferred-flush timers', async () => {
+		const callbacks: Array<() => void> = []
+		const cleared: unknown[] = []
+		const ev = makeEventBuffer(logger, {
+			setTimeout: callback => {
+				callbacks.push(callback)
+				return callbacks.length - 1
+			},
+			clearTimeout: handle => cleared.push(handle)
+		})
+		const buffered = ev.createBufferedFunction(async () => 'done')
+
+		expect(await buffered()).toBe('done')
+		expect(callbacks).toHaveLength(2)
+		callbacks[1]!()
+		expect(cleared).toEqual([0, 1])
+	})
+
 	it('returns an unsubscribe function and stops delivery after cleanup', () => {
 		const ev = makeEventBuffer(logger)
 		let calls = 0

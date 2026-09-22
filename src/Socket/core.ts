@@ -168,7 +168,7 @@ const createWASocketFactoryInner = (
 		...DEFAULT_CONNECTION_CONFIG,
 		...config,
 		...(platform ? { browser: [platform.os, 'Chrome', platform.release] as [string, string, string] } : {}),
-		logger: config.logger ?? runtimeLogger
+		logger: config.logger ?? runtime.defaultLogger ?? runtimeLogger
 	}
 	const { logger } = mergedConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
@@ -194,7 +194,10 @@ const createWASocketFactoryInner = (
 			) as () => SignalKeyStoreWithTransaction)
 		: () => auth.keys as SignalKeyStoreWithTransaction
 
-	const ev = makeEventBuffer(logger)
+	const ev = makeEventBuffer(logger, {
+		setTimeout: runtime.setTimeout,
+		clearTimeout: runtime.clearTimeout
+	})
 	// Upstream mutates authState.creds before notifying user listeners. Register
 	// this first so `ev.on('creds.update', saveCreds)` persists the merged state
 	// rather than the pre-pair placeholder.

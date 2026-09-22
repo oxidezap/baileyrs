@@ -40,6 +40,7 @@ export type HostRuntime = {
 	events: object
 	platformInfo?: () => { os: string; release: string }
 	nativeCrypto?: unknown
+	defaultLogger?: ILogger
 	loggerSink: (line: string, delivered?: () => void) => void
 	logLevel: () => string | undefined
 	Long: unknown
@@ -66,7 +67,7 @@ export type HostWASocket = {
 	query: (...args: unknown[]) => Promise<unknown>
 	sendNode: (...args: unknown[]) => Promise<unknown>
 	relayMessage: (...args: unknown[]) => Promise<unknown>
-	downloadMediaMessage: (...args: unknown[]) => Promise<unknown>
+	downloadMedia: (...args: unknown[]) => Promise<unknown>
 	profilePictureUrl: (...args: unknown[]) => Promise<unknown>
 	sendPresenceUpdate: (...args: unknown[]) => Promise<unknown>
 	waUploadToServer: (...args: unknown[]) => Promise<unknown>

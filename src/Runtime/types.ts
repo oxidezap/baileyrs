@@ -22,6 +22,7 @@ import type {
 	JsStoreCallbacks
 } from '@oxidezap/whatsapp-rust-bridge/host'
 import type Long from 'long'
+import type { ILogger } from '../Utils/logger.ts'
 
 /** Subset of the bridge surface the socket core touches. */
 export interface BridgeRuntime {
@@ -99,6 +100,8 @@ export interface BaileysRuntime {
 	platformInfo?(): PlatformInfo
 	/** Native AES/HMAC fast path; absent on hosts (Rust/WASM fallback). */
 	nativeCrypto?: unknown
+	/** Runtime-specific default logger. Node preserves the pino-backed connection logger; hosts omit it. */
+	defaultLogger?: ILogger
 	/** Where core log lines go: Node writes stdout, hosts console. */
 	loggerSink(line: string, delivered?: () => void): void
 	/** Log level: Node reads `BAILEYRS_LOG_LEVEL`, hosts use config/default. */

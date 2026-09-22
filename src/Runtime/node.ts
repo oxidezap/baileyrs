@@ -17,6 +17,7 @@ import { execFile } from 'node:child_process'
 import { createReadStream, promises as fs } from 'node:fs'
 import * as bridge from '@oxidezap/whatsapp-rust-bridge'
 import Long from './long.ts'
+import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index.ts'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { setReadableRuntime } from './stream.ts'
@@ -71,6 +72,7 @@ export const nodeRuntime: BaileysRuntime = {
 		createEmitter: () => new EventEmitter() as never
 	},
 	nativeCrypto: makeNativeCryptoProvider(),
+	defaultLogger: DEFAULT_CONNECTION_CONFIG.logger,
 	loggerSink: nodeLoggerSink,
 	logLevel: () => process.env.BAILEYRS_LOG_LEVEL,
 	Long,
