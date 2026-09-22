@@ -390,7 +390,11 @@ const createWASocketFactoryInner = (
 	// transient drop from a terminal one.
 	let autoReconnectEnabled = true
 	/** Owns reporting the terminal close: once, after teardown, never not at all. */
-	const terminalClose = makeTerminalCloseReporter({ logger })
+	const terminalClose = makeTerminalCloseReporter({
+		logger,
+		setTimeout: runtime.setTimeout,
+		clearTimeout: runtime.clearTimeout
+	})
 	const runCompletionError = (completion: RunCompletionResult): Boom => {
 		let statusCode = DisconnectReason.connectionClosed
 		let message = 'Connection closed'
@@ -562,7 +566,10 @@ const createWASocketFactoryInner = (
 		},
 		{
 			...makeHistoryRuntime(runtime),
-			BinaryReader: runtime.bridge.BinaryReader
+			BinaryReader: runtime.bridge.BinaryReader,
+			Long: runtime.Long,
+			setTimeout: runtime.setTimeout,
+			clearTimeout: runtime.clearTimeout
 		} as never
 	)
 
@@ -970,7 +977,10 @@ const createWASocketFactoryInner = (
 		assertNodeErrorFree(result)
 		return result
 	}
-	const waitForMessage = makeTaggedMessageWaiter(ws, logger, fullConfig.defaultQueryTimeoutMs)
+	const waitForMessage = makeTaggedMessageWaiter(ws, logger, fullConfig.defaultQueryTimeoutMs, {
+		setTimeout: runtime.setTimeout,
+		clearTimeout: runtime.clearTimeout
+	})
 	const usyncMethods = makeUSyncMethods({
 		queryNode: query,
 		queryUsync: async typedQuery => ctx.withClient(client => client.queryUsync(typedQuery))

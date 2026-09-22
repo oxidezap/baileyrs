@@ -25,8 +25,13 @@ const noopLogger = {
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+const nodeTimers = {
+	setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+	clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>)
+}
+
 const makeReporter = (publishTimeoutMs = 10_000) =>
-	makeTerminalCloseReporter({ logger: noopLogger as never, publishTimeoutMs })
+	makeTerminalCloseReporter({ logger: noopLogger as never, publishTimeoutMs, ...nodeTimers })
 
 describe('terminal close: reportAfter', () => {
 	it('publishes only once teardown has finished', async () => {
@@ -45,6 +50,36 @@ describe('terminal close: reportAfter', () => {
 		await reporter.published()
 
 		expect(order).toEqual(['teardown', 'publish'])
+	})
+
+	it('uses the injected scheduler for its watchdog', async () => {
+		let watchdog: (() => void) | undefined
+		let cleared: unknown
+		const handle = { scheduler: 'host' }
+		const reporter = makeTerminalCloseReporter({
+			logger: noopLogger as never,
+			publishTimeoutMs: 50,
+			setTimeout: callback => {
+				watchdog = callback
+				return handle
+			},
+			clearTimeout: value => {
+				cleared = value
+			}
+		})
+		let published = false
+		reporter.reportAfter(
+			() => new Promise<void>(() => {}),
+			() => {
+				published = true
+			}
+		)
+
+		expect(watchdog).toBeDefined()
+		watchdog?.()
+		await reporter.published()
+		expect(published).toBe(true)
+		expect(cleared).toEqual(undefined)
 	})
 
 	it('publishes even when teardown rejects', async () => {

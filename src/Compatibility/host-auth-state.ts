@@ -38,6 +38,44 @@ export const initHostAuthCreds = (): HostAuthenticationState['creds'] => {
 	} as unknown as HostAuthenticationState['creds']
 }
 
+const PERSISTED_JID_DOMAINS = new Set([
+	'c.us',
+	'g.us',
+	'broadcast',
+	's.whatsapp.net',
+	'call',
+	'lid',
+	'newsletter',
+	'bot',
+	'hosted',
+	'hosted.lid'
+])
+
+const parsePersistedJid = (
+	record: Record<string, unknown>,
+	field: 'pn' | 'lid'
+): { user: string; server: string; device?: number } | undefined => {
+	const value = record[field]
+	if (value == null) return undefined
+	if (typeof value !== 'object') throw new Error(`persisted auth record contains an invalid ${field} JID`)
+	const candidate = value as Record<string, unknown>
+	if (
+		typeof candidate.user !== 'string' ||
+		candidate.user.length === 0 ||
+		typeof candidate.server !== 'string' ||
+		!PERSISTED_JID_DOMAINS.has(candidate.server) ||
+		(candidate.device !== undefined &&
+			(typeof candidate.device !== 'number' || !Number.isSafeInteger(candidate.device) || candidate.device < 0))
+	) {
+		throw new Error(`persisted auth record contains an invalid ${field} JID`)
+	}
+	return {
+		user: candidate.user,
+		server: candidate.server,
+		...(candidate.device === undefined ? {} : { device: candidate.device as number })
+	}
+}
+
 export const hydrateHostAuthCreds = async (
 	store: JsStoreCallbacks,
 	creds: HostAuthenticationState['creds']
@@ -53,6 +91,9 @@ export const hydrateHostAuthCreds = async (
 	} catch (error) {
 		throw new Error("failed to hydrate persisted auth record 'device'", { cause: error })
 	}
+	// Validate both identities before mutating the caller's credential mirror.
+	const pn = parsePersistedJid(record, 'pn')
+	const lid = parsePersistedJid(record, 'lid')
 	const mutable = creds as { -readonly [K in keyof typeof creds]: (typeof creds)[K] }
 	const asBytes = (value: unknown): Uint8Array | undefined =>
 		Array.isArray(value) && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)
@@ -103,14 +144,12 @@ export const hydrateHostAuthCreds = async (
 		mutable.firstUnuploadedPreKeyId = record.next_pre_key_id
 	}
 	if (typeof record.props_hash === 'string') mutable.lastPropHash = record.props_hash
-	const pn = record.pn as { user?: string; server?: string; device?: number } | undefined
-	const lid = record.lid as { user?: string; server?: string; device?: number } | undefined
-	if (pn?.user && pn.server) {
+	if (pn) {
 		const id = jidEncode(pn.user, pn.server as never, pn.device)
 		mutable.me = {
 			id,
 			name: typeof record.push_name === 'string' ? record.push_name : undefined,
-			...(lid?.user && lid.server ? { lid: jidEncode(lid.user, lid.server as never, lid.device) } : {})
+			...(lid ? { lid: jidEncode(lid.user, lid.server as never, lid.device) } : {})
 		} as never
 	} else if (typeof record.push_name === 'string') {
 		mutable.me = { id: '', name: record.push_name } as never

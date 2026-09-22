@@ -7,7 +7,7 @@
  * is a compile error.
  */
 
-import Long from 'long'
+import DefaultLong from 'long'
 import {
 	BinaryReader as DefaultBinaryReader,
 	decodeMessageWireBatch as defaultDecodeMessageWireBatch,
@@ -42,7 +42,7 @@ import type {
 import { DisconnectReason, WAMessageStatus, WAProto } from '../Types/index.ts'
 import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
-import { toNumber } from '../Runtime/bytes.ts'
+import { toNumber, unrefTimer } from '../Runtime/bytes.ts'
 import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message-core.ts'
 import { isJidBroadcast, isJidGroup } from '../WABinary/jid-utils.ts'
 import {
@@ -59,6 +59,9 @@ import { isReconnectableConnectFailure, mapConnectFailureToDisconnect } from './
 import type { SocketContext } from './types.ts'
 type EventBridgeRuntime = {
 	BinaryReader: typeof DefaultBinaryReader
+	Long: typeof DefaultLong
+	setTimeout: (callback: () => void, ms: number) => unknown
+	clearTimeout: (handle: unknown) => void
 	decodeMessageWireBatch: typeof defaultDecodeMessageWireBatch
 	decodeReceiptWireBatch: typeof defaultDecodeReceiptWireBatch
 	decodeServerAckWireBatch: typeof defaultDecodeServerAckWireBatch
@@ -108,7 +111,7 @@ const emitCBEvents = (ctx: SocketContext, node: BinaryNode) => {
  * is the Baileys upstream contract — it's the OUTBOUND end of the
  * bridge → canonical → Baileys pipeline. Adapters never reach for the proto.
  */
-const canonicalMessageToWAMessage = (m: CanonicalMessage): WAMessage => {
+const canonicalMessageToWAMessage = (m: CanonicalMessage, Long: typeof DefaultLong): WAMessage => {
 	// Direct construction instead of a `WebMessageInfo.fromObject` envelope:
 	// every input is already in its wire-correct runtime type, so the schema
 	// walk would only re-derive them field by field on the hottest path. `new`
@@ -215,17 +218,18 @@ interface EventCallbacks {
 interface DispatchCtx {
 	ctx: SocketContext
 	callbacks?: EventCallbacks
+	runtime: EventBridgeRuntime
 	historySync: HistorySyncStatusState
 }
 
 interface HistorySyncStatusState {
 	initialBootstrapComplete: boolean
 	recentSyncComplete: boolean
-	pausedTimeout?: ReturnType<typeof setTimeout>
+	pausedTimeout?: unknown
 }
 
-const clearHistorySyncPausedTimeout = (state: HistorySyncStatusState) => {
-	if (state.pausedTimeout) clearTimeout(state.pausedTimeout)
+const clearHistorySyncPausedTimeout = (state: HistorySyncStatusState, runtime: EventBridgeRuntime) => {
+	if (state.pausedTimeout !== undefined) runtime.clearTimeout(state.pausedTimeout)
 	state.pausedTimeout = undefined
 }
 
@@ -257,7 +261,7 @@ type DispatcherMap = { [K in CanonicalEvent['type']]: DispatcherFn<K> }
  * goes out immediately.
  */
 const emitClose = (
-	{ ctx, callbacks, historySync }: DispatchCtx,
+	{ ctx, callbacks, historySync, runtime }: DispatchCtx,
 	reason: string,
 	statusCode: number,
 	data?: Record<string, unknown>
@@ -266,7 +270,7 @@ const emitClose = (
 	// one in `disconnected`. A transient drop deliberately keeps it armed, so
 	// without this a drop followed by a terminal close leaves it to fire a
 	// `messaging-history.status: paused` from a socket that has already ended.
-	clearHistorySyncPausedTimeout(historySync)
+	clearHistorySyncPausedTimeout(historySync, runtime)
 
 	const error = new Boom(reason, { statusCode, data })
 	const publish = () =>
@@ -484,14 +488,14 @@ const DISPATCHERS: DispatcherMap = {
 	qrScannedWithoutMultidevice: (_, { ctx }) => ctx.logger.warn('QR scanned but multi-device not enabled on phone'),
 
 	// ── Messages ──
-	message: (evt, { ctx }) => {
+	message: (evt, { ctx, runtime }) => {
 		if (ctx.fullConfig.shouldIgnoreJid?.(evt.chatJid)) return
 		emitInboundPushName(ctx, evt)
 		// Note: `emitOwnEvents=false` is NOT applied here. Upstream Baileys
 		// uses that flag to suppress the local echo when `sendMessage()`
 		// succeeds, not to drop inbound `fromMe` messages from other linked
 		// devices.
-		const waMsg = canonicalMessageToWAMessage(evt)
+		const waMsg = canonicalMessageToWAMessage(evt, runtime.Long)
 		emitMessageUpsert(ctx, [waMsg], messageUpsertMetadata(evt))
 
 		// Mirror upstream `process-message.ts:523-533`: when the inbound
@@ -981,7 +985,7 @@ const DISPATCHERS: DispatcherMap = {
 			}
 		]),
 
-	historySync: (evt, { ctx, historySync }) => {
+	historySync: (evt, { ctx, historySync, runtime }) => {
 		// 1:1 with upstream `process-message.ts:371-376`. `isLatest` is true
 		// when this is the first history sync the bot has seen since
 		// pairing — upstream tracks it in `creds.processedHistoryMessages`,
@@ -1005,23 +1009,24 @@ const DISPATCHERS: DispatcherMap = {
 			})
 		}
 		if (isFinalBatch && evt.syncType === HSType.RECENT && !historySync.recentSyncComplete) {
-			clearHistorySyncPausedTimeout(historySync)
+			clearHistorySyncPausedTimeout(historySync, runtime)
 			if (evt.progress === 100) {
 				historySync.recentSyncComplete = true
 				ctx.ev.emit('messaging-history.status', { syncType: HSType.RECENT, status: 'complete', explicit: true })
 			} else {
-				historySync.pausedTimeout = setTimeout(() => {
-					if (!historySync.recentSyncComplete) {
-						historySync.recentSyncComplete = true
-						ctx.ev.emit('messaging-history.status', {
-							syncType: HSType.RECENT,
-							status: 'paused',
-							explicit: false
-						})
-					}
-					historySync.pausedTimeout = undefined
-				}, HISTORY_SYNC_PAUSED_TIMEOUT_MS)
-				historySync.pausedTimeout.unref?.()
+				historySync.pausedTimeout = unrefTimer(
+					runtime.setTimeout(() => {
+						if (!historySync.recentSyncComplete) {
+							historySync.recentSyncComplete = true
+							ctx.ev.emit('messaging-history.status', {
+								syncType: HSType.RECENT,
+								status: 'paused',
+								explicit: false
+							})
+						}
+						historySync.pausedTimeout = undefined
+					}, HISTORY_SYNC_PAUSED_TIMEOUT_MS)
+				)
 			}
 		}
 		const payload: BaileysEventMap['messaging-history.set'] = {
@@ -1096,7 +1101,7 @@ const dispatchCanonicalBatch = (
 			// in dispatchCanonicalEvent.
 			emitInboundPushName(ctx, canonical)
 			const metadata = messageUpsertMetadata(canonical)
-			const message = canonicalMessageToWAMessage(canonical)
+			const message = canonicalMessageToWAMessage(canonical, dispatchCtx.runtime.Long)
 			if (pending && hasSameUpsertMetadata(pending, metadata)) {
 				pending.messages.push(message)
 			} else {
@@ -1121,6 +1126,9 @@ export const makeEventHandlers = (
 	callbacks?: EventCallbacks,
 	runtime: EventBridgeRuntime = {
 		BinaryReader: DefaultBinaryReader,
+		Long: DefaultLong,
+		setTimeout: (callback, ms) => setTimeout(callback, ms),
+		clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 		decodeMessageWireBatch: defaultDecodeMessageWireBatch,
 		decodeReceiptWireBatch: defaultDecodeReceiptWireBatch,
 		decodeServerAckWireBatch: defaultDecodeServerAckWireBatch
@@ -1129,10 +1137,11 @@ export const makeEventHandlers = (
 	const dispatchCtx: DispatchCtx = {
 		ctx,
 		callbacks,
+		runtime,
 		historySync: { initialBootstrapComplete: false, recentSyncComplete: false }
 	}
 
-	callbacks?.onCleanup?.(() => clearHistorySyncPausedTimeout(dispatchCtx.historySync))
+	callbacks?.onCleanup?.(() => clearHistorySyncPausedTimeout(dispatchCtx.historySync, runtime))
 
 	const onEvent = (event: WhatsAppEvent) => {
 		const canonical = adaptBridgeEvent(event, ctx.logger)
