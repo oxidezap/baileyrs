@@ -187,20 +187,58 @@ export type HostSocketConfig = {
 	makeSignalRepository?: (...args: never[]) => unknown
 }
 
+export type HostConnectionUpdate = {
+	connection?: 'open' | 'connecting' | 'close'
+	lastDisconnect?: { error?: Error; date: Date }
+	isNewLogin?: boolean
+	qr?: string
+	receivedPendingNotifications?: boolean
+	legacy?: { phoneConnected: boolean; user?: { id: string; name?: string } }
+	isOnline?: boolean
+	reachoutTimeLock?: Record<string, unknown>
+}
+
+export type HostBaileysEventMap = {
+	'connection.update': HostConnectionUpdate
+	'creds.update': Partial<HostAuthenticationCreds>
+	'messages.upsert': {
+		messages: Array<Record<string, unknown>>
+		type: 'append' | 'notify'
+		requestId?: string
+	}
+}
+
+// Unknown event names are an intentional EventEmitter-compatible escape hatch;
+// known Baileys events above retain contextual payload types.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type HostEventListener = (...args: any[]) => void
+
+type HostMappedEventListener<K extends keyof HostBaileysEventMap> = (payload: HostBaileysEventMap[K]) => void
+
 export type HostEventEmitter = {
-	on(event: string | symbol, listener: (...args: unknown[]) => void): HostEventEmitter
-	off(event: string | symbol, listener: (...args: unknown[]) => void): HostEventEmitter
-	once(event: string | symbol, listener: (...args: unknown[]) => void): HostEventEmitter
-	prependListener(event: string | symbol, listener: (...args: unknown[]) => void): HostEventEmitter
-	prependOnceListener(event: string | symbol, listener: (...args: unknown[]) => void): HostEventEmitter
-	removeListener(event: string | symbol, listener: (...args: unknown[]) => void): HostEventEmitter
+	on<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): HostEventEmitter
+	on(event: string | symbol, listener: HostEventListener): HostEventEmitter
+	off<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): HostEventEmitter
+	off(event: string | symbol, listener: HostEventListener): HostEventEmitter
+	once<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): HostEventEmitter
+	once(event: string | symbol, listener: HostEventListener): HostEventEmitter
+	prependListener<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): HostEventEmitter
+	prependListener(event: string | symbol, listener: HostEventListener): HostEventEmitter
+	prependOnceListener<K extends keyof HostBaileysEventMap>(
+		event: K,
+		listener: HostMappedEventListener<K>
+	): HostEventEmitter
+	prependOnceListener(event: string | symbol, listener: HostEventListener): HostEventEmitter
+	removeListener<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): HostEventEmitter
+	removeListener(event: string | symbol, listener: HostEventListener): HostEventEmitter
 	removeAllListeners(event?: string | symbol): HostEventEmitter
 	eventNames(): (string | symbol)[]
-	rawListeners(event: string | symbol): Array<(...args: unknown[]) => void>
-	listeners(event: string | symbol): Array<(...args: unknown[]) => void>
-	listenerCount(event: string | symbol, listener?: (...args: unknown[]) => void): number
+	rawListeners(event: string | symbol): HostEventListener[]
+	listeners(event: string | symbol): HostEventListener[]
+	listenerCount(event: string | symbol, listener?: HostEventListener): number
 	setMaxListeners(count: number): HostEventEmitter
 	getMaxListeners(): number
+	emit<K extends keyof HostBaileysEventMap>(event: K, payload: HostBaileysEventMap[K]): boolean
 	emit(event: string | symbol, ...args: unknown[]): boolean
 }
 

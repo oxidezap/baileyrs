@@ -5,6 +5,7 @@ import Long from 'long'
 import type {
 	HostAuthenticationState,
 	HostBridgeRuntime,
+	HostConnectionUpdate,
 	HostLongConstructor,
 	HostRuntime,
 	HostSocketConfig,
@@ -40,6 +41,14 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 	void socket.isLoggedIn
 	void socket.waClient
 	void socket.ws.listenerCount('close')
+	socket.ev.on('connection.update', update => {
+		void update.connection
+		// @ts-expect-error Known events are contextually typed, not the fallback payload.
+		void update.notAConnectionField
+	})
+	const typedListener = (update: HostConnectionUpdate) => void update.qr
+	socket.ev.on('connection.update', typedListener)
+	socket.ev.on('consumer.extension', (payload: { ready: boolean }) => void payload.ready)
 }
 
 describe('host socket declarations', () => {

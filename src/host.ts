@@ -38,8 +38,10 @@ export type { HostSocketFactory } from './host-surface.ts'
 export type {
 	HostAuthenticationCreds,
 	HostAuthenticationState,
+	HostBaileysEventMap,
 	HostBridgeRuntime,
 	HostCacheStore,
+	HostConnectionUpdate,
 	HostEventEmitter,
 	HostKeyPair,
 	HostLongConstructor,

@@ -37,18 +37,10 @@ export const initHostAuthCreds = (): HostAuthenticationState['creds'] => {
 	} as unknown as HostAuthenticationState['creds']
 }
 
-const PERSISTED_JID_DOMAINS = new Set([
-	'c.us',
-	'g.us',
-	'broadcast',
-	's.whatsapp.net',
-	'call',
-	'lid',
-	'newsletter',
-	'bot',
-	'hosted',
-	'hosted.lid'
-])
+const PERSISTED_JID_DOMAINS: Record<'pn' | 'lid', ReadonlySet<string>> = {
+	pn: new Set(['c.us', 's.whatsapp.net', 'hosted']),
+	lid: new Set(['lid', 'hosted.lid'])
+}
 
 const parsePersistedJid = (
 	record: Record<string, unknown>,
@@ -62,7 +54,7 @@ const parsePersistedJid = (
 		typeof candidate.user !== 'string' ||
 		candidate.user.length === 0 ||
 		typeof candidate.server !== 'string' ||
-		!PERSISTED_JID_DOMAINS.has(candidate.server) ||
+		!PERSISTED_JID_DOMAINS[field].has(candidate.server) ||
 		(candidate.device !== undefined &&
 			(typeof candidate.device !== 'number' || !Number.isSafeInteger(candidate.device) || candidate.device < 0))
 	) {

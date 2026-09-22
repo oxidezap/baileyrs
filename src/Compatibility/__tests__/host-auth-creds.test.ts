@@ -43,6 +43,8 @@ describe('host auth creds', () => {
 		for (const device of [
 			{ pn: { user: '123', server: 7 } },
 			{ pn: { user: '123', server: 'invalid.example' } },
+			{ pn: { user: '120', server: 'g.us' } },
+			{ lid: { user: '456', server: 's.whatsapp.net' } },
 			{ lid: { user: '456', server: 'lid', device: -1 } },
 			{ lid: { user: '456', server: 'lid', device: 1.5 } }
 		]) {
