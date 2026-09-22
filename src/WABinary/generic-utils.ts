@@ -5,7 +5,7 @@
  * implementations are byte-identical.
  */
 
-import { hexEncode, utf8Decode } from '../Runtime/bytes.ts'
+import { hexEncode } from '../Runtime/bytes.ts'
 import type { BinaryNode } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
 import { proto } from '../WAProto/runtime.ts'
@@ -36,7 +36,7 @@ export const getBinaryNodeChildBuffer = (node: BinaryNode | undefined, childTag:
 
 export const getBinaryNodeChildString = (node: BinaryNode | undefined, childTag: string): string | undefined => {
 	const child = getBinaryNodeChild(node, childTag)?.content
-	if (child instanceof Uint8Array) return utf8Decode(child)
+	if (child instanceof Uint8Array) return new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(child)
 	if (typeof child === 'string') return child
 }
 

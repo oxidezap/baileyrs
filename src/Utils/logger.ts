@@ -265,6 +265,7 @@ interface FallbackState {
 	msgPrefix?: string
 	onChild: (child: Logger) => void
 	bindings: Record<string, unknown>
+	sink?: (line: string, delivered: () => void) => void
 }
 
 /** Stdout is process-global, so pending-write tracking is too. */
@@ -305,7 +306,7 @@ const defaultSink = (line: string, delivered: () => void): void => {
 	}
 }
 
-const writeFallbackLine = (line: string): void => {
+const writeFallbackLine = (line: string, sink?: (line: string, delivered: () => void) => void): void => {
 	fallbackPendingWrites++
 	let settled = false
 	const delivered = (): void => {
@@ -314,7 +315,7 @@ const writeFallbackLine = (line: string): void => {
 		noteFallbackDelivered()
 	}
 	try {
-		;(loggerSink ?? defaultSink)(line, delivered)
+		;(sink ?? loggerSink ?? defaultSink)(line, delivered)
 	} catch {
 		delivered()
 	}
@@ -337,7 +338,7 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 			msgPrefix: state.msgPrefix,
 			args
 		})
-		if (line !== undefined) writeFallbackLine(line)
+		if (line !== undefined) writeFallbackLine(line, state.sink)
 	}
 
 	const logger: Logger = {
@@ -365,7 +366,8 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 				msgPrefix:
 					`${state.msgPrefix ?? ''}${typeof options?.msgPrefix === 'string' ? options.msgPrefix : ''}` || undefined,
 				onChild: state.onChild,
-				bindings: { ...state.bindings, ...extra }
+				bindings: { ...state.bindings, ...extra },
+				sink: state.sink
 			})
 			state.onChild(created)
 			return created
@@ -393,6 +395,12 @@ const createFallbackLogger = (state: FallbackState): Logger => {
 	}
 	return logger
 }
+
+/** A fallback logger whose sink belongs to one runtime factory, never process-global. */
+export const createRuntimeLogger = (
+	sink: (line: string, delivered: () => void) => void,
+	level = DEFAULT_LEVEL
+): Logger => createFallbackLogger({ level, onChild: () => {}, bindings: { name: 'baileyrs' }, sink })
 
 type PinoFactory = (options: Record<string, unknown>) => Logger
 

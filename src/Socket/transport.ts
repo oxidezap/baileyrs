@@ -7,6 +7,8 @@ interface TransportConfig {
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
+	setTimeout?: (callback: () => void, ms: number) => unknown
+	clearTimeout?: (handle: unknown) => void
 }
 
 /**
@@ -168,7 +170,19 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			}
 			// Bound the wait so a pathological close (e.g. half-open TCP peer
 			// never acking FIN) can't hang shutdown beyond a short grace period.
-			await Promise.race([closed, new Promise<void>(r => unrefTimer(setTimeout(r, 500)))])
+			const schedule = config.setTimeout ?? ((callback, ms) => setTimeout(callback, ms))
+			const cancel = config.clearTimeout ?? (timerHandle => clearTimeout(timerHandle as ReturnType<typeof setTimeout>))
+			let timer: unknown
+			try {
+				await Promise.race([
+					closed,
+					new Promise<void>(resolve => {
+						timer = unrefTimer(schedule(resolve, 500))
+					})
+				])
+			} finally {
+				if (timer !== undefined) cancel(timer)
+			}
 		}
 	}
 }

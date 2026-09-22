@@ -8,6 +8,7 @@ import type { BaileysRuntime } from '../Runtime/types.ts'
 import { base64UrlEncode, unrefTimer } from '../Runtime/bytes.ts'
 import { encodeProtoCompat as encodeProtoCompatCore } from '../Compatibility/encode-proto-core.ts'
 import { normalizeHostAuthenticationState } from '../Compatibility/internal/host-auth-state.ts'
+import { hydrateHostAuthCreds } from '../Compatibility/host-auth-state.ts'
 import { makeHistoryRuntime } from '../Runtime/bridge.ts'
 import { makeMutex } from '../Compatibility/internal/make-mutex.ts'
 import { isNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
@@ -79,8 +80,7 @@ import { makeHttpClient, makeTransport } from './transport.ts'
 import type { SocketContext } from './types.ts'
 import { makeWithClient } from './client-operations.ts'
 import { makeUSyncMethods } from './usync.ts'
-import defaultLogger from '../Utils/logger.ts'
-import { setLoggerSink } from '../Utils/logger.ts'
+import { createRuntimeLogger } from '../Utils/logger.ts'
 
 /**
  * Default mapping for the legacy `browser[1]` slot — preserved so users on the
@@ -135,9 +135,10 @@ const completionFailureCode = (reason: string): number | undefined => {
 
 /** Build the ws EventEmitter with auto-enable raw node forwarding */
 export const createWASocketFactory = (runtime: BaileysRuntime) => {
-	setLoggerSink((line, delivered) => runtime.loggerSink(line, delivered))
-	const configuredLevel = runtime.logLevel()
-	if (configuredLevel) defaultLogger.level = configuredLevel
+	const runtimeLogger = createRuntimeLogger(
+		(line, delivered) => runtime.loggerSink(line, delivered),
+		runtime.logLevel()
+	)
 	let engineInitialized = false
 	return (config: UserFacingSocketConfig | HostSocketConfig): ReturnType<typeof createWASocketFactoryInner> =>
 		createWASocketFactoryInner(
@@ -150,7 +151,8 @@ export const createWASocketFactory = (runtime: BaileysRuntime) => {
 			},
 			() => {
 				engineInitialized = false
-			}
+			},
+			runtimeLogger
 		)
 }
 
@@ -158,9 +160,10 @@ const createWASocketFactoryInner = (
 	runtime: BaileysRuntime,
 	config: UserFacingSocketConfig | HostSocketConfig,
 	claimEngineInitialization: () => boolean,
-	resetEngineInitialization: () => void
+	resetEngineInitialization: () => void,
+	runtimeLogger: ReturnType<typeof createRuntimeLogger>
 ) => {
-	const mergedConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config }
+	const mergedConfig = { ...DEFAULT_CONNECTION_CONFIG, ...config, logger: config.logger ?? runtimeLogger }
 	const { logger } = mergedConfig
 	// Against `config`, not `fullConfig`: only what this caller actually passed
 	// is worth naming. Merging the defaults first would report every unsupported
@@ -506,6 +509,12 @@ const createWASocketFactoryInner = (
 						cachedAccount = acc ?? undefined
 					})
 					.catch(() => {})
+				if (!auth.keys && auth.store) {
+					void hydrateHostAuthCreds(auth.store, auth.creds).then(
+						() => ev.emit('creds.update', auth.creds),
+						error => ctx.reportUnexpectedError(error, 'refreshing host credentials after pairing')
+					)
+				}
 			},
 			onIncomingCall: event => {
 				const { callId, callCreator, type } = event.action
@@ -630,7 +639,7 @@ const createWASocketFactoryInner = (
 		if (useNativeMemory) logger.debug('auth: using socket-local native memory backend')
 
 		const created = await runtime.bridge.createWhatsAppClient(
-			makeTransport(fullConfig),
+			makeTransport({ ...fullConfig, setTimeout: runtime.setTimeout, clearTimeout: runtime.clearTimeout }),
 			makeHttpClient(fullConfig),
 			eventHandlers,
 			bridgeStore,

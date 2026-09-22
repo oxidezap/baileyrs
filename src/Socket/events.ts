@@ -57,6 +57,14 @@ import { extractMessageCappingPayload } from './message-capping.ts'
 import { mapReachoutTimelock } from './reachout.ts'
 import { isReconnectableConnectFailure, mapConnectFailureToDisconnect } from './terminal-close.ts'
 import type { SocketContext } from './types.ts'
+// Preserve standalone Node deep-import behavior without putting the bare bridge
+// entrypoint in the host bundle: Node loads its auto-initializing entrypoint,
+// while browser/Worker hosts rely on the caller's prior initSync.
+if ((globalThis as typeof globalThis & { process?: unknown }).process) {
+	const bridgePackage = ['@oxidezap', 'whatsapp-rust-bridge'].join('/')
+	await import(bridgePackage)
+}
+
 type EventBridgeRuntime = {
 	BinaryReader: typeof DefaultBinaryReader
 	decodeMessageWireBatch: typeof defaultDecodeMessageWireBatch
