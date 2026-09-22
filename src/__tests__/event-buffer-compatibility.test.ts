@@ -29,6 +29,17 @@ describe('event buffer — upstream process() contract', () => {
 		expect(processed).toEqual(['group.join-request', 'group.member-tag.update'])
 	})
 
+	it('matches the buffered facade listener return and remove-all semantics', () => {
+		const ev = makeEventBuffer(logger)
+		let calls = 0
+		expect(ev.on('connection.update', () => (calls += 1))).toBe(undefined)
+		ev.on('creds.update', () => (calls += 1))
+		;(ev.removeAllListeners as (event?: keyof BaileysEventMap) => void)()
+		ev.emit('connection.update', { connection: 'open' })
+		ev.emit('creds.update', {})
+		expect(calls).toBe(0)
+	})
+
 	it('uses the injected scheduler for buffer and deferred-flush timers', async () => {
 		const callbacks: Array<() => void> = []
 		const cleared: unknown[] = []

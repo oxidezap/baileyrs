@@ -2,6 +2,8 @@ import type { ILogger } from './Utils/logger.ts'
 import type { WAMessage } from './host-shared.ts'
 import type { HostSocketOperationName } from './host-socket-operations.ts'
 
+export type HostLoggerSink = (line: string, delivered: () => void) => void
+
 export type HostStoreCallbacks = {
 	get(store: string, key: string): Promise<Uint8Array | null>
 	set(store: string, key: string, value: Uint8Array): Promise<void>
@@ -244,7 +246,14 @@ export type HostEventEmitter = {
 }
 
 /** Host-facing operations retain callable types without importing Node Baileys declarations. */
-export type HostSocketEventEmitter = Pick<HostEventEmitter, 'on' | 'off' | 'removeAllListeners' | 'emit'> & {
+export type HostSocketEventEmitter = {
+	on<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): void
+	on(event: string | symbol, listener: HostEventListener): void
+	off<K extends keyof HostBaileysEventMap>(event: K, listener: HostMappedEventListener<K>): void
+	off(event: string | symbol, listener: HostEventListener): void
+	removeAllListeners(event: string | symbol): void
+	emit<K extends keyof HostBaileysEventMap>(event: K, payload: HostBaileysEventMap[K]): boolean
+	emit(event: string | symbol, ...args: unknown[]): boolean
 	process(handler: (events: Partial<HostBaileysEventMap> & Record<string, unknown>) => void | Promise<void>): () => void
 	buffer(): void
 	flush(force?: boolean): boolean

@@ -550,7 +550,8 @@ export const makeEventBuffer = (
 			ev.off(event, listener)
 		},
 		removeAllListeners: event => {
-			ev.removeAllListeners(event)
+			if (event === undefined) ev.removeAllListeners()
+			else ev.removeAllListeners(event)
 		},
 		buffer,
 		flush,

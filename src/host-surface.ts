@@ -2,7 +2,7 @@
 import { createWASocketFactory as createFactory } from './Socket/core.ts'
 import { hostLoggerSink, hostRuntime } from './Runtime/host.ts'
 import { useMemoryStore as makeMemoryStore } from './Utils/use-memory-store.ts'
-import type { HostRuntime, HostSocketConfig, HostStoreCallbacks, HostWASocket } from './host-types.ts'
+import type { HostLoggerSink, HostRuntime, HostSocketConfig, HostStoreCallbacks, HostWASocket } from './host-types.ts'
 
 export * from './host-types.ts'
 export const useMemoryStore = (options?: { native?: boolean }): HostStoreCallbacks => makeMemoryStore(options)
@@ -10,8 +10,18 @@ export { createAuthenticationState, initHostAuthCreds } from './Compatibility/ho
 export const setPlatformInfo = (info: { os: string; release: string }): void => {
 	hostRuntime.platformInfo = () => ({ ...info })
 }
-export const setLoggerSink = (sink: ((line: string, delivered?: () => void) => void) | undefined): void => {
-	hostRuntime.loggerSink = sink ?? hostLoggerSink
+export function setLoggerSink(sink: HostLoggerSink | undefined): void {
+	if (!sink) {
+		hostRuntime.loggerSink = hostLoggerSink
+		return
+	}
+	hostRuntime.loggerSink = (line, delivered) => {
+		if (sink.length >= 2) (sink as (line: string, delivered: () => void) => void)(line, delivered ?? (() => {}))
+		else {
+			;(sink as (line: string) => void)(line)
+			delivered?.()
+		}
+	}
 }
 
 export type HostSocketFactory = (config: HostSocketConfig) => HostWASocket

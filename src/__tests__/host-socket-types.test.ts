@@ -50,6 +50,10 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 	socket.ev.on('connection.update', typedListener)
 	socket.ev.on('messages.upsert', upsert => void upsert.messages[0]?.key.id)
 	socket.ev.on('consumer.extension', (payload: { ready: boolean }) => void payload.ready)
+	// @ts-expect-error Buffered listener registration returns void and cannot be chained.
+	socket.ev.on('connection.update', () => undefined).on('connection.update', () => undefined)
+	// @ts-expect-error The Baileys buffered facade requires the event to remove.
+	socket.ev.removeAllListeners()
 	// @ts-expect-error The buffered socket facade does not expose EventEmitter.once().
 	socket.ev.once('connection.update', () => undefined)
 }
