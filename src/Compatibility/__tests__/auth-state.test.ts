@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import { describe, it } from 'node:test'
 import { initAuthCreds } from '../../Utils/generics.ts'
 import { useMemoryStore } from '../../Utils/use-memory-store.ts'
@@ -26,6 +27,8 @@ describe('socket authentication normalization', () => {
 
 		assert.equal(normalized.store, store)
 		assert.equal(normalized.creds.registered, false)
+		assert.equal(Buffer.isBuffer(normalized.creds.noiseKey.private), true)
+		assert.equal(Buffer.isBuffer(normalized.creds.signedIdentityKey.public), true)
 		assert.equal(typeof normalized.keys.get, 'function')
 		assert.equal(typeof normalized.keys.set, 'function')
 		assert.deepEqual(await normalized.keys.get('pre-key', ['7']), {})

@@ -6,6 +6,7 @@ type FileBytes = { toString: (encoding?: string) => string }
 export const nodeMedia: {
 	getImageProcessingLibrary: () => Promise<unknown>
 	decodeAudio: (input: Uint8Array) => Promise<{ getChannelData(channel: number): Float32Array }>
+	getAudioDuration: (input: unknown) => Promise<number | undefined>
 	hkdf: (input: Uint8Array, length: number, options: { salt?: Uint8Array; info?: string }) => Uint8Array
 	tempDir: () => string
 	execFile: (command: string, args: string[], callback: (error: unknown) => void) => void
@@ -20,6 +21,7 @@ export const nodeMedia: {
 	decodeAudio: async () => {
 		throw new Error('audio decoding is unavailable on this host')
 	},
+	getAudioDuration: async () => undefined,
 	hkdf: () => {
 		throw new Error('HKDF bridge capability is unavailable')
 	},
@@ -71,6 +73,35 @@ if (nodeProcess) {
 				default: (bytes: Uint8Array) => Promise<{ getChannelData(channel: number): Float32Array }>
 			}
 			return loaded.default(input)
+		}
+		nodeMedia.getAudioDuration = async input => {
+			const metadataPackage = ['music', 'metadata'].join('-')
+			let loaded: {
+				parseBuffer(
+					input: Uint8Array,
+					mimeType?: string,
+					options?: { duration: boolean }
+				): Promise<{ format: { duration?: number } }>
+				parseFile(path: string, options?: { duration: boolean }): Promise<{ format: { duration?: number } }>
+				parseStream(
+					input: unknown,
+					mimeType?: string,
+					options?: { duration: boolean }
+				): Promise<{ format: { duration?: number } }>
+			}
+			try {
+				loaded = (await import(metadataPackage)) as typeof loaded
+			} catch {
+				return undefined
+			}
+			const options = { duration: true }
+			const metadata =
+				input instanceof Uint8Array
+					? await loaded.parseBuffer(input, undefined, options)
+					: typeof input === 'string'
+						? await loaded.parseFile(input, options)
+						: await loaded.parseStream(input, undefined, options)
+			return metadata.format.duration
 		}
 	} catch {
 		/* A host has no Node bridge loader; its runtime installs this capability. */

@@ -64,18 +64,22 @@ export interface BridgeRuntime {
 }
 
 /** Minimal emitter surface the socket core needs. */
+export interface RuntimeEventEmitter {
+	on(event: string | symbol, listener: (...args: never[]) => void): unknown
+	off(event: string | symbol, listener: (...args: never[]) => void): unknown
+	once(event: string | symbol, listener: (...args: never[]) => void): unknown
+	prependListener(event: string | symbol, listener: (...args: never[]) => void): unknown
+	prependOnceListener(event: string | symbol, listener: (...args: never[]) => void): unknown
+	removeListener(event: string | symbol, listener: (...args: never[]) => void): unknown
+	removeAllListeners(event?: string | symbol): unknown
+	eventNames(): (string | symbol)[]
+	rawListeners(event: string | symbol): Array<(...args: never[]) => void>
+	setMaxListeners(count: number): unknown
+	emit(event: string | symbol, ...args: never[]): boolean
+}
+
 export interface EmitterFactory {
-	createEmitter(): {
-		on(event: string, listener: (...args: never[]) => void): unknown
-		off(event: string, listener: (...args: never[]) => void): unknown
-		once(event: string, listener: (...args: never[]) => void): unknown
-		prependListener(event: string, listener: (...args: never[]) => void): unknown
-		prependOnceListener(event: string, listener: (...args: never[]) => void): unknown
-		removeListener(event: string, listener: (...args: never[]) => void): unknown
-		removeAllListeners(event?: string): unknown
-		eventNames(): (string | symbol)[]
-		emit(event: string, ...args: never[]): boolean
-	}
+	createEmitter(): RuntimeEventEmitter
 }
 
 /** Platform identity for `Browsers.appropriate()` and device props. */

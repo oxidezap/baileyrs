@@ -1,8 +1,7 @@
 /** Host-only auth bootstrap. It deliberately does not import legacy-store codecs. */
-import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge/host'
 import { calculateSignature, generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
-import type { HostAuthenticationState, HostKeyPair } from '../host-types.ts'
+import type { HostAuthenticationState, HostKeyPair, HostStoreCallbacks } from '../host-types.ts'
 import { base64Encode, concatBytes, randomBytes, readU16BE, utf8Decode } from '../Runtime/bytes.ts'
 import { jidEncode } from '../WABinary/jid-utils.ts'
 
@@ -77,7 +76,7 @@ const parsePersistedJid = (
 }
 
 export const hydrateHostAuthCreds = async (
-	store: JsStoreCallbacks,
+	store: HostStoreCallbacks,
 	creds: HostAuthenticationState['creds']
 ): Promise<void> => {
 	const [payload, accountPayload] = await Promise.all([store.get('device', 'device'), store.get('device', 'account')])
@@ -167,7 +166,7 @@ export const hydrateHostAuthCreds = async (
 }
 
 /** Build host auth from the caller-owned native byte store. Rust remains the Signal authority. */
-export const createAuthenticationState = async (store: JsStoreCallbacks): Promise<HostAuthenticationState> => {
+export const createAuthenticationState = async (store: HostStoreCallbacks): Promise<HostAuthenticationState> => {
 	const creds = initHostAuthCreds()
 	await hydrateHostAuthCreds(store, creds)
 	return { creds: creds as unknown as HostAuthenticationState['creds'], store }

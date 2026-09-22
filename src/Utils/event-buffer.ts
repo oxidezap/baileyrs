@@ -14,6 +14,7 @@ import { WAMessageStatus } from '../Types/index.ts'
 import { trimUndefined, updateMessageWithReaction, updateMessageWithReceipt } from '../Media/mutations.ts'
 import type { ILogger } from './logger.ts'
 import { unrefTimer } from '../Runtime/bytes.ts'
+import type { RuntimeEventEmitter } from '../Runtime/types.ts'
 import { isRealMessage, shouldIncrementChatUnread } from './process-message-core.ts'
 
 const BUFFERABLE_EVENTS = [
@@ -428,9 +429,10 @@ const defaultEventBufferTimers: EventBufferTimers = {
 
 export const makeEventBuffer = (
 	logger: ILogger,
-	timers: EventBufferTimers = defaultEventBufferTimers
+	timers: EventBufferTimers = defaultEventBufferTimers,
+	emitter: RuntimeEventEmitter = new EventEmitter() as never
 ): BaileysBufferableEventEmitter => {
-	const ev = new EventEmitter()
+	const ev = emitter as unknown as EventEmitter
 	const historyCache = new Set<string>()
 	let data = makeBufferData()
 	let buffering = false

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import type { SocketConfig } from '../../Types/index.ts'
@@ -93,6 +94,27 @@ describe('native WebSocket compatibility facade', () => {
 		assert.deepEqual(rawForwardingCalls, [true, false, true, false, true])
 		ws.removeAllListeners()
 		assert.deepEqual(rawForwardingCalls, [true, false, true, false, true, false])
+	})
+
+	it('uses an injected emitter for subscriptions and delivery', () => {
+		const emitter = new EventEmitter()
+		const rawForwardingCalls: boolean[] = []
+		const client = { setRawNodeForwarding: (enabled: boolean) => rawForwardingCalls.push(enabled) }
+		const ws = new WebSocketClient(
+			'wss://web.whatsapp.com/ws/chat',
+			{} as SocketConfig,
+			() => client as unknown as WasmWhatsAppClient,
+			emitter as never
+		)
+		let delivered = false
+		ws.once('CB:injected', () => {
+			delivered = true
+		})
+
+		assert.deepEqual(emitter.eventNames(), ['CB:injected'])
+		ws.emit('CB:injected')
+		assert.equal(delivered, true)
+		assert.deepEqual(rawForwardingCalls, [true, false])
 	})
 
 	it('returns false when the native client is not ready', () => {

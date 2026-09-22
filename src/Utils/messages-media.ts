@@ -1,4 +1,3 @@
-import type * as musicMetadataTypes from 'music-metadata'
 import type { Buffer } from 'node:buffer'
 import { BufferRuntime } from '../Runtime/buffer.ts'
 import type { Readable } from 'node:stream'
@@ -159,34 +158,9 @@ export const mediaMessageSHA256B64 = (message: WAMessageContent): string | null 
 	return media?.fileSha256 && base64Encode(media.fileSha256)
 }
 
-/** Returns audio duration in seconds, parsed via `music-metadata`. */
-export async function getAudioDuration(buffer: Buffer | string | Readable) {
-	// `music-metadata` is an optional peer: without it the duration is simply
-	// unknown and the caller sends without `seconds`. The specifier cast keeps
-	// bundlers from failing the build when the peer is absent, the same trick
-	// `link-preview.ts` uses for `link-preview-js`. Only the import is
-	// guarded: parser failures still throw so the caller's warning reports
-	// corrupt audio instead of silently dropping the duration.
-	let musicMetadata: typeof musicMetadataTypes
-	try {
-		musicMetadata = await import('music-metadata' as string)
-	} catch {
-		return undefined
-	}
-	let metadata: musicMetadataTypes.IAudioMetadata
-	const options = {
-		duration: true
-	}
-	if (isBytes<Buffer>(buffer)) {
-		metadata = await musicMetadata.parseBuffer(buffer, undefined, options)
-	} else if (typeof buffer === 'string') {
-		metadata = await musicMetadata.parseFile(buffer, options)
-	} else {
-		metadata = await musicMetadata.parseStream(buffer, undefined, options)
-	}
-
-	return metadata.format.duration
-}
+/** Returns audio duration when the selected runtime provides a metadata processor. */
+export const getAudioDuration = (buffer: Buffer | string | Readable): Promise<number | undefined> =>
+	nodeMedia.getAudioDuration(buffer)
 
 /**
   referenced from and modifying https://github.com/wppconnect-team/wa-js/blob/main/src/chat/functions/prepareAudioWaveform.ts

@@ -25,5 +25,25 @@
  * Rust/WASM crypto (no OpenSSL fast path), `console` logger sink, no
  * filesystem auth, no media processors, no `Buffer`/`Readable` inputs.
  */
-export * from './host-surface.ts'
+export * from './surface.ts'
+export {
+	createWASocketFactory,
+	makeHostWASocket,
+	makeWASocket,
+	setLoggerSink,
+	setPlatformInfo,
+	useMemoryStore
+} from './host-surface.ts'
+export type { HostSocketFactory } from './host-surface.ts'
+export type {
+	HostAuthenticationCreds,
+	HostAuthenticationState,
+	HostEventEmitter,
+	HostKeyPair,
+	HostRuntime,
+	HostSignedKeyPair,
+	HostSocketConfig,
+	HostStoreCallbacks,
+	HostWASocket
+} from './host-types.ts'
 export { default } from './host-surface.ts'

@@ -194,10 +194,14 @@ const createWASocketFactoryInner = (
 			) as () => SignalKeyStoreWithTransaction)
 		: () => auth.keys as SignalKeyStoreWithTransaction
 
-	const ev = makeEventBuffer(logger, {
-		setTimeout: runtime.setTimeout,
-		clearTimeout: runtime.clearTimeout
-	})
+	const ev = makeEventBuffer(
+		logger,
+		{
+			setTimeout: runtime.setTimeout,
+			clearTimeout: runtime.clearTimeout
+		},
+		runtime.events.createEmitter()
+	)
 	// Upstream mutates authState.creds before notifying user listeners. Register
 	// this first so `ev.on('creds.update', saveCreds)` persists the merged state
 	// rather than the pre-pair placeholder.
@@ -370,7 +374,12 @@ const createWASocketFactoryInner = (
 		}
 	})
 
-	const ws = new WebSocketClient(fullConfig.waWebSocketUrl, fullConfig, () => owner.peek())
+	const ws = new WebSocketClient(
+		fullConfig.waWebSocketUrl,
+		fullConfig,
+		() => owner.peek(),
+		runtime.events.createEmitter()
+	)
 
 	let tagEpoch = 0
 	// Per-socket random prefix avoids collisions between sockets created
