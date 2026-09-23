@@ -28,13 +28,18 @@ so existing integrations can migrate with minimal changes. See
 | Key management        | JS auth state             | Rust `PersistenceManager`                                                      |
 | Auto-reconnect        | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
 
-Compatibility is checked rather than assumed: a declaration audit against
-upstream's `.d.ts`, a wire-fidelity audit of the send path, ~50 behavioural
-compatibility suites, and a
-[differential fuzz suite](src/__fuzz__/README.md) that generates its own inputs
-from the proto schema and compares the two libraries directly. Differences the
-fuzzers find are recorded with a reason and a review date, and known open ones
-are listed in `src/__fuzz__/harness/divergence.ts`.
+Compatibility is checked rather than assumed: CI compiles and runs consumer code
+against the locally packed npm tarball under the upstream package name, exercises
+published deep imports and verifies host initialization in workerd with
+`nodejs_compat` disabled. It also runs the proto-runtime, wire-fidelity and
+lifecycle contract audits. The strict declaration audit is available as
+`npm run compat:audit:strict`; it currently reports known declaration gaps and
+is not a green gate yet. Layer ownership is checked by `npm run compat:layers`
+when sibling core and bridge checkouts are available.
+Behavioural suites and a [differential fuzz suite](src/__fuzz__/README.md)
+generate inputs from the proto schema and compare the two libraries directly.
+Differences the fuzzers find are recorded with a reason and a review date, and
+known open ones are listed in `src/__fuzz__/harness/divergence.ts`.
 
 ### Protobuf field names
 

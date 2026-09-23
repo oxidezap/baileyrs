@@ -88,6 +88,7 @@
     "fuzz:record": "FUZZ_RECORD=1 node --test --test-timeout=600000 ./src/__fuzz__/**/*.test.ts",
     "fuzz:report": "node scripts/fuzz/report.ts",
     "test:compat-auditor": "node --test scripts/compatibility/__tests__/audit.test.ts",
+    "test:packaged": "node scripts/packaged-upstream-alias.mjs",
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && tsc -p scripts/compatibility/tsconfig.json",
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts"
   },
@@ -116,7 +117,8 @@
     "qrcode-terminal": "^0.12.0",
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
-    "typescript-compat-auditor": "npm:typescript@6.0.3"
+    "typescript-compat-auditor": "npm:typescript@6.0.3",
+    "wrangler": "4.136.3"
   },
   "peerDependencies": {
     "@hapi/boom": "^9.1.0 || ^10.0.0",

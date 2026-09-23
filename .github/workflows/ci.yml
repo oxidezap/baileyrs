@@ -208,7 +208,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -228,6 +228,17 @@ jobs:
       # duplicated files is a defect of the diff that introduced it, and this is
       # where that diff can still be changed.
       - run: node scripts/check-pack.ts
+
+      # Exercise the installed tarball, not source aliases: compile as an
+      # upstream consumer, then initialize the host package inside workerd with
+      # nodejs_compat deliberately absent. No Cloudflare credentials are used.
+      - run: npm run test:packaged
+
+      - run: npm run compat:audit:proto
+
+      - run: npm run compat:audit:wire
+
+      - run: npm run compat:audit:lifecycle
 
       # Only the release path takes the build away with it: `publish` ships
       # these exact bytes instead of building its own copy next to the npm
