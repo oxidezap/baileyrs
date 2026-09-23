@@ -18,7 +18,7 @@
  * that memory detaches the buffer under every view of it.
  */
 
-import { afterEach, beforeEach, describe, it } from 'node:test'
+import { describe, it } from 'node:test'
 
 import { makeTransport } from '../Socket/transport.ts'
 import type { ILogger } from '../Utils/logger.ts'
@@ -55,7 +55,7 @@ class FakeWebSocket {
 		this.url = url
 		// The transport only settles `connect()` once `open` fires, and it
 		// subscribes after the constructor returns.
-		queueMicrotask(() => this.dispatch('open'))
+		setImmediate(() => this.dispatch('open'))
 	}
 
 	addEventListener(type: string, listener: (event: never) => void) {
@@ -79,37 +79,32 @@ class FakeWebSocket {
 	}
 }
 
-const connect = async () => {
-	const transport = makeTransport({ waWebSocketUrl: 'ws://127.0.0.1:1/ws', logger: silentLogger })
-	await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
-	return transport
-}
-
 /** The most recent socket the transport constructed. */
 let sockets: FakeWebSocket[] = []
 const lastSocket = () => sockets[sockets.length - 1]!
 
-const platformWebSocket = globalThis.WebSocket
+const installTrackedWebSocket = () => {
+	sockets = []
+	class Tracked extends FakeWebSocket {
+		constructor(url: string) {
+			super(url)
+			sockets.push(this)
+		}
+	}
+	return Tracked as unknown as typeof WebSocket
+}
+
+const connect = async () => {
+	const transport = makeTransport({
+		waWebSocketUrl: 'ws://127.0.0.1:1/ws',
+		logger: silentLogger,
+		createWebSocket: async url => new (installTrackedWebSocket())(url)
+	})
+	await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
+	return transport
+}
 
 describe('transport: outgoing frame payloads', () => {
-	// `node --test` gives each file its own process, so this suite cannot reach
-	// another one — but nothing about that is guaranteed by the file itself, and
-	// a stub for the platform WebSocket is not something to leave installed.
-	afterEach(() => {
-		globalThis.WebSocket = platformWebSocket
-	})
-
-	beforeEach(() => {
-		sockets = []
-		class Tracked extends FakeWebSocket {
-			constructor(url: string) {
-				super(url)
-				sockets.push(this)
-			}
-		}
-		globalThis.WebSocket = Tracked as unknown as typeof WebSocket
-	})
-
 	it('hands an ArrayBuffer-backed frame straight to the socket', async () => {
 		const transport = await connect()
 		const frame = new Uint8Array([1, 2, 3, 4])

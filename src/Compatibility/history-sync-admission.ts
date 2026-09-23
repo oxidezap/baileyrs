@@ -4,6 +4,8 @@ import { DEFAULT_CONNECTION_CONFIG, PROCESSABLE_HISTORY_TYPES } from '../Default
 import { proto as protoRuntime } from '../WAProto/runtime.ts'
 import type { proto } from '../WAProto/runtime.ts'
 
+export type { HistorySyncAdmissionMetadata }
+
 export type SocketHistoryPolicy = (message: proto.Message.IHistorySyncNotification) => boolean
 
 /**

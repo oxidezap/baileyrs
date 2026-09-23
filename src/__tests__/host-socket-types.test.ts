@@ -54,6 +54,22 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket, priorMessage: WA
 	void socket.groupAcceptInvite('invite')
 	void socket.communityFetchLinkedGroups('120@g.us')
 	void socket.newsletterFollow('123@newsletter')
+	const pendingPcmCall: Promise<string> = socket.dialCallPcm('123@s.whatsapp.net')
+	const pendingAudioCall: Promise<string> = socket.dialCall('123@s.whatsapp.net', 'opus-mlow')
+	const pendingAnswer: Promise<string> = socket.acceptCallPcm('CALL-1', true)
+	const pendingHangup = socket.endCall('CALL-1')
+	void pendingHangup.then(result => {
+		if (result.outcome === 'partly-notified') void result.unconfirmed
+	})
+	void pendingPcmCall
+	void pendingAudioCall
+	void pendingAnswer
+	void socket.pushCallPcm('CALL-1', new Int16Array(960))
+	void socket.setRelayTransportProvider({
+		createRelayConnection: async () => ({ send: () => undefined, close: () => undefined })
+	})
+	void socket.onCallPcm('CALL-1', frame => void frame.data[0])
+	void socket.terminateCall('CALL-1', '123@s.whatsapp.net')
 	void socket.user?.name
 	void socket.authState.creds.registered
 	void socket.isConnected

@@ -20,13 +20,13 @@ so existing integrations can migrate with minimal changes. See
 
 ### vs. Baileys
 
-| Area | Original Baileys | baileyrs |
-|---|---|---|
-| Signal Protocol | JS (libsignal) | Rust/WASM |
-| Media encrypt/decrypt | Node.js crypto | Rust AES-256-CBC + HMAC |
-| Media upload/download | JS fetch + temp files | Rust with CDN failover, auth refresh, resumable upload |
-| Key management | JS auth state | Rust `PersistenceManager` |
-| Auto-reconnect | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
+| Area                  | Original Baileys          | baileyrs                                                                       |
+| --------------------- | ------------------------- | ------------------------------------------------------------------------------ |
+| Signal Protocol       | JS (libsignal)            | Rust/WASM                                                                      |
+| Media encrypt/decrypt | Node.js crypto            | Rust AES-256-CBC + HMAC                                                        |
+| Media upload/download | JS fetch + temp files     | Rust with CDN failover, auth refresh, resumable upload                         |
+| Key management        | JS auth state             | Rust `PersistenceManager`                                                      |
+| Auto-reconnect        | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
 
 Compatibility is checked rather than assumed: CI compiles and runs consumer code
 against the locally packed npm tarball under the upstream package name, exercises
@@ -107,7 +107,9 @@ For a custom host runtime, bind media helpers to its bridge and random source on
 `makeMediaCryptoRuntime(runtime)` returns a capability you can pass as the final
 argument to `/host`'s `getMediaKeys`, `encryptMediaRetryRequest`, and
 `decryptMediaRetryData` helpers. This keeps HKDF and AES-GCM on the selected
-bridge instead of the default host singleton.
+bridge instead of the default host singleton. `/host` types the call methods and
+`call`/`call.media` events too; a custom host must supply a separate `loadVoip`
+engine per socket before making media calls (see Voice calls below).
 
 Reuse the same byte-preserving store on restart: `await createAuthenticationState(store)`
 rehydrates the device written by the Rust engine, including its registration ID
@@ -129,7 +131,6 @@ need no source changes**. Two things do:
   is finished, and you have to recreate it. Code written against upstream
   Baileys already does the right thing.
 
-
 ```sh
 npm install @whiskeysockets/baileys@npm:@oxidezap/baileyrs
 ```
@@ -138,9 +139,9 @@ That writes the alias to your `package.json` (with the latest version at install
 
 ```jsonc
 {
-  "dependencies": {
-    "@whiskeysockets/baileys": "npm:@oxidezap/baileyrs@^x.x.x"
-  }
+	"dependencies": {
+		"@whiskeysockets/baileys": "npm:@oxidezap/baileyrs@^x.x.x"
+	}
 }
 ```
 
@@ -149,7 +150,7 @@ now resolves to baileyrs.
 
 ### What gets installed
 
-`npm install @oxidezap/baileyrs` always brings two runtime dependencies.
+`npm install @oxidezap/baileyrs` always brings three runtime dependencies.
 
 - `@oxidezap/whatsapp-rust-bridge` is the Rust engine doing the protocol
   work. It is the library, not an add-on, so it stays a hard dependency.
@@ -157,15 +158,19 @@ now resolves to baileyrs.
   `Long` objects in the types, and the package builds real ones at runtime.
   A consumer without it fails compilation in four declaration files and
   fails at import, so there is nothing to save by dropping it. I checked.
+- `undici` backs the WebSocket transport: its Agent carries the HTTP/2
+  opt-out and the self-signed-mock TLS opt-out, and the socket class comes
+  from the same copy so the two can never mix majors. A consumer without
+  it gets no dispatcher and no handshake headers.
 
 Everything else is an optional peer. It is used when present and skipped
 when not.
 
-| Peer | What it does | Without it |
-| --- | --- | --- |
-| `@hapi/boom` (`^9` or `^10`) | Backs the exported `Boom` errors | A built-in implementation with the same shape |
-| `pino` (`^9` or `^10`) | Backs the default logger | JSON lines on stdout, same redaction |
-| `sharp`, `jimp`, `audio-decode`, `link-preview-js`, `music-metadata` | Media work | Same behavior as before this change |
+| Peer                                                                 | What it does                     | Without it                                    |
+| -------------------------------------------------------------------- | -------------------------------- | --------------------------------------------- |
+| `@hapi/boom` (`^9` or `^10`)                                         | Backs the exported `Boom` errors | A built-in implementation with the same shape |
+| `pino` (`^9` or `^10`)                                               | Backs the default logger         | JSON lines on stdout, same redaction          |
+| `sharp`, `jimp`, `audio-decode`, `link-preview-js`, `music-metadata` | Media work                       | Same behavior as before this change           |
 
 Two setups both work.
 
@@ -197,9 +202,9 @@ Projects using the Baileys alias point it at the same URL:
 
 ```jsonc
 {
-  "dependencies": {
-    "@whiskeysockets/baileys": "https://pkg.pr.new/@oxidezap/baileyrs@94"
-  }
+	"dependencies": {
+		"@whiskeysockets/baileys": "https://pkg.pr.new/@oxidezap/baileyrs@94"
+	}
 }
 ```
 
@@ -223,55 +228,87 @@ const { state } = await useMultiFileAuthState('auth_info')
 // setTimeout caps at ~2^31-1 ms (~24.8 days) and fires immediately past that,
 // so a long ban has to be waited out in chunks.
 async function waitUntil(deadlineMs: number) {
-    for (let left = deadlineMs - Date.now(); left > 0; left = deadlineMs - Date.now()) {
-        await new Promise(resolve => setTimeout(resolve, Math.min(left, 2_147_483_647)))
-    }
+	for (let left = deadlineMs - Date.now(); left > 0; left = deadlineMs - Date.now()) {
+		await new Promise(resolve => setTimeout(resolve, Math.min(left, 2_147_483_647)))
+	}
 }
 
 async function connectToWhatsApp() {
-    const sock = makeWASocket({ auth: state })
+	const sock = makeWASocket({ auth: state })
 
-    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
-        if (connection === 'close') {
-            // `close` means this socket is finished — same as upstream Baileys.
-            // Transient drops never get here; the Rust engine retries those and
-            // reports `connecting`.
-            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-            // See the reconnect table under Gotchas: a few terminal closes
-            // reject the replacement just as fast, so they are not worth
-            // retrying — or not yet. `Example/example.ts` has the full policy.
-            if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
-                console.log('Closed for good', statusCode)
-            } else if (statusCode === DisconnectReason.forbidden) {
-                // Temporary ban: `expire` is unix seconds. A missing or past
-                // expiry means the ban is over — reconnect like any other
-                // terminal close rather than staying offline forever.
-                const expire = (lastDisconnect?.error as Boom)?.data?.expire
-                console.log('Temporarily banned until', expire)
-                waitUntil(typeof expire === 'number' ? expire * 1000 : 0).then(connectToWhatsApp)
-            } else {
-                setTimeout(connectToWhatsApp, 5_000)
-            }
-        }
-        if (connection === 'open') {
-            console.log('Connected')
-        }
-    })
+	sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+		if (connection === 'close') {
+			// `close` means this socket is finished — same as upstream Baileys.
+			// Transient drops never get here; the Rust engine retries those and
+			// reports `connecting`.
+			const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+			// See the reconnect table under Gotchas: a few terminal closes
+			// reject the replacement just as fast, so they are not worth
+			// retrying — or not yet. `Example/example.ts` has the full policy.
+			if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
+				console.log('Closed for good', statusCode)
+			} else if (statusCode === DisconnectReason.forbidden) {
+				// Temporary ban: `expire` is unix seconds. A missing or past
+				// expiry means the ban is over — reconnect like any other
+				// terminal close rather than staying offline forever.
+				const expire = (lastDisconnect?.error as Boom)?.data?.expire
+				console.log('Temporarily banned until', expire)
+				waitUntil(typeof expire === 'number' ? expire * 1000 : 0).then(connectToWhatsApp)
+			} else {
+				setTimeout(connectToWhatsApp, 5_000)
+			}
+		}
+		if (connection === 'open') {
+			console.log('Connected')
+		}
+	})
 
-    // Register every handler in here. A replacement socket is a new emitter,
-    // so anything attached outside stops firing after the first reconnect.
-    sock.ev.on('messages.upsert', ({ messages }) => {
-        for (const msg of messages) {
-            console.log('received message', msg.key.id)
-        }
-    })
+	// Register every handler in here. A replacement socket is a new emitter,
+	// so anything attached outside stops firing after the first reconnect.
+	sock.ev.on('messages.upsert', ({ messages }) => {
+		for (const msg of messages) {
+			console.log('received message', msg.key.id)
+		}
+	})
 
-    return sock
+	return sock
 }
 
 const sock = await connectToWhatsApp()
 await sock.sendMessage('1234567890@s.whatsapp.net', { text: 'Hello!' })
 ```
+
+## Calls
+
+Incoming call signaling arrives on the `call` event, one entry per update.
+Later updates reuse the remembered offer, so an `accept` still carries the
+offer's `isVideo`, `callerPn` and group JID:
+
+```ts
+sock.ev.on('call', ([call]) => {
+	if (!call) return
+	if (call.status === 'offer') {
+		console.log('incoming call from', call.from, 'video:', call.isVideo)
+	}
+})
+```
+
+Decline a ringing call, or hang up a live one. Both take the call id and the
+chat the stanza came from; when the socket saw the offer it routes from the
+remembered peer and call creator instead:
+
+```ts
+await sock.rejectCall(call.id, call.chatId)
+await sock.terminateCall(call.id, call.chatId)
+```
+
+`terminateCall` is a baileyrs extension, upstream Baileys stops at
+`rejectCall`. A missed call arrives as status `timeout`, group calls carry
+`groupJid`, and `reason` says why a call ended when the bridge knows. To
+place an outgoing call instead of answering one, `sock.dialCall(peerJid)`
+opens it with encoded audio; the voice-calls entry under Gotchas below covers
+pushing packets, collecting the peer's encoded ones, and hanging up through either
+`endCall` or `terminateCall`.
 
 ## Migrating from Upstream Baileys
 
@@ -284,11 +321,11 @@ shape, so the **`makeWASocket(...)` call site needs zero changes**:
 // Auto-wrap kicks in when it sees {creds, keys}.
 const sock = makeWASocket({ auth: state })
 
-sock.ev.on('creds.update', saveCreds)  // still fires — adapter re-emits
+sock.ev.on('creds.update', saveCreds) // still fires — adapter re-emits
 ```
 
 The one switch you do make is **how you load `state`**. baileyrs's
-`useMultiFileAuthState` is a *new-state-only* helper: it provisions a
+`useMultiFileAuthState` is a _new-state-only_ helper: it provisions a
 binary `.bin` store for the Rust engine and ignores any pre-existing
 upstream JSON. To carry an existing pairing across the migration, swap
 the import to `useLegacyMultiFileAuthState` (one line):
@@ -368,14 +405,15 @@ A few behaviors that differ from upstream — almost always to your advantage:
   way and build a replacement — with three exceptions, because some of those
   failures reject the replacement just as fast:
 
-  | `statusCode` | what to do |
-  | --- | --- |
-  | `DisconnectReason.loggedOut` (401) | stop; needs a fresh pairing |
-  | `405` | stop; the server rejected this build, and the next one too |
+  | `statusCode`                       | what to do                                                                           |
+  | ---------------------------------- | ------------------------------------------------------------------------------------ |
+  | `DisconnectReason.loggedOut` (401) | stop; needs a fresh pairing                                                          |
+  | `405`                              | stop; the server rejected this build, and the next one too                           |
   | `DisconnectReason.forbidden` (403) | wait until `lastDisconnect.error.data.expire` (unix seconds) — it is a temporary ban |
-  | anything else | reconnect, after a short delay |
+  | anything else                      | reconnect, after a short delay                                                       |
 
   `Example/example.ts` implements exactly this.
+
 - **`connecting` is not a short state here.** The engine's backoff grows with
   each consecutive failure, so a single `connecting` can stand for minutes of
   downtime with nothing else emitted in between. See
@@ -423,6 +461,64 @@ A few behaviors that differ from upstream — almost always to your advantage:
   other media peers (`sharp`, `jimp`, `audio-decode`, `link-preview-js`).
   Without it, audio messages still send — they just carry no `seconds`
   value. Install `music-metadata` if you want durations computed.
+- **Voice calls use the bridge calls preview, not the release bridge.**
+  The normal path is decoded mono 16 kHz PCM. `sock.dialCallPcm(peerJid)` and
+  `sock.acceptCallPcm(callId)` negotiate PCM. `sock.pushCallPcm(callId,
+  samples)` queues one 960-sample `Int16Array`, and
+  `sock.onCallPcm(callId, sink)` receives decoded frames. Use
+  `sock.openCallPcmWriter(callId)` when the capture loop already owns its
+  timing. A call opened in PCM mode cannot receive encoded pushes, and an
+  encoded call cannot receive PCM pushes.
+  The Example uses this path for microphone and file capture. The core owns
+  Opus, MLOW, jitter handling, concealment, and playout timing.
+  Encoded methods remain available for applications that need packet-level
+  media. `sock.dialCall(peerJid, audioFormat)` /
+  `sock.acceptCall(callId, audioFormat)` open an encoded-audio
+  call (`'mlow'` by default, `'opus'` for native Opus, or `'opus-mlow'` for
+  CELT Opus that the bridge rewrites to MLOW); specify the local application's
+   source format promise.
+  `sock.pushCallAudio(callId, bytes)` queues one packet and resolves `false`
+  when the engine shed it under backpressure — that is the normal
+  loss-tolerant answer, not an error. Pass ffmpeg-shaped Opus straight
+   through an `opus-mlow` call: the engine rewrites to the MLOW escape in flight, so
+  pre-packetizing corrupts the TOC. The peer's encoded packets arrive through
+  per-call `sock.onCallAudio(callId, sink)` sinks. Each frame carries one owned
+   encoded packet, valid after the callback returns and shared with the call's
+   other sinks, so decode synchronously and never modify the bytes. Use the
+   frame's `format`: native `opus` stays unchanged, while `opus-mlow` goes
+   through `depacketizeOpusFromMlow`; `mlow` goes to a stateful MLOW decoder.
+   A push declaring its source grammar (`pushCallAudio(callId, bytes,
+   'opus-mlow')`) is checked against the local source promise and fails fast on
+   a mixup instead of shedding forever; the same check guards
+   `openCallAudioWriter` writes and `startCallAudioPump` sources via its
+   `audioFormat` option. `getCallAudioFormat(callId)` reads the tracked source
+   promise back. `getCallAudioBuffer(callId)` reads queued packets
+  per direction with capacities, which tells a full queue with no relay
+  apart from congestion. Lifecycle
+  steps (`relay-allocated`, …, `ended`) ride the `call.media` event, and
+  `sock.endCall` / `setCallMuted` / `getCallMediaStats` / `getActiveCalls`
+  round out the surface. There is no watermark readout: the bridge names the
+  `false` return as the pacing signal, with the shed counters in the stats
+  for the rest. `startCallAudioPump(callId, source)` wires a packet source
+  to the push; the built-in silence (`0x90` MLOW SID) and file-chunk sources
+  need no microphone, codec, or ffmpeg and are meant for tests. Encoders with
+  their own capture can skip the pump and hold a sync writer from
+  `sock.openCallAudioWriter(callId)` instead, and file playback paces itself
+  through the pump's clock timing rather than the queue. Clock timing paces
+  the pulls, so pair it with an unpaced source (`intervalMs: 0`) or the two
+  cadences add up. The pinned bridge preview ships its media engine in a
+  separate VoIP WASM. The Node socket loads an **isolated engine per socket**
+  during initialization and passes its backend to the bridge before client
+  construction; baileyrs call methods still return call-id strings even
+  though the bridge now returns disposable handles. Non-Node hosts can
+  provide `loadVoip: async transport => initVoipSync(hostWasmBytes,
+  transport).voipBackend` on their `createWASocketFactory` runtime. Standalone
+  Opus–MLOW helpers initialize a codec-only engine if no socket exists. An
+  incompatible bridge reports a missing capability rather than silently
+  dropping media. Before dialing or accepting, install the relay provider
+  (`sock.setRelayTransportProvider(...)`, see `Example/call.ts`); the socket
+  adapts the existing provider API to the VoIP engine's connect/reconnect
+  contract. Without a working relay no audio flows.
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**
   See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
   one can break a boot path, so it has its own section.
@@ -437,12 +533,12 @@ backoff between those retries climbs with each consecutive failure.
 Here is what that costs on a rate-limited account. Four consecutive
 `429 rate-overlimit`, measured against the production reconnect path:
 
-| failure | next attempt in | offline so far |
-| --- | --- | --- |
-| `429` #1 | 8.4s | 8.4s |
-| `429` #2 | 146.2s | 154.6s |
-| `429` #3 | 813.9s | 968.5s |
-| `429` #4 | 903.5s | 1872.0s |
+| failure  | next attempt in | offline so far |
+| -------- | --------------- | -------------- |
+| `429` #1 | 8.4s            | 8.4s           |
+| `429` #2 | 146.2s          | 154.6s         |
+| `429` #3 | 813.9s          | 968.5s         |
+| `429` #4 | 903.5s          | 1872.0s        |
 
 About 16 minutes offline once the third retry delay has run, and about 31 once
 the fourth has. For all of it the consumer sees exactly **one**
@@ -490,10 +586,10 @@ as the persistence channel for the Rust core's own state as well: its device
 record, and the byte-level records the Signal namespaces are projected from.
 Those live under namespaces reserved with the **`bridge-` prefix**:
 
-| namespace | what it holds |
-| --- | --- |
+| namespace         | what it holds                                                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `bridge-native-*` | the core's own encoding of a namespace that also has a Baileys projection (`bridge-native-session`, `bridge-native-prekey`, `bridge-native-device`, …) |
-| `bridge-*` | core records with no Baileys equivalent (`bridge-signed-prekey`, `bridge-sent-message`, `bridge-msg-secret`, `bridge-meta`, …) |
+| `bridge-*`        | core records with no Baileys equivalent (`bridge-signed-prekey`, `bridge-sent-message`, `bridge-msg-secret`, `bridge-meta`, …)                         |
 
 No upstream Baileys namespace starts with `bridge-`, and none of your data is
 stored under one. Which of them you actually see depends on what the engine
@@ -527,7 +623,7 @@ in a later release is covered without you changing anything:
 import { BRIDGE_INTERNAL_KEY_TYPES, isBridgeInternalKeyType } from '@oxidezap/baileyrs'
 
 isBridgeInternalKeyType('bridge-native-device') // true
-isBridgeInternalKeyType('pre-key')              // false
+isBridgeInternalKeyType('pre-key') // false
 
 // Every bridge-internal namespace, e.g. for a SQL `NOT IN (...)` clause. The
 // store also holds the Baileys namespaces the engine projects into it.
@@ -566,7 +662,7 @@ beside it.
 
 Dropping a mirror row makes the next read rebuild it from the projection, which
 is the format both versions agree on — but only for a session that has one. A
-session that turned native-only lives in that row alone, so dropping *that* one
+session that turned native-only lives in that row alone, so dropping _that_ one
 loses the session outright, which is the case the warning above is about. A
 session with no skipped keys buffered at the time is unaffected either way: the
 difference only exists while a chain is holding keys for messages that arrived

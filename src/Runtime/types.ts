@@ -25,6 +25,8 @@ import type {
 	hkdf as bridgeHkdf,
 	sha256 as bridgeSha256
 } from '@oxidezap/whatsapp-rust-bridge/host'
+import type { ClientExtensions } from '@oxidezap/whatsapp-rust-bridge/host'
+import type { VoipRelayTransport } from '@oxidezap/whatsapp-rust-bridge/host'
 import type Long from 'long'
 import type { ILogger } from '../Utils/logger.ts'
 
@@ -39,7 +41,8 @@ export interface BridgeRuntime {
 		version?: readonly [number, number, number] | null,
 		wantedPreKeyCount?: number | null,
 		dangerSkipCertChainVerify?: boolean | null,
-		policies?: ClientPolicies | null
+		policies?: ClientPolicies | null,
+		extensions?: ClientExtensions | null
 	): Promise<WasmWhatsAppClient>
 	initWasmEngine(logger?: unknown, crypto?: unknown): void
 	hkdf: typeof bridgeHkdf
@@ -105,6 +108,13 @@ export type MediaCryptoRuntime = Pick<BridgeRuntime, 'hkdf' | 'sha256' | 'aesGcm
 export interface BaileysRuntime {
 	/** Bridge entrypoint: Node imports the bare root, hosts import `/host`. */
 	bridge: BridgeRuntime
+	/** Optional host WebSocket constructor (Node sets its same-undici dispatcher and Origin). */
+	createWebSocket?: (
+		url: string,
+		config: { options?: RequestInit; dangerSkipCertChainVerify?: boolean }
+	) => Promise<WebSocket>
+	/** Optional host loader for the separate VoIP engine, installed before client creation. */
+	loadVoip?: (transport: VoipRelayTransport) => Promise<NonNullable<ClientExtensions['voipBackend']>>
 	/** Cryptographically strong random bytes (WebCrypto-backed everywhere). */
 	randomBytes(length: number): Uint8Array
 	/** Timer handle with optional `unref` (Node) / plain (hosts). */

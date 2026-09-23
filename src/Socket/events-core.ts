@@ -838,7 +838,9 @@ const DISPATCHERS: DispatcherMap = {
 	// ── Calls ──
 	incomingCall: (evt, { ctx, callbacks }) => {
 		callbacks?.onIncomingCall?.(evt)
-		const isGroup = isJidGroup(evt.from)
+		// The socket enriches sparse updates from the cached offer before dispatch.
+		// Group offers can arrive from the caller rather than the group JID.
+		const isGroup = !!evt.action.groupJid || isJidGroup(evt.from)
 		// Canonical call actions use the exact public Baileys status spelling;
 		// missed-call notifications are normalized to `timeout` by the adapter.
 		const status: WACallUpdateType = evt.action.type
@@ -851,13 +853,9 @@ const DISPATCHERS: DispatcherMap = {
 			status,
 			offline: evt.offline,
 			isGroup,
-			// Group JID = `evt.from` only when the stanza came from a group
-			// JID itself. The bridge offer payload doesn't carry a separate
-			// `group_jid` field today, so the group's JID IS the `from` for
-			// `<call>` stanzas in groups.
-			...(isGroup ? { groupJid: evt.from } : {}),
+			...(isGroup ? { groupJid: evt.action.groupJid ?? evt.from } : {}),
 			...(evt.action.callerPn ? { callerPn: evt.action.callerPn } : {}),
-			...(evt.action.type === 'offer' ? { isVideo: !!evt.action.isVideo } : {}),
+			...(evt.action.isVideo !== undefined ? { isVideo: evt.action.isVideo } : {}),
 			// Bridge auxiliary fields (offer-only / terminate-only / always)
 			...(evt.action.callerCountryCode ? { callerCountryCode: evt.action.callerCountryCode } : {}),
 			...(evt.action.deviceClass ? { deviceClass: evt.action.deviceClass } : {}),
@@ -865,6 +863,8 @@ const DISPATCHERS: DispatcherMap = {
 			...(evt.action.audio ? { audio: evt.action.audio } : {}),
 			...(evt.action.duration !== undefined ? { duration: evt.action.duration } : {}),
 			...(evt.action.audioDuration !== undefined ? { audioDuration: evt.action.audioDuration } : {}),
+			...(evt.action.reason ? { reason: evt.action.reason } : {}),
+			...(evt.videoOrientation !== undefined ? { videoOrientation: evt.videoOrientation } : {}),
 			...(evt.stanzaId ? { stanzaId: evt.stanzaId } : {}),
 			...(evt.notify ? { notify: evt.notify } : {}),
 			...(evt.platform ? { platform: evt.platform } : {}),

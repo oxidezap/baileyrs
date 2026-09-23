@@ -23,6 +23,10 @@ import { DEFAULT_CONNECTION_CONFIG, MEDIA_TYPES, type MediaType } from '../Defau
 import type {
 	BinaryNode,
 	AuthenticationCreds,
+	CallAudioFrame,
+	CallPcmFrame,
+	CallMediaEvent,
+	CallVideoFrame,
 	ConnectionState,
 	Contact,
 	ReachoutTimelockState,
@@ -57,6 +61,9 @@ import { assertNodeErrorFree } from '../WABinary/generic-utils.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
+import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
+import { makeCallRelayTransport } from './call-relay.ts'
+import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent, clearIncompleteEnd } from './calls-core.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -257,6 +264,8 @@ const createWASocketFactoryInner = (
 		 * store to drain.
 		 */
 		teardown: async (client, error) => {
+			// Call pumps hold the bridge client; drain before disconnect and flush.
+			await callMedia.drainAll()
 			try {
 				await ws.close()
 			} catch {
@@ -448,6 +457,7 @@ const createWASocketFactoryInner = (
 			encodeProtoCompatCore(path, message, runtime.bridge.encodeProto.bind(runtime.bridge)),
 		randomBytes: runtime.randomBytes,
 		ws,
+		isClosing: () => owner.isClosing(),
 		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,
 		getMe: () => {
@@ -511,8 +521,14 @@ const createWASocketFactoryInner = (
 	const receiptMutex = makeMutex()
 	const appStatePatchMutex = makeMutex()
 	const notificationMutex = makeMutex()
-	const activeCallContexts = new Map<string, { peer: string; callCreator: string }>()
+	const activeCallContexts: CallOfferCache = new Map()
 	socketEndHandlers.push(() => activeCallContexts.clear())
+	const callRelay = makeCallRelayTransport()
+	const callMedia = makeCallMediaRouter({
+		emitMediaEvent: event => ev.emit('call.media', event),
+		reportError: (err, msg) => unexpectedErrors.report(err, msg)
+	})
+	socketEndHandlers.push(() => callMedia.stopAll())
 	const groupMethods = makeGroupMethods(ctx)
 	const communityMethods = makeCommunityMethods(ctx, groupMethods)
 	const refreshParticipating = makeParticipatingRefreshHandler(ctx, {
@@ -542,12 +558,7 @@ const createWASocketFactoryInner = (
 				}
 			},
 			onIncomingCall: event => {
-				const { callId, callCreator, type } = event.action
-				if (type === 'reject' || type === 'accept' || type === 'timeout' || type === 'terminate') {
-					activeCallContexts.delete(callId)
-				} else if (callCreator) {
-					activeCallContexts.set(callId, { peer: event.from, callCreator })
-				}
+				if (trackIncomingCall(activeCallContexts, event)) callMedia.stopCall(event.action.callId)
 			},
 			onDirtyState: event => refreshParticipating(event.dirtyType),
 			/**
@@ -586,6 +597,12 @@ const createWASocketFactoryInner = (
 			clearTimeout: runtime.clearTimeout
 		} as never
 	)
+	Object.assign(eventHandlers, {
+		onCallAudio: (frame: CallAudioFrame) => callMedia.routeAudioFrame(frame),
+		onCallPcm: (frame: CallPcmFrame) => callMedia.routePcmFrame(frame),
+		onCallVideo: (frame: CallVideoFrame) => callMedia.routeVideoFrame(frame),
+		onCallEvent: (event: CallMediaEvent) => callMedia.routeMediaEvent(event)
+	})
 
 	const init = async () => {
 		await runtime.waitForAuthState?.(auth)
@@ -667,8 +684,18 @@ const createWASocketFactoryInner = (
 		}
 		if (useNativeMemory) logger.debug('auth: using socket-local native memory backend')
 
+		// Install the separate engine before constructing the client: the bridge
+		// handshakes the VoIP backend once, during createWhatsAppClient.
+		const voipBackend = await runtime.loadVoip?.(callRelay.transport)
+		// Even if end() won this await, finish construction so owner.adopt can
+		// release the refused client and async disposal waits for the barrier.
 		const created = await runtime.bridge.createWhatsAppClient(
-			makeTransport({ ...fullConfig, setTimeout: runtime.setTimeout, clearTimeout: runtime.clearTimeout }),
+			makeTransport({
+				...fullConfig,
+				createWebSocket: runtime.createWebSocket,
+				setTimeout: runtime.setTimeout,
+				clearTimeout: runtime.clearTimeout
+			}),
 			makeHttpClient(fullConfig),
 			eventHandlers,
 			bridgeStore,
@@ -681,7 +708,8 @@ const createWASocketFactoryInner = (
 			// coercion could promote a malformed opt-out into an opt-in.
 			// Absent stays strict.
 			fullConfig.dangerSkipCertChainVerify,
-			makeHistorySyncAdmission(shouldSyncHistoryMessage)
+			makeHistorySyncAdmission(shouldSyncHistoryMessage),
+			voipBackend ? { voipBackend } : null
 		)
 		// `end()` can land while the client is still being built — a `sock.end()`
 		// or `await using` right after `makeWASocket()` does exactly that. When
@@ -1175,6 +1203,28 @@ const createWASocketFactoryInner = (
 				client.rejectCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
 			)
 			activeCallContexts.delete(callId)
+			callMedia.stopCall(callId)
+		},
+		/** Hang up a live call, or send a signaling termination for an unopened call. */
+		terminateCall: async (callId: string, callFrom: string) => {
+			try {
+				if (await endMediaCallIfPresent(ctx, callId)) {
+					activeCallContexts.delete(callId)
+					return
+				}
+				const context = activeCallContexts.get(callId)
+				try {
+					await ctx.withClient(client =>
+						client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+					)
+					activeCallContexts.delete(callId)
+					clearIncompleteEnd(ctx, callId)
+				} finally {
+					callMedia.stopCall(callId)
+				}
+			} finally {
+				callMedia.stopCall(callId)
+			}
 		},
 		/**
 		 * Fetch the account's current reachout-timelock state from the server.
@@ -1223,6 +1273,10 @@ const createWASocketFactoryInner = (
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
+		...makeCallAudioMethods(ctx, callMedia, {
+			onCallEnded: callId => activeCallContexts.delete(callId),
+			setRelayProvider: callRelay.setProvider
+		}),
 		...makeServerQueryMethods(ctx),
 		downloadMedia: async <T extends MediaDownloadType>(
 			message: WAMessage,

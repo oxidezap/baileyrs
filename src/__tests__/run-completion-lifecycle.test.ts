@@ -58,7 +58,8 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		let releaseFlush!: () => void
 		try {
-			const { state } = await useMultiFileAuthState(authFolder)
+			const folder = await mkdtemp(join(authFolder, 'test1-'))
+			const { state } = await useMultiFileAuthState(folder)
 			const flushGate = new Promise<void>(resolve => {
 				releaseFlush = resolve
 			})
@@ -116,6 +117,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 			releaseConnection()
 			releaseFlush()
 			await sock?.end(undefined).catch(() => {})
+			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})
@@ -140,7 +142,8 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		try {
-			const { state } = await useMultiFileAuthState(authFolder)
+			const folder = await mkdtemp(join(authFolder, 'test2-'))
+			const { state } = await useMultiFileAuthState(folder)
 			sock = makeWASocket({
 				auth: state,
 				logger: silentLogger,
@@ -168,6 +171,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		} finally {
 			releaseConnection()
 			await sock?.end(undefined).catch(() => {})
+			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})
@@ -185,7 +189,8 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		try {
-			const { state } = await useMultiFileAuthState(authFolder)
+			const folder = await mkdtemp(join(authFolder, 'test3-'))
+			const { state } = await useMultiFileAuthState(folder)
 			sock = makeWASocket({
 				auth: state,
 				logger: throwingErrorLogger,
@@ -208,6 +213,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		} finally {
 			WasmWhatsAppClient.prototype.waitForRunCompletion = originalWait
 			await sock?.end(undefined).catch(() => {})
+			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})
@@ -230,7 +236,8 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		try {
-			const { state } = await useMultiFileAuthState(authFolder)
+			const folder = await mkdtemp(join(authFolder, 'test4-'))
+			const { state } = await useMultiFileAuthState(folder)
 			sock = makeWASocket({
 				auth: state,
 				logger: silentLogger,
@@ -256,6 +263,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		} finally {
 			WasmWhatsAppClient.prototype.waitForRunCompletion = originalWait
 			await sock?.end(undefined).catch(() => {})
+			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})

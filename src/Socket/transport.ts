@@ -7,6 +7,9 @@ interface TransportConfig {
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
+	/** Node runtime TLS test override; ignored by host-neutral transports. */
+	dangerSkipCertChainVerify?: boolean
+	createWebSocket?: (url: string, config: TransportConfig) => Promise<WebSocket>
 	setTimeout?: (callback: () => void, ms: number) => unknown
 	clearTimeout?: (handle: unknown) => void
 }
@@ -42,16 +45,22 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 	let ws: WebSocket | undefined
 	let handle: JsTransportHandle | undefined
 	let disconnectTarget: WebSocket | undefined
+	let connectionGeneration = 0
 	const abortControllers = new WeakMap<WebSocket, AbortController>()
 
 	return {
-		connect(h: JsTransportHandle) {
+		async connect(h: JsTransportHandle) {
+			const generation = ++connectionGeneration
 			handle = h
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
 
 			disconnectTarget = ws
 
-			const newWs = new WebSocket(url)
+			const newWs = config.createWebSocket ? await config.createWebSocket(url, config) : new WebSocket(url)
+			if (generation !== connectionGeneration) {
+				newWs.close()
+				throw new Error('WebSocket connection superseded')
+			}
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 
@@ -138,6 +147,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			}
 		},
 		async disconnect() {
+			connectionGeneration++
 			const toClose = disconnectTarget ?? ws
 			if (toClose === ws) ws = undefined
 			disconnectTarget = undefined
