@@ -9,7 +9,11 @@ import { describe, it } from 'node:test'
 const worker = fileURLToPath(new URL('./restart-worker.ts', import.meta.url))
 
 async function generation(folder: string, format: string, phase: string, signal: 'SIGINT' | 'SIGKILL') {
-	const child = spawn(process.env.BAILEYRS_RESTART_RUNTIME ?? process.execPath, [worker, phase, folder, format], {
+	const runtime = process.env.BAILEYRS_RESTART_RUNTIME
+	const args = runtime
+		? [worker, phase, folder, format]
+		: [...process.execArgv.filter(arg => arg !== '--test' && !arg.startsWith('--test-')), worker, phase, folder, format]
+	const child = spawn(runtime ?? process.execPath, args, {
 		env: process.env,
 		stdio: ['pipe', 'pipe', 'pipe']
 	})

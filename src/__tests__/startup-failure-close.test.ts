@@ -84,15 +84,13 @@ describe('startup failures close the socket', { timeout: 10_000 }, () => {
 						})
 						sockets.push(sock)
 						const updates: Partial<ConnectionState>[] = []
+						let atClose: { flushed: boolean; ended: boolean } | undefined
 						sock.registerSocketEndHandler(() => {
 							ended = true
 						})
 						sock.ev.on('connection.update', update => {
 							updates.push(update)
-							if (update.connection === 'close') {
-								assert.equal(flushed, true)
-								assert.equal(ended, true)
-							}
+							if (update.connection === 'close') atClose = { flushed, ended }
 						})
 						const failure = stage === 'hydration' ? `restore-${index}-failed` : `construction-${index}-failed`
 						const closed = sock.waitForConnectionUpdate(async () => false, 1_000)
@@ -104,6 +102,7 @@ describe('startup failures close the socket', { timeout: 10_000 }, () => {
 						})
 						await assert.rejects(sock.getJid(), /failed to initialize/)
 						await observed
+						assert.deepEqual(atClose, { flushed: true, ended: true })
 						await sock.end(undefined)
 						await tick()
 						assert.deepEqual(

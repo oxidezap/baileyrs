@@ -85,7 +85,10 @@ try {
 				})
 			})
 			assert.ok(sock.user?.id)
-			identities[index] = { id: api.jidNormalizedUser(sock.user.id), lid: sock.user.lid }
+			identities[index] = {
+				id: api.jidNormalizedUser(sock.user.id),
+				lid: sock.user.lid ? api.jidNormalizedUser(sock.user.lid) : undefined
+			}
 		})
 	)
 	for (const result of results) if (result.status === 'rejected') throw result.reason

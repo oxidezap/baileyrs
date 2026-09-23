@@ -107,6 +107,10 @@ const reconnectDelayFor = (statusCode: number | undefined, error: Boom | undefin
 		case CLIENT_OUTDATED_STATUS:
 			// The server rejected this build; the next one is rejected too.
 			return undefined
+		case 500:
+			// Startup failures need their cause inspected before another attempt;
+			// a persistent auth-store error would otherwise loop forever.
+			return undefined
 		case DisconnectReason.forbidden: {
 			// Temporary ban. `expire` is unix-seconds, carried on the Boom's data.
 			const expire = (error?.data as { expire?: number } | undefined)?.expire
@@ -176,7 +180,10 @@ const startSock = async () => {
 					// these reject the replacement just as fast.
 					const retryDelayMs = reconnectDelayFor(statusCode, boom)
 					if (retryDelayMs === undefined) {
-						logger.fatal({ statusCode }, 'connection closed for good; not reconnecting')
+						logger.fatal(
+							{ statusCode, cause: boom?.cause },
+							'connection closed for good; inspect the cause before reconnecting'
+						)
 					} else {
 						logger.warn({ statusCode, retryDelayMs }, 'connection closed for good, starting a new socket')
 						// `ev.process` invokes this handler with `void handler(events)`
