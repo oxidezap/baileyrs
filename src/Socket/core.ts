@@ -462,6 +462,7 @@ const createWASocketFactoryInner = (
 		withClient: makeWithClient(getClient)
 	}
 	function getClient(): Promise<WasmWhatsAppClient> {
+		if (initError) return Promise.reject(initError)
 		// Teardown retains the client through closing to disconnect the transport.
 		// Ordinary operations must stop being admitted when close() is called.
 		if (owner.isClosing()) {
@@ -480,16 +481,13 @@ const createWASocketFactoryInner = (
 		}
 
 		return initPromise.then(() => {
+			if (initError) throw initError
 			// Closing may have started while initialization was pending.
 			// This gate does not track admitted operations. Bridge 0.21.1 tolerates
 			// free() during ordinary calls, but not during disconnect(); release
 			// still awaits that drain before freeing the client.
 			if (owner.isClosing()) {
 				throw new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed })
-			}
-
-			if (initError) {
-				throw new Boom('Bridge client failed to initialize: ' + initError.message, { statusCode: 500 })
 			}
 
 			const built = owner.peek()
@@ -588,6 +586,16 @@ const createWASocketFactoryInner = (
 	)
 
 	const init = async () => {
+		// Announce startup before awaiting storage, and allow callers to attach
+		// listeners first. A slow or failed hydration still has a lifecycle.
+		runtime.queueMicrotask(() => {
+			if (owner.isClosing()) return
+			ev.emit('connection.update', {
+				connection: 'connecting',
+				receivedPendingNotifications: false,
+				qr: undefined
+			} as Partial<ConnectionState>)
+		})
 		await runtime.waitForAuthState?.(auth)
 		// `initWasmEngine` reads `logger.level` synchronously while installing
 		// the Rust-side logger: a consumer logger without the pino shape
@@ -619,25 +627,6 @@ const createWASocketFactoryInner = (
 			resetEngineInitialization()
 			throw err
 		}
-
-		// Defer to a microtask so callers have a turn to attach listeners
-		// after `makeWASocket()` returns. Without this the emit fires
-		// synchronously inside `init()` (before the function reaches its
-		// first `await`), which is also before the caller ever sees `conn.ev`,
-		// so any handler registered via `conn.ev.on('connection.update', …)`
-		// or `conn.ev.process(…)` silently misses the initial 'connecting'
-		// state. Bots like sung that drive UI off the lifecycle (spinners,
-		// reconnection counters) end up tracking a state machine they never
-		// got to enter, then crash when the next state ('open' / 'close')
-		// references prerequisites that the missed event was supposed to set
-		// up.
-		runtime.queueMicrotask(() =>
-			ev.emit('connection.update', {
-				connection: 'connecting',
-				receivedPendingNotifications: false,
-				qr: undefined
-			} as Partial<ConnectionState>)
-		)
 
 		// Auto-promote upstream-Baileys-style `auth: { creds, keys }` to a
 		// `JsStoreCallbacks`-shaped store via `wrapLegacyStore`. The synthetic
@@ -841,7 +830,13 @@ const createWASocketFactoryInner = (
 	// becomes a `ReferenceError` inside a bridge callback, where no `try/catch`
 	// of ours can reach it. Ordering it here makes the dependency structural.
 	const initPromise = init().catch(err => {
-		initError = err instanceof Error ? err : new Error(String(err))
+		// A failure caused by an explicit shutdown must keep its existing
+		// Connection Closed behavior and must not publish a second lifecycle.
+		if (owner.isClosing()) return owner.discard()
+		initError = new Boom('Bridge client failed to initialize: ' + (err instanceof Error ? err.message : String(err)), {
+			statusCode: 500,
+			decorate: { cause: err }
+		})
 		try {
 			logger.error({ err }, 'failed to initialize bridge client')
 		} catch {
@@ -850,9 +845,20 @@ const createWASocketFactoryInner = (
 			// unhandled rejection on a chain the caller never sees.
 		}
 
-		// A client adopted before the failure outlives a read loop that never
-		// started: `getClient()` correctly rejects, but the standalone
-		// helpers bypass it and would keep reaching the half-built client.
+		// Initialization can fail before run() installs its completion observer.
+		// Report that failure through the same once-only lifecycle as a run exit.
+		// Keep this detached: the reporter joins initPromise after teardown, so
+		// awaiting it here would make initialization wait for itself.
+		if (!owner.isClosing()) {
+			const error = initError
+			reportTerminalClose(error, () =>
+				ev.emit('connection.update', {
+					connection: 'close',
+					lastDisconnect: { error, date: new Date() }
+				} as Partial<ConnectionState>)
+			)
+		}
+		// Join teardown without allowing its failure to reject initPromise.
 		return owner.discard()
 	})
 

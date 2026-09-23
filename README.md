@@ -373,6 +373,7 @@ A few behaviors that differ from upstream — almost always to your advantage:
   | `DisconnectReason.loggedOut` (401) | stop; needs a fresh pairing |
   | `405` | stop; the server rejected this build, and the next one too |
   | `DisconnectReason.forbidden` (403) | wait until `lastDisconnect.error.data.expire` (unix seconds) — it is a temporary ban |
+  | `500` (startup failure) | inspect `lastDisconnect.error.cause` before retrying; persistent storage/setup errors will repeat |
   | anything else | reconnect, after a short delay |
 
   `Example/example.ts` implements exactly this.
@@ -428,6 +429,13 @@ A few behaviors that differ from upstream — almost always to your advantage:
   one can break a boot path, so it has its own section.
 
 ### When `connecting` lasts minutes
+
+Socket startup emits `connecting` before awaiting credential hydration. If
+hydration, bridge construction, or client setup rejects, it emits one terminal
+`close` after cleanup with `statusCode` 500. `lastDisconnect.error` preserves
+the initialization failure in `cause`; pending socket methods reject with that
+same error. Check the cause before replacing a socket, since a storage error can
+persist across restarts. An explicit `sock.end()` during startup remains a silent shutdown.
 
 Upstream Baileys emits `connecting` once per socket, and it resolves to `open`
 or `close` within seconds, because upstream never retries on its own. On
