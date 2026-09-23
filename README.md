@@ -429,6 +429,13 @@ A few behaviors that differ from upstream — almost always to your advantage:
 
 ### When `connecting` lasts minutes
 
+Socket startup emits `connecting` before awaiting credential hydration. If
+hydration, bridge construction, or client setup rejects, it emits one terminal
+`close` after cleanup. `lastDisconnect.error` preserves the initialization
+failure in `cause`; pending socket methods reject with that same error. Check
+the cause before replacing a socket, since a storage error can persist across
+restarts. An explicit `sock.end()` during startup remains a silent shutdown.
+
 Upstream Baileys emits `connecting` once per socket, and it resolves to `open`
 or `close` within seconds, because upstream never retries on its own. On
 baileyrs the same value also covers every drop the engine is retrying, and the
