@@ -58,6 +58,28 @@ if (nodeProcess) {
 	try {
 		const bridgePackage = ['@oxidezap', 'whatsapp-rust-bridge'].join('/')
 		const nodeBridge = await import(bridgePackage)
+		const isCryptoEngineUnavailable = (error: unknown): boolean => {
+			if (!(error instanceof Error)) return false
+			const details = error as Error & { kind?: unknown; field?: unknown; reason?: unknown }
+			return (
+				details.kind === 'invalid-argument' &&
+				details.field === 'initWasmEngine' &&
+				details.reason === 'must be called before AES-GCM operations'
+			)
+		}
+		const withMediaCryptoInitialized = <T>(operation: () => T): T => {
+			try {
+				return operation()
+			} catch (error) {
+				if (!isCryptoEngineUnavailable(error)) throw error
+				nodeBridge.initWasmEngine()
+				return operation()
+			}
+		}
+		nodeMedia.aesGcm256Encrypt = (key, nonce, aad, plaintext) =>
+			withMediaCryptoInitialized(() => nodeBridge.aesGcm256Encrypt(key, nonce, aad, plaintext))
+		nodeMedia.aesGcm256Decrypt = (key, nonce, aad, ciphertext) =>
+			withMediaCryptoInitialized(() => nodeBridge.aesGcm256Decrypt(key, nonce, aad, ciphertext))
 		nodeMedia.hkdf = (input, length, options) => {
 			try {
 				return nodeBridge.hkdf(input, length, options)

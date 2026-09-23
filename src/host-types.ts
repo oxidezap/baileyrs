@@ -278,9 +278,11 @@ export type HostMessageGenerationOptions = {
 	messageId?: string
 	useCachedGroupMetadata?: boolean
 	timestamp?: Date
+	quoted?: WAMessage
 	ephemeralExpiration?: number | string
 	mediaUploadTimeoutMs?: number
 	statusJidList?: string[]
+	broadcast?: boolean
 	backgroundColor?: string
 	font?: number
 }

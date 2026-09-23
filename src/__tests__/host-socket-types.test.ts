@@ -40,11 +40,13 @@ const rejectsMalformedHostConfig = (auth: HostAuthenticationState): void => {
 	void misspelledOption
 }
 
-const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
+const acceptsCompleteHostSocketSurface = (socket: HostWASocket, priorMessage: WAMessage): void => {
 	const sentMessage: Promise<WAMessage> = socket.sendMessage('120@g.us', { text: 'hello' })
 	void sentMessage.then(message => void message.key.id)
 	const content: HostAnyMessageContent = { text: 'hello' }
-	const options: HostMessageGenerationOptions = { messageId: 'MSG1' }
+	const options: HostMessageGenerationOptions = { messageId: 'MSG1', quoted: priorMessage, broadcast: true }
+	void socket.sendMessage('120@g.us', { text: 'reply' }, { quoted: priorMessage })
+	void socket.sendMessage('status@broadcast', { text: 'status' }, { broadcast: true })
 	void content
 	void options
 	void socket.groupLeave('120@g.us')
