@@ -115,7 +115,13 @@ try {
 		})
 	)
 	await Promise.all(saves)
-	await Promise.all(states.map(({ state }) => ('store' in state ? state.store?.flush?.() : undefined)))
+	// The native seed generation must flush before the SIGKILL checkpoint.
+	// A restored native generation is killed only after verifying identity and
+	// traffic, so flushing its ongoing app-state writes would test teardown
+	// quiescence instead of process-restart persistence.
+	if (phase === 'seed' || format === 'legacy') {
+		await Promise.all(states.map(({ state }) => ('store' in state ? state.store?.flush?.() : undefined)))
+	}
 	console.log(`RESTART_READY ${JSON.stringify({ phase, format, qrCounts, opens, stages })}`)
 	await stopped
 } finally {
