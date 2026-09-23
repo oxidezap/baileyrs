@@ -69,11 +69,12 @@ async function generation(folder: string, format: string, phase: string, signal:
 
 describe('E2E: four sessions across process restarts', { timeout: 300_000 }, () => {
 	for (const format of ['native', 'legacy']) {
-		it(`restores ${format} auth without QR and decrypts traffic after SIGINT`, async () => {
+		const restoreSignal = format === 'native' ? 'SIGKILL' : 'SIGINT'
+		it(`restores ${format} auth without QR and decrypts traffic after ${restoreSignal}`, async () => {
 			const folder = await mkdtemp(join(tmpdir(), `baileyrs-process-${format}-`))
 			try {
 				await generation(folder, format, 'seed', 'SIGINT')
-				await generation(folder, format, 'restore', 'SIGINT')
+				await generation(folder, format, 'restore', restoreSignal)
 			} finally {
 				await rm(folder, { recursive: true, force: true })
 			}
@@ -83,7 +84,7 @@ describe('E2E: four sessions across process restarts', { timeout: 300_000 }, () 
 		const folder = await mkdtemp(join(tmpdir(), 'baileyrs-process-kill-'))
 		try {
 			await generation(folder, 'native', 'seed', 'SIGKILL')
-			await generation(folder, 'native', 'restore', 'SIGINT')
+			await generation(folder, 'native', 'restore', 'SIGKILL')
 		} finally {
 			await rm(folder, { recursive: true, force: true })
 		}
