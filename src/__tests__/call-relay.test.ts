@@ -48,4 +48,43 @@ describe('VoIP relay transport adapter', () => {
 		expect(events[1]!.closes).toBe(1)
 		expect(closed).toEqual([])
 	})
+
+	it('closes a reconnect result that arrives after teardown without retaining it', async () => {
+		let resolveReconnect!: (handle: { send(data: Uint8Array): void; close(): void }) => void
+		let closes = 0
+		let lateCloses = 0
+		const sent: number[] = []
+		const relay = makeCallRelayTransport()
+		relay.setProvider({
+			createRelayConnection: async params =>
+				params.port === 1
+					? {
+							send: () => undefined,
+							close: () => {
+								closes++
+							}
+						}
+					: new Promise(resolve => {
+							resolveReconnect = resolve
+						})
+		})
+		const connection = await relay.transport.connect(endpoint(1), {
+			onPacket: () => undefined,
+			onOpen: () => undefined,
+			onClose: () => undefined
+		})
+		const reconnecting = connection.reconnect(endpoint(2))
+		await connection.close()
+		resolveReconnect({
+			send: data => sent.push(data[0]!),
+			close: () => {
+				lateCloses++
+			}
+		})
+		await reconnecting
+		connection.send(new Uint8Array([7]))
+		expect(sent).toEqual([])
+		expect(closes).toBe(1)
+		expect(lateCloses).toBe(1)
+	})
 })

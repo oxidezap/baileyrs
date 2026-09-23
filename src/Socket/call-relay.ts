@@ -10,7 +10,17 @@ export const makeCallRelayTransport = () => {
 	const transport: VoipRelayTransport = {
 		async connect(endpoint, events) {
 			let generation = 0
+			let closed = false
 			let connection: CallRelayConnectionHandle | undefined
+			const retired = new WeakMap<CallRelayConnectionHandle, Promise<void>>()
+			const retire = (handle: CallRelayConnectionHandle | undefined): Promise<void> => {
+				if (!handle) return Promise.resolve()
+				const inFlight = retired.get(handle)
+				if (inFlight) return inFlight
+				const closing = Promise.resolve().then(() => handle.close())
+				retired.set(handle, closing)
+				return closing
+			}
 			const dial = (nextEndpoint: typeof endpoint, current: number) =>
 				provider().createRelayConnection(nextEndpoint, {
 					onPacket: data => {
@@ -27,19 +37,26 @@ export const makeCallRelayTransport = () => {
 			return {
 				send: data => connection?.send(data),
 				async reconnect(nextEndpoint) {
+					if (closed) return
 					const old = connection
 					const current = ++generation
 					try {
-						connection = await dial(nextEndpoint, current)
+						const next = await dial(nextEndpoint, current)
+						if (closed || current !== generation) {
+							await retire(next)
+							return
+						}
+						connection = next
 					} finally {
-						await old?.close()
+						await retire(old)
 					}
 				},
 				async close() {
+					closed = true
 					generation++
 					const old = connection
 					connection = undefined
-					await old?.close()
+					await retire(old)
 				}
 			}
 		}

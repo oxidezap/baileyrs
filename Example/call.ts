@@ -469,7 +469,8 @@ export const splitPcm16Frames = (
 				pendingLength += copied
 				offset = copied
 				if (pendingLength < frameBytes) return frames
-				frames.push(s16leToSamples(scratch, 0, frameSamples))
+				// The remainder of this chunk (or the next push) reuses scratch.
+				frames.push(s16leToSamples(scratch, 0, frameSamples).slice())
 				pendingLength = 0
 			}
 

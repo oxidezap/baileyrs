@@ -457,6 +457,7 @@ const createWASocketFactoryInner = (
 			encodeProtoCompatCore(path, message, runtime.bridge.encodeProto.bind(runtime.bridge)),
 		randomBytes: runtime.randomBytes,
 		ws,
+		isClosing: () => owner.isClosing(),
 		reportUnexpectedError: unexpectedErrors.report,
 		getUser: () => user,
 		getMe: () => {

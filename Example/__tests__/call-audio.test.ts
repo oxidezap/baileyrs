@@ -35,6 +35,17 @@ describe('splitPcm16Frames', () => {
 		expect(direct[1]!.buffer).toBe(aligned.buffer)
 		expect(splitter.flush()).toEqual([])
 	})
+
+	it('does not overwrite a completed partial frame when the chunk also starts the next one', () => {
+		const splitter = splitPcm16Frames(2)
+		expect(splitter.push(new Uint8Array([1, 2]))).toEqual([])
+		const first = splitter.push(new Uint8Array([3, 4, 5]))
+		expect(Array.from(first[0]!)).toEqual([0x0201, 0x0403])
+		const second = splitter.push(new Uint8Array([6, 7, 8]))
+		expect(Array.from(second[0]!)).toEqual([0x0605, 0x0807])
+		expect(Array.from(first[0]!)).toEqual([0x0201, 0x0403])
+		expect(splitter.flush()).toEqual([])
+	})
 })
 
 describe('getOpusSamples48k', () => {
