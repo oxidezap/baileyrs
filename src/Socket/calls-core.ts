@@ -42,6 +42,7 @@ import type {
 	CallPcmFrame,
 	CallPcmSink,
 	CallPcmWriter,
+	CallRelayTransportProvider,
 	CallEndResult,
 	CallKeyframeUrgency,
 	CallMediaEvent,
@@ -91,31 +92,14 @@ export interface CallAudioBridgeClient {
 	requestCallKeyframe(callId: string, urgency: CallKeyframeUrgency): void
 }
 
-/** Host-owned relay media channel for one call, behind `setRelayTransportProvider`. */
-export interface CallRelayConnectionEvents {
-	onPacket(data: Uint8Array): void
-	onOpen(): void
-	onClose(reason?: string): void
-}
-
-export interface CallRelayConnectionHandle {
-	send(data: Uint8Array): void | Promise<void>
-	close(): void | Promise<void>
-}
-
-export interface CallRelayConnectionParams {
-	address: string
-	port: number
-	iceUfrag: string
-	icePwd: string
-}
-
-export interface CallRelayTransportProvider {
-	createRelayConnection(
-		params: CallRelayConnectionParams,
-		events: CallRelayConnectionEvents
-	): Promise<CallRelayConnectionHandle>
-}
+// Preserve historical deep imports while sharing the neutral relay contract
+// with the /host declaration surface.
+export type {
+	CallRelayConnectionEvents,
+	CallRelayConnectionHandle,
+	CallRelayConnectionParams,
+	CallRelayTransportProvider
+} from '../Types/Call.ts'
 
 const AUDIO_FORMATS = ['mlow', 'opus', 'opus-mlow', undefined] as const
 const KEYFRAME_URGENCIES = ['coalesced', 'immediate'] as const

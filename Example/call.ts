@@ -1018,6 +1018,31 @@ const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; sto
 
 // ── the call ──
 
+export const isTerminalCallUpdate = (call: Pick<WACallEvent, 'status'>): boolean =>
+	call.status === 'timeout' || call.status === 'reject' || call.status === 'terminate'
+
+/** Remember signaling-only endings even when no media handle ever existed. */
+export const makeCallTerminalTracker = () => {
+	const deadCallIds = new Set<string>()
+	const markDead = (callId: string): void => {
+		deadCallIds.add(callId)
+		// A listener can run indefinitely; do not retain every call it saw.
+		if (deadCallIds.size > 64) {
+			const oldest = deadCallIds.values().next()
+			if (!oldest.done) deadCallIds.delete(oldest.value)
+		}
+	}
+	return {
+		markDead,
+		isDead: (callId: string): boolean => deadCallIds.has(callId),
+		recordUpdate: (call: Pick<WACallEvent, 'id' | 'status'>): boolean => {
+			if (!isTerminalCallUpdate(call)) return false
+			markDead(call.id)
+			return true
+		}
+	}
+}
+
 const main = async (): Promise<void> => {
 	const args = parseArgs(process.argv.slice(2))
 
@@ -1224,20 +1249,9 @@ const main = async (): Promise<void> => {
 
 	let liveCallId: string | undefined
 	let accepting = false
-	// Calls that saw `ended` before going live: accept/dial continuations
-	// check this after their await so a fast setup failure cannot leave
-	// capture and playback running for a dead call. Bounded, because the
-	// race resolves within milliseconds while a long-running listen
-	// process would otherwise pin every call ID it ever saw.
-	const DEAD_CALL_TOMBSTONES = 64
-	const deadCallIds = new Set<string>()
-	const markCallDead = (callId: string): void => {
-		deadCallIds.add(callId)
-		if (deadCallIds.size > DEAD_CALL_TOMBSTONES) {
-			const oldest = deadCallIds.values().next()
-			if (!oldest.done) deadCallIds.delete(oldest.value)
-		}
-	}
+	// Both signaling-only terminal updates and media endings can race an
+	// accept/dial await. The continuation consults the same bounded tracker.
+	const terminalCalls = makeCallTerminalTracker()
 	let stopPcmSink: (() => void) | undefined
 	let muted = false
 	let shed = 0
@@ -1642,7 +1656,7 @@ const main = async (): Promise<void> => {
 		// Terminal ids are remembered even for calls that are not live yet:
 		// an `ended` landing while accept/dial is still pending must stop
 		// the continuation below from starting capture for a dead call.
-		if (event.kind === 'ended') markCallDead(event.callId)
+		if (event.kind === 'ended') terminalCalls.markDead(event.callId)
 		if (event.kind === 'ended' && event.callId === liveCallId) {
 			console.log('peer ended the call')
 			void hangup().then(() => {
@@ -1761,7 +1775,7 @@ const main = async (): Promise<void> => {
 			// peer, but never starts the local camera by itself.
 			const acceptVideo = args.video !== undefined || call.isVideo === true
 			const id = await sock.acceptCallPcm(call.id, acceptVideo)
-			if (deadCallIds.has(id) || deadCallIds.has(call.id)) {
+			if (terminalCalls.isDead(id) || terminalCalls.isDead(call.id)) {
 				console.log('call ended while accepting; not starting capture for', id)
 				return
 			}
@@ -1786,6 +1800,11 @@ const main = async (): Promise<void> => {
 				}
 			}
 			console.log('answered', id, 'with pcm16')
+		} catch (err) {
+			// A sink or player can fail after capture starts. Never leave the
+			// encoder or playback process alive when setup did not complete.
+			if (liveCallId !== undefined) await hangup()
+			throw err
 		} finally {
 			accepting = false
 		}
@@ -1793,7 +1812,14 @@ const main = async (): Promise<void> => {
 
 	sock.ev.on('call', events => {
 		for (const call of events as WACallEvent[]) {
+			// Signaling can end a ringing call without ever creating media, so
+			// call.media:ended alone cannot fence an in-flight accept.
+			if (terminalCalls.recordUpdate(call)) {
+				if (call.id === liveCallId) void hangup()
+				continue
+			}
 			if (call.status !== 'offer') continue
+			if (terminalCalls.isDead(call.id)) continue
 			console.log(`incoming ${call.isVideo ? 'video' : 'voice'} call from ${call.from}`)
 			if (args.command === 'listen' && args.accept) {
 				answer(call).catch(err => console.error('accept failed:', (err as Error).message))
@@ -1808,7 +1834,7 @@ const main = async (): Promise<void> => {
 		sourceFormat = 'pcm'
 		const withVideo = args.video !== undefined
 		const id = await sock.dialCallPcm(args.peer!, withVideo)
-		if (deadCallIds.has(id)) {
+		if (terminalCalls.isDead(id)) {
 			console.log('call ended while dialing; not starting capture for', id)
 			shutdown(0)
 			return

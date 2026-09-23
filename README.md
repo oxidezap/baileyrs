@@ -107,7 +107,9 @@ For a custom host runtime, bind media helpers to its bridge and random source on
 `makeMediaCryptoRuntime(runtime)` returns a capability you can pass as the final
 argument to `/host`'s `getMediaKeys`, `encryptMediaRetryRequest`, and
 `decryptMediaRetryData` helpers. This keeps HKDF and AES-GCM on the selected
-bridge instead of the default host singleton.
+bridge instead of the default host singleton. `/host` types the call methods and
+`call`/`call.media` events too; a custom host must supply a separate `loadVoip`
+engine per socket before making media calls (see Voice calls below).
 
 Reuse the same byte-preserving store on restart: `await createAuthenticationState(store)`
 rehydrates the device written by the Rust engine, including its registration ID

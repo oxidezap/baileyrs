@@ -1,6 +1,28 @@
 import type { VoipBackendCallbacks, VoipRelayTransport } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { ILogger } from './Utils/logger.ts'
 import type { WAMessage } from './host-shared.ts'
+import type {
+	ActiveCall,
+	CallAudioBuffer,
+	CallAudioFormat,
+	CallAudioPumpStats,
+	CallAudioSink,
+	CallAudioSourceInput,
+	CallAudioStopReason,
+	CallAudioTiming,
+	CallAudioWriter,
+	CallEndResult,
+	CallKeyframeUrgency,
+	CallMediaEvent,
+	CallMediaStats,
+	CallPcmSink,
+	CallPcmWriter,
+	CallRelayTransportProvider,
+	CallVideoDiagnostics,
+	CallVideoSink,
+	CallVideoWriter,
+	WACallEvent
+} from './Types/Call.ts'
 import type { HostSocketOperationName } from './host-socket-operations.ts'
 import type * as HostBridge from '@oxidezap/whatsapp-rust-bridge/host'
 import type Long from 'long'
@@ -203,6 +225,8 @@ export type HostConnectionUpdate = {
 
 export type HostBaileysEventMap = {
 	'connection.update': HostConnectionUpdate
+	call: WACallEvent[]
+	'call.media': CallMediaEvent
 	'creds.update': Partial<HostAuthenticationCreds>
 	'messages.upsert': {
 		messages: WAMessage[]
@@ -290,6 +314,48 @@ export type HostMessageGenerationOptions = {
 	font?: number
 }
 
+type HostCallOperations = {
+	rejectCall(callId: string, callFrom: string): Promise<void>
+	terminateCall(callId: string, callFrom: string): Promise<void>
+	dialCall(peerJid: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string>
+	dialCallPcm(peerJid: string, withVideo?: boolean): Promise<string>
+	acceptCall(callId: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string>
+	acceptCallPcm(callId: string, withVideo?: boolean): Promise<string>
+	pushCallAudio(callId: string, data: Uint8Array, audioFormat?: CallAudioFormat): Promise<boolean>
+	pushCallPcm(callId: string, samples: Int16Array): Promise<boolean>
+	pushCallVideo(callId: string, data: Uint8Array): Promise<boolean>
+	endCall(callId: string): Promise<CallEndResult>
+	openCallAudioWriter(callId: string): Promise<CallAudioWriter>
+	openCallPcmWriter(callId: string): Promise<CallPcmWriter>
+	openCallVideoWriter(callId: string): Promise<CallVideoWriter>
+	setCallMuted(callId: string, muted: boolean): Promise<void>
+	getCallMediaStats(callId: string): Promise<CallMediaStats>
+	getCallAudioBuffer(callId: string): Promise<CallAudioBuffer>
+	getCallAudioFormat(callId: string): CallAudioFormat | undefined
+	getActiveCalls(): Promise<ActiveCall[]>
+	startCallVideo(callId: string): Promise<void>
+	stopCallVideo(callId: string): Promise<void>
+	acceptCallVideo(callId: string): Promise<void>
+	resumeCallVideo(callId: string): Promise<void>
+	retryCallVideoUpgrade(callId: string): Promise<void>
+	getCallVideoDiagnostics(callId: string): Promise<CallVideoDiagnostics>
+	requestCallKeyframe(callId: string, urgency?: CallKeyframeUrgency): Promise<void>
+	setRelayTransportProvider(provider: CallRelayTransportProvider): Promise<void>
+	onCallAudio(callId: string, sink: CallAudioSink): () => void
+	onCallPcm(callId: string, sink: CallPcmSink): () => void
+	onCallVideo(callId: string, sink: CallVideoSink): () => void
+	startCallAudioPump(
+		callId: string,
+		source: CallAudioSourceInput,
+		options?: {
+			signal?: AbortSignal
+			onShed?: (shedTotal: number) => void
+			audioFormat?: CallAudioFormat
+			timing?: CallAudioTiming
+		}
+	): Promise<{ done: Promise<CallAudioPumpStats>; stop(reason?: CallAudioStopReason): void }>
+}
+
 type HostWASocketBase = {
 	ev: HostSocketEventEmitter
 	logger: ILogger
@@ -333,7 +399,6 @@ type HostWASocketBase = {
 	sendReceipts: (...args: unknown[]) => Promise<unknown>
 	requestPlaceholderResend: (...args: unknown[]) => Promise<unknown>
 	updateDefaultDisappearingMode: (...args: unknown[]) => Promise<unknown>
-	rejectCall: (...args: unknown[]) => Promise<unknown>
 	fetchReachoutTimelock: (...args: unknown[]) => Promise<unknown>
 	setAutoReconnect: (...args: unknown[]) => unknown
 	waitForMessage: (...args: unknown[]) => Promise<unknown>
@@ -342,8 +407,10 @@ type HostWASocketBase = {
 }
 
 type GenericHostSocketOperations = {
-	[K in Exclude<HostSocketOperationName, keyof HostWASocketBase>]: (...args: unknown[]) => unknown
+	[K in Exclude<HostSocketOperationName, keyof HostWASocketBase | keyof HostCallOperations>]: (
+		...args: unknown[]
+	) => unknown
 }
 
 /** Complete callable socket surface, with richer signatures for the common operations above. */
-export type HostWASocket = HostWASocketBase & GenericHostSocketOperations
+export type HostWASocket = HostWASocketBase & HostCallOperations & GenericHostSocketOperations

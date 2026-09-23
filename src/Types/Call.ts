@@ -60,6 +60,32 @@ export type WACallEvent = {
 	videoOrientation?: number
 }
 
+/** Host-owned relay channel used by both Node and host socket call methods. */
+export interface CallRelayConnectionEvents {
+	onPacket(data: Uint8Array): void
+	onOpen(): void
+	onClose(reason?: string): void
+}
+
+export interface CallRelayConnectionHandle {
+	send(data: Uint8Array): void | Promise<void>
+	close(): void | Promise<void>
+}
+
+export interface CallRelayConnectionParams {
+	address: string
+	port: number
+	iceUfrag: string
+	icePwd: string
+}
+
+export interface CallRelayTransportProvider {
+	createRelayConnection(
+		params: CallRelayConnectionParams,
+		events: CallRelayConnectionEvents
+	): Promise<CallRelayConnectionHandle>
+}
+
 /**
  * Encoded-audio codec promise for a call.
  *
