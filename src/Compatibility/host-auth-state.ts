@@ -98,7 +98,8 @@ export const hydrateHostAuthCreds = async (
 	const safeUnsigned = (value: unknown): value is number =>
 		typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 	const registration = record.registration_id
-	if ('registration_id' in record && (!safeUnsigned(registration) || registration >= 16_384)) {
+	// Fresh Baileys mirrors use 14 bits; persisted devices come from Rust's 1..=2^31-1 generator.
+	if ('registration_id' in record && (!safeUnsigned(registration) || registration > 2_147_483_647)) {
 		throw new Error('invalid persisted registration id')
 	}
 	if (safeUnsigned(registration)) mutable.registrationId = registration

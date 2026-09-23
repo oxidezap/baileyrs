@@ -64,8 +64,17 @@ describe('host auth creds', () => {
 		await assert.rejects(createAuthenticationState(store), /invalid noise key/)
 	})
 
-	it('rejects persisted registration IDs outside the 14-bit domain', async () => {
-		for (const registration_id of [-1, 16_384, Number.MAX_SAFE_INTEGER]) {
+	it('hydrates the persisted Rust device registration ID domain without changing fresh Baileys defaults', async () => {
+		for (const registration_id of [0, 16_383, 16_384, 2_147_483_647]) {
+			const store = useMemoryStore()
+			await store.set('device', 'device', new TextEncoder().encode(JSON.stringify({ registration_id })))
+			const auth = await createAuthenticationState(store)
+			expect(auth.creds.registrationId).toBe(registration_id)
+		}
+	})
+
+	it('rejects malformed persisted registration IDs', async () => {
+		for (const registration_id of [-1, 2_147_483_648, 1.5, '16384', null, Number.MAX_SAFE_INTEGER]) {
 			const store = useMemoryStore()
 			await store.set('device', 'device', new TextEncoder().encode(JSON.stringify({ registration_id })))
 			await assert.rejects(createAuthenticationState(store), /invalid persisted registration id/)
