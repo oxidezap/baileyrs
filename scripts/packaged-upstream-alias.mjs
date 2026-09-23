@@ -9,18 +9,18 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const fixture = join(root, 'scripts/fixtures/upstream-alias')
 const work = mkdtempSync(join(tmpdir(), 'baileyrs-packaged-alias-'))
 try {
-	const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', work, '--json'], { cwd: root, encoding: 'utf8' })) as [{ filename: string }]
+	const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', work, '--json'], { cwd: root, encoding: 'utf8' }))
 	const tarball = join(work, packed[0].filename)
 	for (const filename of ['consumer.ts', 'runtime.mjs', 'worker.ts', 'wrangler.toml']) {
 		writeFileSync(join(work, filename), readFileSync(join(fixture, filename)))
 	}
-	const tsconfig = JSON.parse(readFileSync(join(fixture, 'tsconfig.json'), 'utf8'))
-	tsconfig.compilerOptions.typeRoots = [join(root, 'node_modules/@types')]
-	writeFileSync(join(work, 'tsconfig.json'), JSON.stringify(tsconfig, null, 2))
+	writeFileSync(join(work, 'tsconfig.json'), readFileSync(join(fixture, 'tsconfig.json')))
+	const nodeTypesVersion = JSON.parse(readFileSync(join(root, 'node_modules/@types/node/package.json'), 'utf8')).version
 	writeFileSync(join(work, 'package.json'), JSON.stringify({
 		private: true,
 		type: 'module',
-		dependencies: { '@whiskeysockets/baileys': `file:${tarball}` }
+		dependencies: { '@whiskeysockets/baileys': `file:${tarball}` },
+		devDependencies: { '@types/node': nodeTypesVersion }
 	}, null, 2))
 	execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: work, stdio: 'inherit' })
 	execFileSync(join(root, 'node_modules/.bin/tsc'), ['--project', join(work, 'tsconfig.json')], { cwd: work, stdio: 'inherit' })
@@ -31,11 +31,11 @@ try {
 	rmSync(work, { recursive: true, force: true })
 }
 
-async function runWorkerdSmoke(cwd: string): Promise<void> {
+async function runWorkerdSmoke(cwd) {
 	const probe = createServer()
-	await new Promise<void>(listening => probe.listen(0, '127.0.0.1', listening))
-	const port = (probe.address() as { port: number }).port
-	await new Promise<void>(closed => probe.close(closed))
+	await new Promise(listening => probe.listen(0, '127.0.0.1', listening))
+	const port = probe.address().port
+	await new Promise(closed => probe.close(closed))
 	const child = spawn(join(root, 'node_modules/.bin/wrangler'), ['dev', '--local', '--ip', '127.0.0.1', '--port', String(port)], {
 		cwd,
 		stdio: 'inherit',
