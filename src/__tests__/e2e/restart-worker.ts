@@ -120,7 +120,7 @@ try {
 	await stopped
 } finally {
 	for (const sock of sockets) if (sock) sock.setAutoReconnect(false)
-	await Promise.all(sockets.map(sock => sock.end(undefined)))
+	for (const sock of sockets) if (sock) await sock.end(undefined)
 	await Promise.all(saves)
 	clearTimeout(deadline)
 	process.stdin.pause()
