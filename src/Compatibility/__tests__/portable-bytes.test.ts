@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import { createHash, randomBytes } from 'node:crypto'
-import { base64Decode, base64Encode, sha256Sync } from '../../Runtime/bytes.ts'
+import { base64Decode, base64Encode, isBridgeWasmUnavailableError, sha256Sync } from '../../Runtime/bytes.ts'
 import { generateMessageIDPortable, generateMessageIDV2Portable } from '../message-ids.ts'
 import { generateMessageID, generateMessageIDV2 } from '../../Utils/generics.ts'
 import { expect } from '../../__tests__/expect.ts'
@@ -22,6 +22,16 @@ describe('portable byte primitives', () => {
 			const got = Buffer.from(sha256Sync(new TextEncoder().encode(text))).toString('hex')
 			expect(got).toBe(createHash('sha256').update(text).digest('hex'))
 		}
+	})
+
+	it('limits the portable SHA fallback to the bridge wasm-before-init failure', () => {
+		expect(
+			isBridgeWasmUnavailableError(
+				new TypeError("Cannot read properties of undefined (reading '__wbindgen_add_to_stack_pointer')")
+			)
+		).toBe(true)
+		expect(isBridgeWasmUnavailableError(new TypeError('invalid SHA input'))).toBe(false)
+		expect(isBridgeWasmUnavailableError(new Error('future bridge failure'))).toBe(false)
 	})
 
 	it('base64 helpers match Buffer, padded and unpadded', () => {

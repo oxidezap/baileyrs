@@ -10,7 +10,7 @@
  * is to keep the `foo(runtime, …)` sprawl in one place.
  */
 
-import type { BaileysRuntime, BridgeRuntime } from './types.ts'
+import type { BaileysRuntime, BridgeRuntime, MediaCryptoRuntime } from './types.ts'
 
 /** The codec surface used by the proto facade and the send path. */
 export const makeProtoRuntime = (runtime: BaileysRuntime) => {
@@ -30,6 +30,18 @@ export const makeHistoryRuntime = (runtime: BaileysRuntime) => {
 		decodeMessageWireBatch: bridge.decodeMessageWireBatch.bind(bridge),
 		decodeReceiptWireBatch: bridge.decodeReceiptWireBatch.bind(bridge),
 		decodeServerAckWireBatch: bridge.decodeServerAckWireBatch.bind(bridge)
+	}
+}
+
+/** Media primitives bound to the bridge and randomness selected for this runtime. */
+export const makeMediaCryptoRuntime = (runtime: Pick<BaileysRuntime, 'bridge' | 'randomBytes'>): MediaCryptoRuntime => {
+	const bridge = runtime.bridge
+	return {
+		hkdf: bridge.hkdf.bind(bridge),
+		sha256: bridge.sha256.bind(bridge),
+		aesGcm256Encrypt: bridge.aesGcm256Encrypt.bind(bridge),
+		aesGcm256Decrypt: bridge.aesGcm256Decrypt.bind(bridge),
+		randomBytes: runtime.randomBytes
 	}
 }
 
@@ -60,6 +72,10 @@ export type SocketRuntime = ReturnType<typeof makeSocketRuntime>
 export const BRIDGE_RUNTIME_KEYS = [
 	'createWhatsAppClient',
 	'initWasmEngine',
+	'hkdf',
+	'sha256',
+	'aesGcm256Encrypt',
+	'aesGcm256Decrypt',
 	'encodeProto',
 	'decodeProto',
 	'inflateZlib',

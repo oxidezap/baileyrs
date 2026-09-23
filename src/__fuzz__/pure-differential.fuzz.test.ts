@@ -789,7 +789,7 @@ const TARGETS: readonly PureTarget[] = [
 	},
 	{ name: 'encodeNewsletterMessage', generate: random => [messageContent(random)], runs: 250 },
 
-	// ---- src/Utils/messages.ts ---------------------------------------------
+	// ---- src/Utils/messages-core.ts ----------------------------------------
 	{
 		name: 'getContentType',
 		generate: random => [random.bool(0.9) ? messageContent(random) : (random.pick([undefined, null, {}]) as unknown)],

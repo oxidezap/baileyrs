@@ -1,5 +1,6 @@
 import { DisconnectReason as socketDisconnectReason } from './Types/index.ts'
 import * as mediaCore from './Media/core.ts'
+import type { HostMediaCryptoRuntime } from './host-types.ts'
 
 export type BinaryNode = {
 	tag: string
@@ -70,8 +71,9 @@ export const DisconnectReason: {
 export const hkdfInfoKey = (type: MediaType): string => mediaCore.hkdfInfoKey(type)
 export const getMediaKeys = (
 	buffer: Uint8Array | string | null | undefined,
-	mediaType: MediaType
-): Promise<MediaDecryptionKeyInfo> => mediaCore.getMediaKeys(buffer, mediaType)
+	mediaType: MediaType,
+	runtime?: HostMediaCryptoRuntime
+): Promise<MediaDecryptionKeyInfo> => mediaCore.getMediaKeys(buffer, mediaType, runtime)
 export const encodeBase64EncodedStringForUpload = (value: string): string =>
 	mediaCore.encodeBase64EncodedStringForUpload(value)
 export const mediaMessageSHA256B64 = (message: Record<string, unknown>): string | null | undefined =>
@@ -81,13 +83,18 @@ export const getUrlFromDirectPath = (directPath: string, host?: string): string 
 	mediaCore.getUrlFromDirectPath(directPath, host)
 export const extensionForMediaMessage = (message: Record<string, unknown>): string =>
 	mediaCore.extensionForMediaMessage(message as never)
-export const encryptMediaRetryRequest = (key: WAMessageKey, mediaKey: Uint8Array, meId: string): BinaryNode =>
-	mediaCore.encryptMediaRetryRequest(key as never, mediaKey, meId)
+export const encryptMediaRetryRequest = (
+	key: WAMessageKey,
+	mediaKey: Uint8Array,
+	meId: string,
+	runtime?: HostMediaCryptoRuntime
+): BinaryNode => mediaCore.encryptMediaRetryRequest(key as never, mediaKey, meId, runtime)
 export const getStatusCodeForMediaRetry = (code: number): 200 | 412 | 404 | 418 =>
 	mediaCore.getStatusCodeForMediaRetry(code)
 export const decodeMediaRetryNode = (node: BinaryNode): MediaRetryUpdate => mediaCore.decodeMediaRetryNode(node)
 export const decryptMediaRetryData = (
 	data: { ciphertext: Uint8Array; iv: Uint8Array },
 	mediaKey: Uint8Array,
-	msgId: string
-): unknown => mediaCore.decryptMediaRetryData(data, mediaKey, msgId)
+	msgId: string,
+	runtime?: HostMediaCryptoRuntime
+): unknown => mediaCore.decryptMediaRetryData(data, mediaKey, msgId, runtime)
