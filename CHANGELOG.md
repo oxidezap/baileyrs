@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.9](https://github.com/oxidezap/baileyrs/compare/v0.3.8...v0.3.9) (2026-09-23)
+
+
+### Bug Fixes
+
+* **socket:** report startup initialization failures ([#162](https://github.com/oxidezap/baileyrs/issues/162)) ([93bfbaa](https://github.com/oxidezap/baileyrs/commit/93bfbaaa132986cf7e9292804ef9dcb2f68f1f47))
+
 ## [0.3.8](https://github.com/oxidezap/baileyrs/compare/v0.3.7...v0.3.8) (2026-09-23)
 
 
