@@ -112,7 +112,8 @@
     "protobufjs": "^8.8.0",
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
-    "typescript-compat-auditor": "npm:typescript@6.0.3"
+    "typescript-compat-auditor": "npm:typescript@6.0.3",
+    "wrangler": "4.136.3"
   },
   "peerDependencies": {
     "@hapi/boom": "^9.1.0 || ^10.0.0",
