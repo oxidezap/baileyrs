@@ -231,6 +231,10 @@ jobs:
       # nodejs_compat deliberately absent. No Cloudflare credentials are used.
       - run: npm run test:packaged
 
+      - run: npm run compat:audit:proto
+
+      - run: npm run compat:audit:wire
+
       - run: npm run compat:audit:lifecycle
 
       # Only the release path takes the build away with it: `publish` ships
