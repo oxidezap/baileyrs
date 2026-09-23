@@ -1,6 +1,6 @@
 import type { WAMediaUpload } from '../Types/index.ts'
 import { Boom } from '../Utils/boom.ts'
-import { generateProfilePicture } from '../Utils/messages-media.ts'
+import { generateProfilePicture } from '../Utils/messages-media-core.ts'
 import { isJidGroup } from '../WABinary/index.ts'
 import type { SocketContext } from './types.ts'
 

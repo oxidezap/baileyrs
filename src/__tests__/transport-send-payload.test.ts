@@ -55,7 +55,7 @@ class FakeWebSocket {
 		this.url = url
 		// The transport only settles `connect()` once `open` fires, and it
 		// subscribes after the constructor returns.
-		queueMicrotask(() => this.dispatch('open'))
+		setImmediate(() => this.dispatch('open'))
 	}
 
 	addEventListener(type: string, listener: (event: never) => void) {
@@ -98,7 +98,7 @@ const connect = async () => {
 	const transport = makeTransport({
 		waWebSocketUrl: 'ws://127.0.0.1:1/ws',
 		logger: silentLogger,
-		webSocketCtor: installTrackedWebSocket()
+		createWebSocket: async url => new (installTrackedWebSocket())(url)
 	})
 	await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
 	return transport

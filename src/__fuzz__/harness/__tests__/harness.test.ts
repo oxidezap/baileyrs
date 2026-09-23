@@ -9,7 +9,14 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { applyAllowlist, staleEntries, type Divergence, type KnownDivergence } from '../divergence.ts'
+import {
+	applyAllowlist,
+	classifyDecodeParityDifference,
+	classifyRoundTripDifference,
+	staleEntries,
+	type Divergence,
+	type KnownDivergence
+} from '../divergence.ts'
 import { corpusSlug } from '../corpus.ts'
 import { makeRandom } from '../random.ts'
 import { shrink } from '../shrink.ts'
@@ -21,6 +28,13 @@ import {
 	sameWireOrdering,
 	type SchemaContext
 } from '../wire.ts'
+
+// Node's test runner isolates this file in its own process. Keep job settings
+// out of these synthetic probes, including report and corpus writes. The runner
+// must stay dynamically imported below so this runs before it reads configuration.
+for (const name of Object.keys(process.env)) {
+	if (name.startsWith('FUZZ_')) delete process.env[name]
+}
 
 describe('fuzz harness — deterministic randomness', () => {
 	it('replays an identical stream for an identical seed', () => {
@@ -600,6 +614,37 @@ describe('fuzz harness — known-divergence allowlist', () => {
 			excused(renamed, { ...declared, businessBroadcastAssociationAction: {} }),
 			'the rename beside a field the bridge never writes — the shape deep mode draws'
 		)
+		// Decoded keys use lower camel case, while the omission registry is
+		// holder-scoped by generated type. Wrapped media and favicon paths must
+		// still reach their exact holder entries rather than falling through to a
+		// broad mediaKeyDomain suffix allowance.
+		assert.ok(
+			excusedWith(
+				{ path: 'Message' },
+				{ agentAction: { deviceId: '0n' }, videoMessage: {} },
+				{ agentAction: { deviceID: '0n' }, videoMessage: { mediaKeyDomain: {} } }
+			),
+			'video mediaKeyDomain omission is holder-scoped through a decoded wrapper'
+		)
+		assert.ok(
+			excusedWith(
+				{ path: 'Message' },
+				{ agentAction: { deviceId: '0n' }, extendedTextMessage: {} },
+				{
+					agentAction: { deviceID: '0n' },
+					extendedTextMessage: { faviconMMSMetadata: { mediaKeyDomain: {} } }
+				}
+			),
+			'favicon mediaKeyDomain omission reaches its nested holder'
+		)
+		assert.ok(
+			!excusedWith(
+				{ path: 'Message' },
+				{ agentAction: { deviceId: '0n' }, reactionMessage: {} },
+				{ agentAction: { deviceID: '0n' }, reactionMessage: { mediaKeyDomain: {} } }
+			),
+			'an unsupported media holder remains a finding'
+		)
 		// The documented absence is rooted at the decoded type, so a finding that
 		// names no type cannot reach it. Pinned because the root lookup is the one
 		// place a later change could widen every path at once.
@@ -874,6 +919,179 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 		assert.equal(sameWireOrdering(nested(minimal), nested(respelledValue)), false)
 	})
 
+	it('reads fixed-width wire types off the generated metadata, not the schema kind', async () => {
+		// The compact schema lumps fixed64 with uint64, so the kind alone says
+		// wire type 0 — but the generated `wireType` metadata records 1, the
+		// table protobufjs encodes with. Without it every valid fixed64 payload
+		// reads as schema-invalid and a real disagreement there is reclassified
+		// into the excused interpretation class.
+		const { allowedWireTypes } = await import('../schema-context.ts')
+		assert.deepEqual([...(allowedWireTypes('SignedPreKeyRecordStructure', 5) ?? [])], [1])
+		// varint, fixed32, length-delimited and 64-bit fixed-width kinds:
+		// MessageKey field 1 is a string, SyncActionValue field 1 an int64,
+		// ClientPayload field 9 an sfixed32, Location field 1 a double.
+		assert.deepEqual([...(allowedWireTypes('MessageKey', 1) ?? [])], [2])
+		assert.deepEqual([...(allowedWireTypes('SyncActionValue', 1) ?? [])], [0])
+		assert.deepEqual([...(allowedWireTypes('ClientPayload', 9) ?? [])], [5])
+		assert.deepEqual([...(allowedWireTypes('Location', 1) ?? [])], [1])
+	})
+
+	it('validates recursive messages beyond the old depth budget', async () => {
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, nestedMessageAt, packedWireType } = await import('../schema-context.ts')
+		const facts = { allowedWireTypes, isStringField, nestedMessageAt, packedWireType }
+		let payload = new Uint8Array()
+		for (let depth = 0; depth < 20; depth++) {
+			payload = Uint8Array.from([0x0a, payload.length, ...payload])
+			payload = Uint8Array.from([0xc2, 0x02, payload.length, ...payload])
+		}
+		const result = validateSchemaWire(payload, 'Message', facts)
+		assert.equal(result.valid, true)
+	})
+
+	it('rejects a map field arriving at a non-length-delimited wire type', async () => {
+		// Maps encode as length-delimited entry messages on the wire, so a map
+		// number arriving as a varint is schema-invalid rather than
+		// agreement-worthy — even though the generated value metadata says
+		// nothing about the outer record.
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, mapEntrySchemas, mapFieldNumbers, nestedMessageAt, packedWireType } =
+			await import('../schema-context.ts')
+		const maps = mapFieldNumbers('Config')
+		assert.ok(maps.has(1), 'expected Config field 1 to be a map number')
+		const facts = {
+			allowedWireTypes: (at: string, field: number) =>
+				maps.has(field) && at === 'Config' ? new Set([2]) : allowedWireTypes(at, field),
+			isStringField,
+			nestedMessageAt,
+			packedWireType,
+			mapEntrySchema: (at: string, field: number) => mapEntrySchemas(at).get(field)
+		}
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x08, 0x00]), 'Config', facts), {
+			valid: false,
+			reason: 'wire-type',
+			path: 'Config',
+			field: 1,
+			actualWireType: 0
+		})
+		// Config.field has uint32 keys: a varint key is valid, while a
+		// length-delimited key is not.
+		assert.equal(validateSchemaWire(Uint8Array.from([0x0a, 0x04, 0x08, 0x01, 0x12, 0x00]), 'Config', facts).valid, true)
+		assert.equal(
+			validateSchemaWire(Uint8Array.from([0x0a, 0x05, 0x0a, 0x01, 0x78, 0x12, 0x00]), 'Config', facts).valid,
+			false
+		)
+	})
+
+	it('validates nested map fields and packed scalar payloads', async () => {
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, mapEntrySchemas, mapFieldNumbers, nestedMessageAt, packedWireType } =
+			await import('../schema-context.ts')
+		const mapsByPath = new Map<string, ReadonlySet<number>>()
+		const mapsAt = (path: string): ReadonlySet<number> => {
+			const cached = mapsByPath.get(path)
+			if (cached !== undefined) return cached
+			const maps = mapFieldNumbers(path)
+			mapsByPath.set(path, maps)
+			return maps
+		}
+		const facts = {
+			allowedWireTypes: (path: string, field: number) =>
+				mapsAt(path).has(field) ? new Set([2]) : allowedWireTypes(path, field),
+			isStringField,
+			nestedMessageAt,
+			packedWireType: (path: string, field: number) =>
+				mapsAt(path).has(field) ? undefined : packedWireType(path, field),
+			mapEntrySchema: (path: string, field: number) => mapEntrySchemas(path).get(field)
+		}
+		// MusicUserIdAction.musicUserIdMap is a nested map; field 2 as a
+		// varint must not fall through as an unknown number.
+		const nestedMap = validateSchemaWire(Uint8Array.from([0x10, 0x00]), 'SyncActionValue.MusicUserIdAction', facts)
+		assert.deepEqual(nestedMap, {
+			valid: false,
+			reason: 'wire-type',
+			path: 'SyncActionValue.MusicUserIdAction',
+			field: 2,
+			actualWireType: 0
+		})
+		// ImageMessage.scanLengths is repeated uint32 field 22. A packed
+		// occurrence with an unterminated inner varint is not schema-valid.
+		const packed = validateSchemaWire(Uint8Array.from([0xb2, 0x01, 0x01, 0x80]), 'Message.ImageMessage', facts)
+		assert.equal(packed.valid, false)
+		assert.equal(packed.reason, 'framing')
+	})
+
+	it('accepts balanced unknown groups and rejects mismatched group ends', async () => {
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, nestedMessageAt, packedWireType } = await import('../schema-context.ts')
+		const facts = { allowedWireTypes, isStringField, nestedMessageAt, packedWireType }
+		// Unknown field 99: start-group, field 1 varint, matching end-group.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x9b, 0x06, 0x08, 0x00, 0x9c, 0x06]), 'MessageKey', facts), {
+			valid: true
+		})
+		assert.equal(
+			validateSchemaWire(Uint8Array.from([0x9b, 0x06, 0x08, 0x00, 0xa4, 0x06]), 'MessageKey', facts).valid,
+			false
+		)
+		// A tenth varint byte may carry only bit 63; an overflowing terminator
+		// is malformed even when it appears as an unknown scalar value.
+		assert.equal(
+			validateSchemaWire(
+				Uint8Array.from([0x08, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02]),
+				'MessageKey',
+				facts
+			).valid,
+			false
+		)
+		// Unknown groups can nest deeply without consuming the JS call stack.
+		const deepGroup: number[] = [0x9b, 0x06]
+		for (let depth = 0; depth < 1024; depth++) deepGroup.push(0x9b, 0x06)
+		deepGroup.push(0x08, 0x00)
+		for (let depth = 0; depth <= 1024; depth++) deepGroup.push(0x9c, 0x06)
+		assert.equal(validateSchemaWire(Uint8Array.from(deepGroup), 'MessageKey', facts).valid, true)
+	})
+
+	it('treats undecodable bytes in a declared string as schema-invalid', async () => {
+		// A protobuf string is UTF-8: invalid bytes in one are not semantically
+		// valid input even when they frame, so the validator fails them rather
+		// than demanding the bridge reproduce protobufjs's salvage. `bytes`
+		// fields carry arbitrary bytes and stay valid.
+		const { validateSchemaWire } = await import('../wire.ts')
+		const { allowedWireTypes, isStringField, nestedMessageAt } = await import('../schema-context.ts')
+		const facts = { allowedWireTypes, isStringField, nestedMessageAt }
+		// MessageKey field 1 is `string remoteJid`: tag 0x0a, length 1, 0xff.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x0a, 0x01, 0xff]), 'MessageKey', facts), {
+			valid: false,
+			reason: 'invalid-utf8',
+			path: 'MessageKey',
+			field: 1
+		})
+		// Unknown field numbers stay skippable: field 99 varint is valid.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0xb8, 0x06, 0x01]), 'MessageKey', facts), {
+			valid: true
+		})
+		// A nested mismatch is reported, not swallowed: Message field 49 is
+		// `deviceSentMessage`, so a varint arriving where a message descends
+		// fails the recursive check even though the top-level tag frames.
+		// Tag 0xf2 0x03 is field 62 << 3 | 2; its two-byte payload 0x08 0x00 is
+		// field 1 as a varint, which must not validate as a length-delimited
+		// Message. Field 62 is unknown to Message, so the payload is opaque —
+		// instead craft the failure one level down: MessageKey field 1 is a
+		// string, and the same bytes as a varint fail there.
+		assert.deepEqual(validateSchemaWire(Uint8Array.from([0x08, 0x00]), 'MessageKey', facts), {
+			valid: false,
+			reason: 'wire-type',
+			path: 'MessageKey',
+			field: 1,
+			actualWireType: 0
+		})
+		// And a nested message that consumed fewer bytes than its length is
+		// still framing: MessageKey field 3 is `string id`, so 0x0a 0x03 with
+		// only 0x08 0x00 inside overruns the submessage boundary.
+		const nested = validateSchemaWire(Uint8Array.from([0x1a, 0x03, 0x0a, 0x02, 0x08, 0x00]), 'Message', facts)
+		assert.equal(nested.valid, false)
+	})
+
 	it('reads a packing difference alongside a dropped field as an omission', () => {
 		// Same repeated field spelled both ways, and field 2 present on one side only.
 		const packed = lengthDelimited(22, [0x80, 0x80, 0x40, 0x00])
@@ -948,6 +1166,138 @@ describe('fuzz harness — protobuf wire canonicaliser', () => {
 			`a field number is claimed by two fields, so the scan degraded it to opaque bytes: ${collisions
 				.map(([path, numbers]) => `${path} #${numbers.join(', #')}`)
 				.join('; ')}`
+		)
+	})
+})
+
+describe('fuzz harness — round-trip omission classification', () => {
+	it('only accepts documented bridge-side omissions', () => {
+		const text = { isTextField: () => false }
+		assert.equal(
+			classifyRoundTripDifference(
+				{ mediaKeyTimestamp: 1 },
+				{ mediaKeyTimestamp: 1, mediaKeyDomain: 0 },
+				'Message.ImageMessage',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference({}, { deviceID: 0 }, 'SyncActionValue.AgentAction', text),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ agentAction: {} }, { agentAction: { deviceID: 0 } }, 'SyncActionValue', text),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ value: { agentAction: {} } },
+				{ value: { agentAction: { deviceID: 0 } } },
+				'SyncActionData',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ value: { chatAssignment: {} } },
+				{ value: { chatAssignment: { deviceAgentID: 0 } } },
+				'SyncActionData',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, businessBroadcastAssociationAction: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceID: 1, deviceId: 2 } },
+				{ agentAction: { deviceID: 1 } },
+				'SyncActionValue',
+				text
+			),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceId: 2, deviceID: 1 } },
+				{ agentAction: { deviceID: 1 } },
+				'SyncActionValue',
+				text
+			),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, chatLockSettings: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ timestamp: 1 }, { timestamp: 1, chatLockSettings: {} }, 'SyncActionValue', text),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ timestamp: 1, extra: {} }, { timestamp: 1 }, 'SyncActionValue', text),
+			'proto:round-trip'
+		)
+		assert.equal(
+			classifyRoundTripDifference({ timestamp: 1 }, { timestamp: 2 }, 'SyncActionValue', text),
+			'proto:round-trip'
+		)
+	})
+
+	it('requires documented omissions for decode parity too', () => {
+		const text = { isTextField: () => false }
+		assert.equal(
+			classifyDecodeParityDifference(
+				{ mediaKeyTimestamp: 1 },
+				{ mediaKeyTimestamp: 1, mediaKeyDomain: 0 },
+				'Message.ImageMessage',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyDecodeParityDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, businessBroadcastAssociationAction: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:field-omission'
+		)
+		assert.equal(
+			classifyDecodeParityDifference(
+				{ agentAction: { deviceId: 1 } },
+				{ agentAction: { deviceID: 1 }, chatLockSettings: {} },
+				'SyncActionValue',
+				text
+			),
+			'proto:decode-parity'
+		)
+		assert.equal(
+			classifyDecodeParityDifference({ timestamp: 1 }, { timestamp: 1, chatLockSettings: {} }, 'SyncActionValue', text),
+			'proto:decode-parity'
+		)
+		assert.equal(
+			classifyDecodeParityDifference({ timestamp: 1, extra: {} }, { timestamp: 1 }, 'SyncActionValue', text),
+			'proto:decode-parity'
+		)
+		assert.equal(
+			classifyDecodeParityDifference({ timestamp: 1 }, { timestamp: 2 }, 'SyncActionValue', text),
+			'proto:decode-parity'
 		)
 	})
 })
@@ -1045,7 +1395,7 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 	 * finding on it is the cheapest way to ask whether the runner minimised
 	 * something it was never going to report.
 	 */
-	const alwaysFinds = (target: string) => {
+	const alwaysFinds = (target: string, detail = 'always') => {
 		let checks = 0
 		return {
 			count: () => checks,
@@ -1056,7 +1406,7 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 					input: { padding: 'x'.repeat(64) },
 					local: 'a',
 					upstream: 'b',
-					detail: 'always'
+					detail
 				}
 			}
 		}
@@ -1064,7 +1414,10 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 
 	it('does not minimise a finding the registry already excuses', async () => {
 		const { fuzz } = await import('../runner.ts')
-		const probe = alwaysFinds('proto:mutation-interpretation')
+		const probe = alwaysFinds(
+			'proto:mutation-interpretation',
+			'both decoders accepted bytes that are not well-formed protobuf, and read them differently'
+		)
 		const report = await fuzz<{ padding: string }>({
 			target: 'proto:mutation-interpretation',
 			runs: 5,
@@ -1074,8 +1427,8 @@ describe('fuzz harness — minimising is for findings that will be reported', ()
 
 		assert.equal(report.excused, 5)
 		assert.deepEqual(report.findings, [])
-		// One evaluation per input and nothing else. A shrink pass would add its
-		// candidates plus the re-check of the minimised input.
+		// One evaluation per generated input and nothing else. A shrink pass
+		// would add its candidates plus a re-check of the minimised input.
 		assert.equal(probe.count(), 5)
 	})
 

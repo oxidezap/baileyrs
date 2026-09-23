@@ -135,8 +135,61 @@ type JoinRequestEventExact = Assert<Exact<LocalEventMap['group.join-request'], U
 // The base emitter and the richer buffer return contract must remain usable in
 // both directions. This catches accidental additions to the base interface as
 // well as missing buffer lifecycle methods.
-type EventNamesExact = Assert<Exact<keyof LocalEventMap, keyof UpstreamEventMap>>
-type EventMapExact = Assert<Exact<LocalEventMap, UpstreamEventMap>>
+//
+// Upstream's map is not copied verbatim: `app-state-sync.failed` (bridge 0.10.0, #55)
+// and the stub fields pinned below are deliberate, so a new addition still fails.
+const INTENDED_EVENT_ADDITIONS = ['app-state-sync.failed'] as const
+type IntendedEventAdditions = (typeof INTENDED_EVENT_ADDITIONS)[number]
+type EventNamesExact = Assert<
+	Exact<Exclude<keyof LocalEventMap, IntendedEventAdditions>, keyof UpstreamEventMap>
+>
+// The direction a consumer's handler needs: a payload this library emits has to
+// satisfy the type upstream declares, so a handler written against upstream keeps
+// typechecking. The reverse is the producer's direction and is not required.
+type EventMapLocalToUpstream = Assert<Assignable<LocalEventMap, UpstreamEventMap>>
+type CallPayloadAdditions = Assert<
+	Exact<
+		Exclude<keyof LocalEventMap['call'][number], keyof UpstreamEventMap['call'][number]>,
+		'audio' | 'audioDuration' | 'callCreator' | 'callerCountryCode' | 'deviceClass' | 'duration' | 'joinable' | 'notify' | 'platform' | 'stanzaId' | 'version'
+	>
+>
+type UpsertMessageAdditions = Assert<
+	Exact<
+		Exclude<
+			keyof LocalEventMap['messages.upsert']['messages'][number],
+			keyof UpstreamEventMap['messages.upsert']['messages'][number]
+		>,
+		'stanzaType'
+	>
+>
+type HistoryMessageAdditions = Assert<
+	Exact<
+		Exclude<
+			keyof LocalEventMap['messaging-history.set']['messages'][number],
+			keyof UpstreamEventMap['messaging-history.set']['messages'][number]
+		>,
+		'stanzaType'
+	>
+>
+type UpdatePayloadAdditions = Assert<
+	Exact<
+		Exclude<
+			keyof LocalEventMap['messages.update'][number]['update'],
+			keyof UpstreamEventMap['messages.update'][number]['update']
+		>,
+		'stanzaType'
+	>
+>
+// The four events above carry types this library shares with its own messages, so
+// they are pinned member by member. Every other event stays strictly equal to
+// upstream's, which is what catches an accidental field or rename elsewhere.
+type PinnedEventKeys = 'call' | 'messages.update' | 'messages.upsert' | 'messaging-history.set'
+type UnpinnedEventKey = Exclude<keyof LocalEventMap, IntendedEventAdditions | PinnedEventKeys>
+type UnpinnedEventsExact = Assert<
+	{ [K in UnpinnedEventKey]: Exact<LocalEventMap[K], UpstreamEventMap[K]> }[UnpinnedEventKey] extends true
+		? true
+		: false
+>
 type EventEmitterMethodsExact = Assert<Exact<keyof LocalEventEmitter, keyof UpstreamEventEmitter>>
 type BufferLifecycleMethods = 'buffer' | 'createBufferedFunction' | 'destroy' | 'flush' | 'isBuffering'
 type EventBufferLifecycleExact = Assert<
@@ -285,7 +338,12 @@ export type CompatibilityTypeAssertions = [
 	GroupsUpdateEventExact,
 	JoinRequestEventExact,
 	EventNamesExact,
-	EventMapExact,
+	EventMapLocalToUpstream,
+	CallPayloadAdditions,
+	UpsertMessageAdditions,
+	HistoryMessageAdditions,
+	UpdatePayloadAdditions,
+	UnpinnedEventsExact,
 	EventEmitterMethodsExact,
 	EventBufferLifecycleExact,
 	RelayMessageResultExact,

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { describe, it } from 'node:test'
@@ -111,6 +112,14 @@ describe('generated protobuf runtime facade', () => {
 		}
 	})
 
+	it('preserves protobufjs Buffer base64 coercion for noncanonical strings', () => {
+		const local = messageType(localProto, 'Message.ImageMessage')
+		for (const mediaKey of ['AQID====', 'AQ!ID']) {
+			const actual = local.fromObject({ mediaKey }) as { mediaKey: Uint8Array }
+			assert.deepEqual([...actual.mediaKey], [...Buffer.from(mediaKey, 'base64')])
+		}
+	})
+
 	it('preserves all 64 bits through the existing codec and interoperates with protobufjs readers and writers', () => {
 		const fixture = {
 			requestPaymentMessage: {
@@ -220,12 +229,18 @@ describe('generated protobuf runtime facade', () => {
 		assert.equal(report.enums.coverage, 100)
 		assert.equal(report.codecTypes.coverage, 99.8)
 		assert.deepEqual(report.codecTypes.unsupported, ['BotAvatarMetadata'])
-		assert.equal(report.wireFields.coverage, 99.26)
-		assert.equal(report.wireFields.matched, 2406)
+		assert.equal(report.wireFields.coverage, 99.42)
+		assert.equal(report.wireFields.matched, 2410)
 		assert.equal(report.wireFields.total, 2424)
-		assert.equal(report.wireFields.gaps.length, 18)
+		assert.equal(report.wireFields.gaps.length, 14)
 		assert.deepEqual(report.wireFields.unexpectedGaps, [])
 		assert.deepEqual(report.wireFields.resolvedKnownGaps, [])
+		// Named, not just counted: the totals above would stay silent if a later
+		// change reopened one of these and closed something else.
+		assert.deepEqual(
+			report.wireFields.gaps.filter(gap => gap.includes('favicon') || gap.includes('oldestMessageTimestamp')),
+			[]
+		)
 	})
 
 	it('keeps compatibility metadata compact and ships no second codec runtime', () => {

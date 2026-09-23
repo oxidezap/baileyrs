@@ -13,6 +13,7 @@ import {
 	type ProtoFieldSchema,
 	type ProtoMessageSchema
 } from '../../src/WAProto/compatibility-schema.ts'
+import { projectProtoMessage } from '../../src/Compatibility/proto-runtime.ts'
 
 /**
  * Behavioural companion to the declaration auditor. That auditor compares
@@ -263,7 +264,12 @@ export const auditWireFidelity = async (
 	const findings: FidelityFinding[] = []
 
 	for (const testCase of cases) {
-		const reference = decodeProto('Message', encodeProto('Message', testCase.message))
+		// Projected like the send path: the codec writes a field named as upstream names
+		// it only after the translation, so an untranslated reference reads as an alteration.
+		const reference = decodeProto(
+			'Message',
+			encodeProto('Message', projectProtoMessage('Message', testCase.message))
+		)
 		let sent: unknown
 		let sentBytes: Uint8Array
 		try {

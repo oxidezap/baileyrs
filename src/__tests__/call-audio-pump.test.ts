@@ -994,6 +994,35 @@ describe('call audio socket methods', () => {
 		})
 	})
 
+	it('unwraps the bridge call handles and frees only the JS handle after reading the ID', async () => {
+		const freed: string[] = []
+		const makeHandle = (callId: string) => ({ callId, free: () => freed.push(callId) })
+		const client = {
+			...liveClient(),
+			acceptCall: async () => makeHandle('CALL-IN'),
+			acceptCallPcm: async () => makeHandle('CALL-IN-PCM'),
+			dialCall: async () => makeHandle('CALL-OUT'),
+			dialCallPcm: async () => makeHandle('CALL-OUT-PCM')
+		}
+		const methods = makeCallAudioMethods(stubCtx(client), nullRouter())
+		expect(await methods.acceptCall('CALL-IN')).toBe('CALL-IN')
+		expect(await methods.acceptCallPcm('CALL-IN-PCM')).toBe('CALL-IN-PCM')
+		expect(await methods.dialCall('5511999999999@s.whatsapp.net')).toBe('CALL-OUT')
+		expect(await methods.dialCallPcm('5511999999999@s.whatsapp.net')).toBe('CALL-OUT-PCM')
+		expect(freed).toEqual(['CALL-IN', 'CALL-IN-PCM', 'CALL-OUT', 'CALL-OUT-PCM'])
+	})
+
+	it('installs a relay provider after client construction without changing the backend', async () => {
+		const selected: unknown[] = []
+		const methods = makeCallAudioMethods(stubCtx(liveClient()), nullRouter(), {
+			setRelayProvider: provider => selected.push(provider)
+		})
+		const provider = { createRelayConnection: async () => ({ send() {}, close() {} }) }
+		await methods.setRelayTransportProvider(provider)
+		expect(selected).toEqual([provider])
+		expect(() => methods.setRelayTransportProvider({} as never)).toThrow(/createRelayConnection/)
+	})
+
 	it('drives PCM calls with fixed 960-sample frames', async () => {
 		const methods = makeCallAudioMethods(stubCtx(liveClient()), nullRouter())
 		expect(await methods.dialCallPcm('5511999999999@s.whatsapp.net')).toBe('CALL-NEW-PCM')

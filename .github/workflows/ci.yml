@@ -179,6 +179,8 @@ jobs:
 
       - run: npm run format:check
 
+      - run: npm run check:host-boundaries
+
   test:
     name: Tests
     needs: changes

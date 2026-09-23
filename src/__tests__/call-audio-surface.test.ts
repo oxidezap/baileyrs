@@ -24,6 +24,7 @@ import {
 	type JsStoreCallbacks,
 	type JsTransportCallbacks
 } from '@oxidezap/whatsapp-rust-bridge'
+import { loadVoip } from '@oxidezap/whatsapp-rust-bridge/voip'
 
 import { asCallAudioClient, type CallAudioBridgeClient } from '../Socket/calls.ts'
 import type { CallAudioFrame, CallMediaEvent, CallPcmFrame, CallVideoFrame } from '../Types/Call.ts'
@@ -79,7 +80,23 @@ const syncRejection = (fn: () => unknown): CodedError => {
 }
 
 const offlineAudioClient = async (): Promise<CallAudioBridgeClient> => {
-	const client = await createWhatsAppClient(deadTransport(), deadHttp(), null, memoryStore(), null)
+	const { voipBackend } = loadVoip({
+		connect: async () => {
+			throw new Error('offline relay')
+		}
+	})
+	const client = await createWhatsAppClient(
+		deadTransport(),
+		deadHttp(),
+		null,
+		memoryStore(),
+		null,
+		null,
+		null,
+		null,
+		null,
+		{ voipBackend }
+	)
 	for (const method of [
 		'acceptCall',
 		'dialCall',
@@ -92,7 +109,6 @@ const offlineAudioClient = async (): Promise<CallAudioBridgeClient> => {
 		'getCallMediaStats',
 		'getCallAudioBuffer',
 		'getActiveCalls',
-		'setRelayTransportProvider',
 		'acceptCallVideo',
 		'callPushVideo',
 		'startCallVideo',
@@ -206,17 +222,6 @@ describe('call audio bridge surface', { timeout: 60_000 }, () => {
 			const keyframe = syncRejection(() => client.requestCallKeyframe('NEVER-LIVE', 'immediate'))
 			expect(keyframe.kind).toBe('invalid-argument')
 			expect(keyframe.field).toBe('callId')
-		} finally {
-			;(client as unknown as { free(): void }).free()
-		}
-	})
-
-	it('the relay provider names a missing constructor', async () => {
-		const client = await offlineAudioClient()
-		try {
-			const error = syncRejection(() => client.setRelayTransportProvider({} as never))
-			expect(error.kind).toBe('invalid-argument')
-			expect(error.field).toBe('provider')
 		} finally {
 			;(client as unknown as { free(): void }).free()
 		}

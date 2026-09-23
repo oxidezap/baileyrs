@@ -1,6 +1,7 @@
-import { Buffer } from 'node:buffer'
+import type { Buffer } from 'node:buffer'
+import { BufferRuntime } from '../Runtime/buffer.ts'
 import LongRuntime from 'long'
-import { Readable } from 'node:stream'
+import type { Readable } from 'node:stream'
 import type { ReadableStream as WebReadableStream } from 'stream/web'
 import type { UploadMediaResult, WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
@@ -31,9 +32,16 @@ import { proto } from '../WAProto/runtime.ts'
 import { isJidGroup, isJidNewsletter, isJidStatusBroadcast, jidNormalizedUser } from '../WABinary/index.ts'
 import { assertArgumentDomain } from './argument-domain.ts'
 import { Boom } from './boom.ts'
-import { randomBytes } from 'node:crypto'
-import { sha256 } from './crypto.ts'
-import { getKeyAuthor, toNumber, unixTimestampSeconds } from './generics.ts'
+import {
+	getKeyAuthorPortable,
+	randomBytes,
+	sha256Sync,
+	toNumber,
+	unixTimestampSeconds,
+	utf8Encode,
+	hexEncode
+} from '../Runtime/bytes.ts'
+import { readableFromWeb } from '../Runtime/stream.ts'
 import type { ILogger } from './logger.ts'
 import {
 	generateThumbnail,
@@ -42,7 +50,7 @@ import {
 	getStream,
 	type MediaDownloadOptions,
 	toBuffer
-} from './messages-media.ts'
+} from './messages-media-core.ts'
 
 type ExtractByKey<T, K extends PropertyKey> = T extends Record<K, unknown> ? T : never
 type RequireKey<T, K extends keyof T> = T & {
@@ -228,7 +236,7 @@ export const prepareWAMessageMedia = async (
 	// extraction time) so values arriving via `processMedia`, link-preview
 	// builders, or direct user input go through the same coercion.
 	if (typeof uploadData.jpegThumbnail === 'string') {
-		uploadData.jpegThumbnail = Buffer.from(uploadData.jpegThumbnail, 'base64')
+		uploadData.jpegThumbnail = BufferRuntime.from(uploadData.jpegThumbnail, 'base64')
 	}
 
 	const obj = WAProto.Message.fromObject({
@@ -393,9 +401,12 @@ function hasOptionalProperty<T, K extends PropertyKey>(obj: T, key: K): obj is W
 	return typeof obj === 'object' && obj !== null && key in obj && (obj as Record<PropertyKey, unknown>)[key] !== null
 }
 
+type RuntimeRandomOptions = { runtimeRandomBytes?: (length: number) => Uint8Array }
+type RuntimeLongOptions = { runtimeLong?: Pick<typeof LongRuntime, 'fromValue'> }
+
 export const generateWAMessageContent = async (
 	message: AnyMessageContent,
-	options: MessageContentGenerationOptions
+	options: MessageContentGenerationOptions & RuntimeRandomOptions
 ) => {
 	let m: WAMessageContent = {}
 	if (hasNonNullishProperty(message, 'text')) {
@@ -486,7 +497,7 @@ export const generateWAMessageContent = async (
 			if (pfpUrl) {
 				const resp = await fetch(pfpUrl, { method: 'GET', dispatcher: options?.options?.dispatcher })
 				if (resp.ok) {
-					const buf = Buffer.from(await resp.arrayBuffer())
+					const buf = BufferRuntime.from(await resp.arrayBuffer())
 					m.groupInviteMessage.jpegThumbnail = buf
 				}
 			}
@@ -573,7 +584,8 @@ export const generateWAMessageContent = async (
 		// this cannot silently drop a field a later change puts there.
 		m.messageContextInfo = {
 			...m.messageContextInfo,
-			messageSecret: message.event.messageSecret || randomBytes(32)
+			messageSecret:
+				message.event.messageSecret || (BufferRuntime.from((options.runtimeRandomBytes ?? randomBytes)(32)) as Buffer)
 		}
 	} else if (hasNonNullishProperty(message, 'poll')) {
 		message.poll.selectableCount ||= 0
@@ -629,7 +641,8 @@ export const generateWAMessageContent = async (
 		// `mentionedJid` at all.
 		m.messageContextInfo = {
 			...m.messageContextInfo,
-			messageSecret: message.poll.messageSecret || randomBytes(32)
+			messageSecret:
+				message.poll.messageSecret || (BufferRuntime.from((options.runtimeRandomBytes ?? randomBytes)(32)) as Buffer)
 		}
 	} else if (hasNonNullishProperty(message, 'sharePhoneNumber')) {
 		m.protocolMessage = {
@@ -701,7 +714,7 @@ export const generateWAMessageContent = async (
 export const generateWAMessageFromContent = (
 	jid: string,
 	message: WAMessageContent,
-	options: MessageGenerationOptionsFromContent
+	options: MessageGenerationOptionsFromContent & RuntimeLongOptions
 ) => {
 	const innerMessage = normalizeMessageContent(message)!
 	const timestamp = unixTimestampSeconds(options.timestamp)
@@ -783,7 +796,9 @@ export const generateWAMessageFromContent = (
 	const wm = new WAProto.WebMessageInfo() as WAMessage
 	wm.key = messageKey
 	wm.message = message
-	wm.messageTimestamp = LongRuntime.fromValue(timestamp) as unknown as WAMessage['messageTimestamp']
+	wm.messageTimestamp = (options.runtimeLong ?? LongRuntime).fromValue(
+		timestamp
+	) as unknown as WAMessage['messageTimestamp']
 	// TODO: Add support for LIDs
 	const participant = isJidGroup(jid) || isJidStatusBroadcast(jid) ? userJid : undefined
 	if (participant !== undefined) wm.participant = participant
@@ -791,7 +806,11 @@ export const generateWAMessageFromContent = (
 	return wm
 }
 
-export const generateWAMessage = async (jid: string, content: AnyMessageContent, options: MessageGenerationOptions) => {
+export const generateWAMessage = async (
+	jid: string,
+	content: AnyMessageContent,
+	options: MessageGenerationOptions & RuntimeRandomOptions & RuntimeLongOptions
+) => {
 	const contentOptions =
 		options.messageId && options.logger
 			? { ...options, logger: options.logger.child({ msgId: options.messageId }) }
@@ -1029,12 +1048,12 @@ export const downloadMediaMessage = async <Type extends MediaDownloadType>(
 
 		if (type === 'buffer') {
 			const data = await withClient.waClient.downloadMedia(...args)
-			return Buffer.from(data)
+			return BufferRuntime.from(data)
 		}
 
 		// Stream mode: Web ReadableStream from Rust → Node.js Readable
 		const webStream = withClient.waClient.downloadMediaStream(...args)
-		return Readable.fromWeb(webStream as WebReadableStream)
+		return readableFromWeb(webStream as WebReadableStream) as Readable
 	}
 }
 
@@ -1181,7 +1200,7 @@ export function getAggregateVotesInPollMessage(
 	const voteHashMap: Record<string, VoteAggregation> = {}
 	for (const opt of opts) {
 		const name = opt.optionName || ''
-		voteHashMap[sha256(Buffer.from(name)).toString()] = { name, voters: [] }
+		voteHashMap[hexEncode(sha256Sync(utf8Encode(name)))] = { name, voters: [] }
 	}
 
 	for (const update of pollUpdates || []) {
@@ -1189,10 +1208,10 @@ export function getAggregateVotesInPollMessage(
 		if (!vote?.selectedOptions?.length) continue
 
 		for (const optionHash of vote.selectedOptions) {
-			const hash = Buffer.from(optionHash).toString()
+			const hash = hexEncode(optionHash)
 			let aggregate = voteHashMap[hash]
 			if (!aggregate) aggregate = voteHashMap[hash] = { name: 'Unknown', voters: [] }
-			aggregate.voters.push(getKeyAuthor(update.pollUpdateMessageKey, meId))
+			aggregate.voters.push(getKeyAuthorPortable(update.pollUpdateMessageKey, meId))
 		}
 	}
 
@@ -1213,7 +1232,7 @@ export function getAggregateResponsesInEventMessage(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const responseType = (update as any).eventResponse || 'UNKNOWN'
 		if (responseType !== 'UNKNOWN' && responseMap[responseType]) {
-			responseMap[responseType].responders.push(getKeyAuthor(update.eventResponseMessageKey, meId))
+			responseMap[responseType].responders.push(getKeyAuthorPortable(update.eventResponseMessageKey, meId))
 		}
 	}
 	return Object.values(responseMap)
@@ -1241,8 +1260,8 @@ export const updateMessageWithReceipt = (msg: Pick<WAMessage, 'userReceipt'>, re
 
 /** Replace the previous reaction from the same author, then append the latest. */
 export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, reaction: proto.IReaction): void => {
-	const author = getKeyAuthor(reaction.key || {})
-	const reactions = (msg.reactions || []).filter(item => getKeyAuthor(item.key || {}) !== author)
+	const author = getKeyAuthorPortable(reaction.key || {})
+	const reactions = (msg.reactions || []).filter(item => getKeyAuthorPortable(item.key || {}) !== author)
 	reaction.text = reaction.text || ''
 	reactions.push(reaction)
 	msg.reactions = reactions
@@ -1250,8 +1269,8 @@ export const updateMessageWithReaction = (msg: Pick<WAMessage, 'reactions'>, rea
 
 /** Replace the previous poll update from the same author. Empty votes remove it. */
 export const updateMessageWithPollUpdate = (msg: Pick<WAMessage, 'pollUpdates'>, update: proto.IPollUpdate): void => {
-	const author = getKeyAuthor(update.pollUpdateMessageKey)
-	const pollUpdates = (msg.pollUpdates || []).filter(item => getKeyAuthor(item.pollUpdateMessageKey) !== author)
+	const author = getKeyAuthorPortable(update.pollUpdateMessageKey)
+	const pollUpdates = (msg.pollUpdates || []).filter(item => getKeyAuthorPortable(item.pollUpdateMessageKey) !== author)
 	if (update.vote?.selectedOptions?.length) pollUpdates.push(update)
 	msg.pollUpdates = pollUpdates
 }
@@ -1261,8 +1280,10 @@ export const updateMessageWithEventResponse = (
 	msg: Pick<WAMessage, 'eventResponses'>,
 	update: proto.IEventResponse
 ): void => {
-	const author = getKeyAuthor(update.eventResponseMessageKey)
-	const responses = (msg.eventResponses || []).filter(item => getKeyAuthor(item.eventResponseMessageKey) !== author)
+	const author = getKeyAuthorPortable(update.eventResponseMessageKey)
+	const responses = (msg.eventResponses || []).filter(
+		item => getKeyAuthorPortable(item.eventResponseMessageKey) !== author
+	)
 	responses.push(update)
 	msg.eventResponses = responses
 }

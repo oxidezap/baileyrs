@@ -1,5 +1,5 @@
 import type { JsHttpClientConfig, JsTransportCallbacks, JsTransportHandle } from '@oxidezap/whatsapp-rust-bridge'
-import { DEFAULT_ORIGIN } from '../Defaults/index.ts'
+import { unrefTimer } from '../Runtime/bytes.ts'
 import type { ILogger } from '../Utils/logger.ts'
 
 interface TransportConfig {
@@ -7,74 +7,11 @@ interface TransportConfig {
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
-	/** Test-only opt-out of TLS verification, forwarded to the WS agent below. */
+	/** Node runtime TLS test override; ignored by host-neutral transports. */
 	dangerSkipCertChainVerify?: boolean
-	/** Test-only WebSocket constructor, so unit tests observe the handshake options. */
-	webSocketCtor?: typeof WebSocket
-}
-
-interface RuntimeUndici {
-	Agent: new (options: unknown) => unknown
-	WebSocket: typeof WebSocket
-}
-
-let defaultNodeDispatcher: unknown
-/**
- * Resolve the undici module backing this runtime's WebSocket. `getBuiltinModule`
- * has no `undici` ID and always misses, so the direct `undici` dependency is
- * the source on every Node.
- *
- * Both the Agent and the WebSocket class come from that one module, never
- * mixed with the global WebSocket: pairing a dispatcher built from one
- * undici major with a socket embedding another (npm v8 Agent with Node 24's
- * embedded v7 class) breaks close propagation — reproduced as a
- * run-completion hang where the server-side destroy is never observed.
- * A missing module means no dispatcher rather than a wrong one.
- */
-const loadRuntimeUndici = async (): Promise<RuntimeUndici | undefined> => {
-	const builtin = (
-		typeof process !== 'undefined' ? (process as unknown as Record<string, unknown>).getBuiltinModule : undefined
-	) as undefined | ((name: string) => unknown)
-	if (typeof builtin === 'function') {
-		try {
-			const mod = builtin.call(process, 'undici') as RuntimeUndici | undefined
-			if (mod?.Agent && mod?.WebSocket) return mod
-		} catch {
-			// Fall through to the npm copy below.
-		}
-	}
-	try {
-		const undici = (await import('undici')) as unknown as Partial<RuntimeUndici>
-		if (!undici.Agent || !undici.WebSocket) return undefined
-		return undici as RuntimeUndici
-	} catch {
-		return undefined
-	}
-}
-
-const getDefaultDispatcher = async (undici: RuntimeUndici, insecure: boolean): Promise<unknown> => {
-	if (defaultNodeDispatcher !== undefined && !insecure) return defaultNodeDispatcher
-	try {
-		// Node 22+ enables experimental WebSocket-over-HTTP/2 by default.
-		// web.whatsapp.com does not support RFC 8441, so HTTP/2 handshakes
-		// fail immediately with 400. Use an Agent with allowH2: false
-		// unless the caller supplied their own dispatcher.
-		// An undici Agent ignores NODE_TLS_REJECT_UNAUTHORIZED, which the
-		// plain WebSocket path honoured: without this, pointing a socket at
-		// a self-signed mock breaks the moment a dispatcher is set.
-		const agent = new undici.Agent({
-			allowH2: false,
-			...(insecure ? { connect: { rejectUnauthorized: false } } : {})
-		})
-		// The insecure shape depends on the caller, so only the shared
-		// secure one is cached: caching it would hand one test's opt-out
-		// to every later socket in the process.
-		if (!insecure) defaultNodeDispatcher = agent
-		return agent
-	} catch {
-		if (!insecure) defaultNodeDispatcher = null
-		return null
-	}
+	createWebSocket?: (url: string, config: TransportConfig) => Promise<WebSocket>
+	setTimeout?: (callback: () => void, ms: number) => unknown
+	clearTimeout?: (handle: unknown) => void
 }
 
 /**
@@ -114,31 +51,16 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 	return {
 		async connect(h: JsTransportHandle) {
 			const generation = ++connectionGeneration
+			handle = h
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
 
-			const wsOptions: Record<string, unknown> = {}
-			let WebSocketCtor: typeof WebSocket = WebSocket
-			if (typeof process !== 'undefined' && process.versions?.node) {
-				// Test-only paths (self-signed mock, NODE_TLS_REJECT_UNAUTHORIZED)
-				// need the opt-out on the agent itself; callers keep passing
-				// their own dispatcher first.
-				const insecure = config.dangerSkipCertChainVerify === true || process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0'
-				const undici = await loadRuntimeUndici()
-				const dispatcher = config.options?.dispatcher ?? (undici ? await getDefaultDispatcher(undici, insecure) : null)
-				if (generation !== connectionGeneration) throw new Error('WebSocket connection superseded')
-				if (dispatcher) wsOptions.dispatcher = dispatcher
-				wsOptions.headers = { Origin: DEFAULT_ORIGIN }
-				// Same-module socket for the Agent above, never the global
-				// class: see loadRuntimeUndici for the cross-major breakage.
-				if (undici) WebSocketCtor = undici.WebSocket
-			}
-			if (config.webSocketCtor) WebSocketCtor = config.webSocketCtor
-			if (generation !== connectionGeneration) throw new Error('WebSocket connection superseded')
-			handle = h
 			disconnectTarget = ws
 
-			const newWs =
-				Object.keys(wsOptions).length > 0 ? new WebSocketCtor(url, wsOptions as never) : new WebSocketCtor(url)
+			const newWs = config.createWebSocket ? await config.createWebSocket(url, config) : new WebSocket(url)
+			if (generation !== connectionGeneration) {
+				newWs.close()
+				throw new Error('WebSocket connection superseded')
+			}
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 
@@ -258,7 +180,19 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			}
 			// Bound the wait so a pathological close (e.g. half-open TCP peer
 			// never acking FIN) can't hang shutdown beyond a short grace period.
-			await Promise.race([closed, new Promise<void>(r => setTimeout(r, 500).unref())])
+			const schedule = config.setTimeout ?? ((callback, ms) => setTimeout(callback, ms))
+			const cancel = config.clearTimeout ?? (timerHandle => clearTimeout(timerHandle as ReturnType<typeof setTimeout>))
+			let timer: unknown
+			try {
+				await Promise.race([
+					closed,
+					new Promise<void>(resolve => {
+						timer = unrefTimer(schedule(resolve, 500))
+					})
+				])
+			} finally {
+				if (timer !== undefined) cancel(timer)
+			}
 		}
 	}
 }

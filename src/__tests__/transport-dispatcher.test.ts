@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 
 import { makeTransport } from '../Socket/transport.ts'
+import { createNodeWebSocket } from '../Runtime/node-websocket.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
 
@@ -29,7 +30,7 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 			constructor(url: string, options?: Record<string, unknown>) {
 				this.url = url
 				capturedOptions.push(options)
-				queueMicrotask(() => this.dispatch('open'))
+				setImmediate(() => this.dispatch('open'))
 			}
 
 			addEventListener(type: string, listener: (event: never) => void) {
@@ -54,7 +55,8 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 		const transport = makeTransport({
 			waWebSocketUrl: 'ws://127.0.0.1:1/ws',
 			logger: silentLogger,
-			webSocketCtor: installCapturedWebSocket()
+			createWebSocket: (url, config) =>
+				createNodeWebSocket(url, { ...config, webSocketCtor: installCapturedWebSocket() })
 		})
 		await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
 
@@ -76,7 +78,8 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 			waWebSocketUrl: 'ws://127.0.0.1:1/ws',
 			logger: silentLogger,
 			dangerSkipCertChainVerify: true,
-			webSocketCtor: installCapturedWebSocket()
+			createWebSocket: (url, config) =>
+				createNodeWebSocket(url, { ...config, webSocketCtor: installCapturedWebSocket() })
 		})
 		await transport.connect({ onConnected: () => {}, onData: () => {}, onDisconnected: () => {} })
 

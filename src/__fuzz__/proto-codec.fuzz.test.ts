@@ -23,7 +23,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
-import { equivalent, normalise, omitsKeysOnly } from './harness/compare.ts'
+import { equivalent, normalise } from './harness/compare.ts'
 import {
 	canonicalWire,
 	differsOnlyByPacking,
@@ -32,9 +32,17 @@ import {
 	sameWireContent,
 	sameWireOrdering
 } from './harness/wire.ts'
-import { undoRenames, type Divergence } from './harness/divergence.ts'
+import { classifyDecodeParityDifference, classifyRoundTripDifference, type Divergence } from './harness/divergence.ts'
 import { fuzz } from './harness/runner.ts'
-import { firstFieldNumber, sampleFor, schemaAt, upstreamType, type UpstreamType } from './harness/schema-context.ts'
+import {
+	firstFieldNumber,
+	int64KindsOfPath,
+	longToDecimal,
+	sampleFor,
+	schemaAt,
+	upstreamType,
+	type UpstreamType
+} from './harness/schema-context.ts'
 
 /** The kinds protobufjs routes through `Long.fromString`, which rejects `''`. */
 const SIXTY_FOUR_BIT_KINDS: ReadonlySet<number> = new Set([PROTO_FIELD_KIND.signed64, PROTO_FIELD_KIND.unsigned64])
@@ -74,6 +82,49 @@ const isUsableCase = (value: ProtoCase): boolean =>
  * every unset field and the comparison stops being able to see a dropped one.
  */
 const TO_OBJECT = { longs: String, enums: Number, defaults: false, arrays: false, objects: false, oneofs: false }
+
+/**
+ * Reads bytes back the way the round-trip target compares them, minus one
+ * upstream artifact: protobufjs's `toObject` converter renders a `fixed64`
+ * holding `2^64 - 1` as `-1`, while the decoded Long itself carries
+ * `{ low: -1, high: -1, unsigned: true }` — the right triple, read right by
+ * `longToDecimal`. So a 64-bit field is re-read from the raw decode with its
+ * declared signedness, and only the remaining fields go through the converter.
+ * Anything else the two readings disagree on is still a finding: only the
+ * converter's sign artifact is repaired, field by field, and a real value
+ * difference elsewhere still fails the comparison.
+ */
+const repairDecoded64 = (raw: unknown, converted: unknown, path: string, depth = 0): unknown => {
+	if (depth > 12 || raw === null || converted === null || typeof raw !== 'object' || typeof converted !== 'object') {
+		return converted
+	}
+	if (Array.isArray(raw) || Array.isArray(converted)) {
+		if (!Array.isArray(raw) || !Array.isArray(converted)) return converted
+		return converted.map((value, index) => repairDecoded64(raw[index], value, path, depth + 1))
+	}
+	const rawRecord = raw as Record<string, unknown>
+	const fixed = { ...(converted as Record<string, unknown>) }
+	for (const [name, kind] of int64KindsOfPath(path)) {
+		if (!Object.hasOwn(rawRecord, name) || !Object.hasOwn(fixed, name)) continue
+		const truth = longToDecimal(rawRecord[name], kind === PROTO_FIELD_KIND.unsigned64)
+		if (truth !== undefined) fixed[name] = truth
+	}
+	for (const field of fieldsOfPath(path)) {
+		const nestedPath = messagePathOfField(field)
+		if (nestedPath === undefined || !Object.hasOwn(rawRecord, field[0]) || !Object.hasOwn(fixed, field[0])) continue
+		fixed[field[0]] = repairDecoded64(rawRecord[field[0]], fixed[field[0]], nestedPath, depth + 1)
+	}
+	return fixed
+}
+
+const readBackUpstream = (type: UpstreamType, path: string, bytes: Uint8Array): Outcome => {
+	const decoded = attempt(() => type.decode(bytes))
+	if (!decoded.ok) return { ok: false, error: (decoded as unknown as { error: string }).error }
+	const converted = attempt(() => type.toObject(decoded.value, TO_OBJECT))
+	if (!converted.ok) return converted
+	const repaired = repairDecoded64(decoded.value, converted.value, path)
+	return { ok: true, value: repaired }
+}
 
 /** One entry in the two finite field sweeps: name and number, per declared field. */
 interface FieldCase {
@@ -858,7 +909,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					if (!source.ok) continue
 					const bytes = source.value as Uint8Array
 					const local = attempt(() => decodeProto(path, bytes))
-					const remote = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+					const remote = readBackUpstream(type, path, bytes)
 
 					if (local.ok !== remote.ok) {
 						findings.push({
@@ -888,17 +939,17 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 							// Same classification as the encode side: a decoder that drops
 							// a field and a decoder that reads a different value are two
 							// different defects and must not share one allowlist entry.
+							// The omission predicate runs on the renames-undone views,
+							// exactly what the allowlist's rename entry decides on: a
+							// renamed field still present under the bridge spelling is
+							// not a dropped field, and without the undo a rename plus
+							// a documented omission fell through to the generic
+							// decode-parity target, which no entry may excuse.
 							target: populatedTouchesUnknownType(path, message)
 								? 'proto:unknown-type-dropped'
-								: // The same predicate the gate above used. Without it this
-									// re-normalisation folds `text: '0'` and `text: 0` back
-									// together, so a text-type regression that co-occurs with an
-									// already-known omission is classified as the omission and
-									// excused — decode findings carry no `omits ...` tag, so that
-									// entry accepts them unconditionally.
-									omitsKeysOnly(local.value, remote.value, { isTextField: textFieldPredicate(path) })
-									? 'proto:field-omission'
-									: 'proto:decode-parity',
+								: classifyDecodeParityDifference(local.value, remote.value, path, {
+										isTextField: textFieldPredicate(path)
+									}),
 							input: { path, origin, message, bytes: hex(bytes) },
 							local: normalise(local.value),
 							upstream: normalise(remote.value),
@@ -937,14 +988,9 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				// something was omitted.
 				const classify = (localView: unknown, upstreamView: unknown): string => {
 					if (populatedTouchesUnknownType(path, message)) return 'proto:unknown-type-dropped'
-					const a = undoRenames(localView)
-					const b = undoRenames(upstreamView)
-					// Under `compare`'s rules, not the default ones — for the reason
-					// spelled out on the decode-parity classifier: the weaker
-					// normalisation folds a changed text field back into agreement and
-					// hands a co-occurring text regression the omission entry's excuse.
-					const shape = { isTextField: textFieldPredicate(path) }
-					return omitsKeysOnly(a, b, shape) || omitsKeysOnly(b, a, shape) ? 'proto:field-omission' : 'proto:round-trip'
+					return classifyRoundTripDifference(localView, upstreamView, path, {
+						isTextField: textFieldPredicate(path)
+					})
 				}
 
 				// The same schema-aware comparison decode-parity uses. Without it, a
@@ -972,7 +1018,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				const encodedLocally = attempt(() => encodeProto(path, message))
 				if (encodedLocally.ok) {
 					const bytes = encodedLocally.value as Uint8Array
-					const readBack = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+					const readBack = readBackUpstream(type, path, bytes)
 					if (readBack.ok) {
 						const own = attempt(() => decodeProto(path, bytes))
 						if (own.ok && !compare(own.value, readBack.value)) {
@@ -1013,7 +1059,7 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 					const bytes = encodedUpstream.value as Uint8Array
 					const readBack = attempt(() => decodeProto(path, bytes))
 					if (readBack.ok) {
-						const own = attempt(() => type.toObject(type.decode(bytes), TO_OBJECT))
+						const own = readBackUpstream(type, path, bytes)
 						if (own.ok && !compare(readBack.value, own.value)) {
 							findings.push({
 								target: classify(readBack.value, own.value),
@@ -1052,8 +1098,8 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				// encoders' output — through one decoder, so that a decoder difference
 				// cannot be mistaken for an encoder one.
 				if (encodedLocally.ok && encodedUpstream.ok) {
-					const viaLocal = attempt(() => type.toObject(type.decode(encodedLocally.value as Uint8Array), TO_OBJECT))
-					const viaUpstream = attempt(() => type.toObject(type.decode(encodedUpstream.value as Uint8Array), TO_OBJECT))
+					const viaLocal = readBackUpstream(type, path, encodedLocally.value as Uint8Array)
+					const viaUpstream = readBackUpstream(type, path, encodedUpstream.value as Uint8Array)
 					if (viaLocal.ok && viaUpstream.ok && !compare(viaLocal.value, viaUpstream.value)) {
 						findings.push({
 							target: classify(viaLocal.value, viaUpstream.value),
@@ -1224,6 +1270,29 @@ describe('protobuf codec differential — Rust/WASM vs protobufjs', () => {
 				}
 			}
 		})
+	})
+
+	it('reads a full-range fixed64 without flipping its sign', () => {
+		// The deep run on seed 35323852812 reported two `proto:round-trip` findings
+		// that were both this: `SignedPreKeyRecordStructure.timestamp` is
+		// `optional fixed64` — unsigned — holding `2^64 - 1`, which the bridge
+		// decodes as `18446744073709551615` while protobufjs's `toObject`
+		// converter renders `-1` (its fixed64 path always negates the high word).
+		// The decoded Long itself carries the right `{ low, high, unsigned }`
+		// triple, so the oracle now re-reads 64-bit fields from it; this pins the
+		// case that motivated it, in both directions.
+		const type = upstreamType('SignedPreKeyRecordStructure')
+		assert.ok(type, 'expected the upstream SignedPreKeyRecordStructure type to resolve')
+		const message = { timestamp: '18446744073709551615' }
+		const fromBridge = encodeProto('SignedPreKeyRecordStructure', message)
+		const readBridge = readBackUpstream(type, 'SignedPreKeyRecordStructure', fromBridge as Uint8Array)
+		assert.equal(readBridge.ok, true)
+		assert.deepEqual(readBridge.ok ? readBridge.value : undefined, { timestamp: '18446744073709551615' })
+		const fromUpstream = type.encode(message).finish()
+		assert.equal(hex(fromBridge), hex(fromUpstream))
+		const readUpstream = readBackUpstream(type, 'SignedPreKeyRecordStructure', fromUpstream)
+		assert.equal(readUpstream.ok, true)
+		assert.deepEqual(readUpstream.ok ? readUpstream.value : undefined, { timestamp: '18446744073709551615' })
 	})
 
 	it('agrees on 64-bit integer boundaries', async () => {

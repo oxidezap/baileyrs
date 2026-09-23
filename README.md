@@ -36,6 +36,25 @@ from the proto schema and compares the two libraries directly. Differences the
 fuzzers find are recorded with a reason and a review date, and known open ones
 are listed in `src/__fuzz__/harness/divergence.ts`.
 
+### Protobuf field names
+
+The bridge and upstream Baileys generate their schemas from different sources, so a
+field can keep its number and wire type and still be spelled differently. The `proto`
+facade always uses the Baileys spelling:
+
+| Type                                   | Baileys                  | Bridge                           |
+| -------------------------------------- | ------------------------ | -------------------------------- |
+| `SyncActionValue.AgentAction`          | `deviceID`               | `deviceId`                       |
+| `SyncActionValue.ChatAssignmentAction` | `deviceAgentID`          | `deviceAgentId`                  |
+| `Message.ExtendedTextMessage`          | `faviconMMSMetadata`     | `faviconMmsMetadata`             |
+| `Message.MessageHistoryMetadata`       | `oldestMessageTimestamp` | `oldestMessageTimestampInWindow` |
+
+Without the translation a write in the Baileys spelling is dropped by the codec and a
+read never sets the public property. Both the facade and the send path translate, in
+both directions, for fields nested at any depth. An own public property wins over the
+bridge name, including an explicit `null` or `undefined`, and inputs are never
+mutated. The bridge keeps its own names.
+
 ## Documentation
 
 The full API reference and guides live in the
@@ -45,7 +64,7 @@ error handling, memory monitoring, and more.
 
 ## Installation
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.3 or newer for the Node API. A runtime-neutral `/host` entrypoint is available for Workers, Deno, and browser-like hosts.
 
 ### New project
 
@@ -56,6 +75,26 @@ npm install @oxidezap/baileyrs
 ```ts
 import makeWASocket from '@oxidezap/baileyrs'
 ```
+
+### Host-neutral entrypoint
+
+For Workers, Deno, or browser-like runtimes, import `/host` and initialize the bridge
+WASM before creating a socket. Provide a caller-owned `JsStoreCallbacks` auth store;
+this path does not use filesystem auth or Node streams.
+
+```ts
+import makeWASocket, { createAuthenticationState, useMemoryStore } from '@oxidezap/baileyrs/host'
+import wasm from '@oxidezap/baileyrs/wasm'
+import { initSync } from '@oxidezap/whatsapp-rust-bridge/host'
+
+initSync({ module: wasm })
+const store = useMemoryStore()
+const auth = await createAuthenticationState(store)
+const socket = makeWASocket({ auth })
+```
+
+Node consumers should continue using the root entrypoint and
+`useMultiFileAuthState` unchanged.
 
 ### Drop-in replacement for upstream Baileys
 
@@ -445,17 +484,19 @@ A few behaviors that differ from upstream — almost always to your advantage:
   `sock.openCallAudioWriter(callId)` instead, and file playback paces itself
   through the pump's clock timing rather than the queue. Clock timing paces
   the pulls, so pair it with an unpaced source (`intervalMs: 0`) or the two
-  cadences add up. Calls need a
-  bridge with the `client-calls-audio` domain — a preview build, not a
-  release — and without one every method above throws `501` naming it,
-  except the purely local registrations: the `onCallAudio`, `onCallPcm`
-  and `onCallVideo` sinks plus `getCallAudioFormat` return normally (a
-  sink simply never fires). To probe for the domain before dialing, call
-  any other method — e.g. `getActiveCalls` — and handle the `501`.
-  Before dialing or accepting, install the relay provider the bridge runs
-  its media transport over (`sock.setRelayTransportProvider(...)`, see
-  `Example/call.ts`); without one the media setup fails fast and the call
-  never carries audio.
+  cadences add up. The pinned bridge preview ships its media engine in a
+  separate VoIP WASM. The Node socket loads an **isolated engine per socket**
+  during initialization and passes its backend to the bridge before client
+  construction; baileyrs call methods still return call-id strings even
+  though the bridge now returns disposable handles. Non-Node hosts can
+  provide `loadVoip: async transport => initVoipSync(hostWasmBytes,
+  transport).voipBackend` on their `createWASocketFactory` runtime. Standalone
+  Opus–MLOW helpers initialize a codec-only engine if no socket exists. An
+  incompatible bridge reports a missing capability rather than silently
+  dropping media. Before dialing or accepting, install the relay provider
+  (`sock.setRelayTransportProvider(...)`, see `Example/call.ts`); the socket
+  adapts the existing provider API to the VoIP engine's connect/reconnect
+  contract. Without a working relay no audio flows.
 - **Your key store also holds bridge state, so "empty" is not "unpaired".**
   See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
   one can break a boot path, so it has its own section.

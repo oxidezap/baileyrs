@@ -20,11 +20,16 @@ const makeLogger = () => {
 	return { logger, warnings }
 }
 
+const nodeTimers = {
+	setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+	clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>)
+}
+
 describe('tagged message waiter', () => {
 	it('resolves the matching tag and removes every listener', async () => {
 		const ws = new EventEmitter()
 		const { logger } = makeLogger()
-		const waitForMessage = makeTaggedMessageWaiter(ws, logger, 100)
+		const waitForMessage = makeTaggedMessageWaiter(ws, logger, 100, nodeTimers)
 		const pending = waitForMessage<{ ok: boolean }>('message-id')
 
 		assert.equal(ws.listenerCount('TAG:message-id'), 1)
@@ -41,7 +46,7 @@ describe('tagged message waiter', () => {
 	it('returns undefined and warns on timeout', async () => {
 		const ws = new EventEmitter()
 		const { logger, warnings } = makeLogger()
-		const waitForMessage = makeTaggedMessageWaiter(ws, logger)
+		const waitForMessage = makeTaggedMessageWaiter(ws, logger, undefined, nodeTimers)
 		const keepAlive = setTimeout(() => undefined, 100)
 		try {
 			assert.equal(await waitForMessage('timeout-id', 5), undefined)
@@ -52,10 +57,34 @@ describe('tagged message waiter', () => {
 		assert.deepEqual(warnings[0]?.[0], { msgId: 'timeout-id' })
 	})
 
+	it('schedules and clears timeouts through the injected runtime', async () => {
+		const ws = new EventEmitter()
+		const { logger, warnings } = makeLogger()
+		const handle = { scheduler: 'host' }
+		let timeout: (() => void) | undefined
+		let cleared: unknown
+		const waitForMessage = makeTaggedMessageWaiter(ws, logger, 100, {
+			setTimeout: callback => {
+				timeout = callback
+				return handle
+			},
+			clearTimeout: value => {
+				cleared = value
+			}
+		})
+		const pending = waitForMessage('runtime-timeout')
+
+		assert.ok(timeout)
+		timeout()
+		assert.equal(await pending, undefined)
+		assert.equal(cleared, handle)
+		assert.equal(warnings.length, 1)
+	})
+
 	it('rejects with the connection-closed reason when the socket closes', async () => {
 		const ws = new EventEmitter()
 		const { logger } = makeLogger()
-		const waitForMessage = makeTaggedMessageWaiter(ws, logger, 100)
+		const waitForMessage = makeTaggedMessageWaiter(ws, logger, 100, nodeTimers)
 		const pending = waitForMessage('closed-id')
 		ws.emit('close')
 

@@ -44,7 +44,7 @@ import { endianness } from 'node:os'
 import process from 'node:process'
 import readline from 'node:readline'
 import qrcode from 'qrcode-terminal'
-import * as bridge from '@oxidezap/whatsapp-rust-bridge'
+import { loadVoip, MlowAudioDecoder as BridgeMlowAudioDecoder } from '@oxidezap/whatsapp-rust-bridge/voip'
 import {
 	classifyStunPacket,
 	describeStunAllocate,
@@ -65,12 +65,17 @@ export type MlowAudioDecoder = {
 	free(): void
 }
 
-type MlowAudioDecoderConstructor = new () => MlowAudioDecoder
-
+let standaloneCodecReady = false
 export const createMlowAudioDecoder = (): MlowAudioDecoder => {
-	const constructor = (bridge as unknown as { MlowAudioDecoder?: MlowAudioDecoderConstructor }).MlowAudioDecoder
-	if (constructor === undefined) throw new Error('installed bridge does not expose MlowAudioDecoder')
-	return new constructor()
+	if (!standaloneCodecReady) {
+		loadVoip({
+			connect: async () => {
+				throw new Error('standalone decoder has no relay')
+			}
+		})
+		standaloneCodecReady = true
+	}
+	return new BridgeMlowAudioDecoder()
 }
 
 export const decodeMlowAudioFrame = (decoder: MlowAudioDecoder, frame: CallAudioFrame): Float32Array =>

@@ -209,7 +209,7 @@ const CASES: DomainCase[] = [
 		parameter: 'type',
 		values: ['available', 'unavailable', 'composing', 'recording', 'paused'],
 		call: (sock, value) => sock.sendPresenceUpdate(arg(value), USER),
-		source: 'index.ts:sendPresenceUpdate:type'
+		source: 'core.ts:sendPresenceUpdate:type'
 	},
 	{
 		label: 'profilePictureUrl',
@@ -238,7 +238,7 @@ const CASES: DomainCase[] = [
 		parameter: 'mediaType',
 		values: MEDIA_TYPES,
 		call: (sock, value) => sock.waUploadToServer(new Uint8Array([1, 2, 3]), { mediaType: arg(value) }),
-		source: 'index.ts:waUploadToServer:mediaType'
+		source: 'core.ts:waUploadToServer:mediaType'
 	},
 	{
 		label: 'sendReceipt',
@@ -303,7 +303,7 @@ const CASES: DomainCase[] = [
 		parameter: 'audioFormat',
 		values: ['mlow', 'opus', undefined],
 		call: (sock, value) => sock.dialCall(USER, arg(value)),
-		source: 'calls.ts:dialCall:audioFormat',
+		source: 'calls-core.ts:dialCall:audioFormat',
 		defaulted: true
 	},
 	{
@@ -311,7 +311,7 @@ const CASES: DomainCase[] = [
 		parameter: 'audioFormat',
 		values: ['mlow', 'opus', undefined],
 		call: (sock, value) => sock.acceptCall('NEVER-RANG', arg(value)),
-		source: 'calls.ts:acceptCall:audioFormat',
+		source: 'calls-core.ts:acceptCall:audioFormat',
 		defaulted: true
 	},
 	{
@@ -319,7 +319,7 @@ const CASES: DomainCase[] = [
 		parameter: 'audioFormat',
 		values: ['mlow', 'opus', undefined],
 		call: (sock, value) => sock.pushCallAudio('NEVER-RANG', new Uint8Array([0x90]), arg(value)),
-		source: 'calls.ts:pushCallAudio:audioFormat',
+		source: 'calls-core.ts:pushCallAudio:audioFormat',
 		defaulted: true
 	},
 	{
@@ -327,7 +327,7 @@ const CASES: DomainCase[] = [
 		parameter: 'urgency',
 		values: ['coalesced', 'immediate'],
 		call: (sock, value) => sock.requestCallKeyframe('NEVER-RANG', arg(value)),
-		source: 'calls.ts:requestCallKeyframe:urgency',
+		source: 'calls-core.ts:requestCallKeyframe:urgency',
 		defaulted: true
 	}
 ]
@@ -341,22 +341,22 @@ const EXEMPT: Record<string, string> = {
 	'business.ts:minutesPastMidnight:which': 'a module-internal helper, called with a literal at both call sites',
 	'internals.ts:resyncAppState:collections': 'a no-op wrapper: nothing is forwarded to the bridge',
 	'server-queries.ts:createCallLink:_type': 'refused with a 501 whatever the value is',
-	'calls.ts:stopEntry:reason': 'a module-internal helper, called with a literal at both call sites',
-	'calls.ts:stopCallWith:reason': 'a module-internal helper, called with a literal at both call sites',
-	'calls.ts:stopAllWith:reason': 'a module-internal helper, called with a literal at both call sites',
-	'calls.ts:stop:reason':
+	'calls-core.ts:stopEntry:reason': 'a module-internal helper, called with a literal at both call sites',
+	'calls-core.ts:stopCallWith:reason': 'a module-internal helper, called with a literal at both call sites',
+	'calls-core.ts:stopAllWith:reason': 'a module-internal helper, called with a literal at both call sites',
+	'calls-core.ts:stop:reason':
 		'a module-internal helper defaulting to stopped, with literals at the abort and router call sites',
-	'calls.ts:<module>:audioFormat':
+	'calls-core.ts:<module>:audioFormat':
 		'the bridge-contract interface restatement, not a parameter; dialCall and acceptCall validate it',
-	'calls.ts:stop:format':
+	'calls-core.ts:stop:format':
 		'the source format bookkeeping on the CallMediaRouter interface (setSourceFormat), attributed by the scan to the nearest preceding opener; only acceptCall and dialCall record, both validating the domain first',
-	'calls.ts:assertPushFormat:audioFormat':
+	'calls-core.ts:assertPushFormat:audioFormat':
 		'a module-internal helper; both call sites (pushCallAudio, tryWrite) validate the domain before calling',
-	'calls.ts:close:audioFormat':
+	'calls-core.ts:next:audioFormat':
 		'the audioFormat option field on CallAudioPumpOptions, attributed by the scan to the nearest preceding opener; startCallAudioPump validates it before the first pull',
-	'calls.ts:<module>:urgency':
+	'calls-core.ts:<module>:urgency':
 		'the bridge-contract interface restatement, not a parameter; requestCallKeyframe validates it',
-	'calls.ts:checkVideoDiagnosticField:field':
+	'calls-core.ts:checkVideoDiagnosticField:field':
 		'a module-internal helper, called with a literal for each of the three diagnostic fields',
 	'internals.ts:upsertMessage:type': 'published on the event bus, so the value comes back to the caller unchanged'
 }
@@ -572,7 +572,9 @@ describe('a closed-domain argument is rejected before it reaches the bridge', { 
 				const { declarator, parameter, type } = match.groups!
 				if (declarator) continue
 				if (!type!.startsWith("'") && !domainTypes.has(type!)) continue
-				found.push(`${file}:${enclosingName(text, match.index)}:${parameter}`)
+				found.push(
+					`${file.replace('messages-core.ts', 'messages.ts')}:${enclosingName(text, match.index)}:${parameter}`
+				)
 			}
 		}
 

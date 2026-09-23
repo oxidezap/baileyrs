@@ -68,13 +68,13 @@ const CASES: readonly BoundaryCase[] = [
 	{
 		method: 'sendPresenceUpdate',
 		parameter: 'type',
-		source: 'Socket/index.ts:sendPresenceUpdate:type',
+		source: 'Socket/core.ts:sendPresenceUpdate:type',
 		call: (s, v) => s.sendPresenceUpdate(off(v), USER)
 	},
 	{
 		method: 'waUploadToServer',
 		parameter: 'mediaType',
-		source: 'Socket/index.ts:waUploadToServer:mediaType',
+		source: 'Socket/core.ts:waUploadToServer:mediaType',
 		call: (s, v) =>
 			s.waUploadToServer(off(Buffer.from('x')), off({ mediaType: v, fileEncSha256B64: '', mediaType2: undefined }))
 	},
@@ -231,7 +231,7 @@ const CASES: readonly BoundaryCase[] = [
 	{
 		method: 'downloadMedia',
 		parameter: 'type',
-		source: 'Socket/index.ts:downloadMedia:type',
+		source: 'Socket/core.ts:downloadMedia:type',
 		call: (s, v) =>
 			s.downloadMedia(
 				off({
@@ -246,31 +246,31 @@ const CASES: readonly BoundaryCase[] = [
 	{
 		method: 'dialCall',
 		parameter: 'audioFormat',
-		source: 'Socket/calls.ts:dialCall:audioFormat',
+		source: 'Socket/calls-core.ts:dialCall:audioFormat',
 		call: (s, v) => s.dialCall(USER, off(v))
 	},
 	{
 		method: 'acceptCall',
 		parameter: 'audioFormat',
-		source: 'Socket/calls.ts:acceptCall:audioFormat',
+		source: 'Socket/calls-core.ts:acceptCall:audioFormat',
 		call: (s, v) => s.acceptCall('NEVER-RANG', off(v))
 	},
 	{
 		method: 'requestCallKeyframe',
 		parameter: 'urgency',
-		source: 'Socket/calls.ts:requestCallKeyframe:urgency',
+		source: 'Socket/calls-core.ts:requestCallKeyframe:urgency',
 		call: (s, v) => s.requestCallKeyframe('NEVER-RANG', off(v))
 	},
 	{
 		method: 'pushCallAudio',
 		parameter: 'audioFormat',
-		source: 'Socket/calls.ts:pushCallAudio:audioFormat',
+		source: 'Socket/calls-core.ts:pushCallAudio:audioFormat',
 		call: (s, v) => s.pushCallAudio('NEVER-RANG', new Uint8Array([0x90]), off(v))
 	},
 	{
 		method: 'startCallAudioPump',
 		parameter: 'audioFormat',
-		source: 'Socket/calls.ts:startCallAudioPump:audioFormat',
+		source: 'Socket/calls-core.ts:startCallAudioPump:audioFormat',
 		call: (s, v) =>
 			s.startCallAudioPump(
 				'NEVER-RANG',
@@ -411,8 +411,8 @@ const inspectRejection = (error: unknown, testCase: BoundaryCase): BoundaryFindi
  */
 const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 	'Socket/blocking.ts:updateBlockStatus:action': ['block', 'unblock'],
-	'Socket/index.ts:sendPresenceUpdate:type': ['unavailable', 'available', 'composing', 'recording', 'paused'],
-	'Socket/index.ts:waUploadToServer:mediaType': [
+	'Socket/core.ts:sendPresenceUpdate:type': ['unavailable', 'available', 'composing', 'recording', 'paused'],
+	'Socket/core.ts:waUploadToServer:mediaType': [
 		'audio',
 		'document',
 		'gif',
@@ -433,7 +433,7 @@ const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 		'ptv',
 		'biz-cover-photo'
 	],
-	'Socket/index.ts:downloadMedia:type': ['buffer', 'stream'],
+	'Socket/core.ts:downloadMedia:type': ['buffer', 'stream'],
 	'Socket/groups.ts:groupSettingUpdate:setting': ['announcement', 'not_announcement', 'locked', 'unlocked'],
 	'Socket/groups.ts:groupRequestParticipantsUpdate:action': ['approve', 'reject'],
 	'Socket/groups.ts:groupParticipantsUpdate:action': ['add', 'remove', 'promote', 'demote', 'modify'],
@@ -483,11 +483,11 @@ const EXPECTED_DOMAINS: Readonly<Record<string, readonly unknown[]>> = {
 	'Socket/communities.ts:communityJoinApprovalMode:mode': ['on', 'off'],
 	// `undefined`, not `null`: omitting the format takes the bridge default,
 	// and the two are different values to `includes`.
-	'Socket/calls.ts:dialCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
-	'Socket/calls.ts:acceptCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
-	'Socket/calls.ts:pushCallAudio:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
-	'Socket/calls.ts:startCallAudioPump:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
-	'Socket/calls.ts:requestCallKeyframe:urgency': ['coalesced', 'immediate']
+	'Socket/calls-core.ts:dialCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls-core.ts:acceptCall:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls-core.ts:pushCallAudio:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls-core.ts:startCallAudioPump:audioFormat': ['mlow', 'opus', 'opus-mlow', undefined],
+	'Socket/calls-core.ts:requestCallKeyframe:urgency': ['coalesced', 'immediate']
 }
 
 /** The same values as reported by the guard itself, for the pin below. */
@@ -561,7 +561,11 @@ describe('closed-domain argument boundary, fuzzed', () => {
 			if (!entry.isFile() || !entry.name.endsWith('.ts')) continue
 			if (entry.parentPath.includes('__fuzz__') || entry.parentPath.includes('__tests__')) continue
 			const file = path.join(entry.parentPath, entry.name)
-			const relative = path.relative(sourceRoot, file).split(path.sep).join('/')
+			const relative = path
+				.relative(sourceRoot, file)
+				.split(path.sep)
+				.join('/')
+				.replace('Socket/messages-core.ts', 'Socket/messages.ts')
 			const source = await readFile(file, 'utf8')
 			for (const match of source.matchAll(/assertArgumentDomain\(\s*['"`]([^'"`]+)['"`],\s*['"`]([^'"`]+)['"`]/gu)) {
 				scanned.push(`${relative}:${match[1]}:${match[2]}`)
@@ -581,7 +585,7 @@ describe('closed-domain argument boundary, fuzzed', () => {
 			// tryWrite lives on the acquired audio writer, not the socket, so
 			// the socket-driven harness cannot reach it; its guard is pinned
 			// by the writer unit tests instead.
-			'Socket/calls.ts:tryWrite:audioFormat'
+			'Socket/calls-core.ts:tryWrite:audioFormat'
 		])
 		const missing = scanned.filter(entry => !covered.has(entry) && !exempt.has(entry))
 		assert.deepEqual(missing, [], `guarded parameters with no fuzz case: ${missing.join(', ')}`)

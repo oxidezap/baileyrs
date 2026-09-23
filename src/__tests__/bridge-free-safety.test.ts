@@ -134,12 +134,10 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 		}
 	})
 
-	it('free() mid-disconnect still kills the process, so end() keeps draining', async () => {
-		// The one shape `free()` never became safe for: freeing under the
-		// disconnect teardown aborts the process from inside wasm, which is
-		// what this pins: it is why `release` awaits `disconnect()` before
-		// freeing — drop that drain and `void sock.ws.close(); await
-		// sock.end()` can land here.
+	it('free() mid-disconnect survives the bridge teardown', async () => {
+		// Bridge 0.23.1 makes freeing under the disconnect teardown safe. Keep
+		// this regression guard because `release` still awaits `disconnect()`
+		// before freeing, and the bridge must remain safe if callers free early.
 		const outcome = await runChild(
 			`
 			c.disconnect().catch(() => {})
@@ -150,16 +148,9 @@ describe('bridge: free() safety with a call in flight', { timeout: 90_000 }, () 
 
 		expect(outcome.reachedTarget).toBe(true)
 		expect(outcome.timedOut).toBe(false)
-		expect(outcome.code === 0).toBe(false)
-		// The exact crash signature of the pinned preview build, not just
-		// any nonzero exit or any wasm fault: anything else (a sync error,
-		// an unhandled rejection after setup, unrelated memory corruption)
-		// would satisfy the lines above while describing a different
-		// hazard. Probed against the lockfile build (preview-cd3654f aborts
-		// with the mutex message); when a bridge bump changes teardown
-		// internals, re-probe and update this string with the lockfile.
-		expect(outcome.stderr).toContain('cannot recursively acquire mutex')
-		expect(outcome.stderr).toContain('wasm://wasm/')
+		expect(outcome.code).toBe(0)
+		expect(outcome.stderr.includes('cannot recursively acquire mutex')).toBe(false)
+		expect(outcome.stderr.includes('wasm://wasm/')).toBe(false)
 	})
 
 	it('await disconnect() before free() survives the same pending call', async () => {

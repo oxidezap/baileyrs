@@ -27,8 +27,15 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { decodeProto, encodeProto } from '@oxidezap/whatsapp-rust-bridge'
 import { equivalent, normalise } from './harness/compare.ts'
-import { canonicalWire } from './harness/wire.ts'
-import { schemaAt } from './harness/schema-context.ts'
+import { describeSchemaWire, validateSchemaWire, type SchemaWireFacts } from './harness/wire.ts'
+import {
+	allowedWireTypes,
+	isStringField,
+	mapEntrySchemas,
+	mapFieldNumbers,
+	nestedMessageAt,
+	packedWireType
+} from './harness/schema-context.ts'
 import { makeRandom, type Random } from './harness/random.ts'
 import { fuzz } from './harness/runner.ts'
 import { generateProtoObject, textFieldPredicate, HOT_PROTO_PATHS } from './generators/proto.ts'
@@ -275,15 +282,42 @@ describe('protobuf decoder robustness under mutation', () => {
 				// and belong to the interpretation class the entry beside this one
 				// already calls undefined behaviour. `wire.ts` states the rule — every
 				// caller that has a schema passes it — and this one has `path`.
-				const wellFormed = canonicalWire(bytes, schemaAt(path)) !== undefined
+				// One validation decides classification and diagnostic together:
+				// wire types, nesting and string encoding, all against the schema.
+				// A payload carrying a known field at an impossible wire type, a
+				// corrupt submessage, or undecodable bytes in a declared string
+				// is a strictness difference (interpretation), not a codec bug —
+				// protobufjs reads those anyway where the bridge treats them as
+				// unknown or substitutes. Only a payload valid under the schema on
+				// both sides demands agreement.
+				// Map fields encode as length-delimited entry messages on the wire,
+				// so a map number arriving at any other wire type is schema-invalid
+				// rather than agreement-worthy. The facts cache skips maps (its
+				// metadata describes the value), so they are answered here.
+				const mapsByPath = new Map<string, ReadonlySet<number>>()
+				const mapsAt = (at: string): ReadonlySet<number> => {
+					const cached = mapsByPath.get(at)
+					if (cached !== undefined) return cached
+					const maps = mapFieldNumbers(at)
+					mapsByPath.set(at, maps)
+					return maps
+				}
+				const facts: SchemaWireFacts = {
+					allowedWireTypes: (at, field) => (mapsAt(at).has(field) ? new Set([2]) : allowedWireTypes(at, field)),
+					isStringField,
+					nestedMessageAt,
+					packedWireType: (at, field) => (mapsAt(at).has(field) ? undefined : packedWireType(at, field)),
+					mapEntrySchema: (at, field) => mapEntrySchemas(at).get(field)
+				}
+				const validation = validateSchemaWire(bytes, path, facts)
 				return {
-					target: wellFormed ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
+					target: validation.valid ? 'proto:mutation-agreement' : 'proto:mutation-interpretation',
 					input: { path, mutator, bytes: hex(bytes) },
 					local: normalise(local.value),
 					upstream: normalise(remote.value),
-					detail: wellFormed
+					detail: validation.valid
 						? 'both decoders read the same well-formed payload differently'
-						: 'both decoders accepted bytes that are not well-formed protobuf, and read them differently'
+						: `both decoders accepted ${describeSchemaWire(validation)}`
 				}
 			}
 		})

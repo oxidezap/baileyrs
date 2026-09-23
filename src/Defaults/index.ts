@@ -1,4 +1,5 @@
-import { Buffer } from 'node:buffer'
+import type { Buffer } from 'node:buffer'
+import { hexDecode, publicBytes } from '../Runtime/bytes.ts'
 import { makeDefaultSignalRepository } from '../Compatibility/signal-repository.ts'
 import { proto } from '../WAProto/runtime.ts'
 import type { AuthenticationState, SocketConfig, WAVersion } from '../Types/index.ts'
@@ -16,10 +17,10 @@ export const DEF_CALLBACK_PREFIX = 'CB:'
 export const DEF_TAG_PREFIX = 'TAG:'
 export const PHONE_CONNECTION_CB = 'CB:Pong'
 
-export const WA_ADV_ACCOUNT_SIG_PREFIX = Buffer.from([6, 0])
-export const WA_ADV_DEVICE_SIG_PREFIX = Buffer.from([6, 1])
-export const WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX = Buffer.from([6, 5])
-export const WA_ADV_HOSTED_DEVICE_SIG_PREFIX = Buffer.from([6, 6])
+export const WA_ADV_ACCOUNT_SIG_PREFIX = publicBytes(new Uint8Array([6, 0])) as Buffer
+export const WA_ADV_DEVICE_SIG_PREFIX = publicBytes(new Uint8Array([6, 1])) as Buffer
+export const WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX = publicBytes(new Uint8Array([6, 5])) as Buffer
+export const WA_ADV_HOSTED_DEVICE_SIG_PREFIX = publicBytes(new Uint8Array([6, 6])) as Buffer
 
 export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60
 
@@ -31,15 +32,15 @@ export const PLACEHOLDER_MAX_AGE_SECONDS = 14 * 24 * 60 * 60
 
 export const NOISE_MODE = 'Noise_XX_25519_AESGCM_SHA256\0\0\0\0'
 export const DICT_VERSION = 3
-export const KEY_BUNDLE_TYPE = Buffer.from([5])
-export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION])
+export const KEY_BUNDLE_TYPE = publicBytes(new Uint8Array([5])) as Buffer
+export const NOISE_WA_HEADER = publicBytes(new Uint8Array([87, 65, 6, DICT_VERSION])) as Buffer
 
 export const URL_REGEX = /https:\/\/(?![^:@/\s]+:[^:@/\s]+@)[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:\d+)?(\/[^\s]*)?/g
 
 export const WA_CERT_DETAILS = {
 	SERIAL: 0,
 	ISSUER: 'WhatsAppLongTerm1',
-	PUBLIC_KEY: Buffer.from('142375574d0a587166aae71ebe516437c4a28b73e3695c6ce1f7f9545da8ee6b', 'hex')
+	PUBLIC_KEY: publicBytes(hexDecode('142375574d0a587166aae71ebe516437c4a28b73e3695c6ce1f7f9545da8ee6b')) as Buffer
 }
 
 export const PROCESSABLE_HISTORY_TYPES: proto.HistorySync.HistorySyncType[] = [

@@ -393,6 +393,13 @@ export interface CanonicalPinUpdate {
 	pinned: boolean
 }
 
+/** Mirrors upstream `chats.lock`: the hidden locked-chats folder membership of one chat. */
+export interface CanonicalLockChatUpdate {
+	type: 'lockChatUpdate'
+	jid: string
+	locked: boolean
+}
+
 export interface CanonicalMuteUpdate {
 	type: 'muteUpdate'
 	jid: string
@@ -784,6 +791,7 @@ export type CanonicalEvent =
 	| CanonicalMuteUpdate
 	| CanonicalStarUpdate
 	| CanonicalMarkChatAsReadUpdate
+	| CanonicalLockChatUpdate
 	| CanonicalLabelEdit
 	| CanonicalLabelAssociation
 	| CanonicalAppStateSyncFailed

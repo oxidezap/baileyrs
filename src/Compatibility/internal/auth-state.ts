@@ -1,12 +1,33 @@
-import type { AuthenticationState } from '../../Types/index.ts'
+import { Buffer } from 'node:buffer'
+import type { AuthenticationCreds, AuthenticationState, NativeAuthenticationState } from '../../Types/index.ts'
 import { initAuthCreds } from '../../Utils/generics.ts'
+import { hydrateHostAuthCreds } from '../host-auth-state.ts'
 import { projectNativeStore } from '../legacy-store/native-projection.ts'
 
-type NativeAuthenticationState = {
-	store: NonNullable<AuthenticationState['store']>
-	creds?: AuthenticationState['creds']
-	keys?: AuthenticationState['keys']
+const hydrationByState = new WeakMap<AuthenticationState, Promise<void>>()
+
+const preserveNodeCredentialBytes = (creds: AuthenticationCreds): void => {
+	for (const pair of [
+		creds.noiseKey,
+		creds.pairingEphemeralKeyPair,
+		creds.signedIdentityKey,
+		creds.signedPreKey.keyPair
+	]) {
+		pair.private = Buffer.from(pair.private)
+		pair.public = Buffer.from(pair.public)
+	}
+	creds.signedPreKey.signature = Buffer.from(creds.signedPreKey.signature)
+	if (creds.routingInfo) creds.routingInfo = Buffer.from(creds.routingInfo)
 }
+
+export const refreshSocketAuthenticationState = async (state: AuthenticationState): Promise<void> => {
+	if (!state.store) return
+	await hydrateHostAuthCreds(state.store, state.creds as never)
+	preserveNodeCredentialBytes(state.creds)
+}
+
+export const waitForSocketAuthenticationState = (state: AuthenticationState): Promise<void> =>
+	hydrationByState.get(state) ?? Promise.resolve()
 
 /**
  * Complete the public authentication view used by the socket when callers use
@@ -29,5 +50,14 @@ export const normalizeSocketAuthenticationState = (
 		throw new TypeError('auth must provide both creds and keys when no native store is configured')
 	}
 
-	return { creds, keys, ...(store ? { store } : {}) }
+	const state = { creds, keys, ...(store ? { store } : {}) }
+	if (store && !input.creds) {
+		const hydration = refreshSocketAuthenticationState(state)
+		// The socket initialization awaits the original promise. Attach a
+		// rejection observer immediately so a synchronously rejecting store does
+		// not become an unhandled rejection before init reaches its first await.
+		void hydration.catch(() => undefined)
+		hydrationByState.set(state, hydration)
+	}
+	return state
 }

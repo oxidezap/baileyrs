@@ -12,7 +12,7 @@
 import { Buffer } from 'node:buffer'
 import { describe, it } from 'node:test'
 import { encodeProtoCompat } from '../Compatibility/encode-proto.ts'
-import { repairProtoMessage } from '../Compatibility/proto-runtime.ts'
+import { projectProtoMessage, repairProtoMessage } from '../Compatibility/proto-runtime.ts'
 import { proto } from '../WAProto/runtime.ts'
 import { expect } from './expect.ts'
 
@@ -168,6 +168,91 @@ describe('repairProtoMessage — copy-on-write contract', () => {
 		const repaired = repairProtoMessage('Message', message) as { imageMessage: unknown }
 		// Copy-on-write: only the branch that changed is rebuilt.
 		expect(repaired.imageMessage).toBe(untouched)
+	})
+})
+
+describe('encodeProtoCompat — fields whose public name the codec does not know', () => {
+	/**
+	 * The codec drops a key it does not know without throwing, so the send path has to
+	 * translate before the encode: a repair after a throw never runs.
+	 */
+	it('writes a renamed field under the name the codec accepts', () => {
+		// 3209 = extendedTextMessage (field 6), 8a02 = faviconMMSMetadata (33),
+		// 0a0164 = thumbnailDirectPath 'd'. Field 33 is written only under the
+		// codec's own spelling, so these bytes appear only if the name was translated.
+		expect(
+			hex(
+				encodeProtoCompat('Message', {
+					extendedTextMessage: { text: 'x', faviconMMSMetadata: { thumbnailDirectPath: 'd' } }
+				})
+			)
+		).toBe('32090a01788a02030a0164')
+	})
+
+	it('keeps aliased fields when a decoded message is re-encoded', () => {
+		// Relaying what the facade just decoded. 3209 = extendedTextMessage (6), b206 =
+		// messageHistoryNotice (102) carrying oldestMessageTimestamp (1007) and count (1802).
+		const wire = '32090a01788a02030a0164b20606120410071802'
+		const instance = proto.Message.decode(Buffer.from(wire, 'hex'))
+		// The precondition of the regression: decode reports the public name, though
+		// these source-level types still call it the bridge's.
+		const decodedExtendedText = instance.extendedTextMessage as unknown as Record<string, unknown>
+		expect(decodedExtendedText.faviconMMSMetadata).toBeDefined()
+		expect(hex(encodeProtoCompat('Message', instance))).toBe(wire)
+	})
+
+	it('repairs a refused value under either spelling of an aliased field', () => {
+		// The projection hands the codec the bridge's name, so a repair has to find the
+		// field there too: 3205 = extendedTextMessage (6), 8a02 = favicon (33), 2800 = 0.
+		const wire = '32058a02022800'
+		expect(
+			hex(encodeProtoCompat('Message', { extendedTextMessage: { faviconMmsMetadata: { mediaKeyTimestamp: '' } } }))
+		).toBe(wire)
+		expect(
+			hex(encodeProtoCompat('Message', { extendedTextMessage: { faviconMMSMetadata: { mediaKeyTimestamp: '' } } }))
+		).toBe(wire)
+	})
+})
+
+describe('projectProtoMessage — copy-on-write contract', () => {
+	it('returns the same reference when nothing is aliased', () => {
+		const message = { conversation: 'hi' }
+		expect(projectProtoMessage('Message', message)).toBe(message)
+	})
+
+	it('returns the same reference for a type it has no schema for', () => {
+		const message = { anything: 1 }
+		expect(projectProtoMessage('NoSuchMessageType', message)).toBe(message)
+	})
+
+	it('does not mutate the caller’s message', () => {
+		const message = { extendedTextMessage: { faviconMMSMetadata: { thumbnailDirectPath: 'd' } } }
+		const projected = projectProtoMessage('Message', message) as {
+			extendedTextMessage: Record<string, unknown>
+		}
+		expect(message.extendedTextMessage.faviconMMSMetadata).toEqual({ thumbnailDirectPath: 'd' })
+		expect(projected.extendedTextMessage.faviconMmsMetadata).toEqual({ thumbnailDirectPath: 'd' })
+		expect(projected).not.toBe(message)
+	})
+
+	it('shares the branches it did not touch', () => {
+		const untouched = { directPath: '/v/t' }
+		const message = { extendedTextMessage: { text: 'x' }, imageMessage: untouched }
+		const projected = projectProtoMessage('Message', message) as { imageMessage: unknown }
+		expect(projected.imageMessage).toBe(untouched)
+	})
+
+	it('translates the action fields the send path can carry too', () => {
+		// The projection is keyed per type, not per message shape: a sync action that
+		// reaches it through a path other than `Message` is translated the same way.
+		const agent = projectProtoMessage('SyncActionValue', { agentAction: { deviceID: 7 } }) as {
+			agentAction: Record<string, unknown>
+		}
+		expect(agent.agentAction.deviceId).toBe(7)
+		const assignment = projectProtoMessage('SyncActionValue', {
+			chatAssignment: { deviceAgentID: 'abc' }
+		}) as { chatAssignment: Record<string, unknown> }
+		expect(assignment.chatAssignment.deviceAgentId).toBe('abc')
 	})
 })
 

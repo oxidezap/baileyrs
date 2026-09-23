@@ -1,7 +1,7 @@
-import { Buffer } from 'node:buffer'
-import { createRequire } from 'node:module'
 import type Long from 'long'
-import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge'
+import LongRuntime from '../Runtime/long.ts'
+import { BinaryReader, type Int64 } from '@oxidezap/whatsapp-rust-bridge/host'
+import { base64Decode, base64Encode, publicBytes } from '../Runtime/bytes.ts'
 import {
 	PROTO_ENUM_SCHEMAS,
 	PROTO_FIELD_FLAG,
@@ -73,10 +73,6 @@ const EMPTY_ARRAY = Object.freeze([]) as readonly unknown[]
 const EMPTY_OBJECT = Object.freeze({}) as Readonly<Record<string, never>>
 const JSON_OPTIONS = Object.freeze({ longs: String, enums: String, bytes: String, json: true })
 const WORD_BASE = 1n << 32n
-// protobufjs resolves the CommonJS Long constructor internally. Loading that
-// same export keeps `instanceof` and prototype identity aligned without
-// loading protobufjs itself or adding a second wire runtime.
-const LongRuntime = createRequire(import.meta.url)('long') as typeof Long
 
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key)
 
@@ -237,6 +233,18 @@ class LongBinaryReader extends BinaryReader {
 const longFromValue = (value: unknown, unsigned: boolean): Long =>
 	LongRuntime.fromValue(value as Long | number | string, unsigned)
 
+/**
+ * The neutral codec hands a 64-bit field back as a number while the value is exact as
+ * a double, and as a word split past that, where upstream declares a `Long` whose
+ * methods callers use. The decode reader above exists for the same reason.
+ */
+const hydratedScalar = (kind: number, value: unknown): unknown => {
+	if (value instanceof LongRuntime) return value
+	const split = isObject(value) && typeof value.low === 'number' && typeof value.high === 'number'
+	if (typeof value !== 'number' && typeof value !== 'string' && !split) return value
+	return longFromValue(value, kind === PROTO_FIELD_KIND.unsigned64)
+}
+
 const longToBigInt = (value: unknown, unsigned: boolean): bigint => {
 	if (typeof value === 'bigint') return value
 	if (typeof value === 'number') return BigInt(Math.trunc(value))
@@ -264,16 +272,45 @@ const longToNumber = (value: unknown, unsigned: boolean): number => {
 
 const bytesToBase64 = (value: unknown): string => {
 	if (value instanceof Uint8Array) {
-		return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')
+		return base64Encode(value)
 	}
-	return Buffer.from(value as ArrayLike<number>).toString('base64')
+	return base64Encode(Uint8Array.from(value as ArrayLike<number>))
 }
 
 const bytesFromObject = (value: unknown): unknown => {
-	if (typeof value === 'string') return Buffer.from(value, 'base64')
+	if (typeof value === 'string') return nodeBytesFromBase64(value)
 	if (isObject(value) && typeof value.length === 'number') return value
 	if (Array.isArray(value)) return value
 	return undefined
+}
+
+/**
+ * Upstream protobufjs materializes `bytes` fields as Node `Buffer` on Node
+ * (`protobuf.util.Buffer`), and the compatibility contract asserts
+ * `deepStrictEqual` against that — `Buffer` vs `Uint8Array` fails even with
+ * identical contents. The host-neutral graph cannot import `node:buffer`,
+ * so the base64 decode stays portable and only the wrapping is Node-only,
+ * resolved lazily through `process.getBuiltinModule('buffer')` (same
+ * lazy-builtin shape `Utils/browser-utils.ts` uses for `node:os`): no
+ * static `node:` import, `Buffer.from(u8)` on Node, the plain `Uint8Array`
+ * on hosts where there is no upstream-Buffer constraint to keep.
+ */
+const nodeBytesFromBase64 = (value: string): unknown => {
+	try {
+		const proc = (globalThis as { process?: unknown }).process as
+			| { getBuiltinModule?: (id: string) => unknown }
+			| undefined
+		const bufferModule = proc?.getBuiltinModule?.('buffer') as
+			| { Buffer?: { from?: (input: string, encoding: string) => unknown } }
+			| undefined
+		// protobufjs delegates string coercion to Buffer.from(), including its
+		// permissive handling of excess padding and ignored non-alphabet bytes.
+		const nodeBytes = bufferModule?.Buffer?.from?.(value, 'base64')
+		if (nodeBytes !== undefined) return nodeBytes
+	} catch {
+		/* host runtimes use the strict portable decoder below */
+	}
+	return base64Decode(value)
 }
 
 const oneofName = (field: ProtoFieldSchema): string | undefined => {
@@ -365,17 +402,35 @@ const defineLazyValue = (target: DynamicObject, key: string, build: () => unknow
 }
 
 /**
- * Type path to schema index, built on first use.
- *
- * Only the repair path needs it, and that path is only reached after an encode
- * has already failed — so an importer that never sends a refused value never
- * pays for the 498 entries.
+ * Type path to schema index, built on first use. The projection reads it per send,
+ * so the first encoded message builds it.
  */
 let schemaIdsByPath: Map<string, number> | undefined
+let lastSchemaPath: string | undefined
+let lastSchemaId: number | undefined
+
+// The send path asks for one type repeatedly, so the last answer is kept.
 const schemaIdFor = (path: string): number | undefined => {
+	if (path === lastSchemaPath) return lastSchemaId
 	schemaIdsByPath ??= new Map(PROTO_MESSAGE_SCHEMAS.map(([name], index) => [name, index]))
-	return schemaIdsByPath.get(path)
+	lastSchemaPath = path
+	lastSchemaId = schemaIdsByPath.get(path)
+	return lastSchemaId
 }
+
+// Bridge names stay neutral. Both sides put these at the same number and wire type,
+// so only the spelling differs.
+const FIELD_ALIASES: Readonly<Record<string, readonly [string, string]>> = {
+	'SyncActionValue.AgentAction': ['deviceID', 'deviceId'],
+	'SyncActionValue.ChatAssignmentAction': ['deviceAgentID', 'deviceAgentId'],
+	'Message.ExtendedTextMessage': ['faviconMMSMetadata', 'faviconMmsMetadata'],
+	'Message.MessageHistoryMetadata': ['oldestMessageTimestamp', 'oldestMessageTimestampInWindow']
+}
+
+// Indexed by schema id because its readers run per message.
+let aliasBySchema: Array<readonly [string, string] | undefined> | undefined
+const aliasFor = (schemaId: number): readonly [string, string] | undefined =>
+	(aliasBySchema ??= PROTO_MESSAGE_SCHEMAS.map(([path]) => FIELD_ALIASES[path]))[schemaId]
 
 /**
  * Coerces the three inputs the bridge codec refuses back to what upstream
@@ -402,9 +457,17 @@ const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>
 	if (seen.has(value)) return value
 	seen.add(value)
 	let output: DynamicObject | undefined
+	const alias = aliasFor(schemaId)
 	for (const field of fields) {
-		if (!hasOwn(value, field[0])) continue
-		const current = value[field[0]]
+		// Either spelling reaches the same field number, so a refused value has to be
+		// coerced under whichever name it arrived with.
+		const fieldKey = hasOwn(value, field[0])
+			? field[0]
+			: alias !== undefined && alias[0] === field[0] && hasOwn(value, alias[1])
+				? alias[1]
+				: undefined
+		if (fieldKey === undefined) continue
+		const current = value[fieldKey]
 		if (current === null || current === undefined) continue
 		const repair = (item: unknown): unknown => {
 			if (field[1] === PROTO_FIELD_KIND.message) return repairMessage(field[2], item, seen)
@@ -436,7 +499,7 @@ const repairMessage = (schemaId: number, value: unknown, ancestors?: Set<object>
 		} else {
 			converted = repair(current)
 		}
-		if (converted !== current) (output ??= { ...value })[field[0]] = converted
+		if (converted !== current) (output ??= { ...value })[fieldKey] = converted
 	}
 	// The ancestor path, not everything ever visited: the same object reached
 	// twice in different branches is legitimate and must still be repaired.
@@ -458,10 +521,110 @@ export const repairProtoMessage = (path: string, message: unknown): unknown => {
 	return schemaId === undefined ? message : repairMessage(schemaId, message)
 }
 
+/**
+ * Message-typed fields by name, built on first use. Keyed by the message rather than
+ * the schema, which is what keeps the send-path walk proportional to the message.
+ */
+const messageFieldsByNameBySchema: Array<ReadonlyMap<string, ProtoFieldSchema> | undefined> = []
+const messageFieldsOf = (schemaId: number): ReadonlyMap<string, ProtoFieldSchema> => {
+	const existing = messageFieldsByNameBySchema[schemaId]
+	if (existing) return existing
+	const index = new Map<string, ProtoFieldSchema>()
+	for (const field of PROTO_MESSAGE_SCHEMAS[schemaId]?.[1] ?? []) {
+		if (field[1] === PROTO_FIELD_KIND.message) index.set(field[0], field)
+	}
+	messageFieldsByNameBySchema[schemaId] = index
+	return index
+}
+
+/**
+ * Rewrites an aliased field's public spelling to the name the codec writes. The send
+ * path reaches `encodeProto` directly and that codec drops an unknown key without
+ * throwing, so this runs before the encode rather than after a failure. Copy-on-write,
+ * like `repairMessage`.
+ */
+const projectAliases = (schemaId: number, value: unknown): unknown => {
+	if (!isObject(value)) return value
+	const messageFields = messageFieldsOf(schemaId)
+	const alias = aliasFor(schemaId)
+	let output: DynamicObject | undefined
+	if (alias && hasOwn(value, alias[0])) {
+		const moved = value[alias[0]]
+		// Walked, not just renamed: an aliased message type may carry one of its own.
+		const field = messageFields.get(alias[0])
+		;(output ??= { ...value })[alias[1]] =
+			field && moved !== null && moved !== undefined ? projectAliases(field[2], moved) : moved
+		delete output[alias[0]]
+	}
+	// The message's own keys, so the cost follows the message.
+	for (const key of Object.keys(value)) {
+		if (key === alias?.[0]) continue
+		const field = messageFields.get(key)
+		if (!field) continue
+		const current = value[key]
+		if (current === null || current === undefined) continue
+		let converted: unknown = current
+		if (field[3] & PROTO_FIELD_FLAG.repeated) {
+			if (Array.isArray(current)) {
+				let items: unknown[] | undefined
+				for (let index = 0; index < current.length; index++) {
+					const item = projectAliases(field[2], current[index])
+					if (item !== current[index]) (items ??= current.slice())[index] = item
+				}
+				converted = items ?? current
+			}
+		} else if (field[3] & PROTO_FIELD_FLAG.map) {
+			if (isObject(current)) {
+				let entries: DynamicObject | undefined
+				for (const entry in current) {
+					const item = projectAliases(field[2], current[entry])
+					if (item !== current[entry]) (entries ??= { ...current })[entry] = item
+				}
+				converted = entries ?? current
+			}
+		} else {
+			converted = projectAliases(field[2], current)
+		}
+		if (converted !== current) (output ??= { ...value })[key] = converted
+	}
+	return output ?? value
+}
+
+/**
+ * The projection for a caller that addresses the codec by type name. Reference
+ * equality means nothing needed translating.
+ */
+export const projectProtoMessage = (path: string, message: unknown): unknown => {
+	const schemaId = schemaIdFor(path)
+	return schemaId === undefined ? message : projectAliases(schemaId, message)
+}
+
+/**
+ * The value a field reads out of `data`, taking either spelling. `hasOwn` and not a
+ * null check, because an instance carries its defaults on the prototype: an absent
+ * public field reads as `0` there and the bridge key would never be reached.
+ */
+const fieldValue = (
+	data: DynamicObject,
+	field: ProtoFieldSchema,
+	alias: readonly [string, string] | undefined
+): unknown =>
+	!hasOwn(data, field[0]) && alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1])
+		? data[alias[1]]
+		: data[field[0]]
+
+/** True when either spelling is an own property, which is what keeps prototype defaults out of `toObject`. */
+const hasOwnField = (
+	data: DynamicObject,
+	field: ProtoFieldSchema,
+	alias: readonly [string, string] | undefined
+): boolean => hasOwn(data, field[0]) || (alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1]))
+
 class ProtoCompatibilityRuntime {
 	/** Sparse: filled by `constructorFor`, never by the constructor. */
 	readonly constructors: Array<ProtoConstructor | undefined>
 	readonly enums: EnumRuntime[]
+	readonly int64FieldsByName: readonly Readonly<Record<string, number>>[]
 	readonly messageFields: readonly (readonly ProtoFieldSchema[])[]
 	readonly messageFieldsByName: readonly Readonly<Record<string, ProtoFieldSchema>>[]
 	readonly namespace: DynamicObject
@@ -471,6 +634,17 @@ class ProtoCompatibilityRuntime {
 	constructor(sourceNamespace: DynamicObject) {
 		this.namespace = { ...sourceNamespace }
 		this.enums = PROTO_ENUM_SCHEMAS.map(([, entries]) => this.makeEnum(entries))
+		// Only the 64-bit names are indexed: `hydrate` looks up every key a partial or a
+		// decode produced, and the rest of them need no conversion.
+		this.int64FieldsByName = PROTO_MESSAGE_SCHEMAS.map(([, fields]) => {
+			const indexed = Object.create(null) as Record<string, number>
+			for (const field of fields) {
+				if (field[1] === PROTO_FIELD_KIND.signed64 || field[1] === PROTO_FIELD_KIND.unsigned64) {
+					indexed[field[0]] = field[1]
+				}
+			}
+			return indexed
+		})
 		this.messageFields = PROTO_MESSAGE_SCHEMAS.map(([, fields]) =>
 			fields.filter(field => field[1] === PROTO_FIELD_KIND.message)
 		)
@@ -597,7 +771,11 @@ class ProtoCompatibilityRuntime {
 		constructor.toObject = (message, options) => this.toObject(schemaId, message, options)
 		constructor.getTypeUrl = (prefix = 'type.googleapis.com') => `${prefix}/proto.${path}`
 		constructor.fromPartial = message => {
-			const partial = sourceCodec?.fromPartial ? sourceCodec.fromPartial(message) : message
+			// A partial is not written, so it must not inherit encode's codec
+			// requirement: the bridge accepts holders of types it does not implement
+			// and simply drops them. Only the alias translation is needed here.
+			const projected = this.projectForEncode(schemaId, message, false)
+			const partial = sourceCodec?.fromPartial ? sourceCodec.fromPartial(projected) : projected
 			return this.hydrate(schemaId, isObject(partial) ? partial : {})
 		}
 		constructor.encode = (message, writer) => {
@@ -697,9 +875,10 @@ class ProtoCompatibilityRuntime {
 		// megamorphic path, where V8 does not elide for..of iterator
 		// allocations (~90 iterator results per WebMessageInfo envelope).
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
 		for (let i = 0; i < fields.length; i++) {
 			const field = fields[i]!
-			const value = data[field[0]]
+			const value = fieldValue(data, field, alias)
 			if (value === null || value === undefined) continue
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (!Array.isArray(value))
@@ -754,6 +933,7 @@ class ProtoCompatibilityRuntime {
 		const data = input as DynamicObject
 		const output: DynamicObject = {}
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
 		for (const field of fields) {
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (options.arrays || options.defaults) output[field[0]] = []
@@ -765,7 +945,7 @@ class ProtoCompatibilityRuntime {
 		}
 
 		for (const field of fields) {
-			const value = data[field[0]]
+			const value = fieldValue(data, field, alias)
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (
 					value &&
@@ -784,7 +964,7 @@ class ProtoCompatibilityRuntime {
 				}
 				continue
 			}
-			if (value === null || value === undefined || !hasOwn(data, field[0])) continue
+			if (value === null || value === undefined || !hasOwnField(data, field, alias)) continue
 			output[field[0]] = this.toObjectField(field, value, options)
 			const group = oneofName(field)
 			if (group && options.oneofs) output[group] = field[0]
@@ -805,7 +985,7 @@ class ProtoCompatibilityRuntime {
 			case PROTO_FIELD_KIND.bool:
 				return false
 			case PROTO_FIELD_KIND.bytes:
-				return options.bytes === String ? '' : options.bytes === Array ? [] : Buffer.alloc(0)
+				return options.bytes === String ? '' : options.bytes === Array ? [] : publicBytes(new Uint8Array(0))
 			case PROTO_FIELD_KIND.signed64:
 			case PROTO_FIELD_KIND.unsigned64:
 				return options.longs === String
@@ -872,11 +1052,15 @@ class ProtoCompatibilityRuntime {
 		const source = isObject(value) ? value : {}
 		const instance = Object.create(this.constructorFor(schemaId).prototype) as DynamicObject
 		const messageFields = this.messageFieldsByName[schemaId]!
-		for (const key in source) {
-			const nested = source[key]
+		const int64Fields = this.int64FieldsByName[schemaId]!
+		const alias = aliasFor(schemaId)
+		for (const sourceKey in source) {
+			const key = alias && sourceKey === alias[1] ? alias[0] : sourceKey
+			const nested = source[sourceKey]
 			const field = messageFields[key]
 			if (!field) {
-				instance[key] = nested
+				const kind = int64Fields[key]
+				instance[key] = kind === undefined ? nested : hydratedScalar(kind, nested)
 			} else if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (Array.isArray(nested)) {
 					for (let index = 0; index < nested.length; index++) {
@@ -899,15 +1083,21 @@ class ProtoCompatibilityRuntime {
 		return instance
 	}
 
-	private projectForEncode(schemaId: number, value: unknown): unknown {
+	private projectForEncode(schemaId: number, value: unknown, requireCodecs = true): unknown {
 		if (!isObject(value)) return value
 		let output: DynamicObject | undefined
 		if (typeof value[INSTANCE_SCHEMA] === 'number') output = { ...value }
+		const alias = aliasFor(schemaId)
+		// An own public field wins, including an explicit null or undefined.
+		if (alias && hasOwn(value, alias[0])) {
+			;(output ??= { ...value })[alias[1]] = value[alias[0]]
+			delete output[alias[0]]
+		}
 		for (const field of this.messageFields[schemaId]!) {
 			if (!hasOwn(value, field[0])) continue
 			const nested = value[field[0]]
 			if (nested === null || nested === undefined) continue
-			if (!this.sourceCodecs[field[2]]) {
+			if (requireCodecs && !this.sourceCodecs[field[2]]) {
 				throw new Error(`protobuf codec unavailable for ${PROTO_MESSAGE_SCHEMAS[field[2]]![0]}`)
 			}
 			let converted: unknown = nested
@@ -915,7 +1105,7 @@ class ProtoCompatibilityRuntime {
 				if (Array.isArray(nested)) {
 					let items: unknown[] | undefined
 					for (let index = 0; index < nested.length; index++) {
-						const item = this.projectForEncode(field[2], nested[index])
+						const item = this.projectForEncode(field[2], nested[index], requireCodecs)
 						if (item !== nested[index]) (items ??= nested.slice())[index] = item
 					}
 					converted = items ?? nested
@@ -924,13 +1114,13 @@ class ProtoCompatibilityRuntime {
 				if (isObject(nested)) {
 					let entries: DynamicObject | undefined
 					for (const key in nested) {
-						const item = this.projectForEncode(field[2], nested[key])
+						const item = this.projectForEncode(field[2], nested[key], requireCodecs)
 						if (item !== nested[key]) (entries ??= { ...nested })[key] = item
 					}
 					converted = entries ?? nested
 				}
 			} else {
-				converted = this.projectForEncode(field[2], nested)
+				converted = this.projectForEncode(field[2], nested, requireCodecs)
 			}
 			if (converted !== nested) (output ??= { ...value })[field[0]] = converted
 		}

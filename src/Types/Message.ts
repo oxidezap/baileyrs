@@ -5,7 +5,7 @@ import type {
 	MediaType as BridgeMediaType,
 	UploadMediaResult,
 	WasmWhatsAppClient
-} from '@oxidezap/whatsapp-rust-bridge'
+} from '@oxidezap/whatsapp-rust-bridge/host'
 import type { WAMessageAddressingMode as WAMessageAddressingModeType } from '../Compatibility/public-api/enum-types.ts'
 import { proto } from '../WAProto/runtime.ts'
 import type { MediaType } from '../Defaults/index.ts'

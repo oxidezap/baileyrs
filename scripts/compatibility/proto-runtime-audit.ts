@@ -42,6 +42,21 @@ export interface ProtoRuntimeCompatibilityReport {
 
 const KNOWN_UNSUPPORTED_CODECS = ['BotAvatarMetadata'] as const
 
+/**
+ * The gaps this layer cannot close, and the reason they are not ours.
+ *
+ * Each one is a field the WhatsApp Web schema no longer declares while the pinned
+ * baileys still does. Checked against the client rather than only against
+ * baileys: whatspec's extraction of WhatsApp Web 2.3000.1047483476
+ * (`generated/proto/WAProto.proto`) and the bridge's schema manifest agree —
+ * `mediaKeyDomain` exists only on `MediaDomainInfo`, `SyncActionValue` numbers run
+ * 60–64 then 66 with the `BusinessBroadcastAssociationAction` message left
+ * declared and unreferenced, and no bot-avatar type is declared anywhere.
+ *
+ * So nothing in whatspec, `whatsapp-rust` or the bridge can add them back, and a
+ * companion that put them on the wire would send a field the client does not read.
+ * They close when upstream regenerates its proto.
+ */
 const KNOWN_WIRE_GAPS = [
 	'BotAvatarMetadata.action',
 	'BotAvatarMetadata.behaviorGraph',
@@ -51,25 +66,20 @@ const KNOWN_WIRE_GAPS = [
 	'BotMetadata.avatarMetadata',
 	'Message.AudioMessage.mediaKeyDomain',
 	'Message.DocumentMessage.mediaKeyDomain',
-	// Renamed rather than absent: WhatsApp schema 2.3000.1044659339 spells field
-	// 33 `faviconMmsMetadata`, which bridge 0.10.0 regenerated against, while
-	// baileys 7.0.0-rc13 still declares `faviconMMSMetadata`. The wire is
-	// identical; the gap closes when upstream regenerates its proto.
-	'Message.ExtendedTextMessage.faviconMMSMetadata',
 	'Message.ImageMessage.mediaKeyDomain',
 	'Message.MMSThumbnailMetadata.mediaKeyDomain',
-	'Message.MessageHistoryMetadata.oldestMessageTimestamp',
 	'Message.StickerMessage.mediaKeyDomain',
 	'Message.VideoMessage.mediaKeyDomain',
-	// Renumbered, not absent: the bridge writes field 115 and baileys 7.0.0-rc13
+	// Renumbered, not absent: the bridge writes field 115 and the pinned baileys
 	// declares 114. WhatsApp Web assigns 115 and leaves 114 unassigned, so the
 	// bridge is the conforming side and the gap closes when upstream regenerates
 	// its proto. `proto-field-number-mismatch` in src/__fuzz__/harness/divergence.ts
 	// carries the client citation and a minimal reproducer.
 	'Message.pollResultSnapshotMessageV3',
-	'SyncActionValue.AgentAction.deviceID',
-	'SyncActionValue.ChatAssignmentAction.deviceAgentID',
 	'SyncActionValue.businessBroadcastAssociationAction'
+	// Two entries left this list when the facade learned the bridge's renamed spellings
+	// (faviconMMSMetadata, oldestMessageTimestamp). The raw bridge still renames them;
+	// RENAMED_PROTO_FIELDS in divergence.ts records that for the neutral codec.
 ] as const
 
 const objectOptions = [
