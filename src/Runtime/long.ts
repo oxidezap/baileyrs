@@ -14,10 +14,11 @@
  * `node:module` import would drag `node:` into the host-neutral graph
  * (workerd without `nodejs_compat` has no `node:` at all), so this resolves
  * it lazily through `process.getBuiltinModule('module')` — available on
- * every supported Node (`engines: >=22.0.0`) with no static import, the same
- * lazy-builtin shape `Utils/browser-utils.ts` uses for `node:os` — and
- * falls back to the ESM build on hosts, where there is no
- * upstream-constructor constraint to keep.
+ * every supported Node (`engines: >=22.3.0`) with no static import, the same
+ * lazy-builtin shape `Utils/browser-utils.ts` uses for `node:os`. Node 22.0–22.2
+ * lack this API; keeping the minimum at 22.3 preserves Long constructor identity
+ * rather than silently falling back to a different ESM constructor. Hosts fall
+ * back to the ESM build, where there is no upstream-constructor constraint.
  */
 
 import LongESM from 'long'

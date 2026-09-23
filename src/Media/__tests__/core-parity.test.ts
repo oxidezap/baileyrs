@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import { Buffer } from 'node:buffer'
-import { hkdf as _bridgeEngineSmoke } from '@oxidezap/whatsapp-rust-bridge'
+import { hkdf as _bridgeEngineSmoke, initWasmEngine } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	decodeMediaRetryNode,
 	decryptMediaRetryData,
@@ -55,8 +55,10 @@ describe('media core parity with the Node implementation', () => {
 
 	it('shares the initialized bridge engine with the bare root', () => {
 		// The bare root auto-initializes the wasm from disk; calling hkdf
-		// through it proves the engine is live for this harness.
+		// through it proves the engine is live for this harness. AES-GCM provider
+		// setup is owned by the caller/socket lifecycle, not the media helper.
 		expect(_bridgeEngineSmoke(new Uint8Array(32), 8, { info: 'smoke' })).toHaveLength(8)
+		initWasmEngine()
 	})
 
 	it('derives identical media keys', async () => {

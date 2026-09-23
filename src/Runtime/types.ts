@@ -12,6 +12,8 @@
 
 import type { AuthenticationState, NativeAuthenticationState } from '../Types/Auth.ts'
 import type {
+	aesGcm256Decrypt as BridgeAesGcm256Decrypt,
+	aesGcm256Encrypt as BridgeAesGcm256Encrypt,
 	BinaryReader as BridgeBinaryReader,
 	JsHttpClientConfig,
 	JsTransportCallbacks,
@@ -19,7 +21,9 @@ import type {
 	WhatsAppEventCallbacks,
 	CacheConfig,
 	ClientPolicies,
-	JsStoreCallbacks
+	JsStoreCallbacks,
+	hkdf as bridgeHkdf,
+	sha256 as bridgeSha256
 } from '@oxidezap/whatsapp-rust-bridge/host'
 import type Long from 'long'
 import type { ILogger } from '../Utils/logger.ts'
@@ -38,6 +42,10 @@ export interface BridgeRuntime {
 		policies?: ClientPolicies | null
 	): Promise<WasmWhatsAppClient>
 	initWasmEngine(logger?: unknown, crypto?: unknown): void
+	hkdf: typeof bridgeHkdf
+	sha256: typeof bridgeSha256
+	aesGcm256Encrypt: typeof BridgeAesGcm256Encrypt
+	aesGcm256Decrypt: typeof BridgeAesGcm256Decrypt
 	encodeProto(path: string, message: unknown): Uint8Array
 	decodeProto(path: string, data: Uint8Array): unknown
 	inflateZlib(data: Uint8Array, maxOutputBytes?: number | null): Uint8Array
@@ -90,6 +98,9 @@ export interface PlatformInfo {
 	os: string
 	release: string
 }
+
+export type MediaCryptoRuntime = Pick<BridgeRuntime, 'hkdf' | 'sha256' | 'aesGcm256Encrypt' | 'aesGcm256Decrypt'> &
+	Pick<BaileysRuntime, 'randomBytes'>
 
 export interface BaileysRuntime {
 	/** Bridge entrypoint: Node imports the bare root, hosts import `/host`. */

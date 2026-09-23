@@ -3,14 +3,18 @@ import { describe, it } from 'node:test'
 import * as hostBridge from '@oxidezap/whatsapp-rust-bridge/host'
 import Long from 'long'
 import type {
+	HostAnyMessageContent,
 	HostAuthenticationState,
 	HostBridgeRuntime,
 	HostConnectionUpdate,
 	HostLongConstructor,
+	HostMessageGenerationOptions,
 	HostRuntime,
 	HostSocketConfig,
 	HostWASocket
 } from '../host-types.ts'
+import type { WAMessage } from '../host-shared.ts'
+import { makeMediaCryptoRuntime } from '../host-surface.ts'
 
 const bridgeSurface: HostBridgeRuntime = hostBridge
 const longSurface: HostLongConstructor = Long
@@ -19,6 +23,13 @@ const longSurface: HostLongConstructor = Long
 const incompleteBridge: HostRuntime['bridge'] = {}
 // @ts-expect-error The event path requires Long.fromValue and Long instances.
 const incompleteLong: HostRuntime['Long'] = {}
+
+const acceptsCustomRuntimeCrypto = (runtime: HostRuntime): void => {
+	const crypto = makeMediaCryptoRuntime(runtime)
+	const digest = crypto.sha256(new Uint8Array())
+	void crypto.hkdf(new Uint8Array(), 32, { info: 'test' })
+	void crypto.aesGcm256Encrypt(new Uint8Array(), new Uint8Array(), new Uint8Array(), digest)
+}
 
 const rejectsMalformedHostConfig = (auth: HostAuthenticationState): void => {
 	// @ts-expect-error browser must retain the three-string Baileys tuple.
@@ -30,6 +41,12 @@ const rejectsMalformedHostConfig = (auth: HostAuthenticationState): void => {
 }
 
 const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
+	const sentMessage: Promise<WAMessage> = socket.sendMessage('120@g.us', { text: 'hello' })
+	void sentMessage.then(message => void message.key.id)
+	const content: HostAnyMessageContent = { text: 'hello' }
+	const options: HostMessageGenerationOptions = { messageId: 'MSG1' }
+	void content
+	void options
 	void socket.groupLeave('120@g.us')
 	void socket.groupInviteCode('120@g.us')
 	void socket.groupAcceptInvite('invite')
@@ -61,10 +78,12 @@ const acceptsCompleteHostSocketSurface = (socket: HostWASocket): void => {
 describe('host socket declarations', () => {
 	it('include the complete callable operation surface', () => {
 		assert.equal(typeof acceptsCompleteHostSocketSurface, 'function')
+		assert.equal(typeof acceptsCustomRuntimeCrypto, 'function')
 		assert.equal(typeof rejectsMalformedHostConfig, 'function')
 		assert.deepEqual(incompleteBridge, {})
 		assert.deepEqual(incompleteLong, {})
 		assert.equal(typeof bridgeSurface.initWasmEngine, 'function')
 		assert.equal(typeof longSurface.fromValue, 'function')
+		assert.equal(longSurface.fromValue(123).toNumber(), 123)
 	})
 })

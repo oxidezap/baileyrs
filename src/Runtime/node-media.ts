@@ -8,6 +8,8 @@ export const nodeMedia: {
 	decodeAudio: (input: Uint8Array) => Promise<{ getChannelData(channel: number): Float32Array }>
 	getAudioDuration: (input: unknown) => Promise<number | undefined>
 	hkdf: (input: Uint8Array, length: number, options: { salt?: Uint8Array; info?: string }) => Uint8Array
+	aesGcm256Encrypt: (key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: Uint8Array) => Uint8Array
+	aesGcm256Decrypt: (key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ciphertext: Uint8Array) => Uint8Array
 	tempDir: () => string
 	execFile: (command: string, args: string[], callback: (error: unknown) => void) => void
 	createReadStream: (path: string | URL) => Readable
@@ -24,6 +26,12 @@ export const nodeMedia: {
 	getAudioDuration: async () => undefined,
 	hkdf: () => {
 		throw new Error('HKDF bridge capability is unavailable')
+	},
+	aesGcm256Encrypt: () => {
+		throw new Error('AES-GCM bridge capability is unavailable')
+	},
+	aesGcm256Decrypt: () => {
+		throw new Error('AES-GCM bridge capability is unavailable')
 	},
 	tempDir: () => '/tmp',
 	execFile: () => {

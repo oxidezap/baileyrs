@@ -1,47 +1,26 @@
-/** Provider-routed AES-GCM primitives supplied by whatsapp-rust-bridge >=0.24.0. */
-import { aesGcm256Decrypt, aesGcm256Encrypt, initWasmEngine } from '@oxidezap/whatsapp-rust-bridge/host'
+/**
+ * Historical AES-GCM helper names, now a thin adapter over runtime-owned
+ * bridge primitives. Engine initialization belongs to the runtime/socket
+ * lifecycle; these calls never initialize or cache bridge state themselves.
+ */
+import { hostRuntime } from './host.ts'
+import { makeMediaCryptoRuntime } from './bridge.ts'
+import type { MediaCryptoRuntime } from './types.ts'
 
-let initialized = false
-const ensureInitialized = (): void => {
-	if (!initialized) {
-		try {
-			initWasmEngine()
-		} catch {
-			try {
-				const processLike = (globalThis as Record<string, unknown>)['process'] as
-					| { getBuiltinModule?: (id: string) => unknown }
-					| undefined
-				const moduleApi = processLike?.getBuiltinModule?.('module') as
-					| { createRequire?: (base: string) => (id: string) => unknown }
-					| undefined
-				const bridge = moduleApi?.createRequire?.(import.meta.url)('@oxidezap/whatsapp-rust-bridge') as
-					| { initWasmEngine?: () => void }
-					| undefined
-				bridge?.initWasmEngine?.()
-			} catch {
-				// Hosts initialize the bridge explicitly through initSync.
-			}
-		}
-		initialized = true
-	}
-}
+const defaultCryptoRuntime = makeMediaCryptoRuntime(hostRuntime)
 
 export const aesGcm256EncryptPortable = (
 	key: Uint8Array,
 	nonce: Uint8Array,
 	aad: Uint8Array,
-	plaintext: Uint8Array
-): Uint8Array => {
-	ensureInitialized()
-	return aesGcm256Encrypt(key, nonce, aad, plaintext)
-}
+	plaintext: Uint8Array,
+	runtime: MediaCryptoRuntime = defaultCryptoRuntime
+): Uint8Array => runtime.aesGcm256Encrypt(key, nonce, aad, plaintext)
 
 export const aesGcm256DecryptPortable = (
 	key: Uint8Array,
 	nonce: Uint8Array,
 	aad: Uint8Array,
-	ciphertextWithTag: Uint8Array
-): Uint8Array => {
-	ensureInitialized()
-	return aesGcm256Decrypt(key, nonce, aad, ciphertextWithTag)
-}
+	ciphertextWithTag: Uint8Array,
+	runtime: MediaCryptoRuntime = defaultCryptoRuntime
+): Uint8Array => runtime.aesGcm256Decrypt(key, nonce, aad, ciphertextWithTag)

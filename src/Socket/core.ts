@@ -46,7 +46,7 @@ import {
 	downloadMediaMessage,
 	MEDIA_DOWNLOAD_TYPES,
 	type MediaDownloadType
-} from '../Utils/messages.ts'
+} from '../Utils/messages-core.ts'
 import {
 	makeHistorySyncAdmission,
 	resolveHistorySyncPolicy,

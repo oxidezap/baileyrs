@@ -536,7 +536,7 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		const covered = new Set(CASES.map(testCase => testCase.source))
 		// downloadMediaMessage is a standalone helper rather than a socket method;
 		// closed-domain-arguments.test.ts drives it directly.
-		const exempt = new Set(['Utils/messages.ts:downloadMediaMessage:type'])
+		const exempt = new Set(['Utils/messages-core.ts:downloadMediaMessage:type'])
 		const missing = scanned.filter(entry => !covered.has(entry) && !exempt.has(entry))
 		assert.deepEqual(missing, [], `guarded parameters with no fuzz case: ${missing.join(', ')}`)
 

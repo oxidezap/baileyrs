@@ -17,7 +17,6 @@ import { proto } from '../WAProto/runtime.ts'
 import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generic-utils.ts'
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
 import { Boom } from './boom.ts'
-import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
 import { base64Encode, isBytes, randomBytes } from '../Runtime/bytes.ts'
 import { runtimeJoinPath } from '../Runtime/paths.ts'
 import { createReadable, isReadable, readableFromWeb } from '../Runtime/stream.ts'
@@ -347,7 +346,7 @@ export const encryptMediaRetryRequest = (
 ): BinaryNode => {
 	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
 	const iv = randomBytes(12)
-	const ciphertext = aesGcm256EncryptPortable(
+	const ciphertext = nodeMedia.aesGcm256Encrypt(
 		getMediaRetryKey(mediaKey),
 		iv,
 		new TextEncoder().encode(key.id!),
@@ -422,5 +421,5 @@ export const decryptMediaRetryData = (
 	msgId: string
 ): proto.MediaRetryNotification =>
 	proto.MediaRetryNotification.decode(
-		aesGcm256DecryptPortable(getMediaRetryKey(mediaKey), iv, new TextEncoder().encode(msgId), ciphertext)
+		nodeMedia.aesGcm256Decrypt(getMediaRetryKey(mediaKey), iv, new TextEncoder().encode(msgId), ciphertext)
 	)

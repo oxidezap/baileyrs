@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { deflateSync } from 'node:zlib'
 import { describe, it } from 'node:test'
 import { toBridgeMediaType } from '../Compatibility/media-type.ts'
+import { initWasmEngine } from '@oxidezap/whatsapp-rust-bridge'
 import {
 	DEFAULT_CACHE_TTLS,
 	DEF_CALLBACK_PREFIX,
@@ -180,6 +181,7 @@ describe('public helper compatibility', () => {
 	})
 
 	it('builds, decodes and decrypts media retry payloads', () => {
+		initWasmEngine()
 		const mediaKey = Buffer.from('55'.repeat(32), 'hex')
 		const request = encryptMediaRetryRequest(
 			{ id: 'MSG-RETRY', remoteJid: '5511999999999@s.whatsapp.net', fromMe: true },

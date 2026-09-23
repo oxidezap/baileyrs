@@ -29,6 +29,7 @@ export * from './surface.ts'
 export {
 	createWASocketFactory,
 	makeHostWASocket,
+	makeMediaCryptoRuntime,
 	makeWASocket,
 	setLoggerSink,
 	setPlatformInfo,
@@ -36,6 +37,7 @@ export {
 } from './host-surface.ts'
 export type { HostSocketFactory } from './host-surface.ts'
 export type {
+	HostAnyMessageContent,
 	HostAuthenticationCreds,
 	HostAuthenticationState,
 	HostBaileysEventMap,
@@ -46,6 +48,8 @@ export type {
 	HostKeyPair,
 	HostLongConstructor,
 	HostLongValue,
+	HostMediaCryptoRuntime,
+	HostMessageGenerationOptions,
 	HostRuntime,
 	HostSignedKeyPair,
 	HostSocketConfig,
