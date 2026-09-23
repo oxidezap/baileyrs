@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.8](https://github.com/oxidezap/baileyrs/compare/v0.3.7...v0.3.8) (2026-09-23)
+
+
+### Features
+
+* make baileyrs host-runtime agnostic ([#155](https://github.com/oxidezap/baileyrs/issues/155)) ([32d62a0](https://github.com/oxidezap/baileyrs/commit/32d62a019627a143f01dd4a6b1db6fdd6f4d9f67))
+
+
+### Bug Fixes
+
+* classify seed 35323852812 fuzz findings at the oracle layer ([#153](https://github.com/oxidezap/baileyrs/issues/153)) ([af4e671](https://github.com/oxidezap/baileyrs/commit/af4e6715246b16085b0523b20eae7c82e0b24810))
+* **host:** hydrate Rust-persisted registration IDs ([#159](https://github.com/oxidezap/baileyrs/issues/159)) ([ad2e498](https://github.com/oxidezap/baileyrs/commit/ad2e498e4f8577f69538408d4ede6718a91c4723))
+* **runtime:** preserve deep-import and host API compatibility ([#161](https://github.com/oxidezap/baileyrs/issues/161)) ([c523e1d](https://github.com/oxidezap/baileyrs/commit/c523e1db82b26b9a3d13c56b17f2b6f27a145aa3))
+
 ## [0.3.7](https://github.com/oxidezap/baileyrs/compare/v0.3.6...v0.3.7) (2026-09-17)
 
 

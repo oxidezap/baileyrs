@@ -8,6 +8,8 @@ export const nodeMedia: {
 	decodeAudio: (input: Uint8Array) => Promise<{ getChannelData(channel: number): Float32Array }>
 	getAudioDuration: (input: unknown) => Promise<number | undefined>
 	hkdf: (input: Uint8Array, length: number, options: { salt?: Uint8Array; info?: string }) => Uint8Array
+	aesGcm256Encrypt: (key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plaintext: Uint8Array) => Uint8Array
+	aesGcm256Decrypt: (key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ciphertext: Uint8Array) => Uint8Array
 	tempDir: () => string
 	execFile: (command: string, args: string[], callback: (error: unknown) => void) => void
 	createReadStream: (path: string | URL) => Readable
@@ -24,6 +26,12 @@ export const nodeMedia: {
 	getAudioDuration: async () => undefined,
 	hkdf: () => {
 		throw new Error('HKDF bridge capability is unavailable')
+	},
+	aesGcm256Encrypt: () => {
+		throw new Error('AES-GCM bridge capability is unavailable')
+	},
+	aesGcm256Decrypt: () => {
+		throw new Error('AES-GCM bridge capability is unavailable')
 	},
 	tempDir: () => '/tmp',
 	execFile: () => {
@@ -50,6 +58,28 @@ if (nodeProcess) {
 	try {
 		const bridgePackage = ['@oxidezap', 'whatsapp-rust-bridge'].join('/')
 		const nodeBridge = await import(bridgePackage)
+		const isCryptoEngineUnavailable = (error: unknown): boolean => {
+			if (!(error instanceof Error)) return false
+			const details = error as Error & { kind?: unknown; field?: unknown; reason?: unknown }
+			return (
+				details.kind === 'invalid-argument' &&
+				details.field === 'initWasmEngine' &&
+				details.reason === 'must be called before AES-GCM operations'
+			)
+		}
+		const withMediaCryptoInitialized = <T>(operation: () => T): T => {
+			try {
+				return operation()
+			} catch (error) {
+				if (!isCryptoEngineUnavailable(error)) throw error
+				nodeBridge.initWasmEngine()
+				return operation()
+			}
+		}
+		nodeMedia.aesGcm256Encrypt = (key, nonce, aad, plaintext) =>
+			withMediaCryptoInitialized(() => nodeBridge.aesGcm256Encrypt(key, nonce, aad, plaintext))
+		nodeMedia.aesGcm256Decrypt = (key, nonce, aad, ciphertext) =>
+			withMediaCryptoInitialized(() => nodeBridge.aesGcm256Decrypt(key, nonce, aad, ciphertext))
 		nodeMedia.hkdf = (input, length, options) => {
 			try {
 				return nodeBridge.hkdf(input, length, options)

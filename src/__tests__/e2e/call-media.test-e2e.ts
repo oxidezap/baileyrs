@@ -31,6 +31,21 @@ import { waitForEvent } from './wait.ts'
 
 const SID = new Uint8Array([0x90])
 
+const waitForDeliveredStats = async (sock: TestClient['sock'], callId: string): Promise<CallMediaStats> => {
+	const started = Date.now()
+	let stats = await sock.getCallMediaStats(callId)
+	// The isolated VoIP engine pushes counter snapshots to the signaling
+	// engine asynchronously. Receiving a sink frame can precede that push.
+	while (stats.audioFramesDelivered === 0 || stats.rtpReceived === 0) {
+		if (Date.now() - started > 10_000) {
+			throw new Error(`media counters did not advance after 10s: ${JSON.stringify(stats)}`)
+		}
+		await new Promise(resolve => setTimeout(resolve, 100))
+		stats = await sock.getCallMediaStats(callId)
+	}
+	return stats
+}
+
 const waitForFrames = async (
 	frames: CallAudioFrame[],
 	count: number,
@@ -199,12 +214,8 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			// classification counters (decoded, inactive-or-sid) belong to
 			// the PCM decoder and stay zero here. Delivery plus received
 			// counters prove the relay, decrypt and handoff ran.
-			const bobStats = (await bob.sock.getCallMediaStats(bobCallId)) as CallMediaStats
-			expect(bobStats.audioFramesDelivered > 0).toBe(true)
-			expect(bobStats.rtpReceived > 0).toBe(true)
-			const aliceStats = (await alice.sock.getCallMediaStats(callId)) as CallMediaStats
-			expect(aliceStats.audioFramesDelivered > 0).toBe(true)
-			expect(aliceStats.rtpReceived > 0).toBe(true)
+			await waitForDeliveredStats(bob.sock, bobCallId)
+			await waitForDeliveredStats(alice.sock, callId)
 
 			// Queue depths are readable mid-call: capacities above zero
 			// prove the bridge owns both queues on this call.

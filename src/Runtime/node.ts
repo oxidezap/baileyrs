@@ -31,6 +31,8 @@ setBufferRuntime(Buffer)
 nodeMedia.getImageProcessingLibrary = loadImageProcessingLibrary
 nodeMedia.getAudioDuration = getAudioDuration
 nodeMedia.hkdf = bridge.hkdf
+nodeMedia.aesGcm256Encrypt = bridge.aesGcm256Encrypt
+nodeMedia.aesGcm256Decrypt = bridge.aesGcm256Decrypt
 nodeMedia.tempDir = tmpdir
 nodeMedia.execFile = execFile as never
 nodeMedia.createReadStream = createReadStream as never

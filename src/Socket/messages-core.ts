@@ -17,7 +17,7 @@ import { randomBytes } from '../Runtime/bytes.ts'
 import type { BaileysRuntime } from '../Runtime/types.ts'
 import { assertArgumentDomain } from '../Utils/argument-domain.ts'
 import { Boom } from '../Utils/boom.ts'
-import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages.ts'
+import { generateWAMessage, getContentType, normalizeMessageContent } from '../Utils/messages-core.ts'
 import { jidNormalizedUser } from '../WABinary/index.ts'
 import type { SocketContext } from './types.ts'
 

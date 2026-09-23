@@ -307,7 +307,7 @@ describe('send-path wire fidelity on generated messages', () => {
 				//
 				// Plus the two options that decide the builder's other branches. With
 				// only the three deterministic ones, the quoted-message and ephemeral
-				// paths in `Utils/messages.ts` were never entered on either side — so
+				// paths in `Utils/messages-core.ts` were never entered on either side — so
 				// a regression that dropped `quotedMessage`, wrote the wrong quoted
 				// participant, or omitted the expiration stayed green while this export
 				// was recorded as fuzz-covered. Both carry their own exceptions

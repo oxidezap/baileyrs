@@ -57,7 +57,7 @@ export const PURE_TARGET_NAMES: readonly string[] = [
 	'generateParticipantHashV2',
 	'encodeNewsletterMessage',
 
-	// src/Utils/messages.ts
+	// src/Utils/messages-core.ts
 	'getContentType',
 	'normalizeMessageContent',
 	'extractMessageContent',

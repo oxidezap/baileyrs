@@ -2,6 +2,8 @@ import type { VoipBackendCallbacks, VoipRelayTransport } from '@oxidezap/whatsap
 import type { ILogger } from './Utils/logger.ts'
 import type { WAMessage } from './host-shared.ts'
 import type { HostSocketOperationName } from './host-socket-operations.ts'
+import type * as HostBridge from '@oxidezap/whatsapp-rust-bridge/host'
+import type Long from 'long'
 
 export type HostLoggerSink = (line: string, delivered: () => void) => void
 
@@ -48,33 +50,28 @@ export type HostAuthenticationState = {
 	store: HostStoreCallbacks
 }
 
-export type HostBridgeRuntime = {
-	createWhatsAppClient: (...args: never[]) => Promise<unknown>
-	initWasmEngine: (...args: never[]) => void
-	encodeProto(path: string, message: unknown): Uint8Array
-	decodeProto(path: string, data: Uint8Array): unknown
-	inflateZlib(data: Uint8Array, maxOutputBytes?: number | null): Uint8Array
-	BinaryReader: new (...args: never[]) => object
-	decodeMessageWireBatch(data: Uint8Array): unknown
-	decodeReceiptWireBatch(data: Uint8Array): unknown
-	decodeServerAckWireBatch(data: Uint8Array): unknown
-	decryptPollVotePayload(
-		encPayload: Uint8Array,
-		encIv: Uint8Array,
-		messageSecret: Uint8Array,
-		stanzaId: string,
-		pollCreatorJid: string,
-		voterJid: string
-	): Uint8Array
-	decryptEventResponsePayload(
-		encPayload: Uint8Array,
-		encIv: Uint8Array,
-		messageSecret: Uint8Array,
-		stanzaId: string,
-		eventCreatorJid: string,
-		responderJid: string
-	): Uint8Array
-}
+export type HostBridgeRuntime = Pick<
+	typeof HostBridge,
+	| 'createWhatsAppClient'
+	| 'initWasmEngine'
+	| 'encodeProto'
+	| 'decodeProto'
+	| 'inflateZlib'
+	| 'BinaryReader'
+	| 'decodeMessageWireBatch'
+	| 'decodeReceiptWireBatch'
+	| 'decodeServerAckWireBatch'
+	| 'decryptPollVotePayload'
+	| 'decryptEventResponsePayload'
+	| 'hkdf'
+	| 'sha256'
+	| 'aesGcm256Encrypt'
+	| 'aesGcm256Decrypt'
+>
+export type HostMediaCryptoRuntime = Pick<
+	HostBridgeRuntime,
+	'hkdf' | 'sha256' | 'aesGcm256Encrypt' | 'aesGcm256Decrypt'
+> & { randomBytes(length: number): Uint8Array }
 
 export type HostLongValue = {
 	low: number
@@ -85,8 +82,8 @@ export type HostLongValue = {
 }
 
 export type HostLongConstructor = {
-	new (...args: never[]): HostLongValue
-	fromValue(value: never): HostLongValue
+	new (low: number, high?: number, unsigned?: boolean): HostLongValue
+	fromValue: typeof Long.fromValue
 }
 
 export type HostRuntime = {
@@ -279,6 +276,20 @@ export type HostWebSocketClient = HostEventEmitter & {
 
 type HostMutex = { mutex<T>(work: () => Promise<T> | T): Promise<T> }
 
+export type HostAnyMessageContent = string | Record<string, unknown>
+export type HostMessageGenerationOptions = {
+	messageId?: string
+	useCachedGroupMetadata?: boolean
+	timestamp?: Date
+	quoted?: WAMessage
+	ephemeralExpiration?: number | string
+	mediaUploadTimeoutMs?: number
+	statusJidList?: string[]
+	broadcast?: boolean
+	backgroundColor?: string
+	font?: number
+}
+
 type HostWASocketBase = {
 	ev: HostSocketEventEmitter
 	logger: ILogger
@@ -298,7 +309,7 @@ type HostWASocketBase = {
 	notificationMutex: HostMutex
 	[Symbol.asyncDispose](): Promise<void>
 	end: (error?: unknown) => Promise<void> | void
-	sendMessage: (...args: unknown[]) => Promise<unknown>
+	sendMessage(jid: string, content: HostAnyMessageContent, options?: HostMessageGenerationOptions): Promise<WAMessage>
 	logout: (...args: unknown[]) => Promise<void>
 	query: (...args: unknown[]) => Promise<unknown>
 	sendNode: (...args: unknown[]) => Promise<unknown>

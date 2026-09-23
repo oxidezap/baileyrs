@@ -98,6 +98,17 @@ const auth = await createAuthenticationState(store)
 const socket = makeWASocket({ auth })
 ```
 
+The socket initializes the bridge crypto engine during startup. If you call the
+standalone AES-backed media retry helpers without creating a socket, initialize
+the bridge engine yourself first (`initWasmEngine()`; after `initSync()` on
+hosts).
+
+For a custom host runtime, bind media helpers to its bridge and random source once:
+`makeMediaCryptoRuntime(runtime)` returns a capability you can pass as the final
+argument to `/host`'s `getMediaKeys`, `encryptMediaRetryRequest`, and
+`decryptMediaRetryData` helpers. This keeps HKDF and AES-GCM on the selected
+bridge instead of the default host singleton.
+
 Reuse the same byte-preserving store on restart: `await createAuthenticationState(store)`
 rehydrates the device written by the Rust engine, including its registration ID
 (which may exceed the 14-bit ID used to seed fresh Baileys-style credentials).

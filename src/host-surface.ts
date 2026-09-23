@@ -1,8 +1,16 @@
 // Host surface: deliberately separate declarations from the Node-shaped Types barrel.
 import { createWASocketFactory as createFactory } from './Socket/core.ts'
 import { hostLoggerSink, hostRuntime } from './Runtime/host.ts'
+import { makeMediaCryptoRuntime as bindMediaCryptoRuntime } from './Runtime/bridge.ts'
 import { useMemoryStore as makeMemoryStore } from './Utils/use-memory-store.ts'
-import type { HostLoggerSink, HostRuntime, HostSocketConfig, HostStoreCallbacks, HostWASocket } from './host-types.ts'
+import type {
+	HostLoggerSink,
+	HostMediaCryptoRuntime,
+	HostRuntime,
+	HostSocketConfig,
+	HostStoreCallbacks,
+	HostWASocket
+} from './host-types.ts'
 
 export * from './host-types.ts'
 export const useMemoryStore = (options?: { native?: boolean }): HostStoreCallbacks => makeMemoryStore(options)
@@ -25,6 +33,10 @@ export function setLoggerSink(sink: HostLoggerSink | undefined): void {
 }
 
 export type HostSocketFactory = (config: HostSocketConfig) => HostWASocket
+
+/** Bind bridge media crypto and randomness to a caller-supplied host runtime. */
+export const makeMediaCryptoRuntime = (runtime: Pick<HostRuntime, 'bridge' | 'randomBytes'>): HostMediaCryptoRuntime =>
+	bindMediaCryptoRuntime(runtime)
 
 /** Build a host socket factory from explicitly supplied host capabilities. */
 export const createWASocketFactory = (runtime: HostRuntime): HostSocketFactory =>

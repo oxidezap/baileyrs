@@ -581,7 +581,7 @@ describe('closed-domain argument boundary, fuzzed', () => {
 		// downloadMediaMessage is a standalone helper rather than a socket method;
 		// closed-domain-arguments.test.ts drives it directly.
 		const exempt = new Set([
-			'Utils/messages.ts:downloadMediaMessage:type',
+			'Utils/messages-core.ts:downloadMediaMessage:type',
 			// tryWrite lives on the acquired audio writer, not the socket, so
 			// the socket-driven harness cannot reach it; its guard is pinned
 			// by the writer unit tests instead.

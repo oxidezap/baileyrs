@@ -12,7 +12,6 @@
  * (the Node half) and stays there.
  */
 
-import { hkdf } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { MediaType } from '../Defaults/index.ts'
 import { MEDIA_HKDF_KEY_MAPPING } from '../Defaults/index.ts'
 import type {
@@ -24,24 +23,29 @@ import type {
 	WAMessageKey
 } from '../Types/index.ts'
 import { proto } from '../WAProto/runtime.ts'
-import { base64Decode, base64Encode, randomBytes, utf8Encode } from '../Runtime/bytes.ts'
+import { base64Decode, base64Encode, utf8Encode } from '../Runtime/bytes.ts'
+import { hostRuntime } from '../Runtime/host.ts'
+import { makeMediaCryptoRuntime } from '../Runtime/bridge.ts'
+import type { MediaCryptoRuntime } from '../Runtime/types.ts'
 import { getBinaryNodeChild, getBinaryNodeChildBuffer } from '../WABinary/generic-utils.ts'
 import { jidNormalizedUser } from '../WABinary/jid-utils.ts'
-import { aesGcm256DecryptPortable, aesGcm256EncryptPortable } from '../Runtime/aes-gcm.ts'
 import { Boom } from '../Utils/boom.ts'
 
 export const hkdfInfoKey = (type: MediaType): string => `WhatsApp ${MEDIA_HKDF_KEY_MAPPING[type]} Keys`
+
+const defaultCryptoRuntime = makeMediaCryptoRuntime(hostRuntime)
 
 const stripDataPrefix = (value: string): string => value.replace('data:;base64,', '')
 
 /** Derive the IV + cipher + MAC keys for a media decryption. Accepts raw bytes or base64. */
 export async function getMediaKeys(
 	buffer: Uint8Array | string | null | undefined,
-	mediaType: MediaType
+	mediaType: MediaType,
+	runtime: MediaCryptoRuntime = defaultCryptoRuntime
 ): Promise<MediaDecryptionKeyInfo> {
 	if (!buffer) throw new Boom('Cannot derive from empty media key')
 	const keyBytes = typeof buffer === 'string' ? base64Decode(stripDataPrefix(buffer)) : buffer
-	const expandedMediaKey = hkdf(keyBytes, 112, { info: hkdfInfoKey(mediaType) })
+	const expandedMediaKey = runtime.hkdf(keyBytes, 112, { info: hkdfInfoKey(mediaType) })
 	return {
 		iv: expandedMediaKey.slice(0, 16),
 		cipherKey: expandedMediaKey.slice(16, 48),
@@ -72,12 +76,23 @@ export function extensionForMediaMessage(message: WAMessageContent): string {
 	return getExtension((message[type] as WAGenericMediaMessage).mimetype!)!
 }
 
-const getMediaRetryKey = (mediaKey: Uint8Array) => hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
+const getMediaRetryKey = (mediaKey: Uint8Array, runtime: MediaCryptoRuntime) =>
+	runtime.hkdf(mediaKey, 32, { info: 'WhatsApp Media Retry Notification' })
 
-export const encryptMediaRetryRequest = (key: WAMessageKey, mediaKey: Uint8Array, meId: string): BinaryNode => {
+export const encryptMediaRetryRequest = (
+	key: WAMessageKey,
+	mediaKey: Uint8Array,
+	meId: string,
+	runtime: MediaCryptoRuntime = defaultCryptoRuntime
+): BinaryNode => {
 	const receiptBuffer = proto.ServerErrorReceipt.encode({ stanzaId: key.id }).finish()
-	const iv = randomBytes(12)
-	const ciphertext = aesGcm256EncryptPortable(getMediaRetryKey(mediaKey), iv, utf8Encode(key.id!), receiptBuffer)
+	const iv = runtime.randomBytes(12)
+	const ciphertext = runtime.aesGcm256Encrypt(
+		getMediaRetryKey(mediaKey, runtime),
+		iv,
+		utf8Encode(key.id!),
+		receiptBuffer
+	)
 	return {
 		tag: 'receipt',
 		attrs: { id: key.id!, to: jidNormalizedUser(meId), type: 'server-error' },
@@ -142,8 +157,9 @@ export const decodeMediaRetryNode = (node: BinaryNode): BaileysEventMap['message
 export const decryptMediaRetryData = (
 	{ ciphertext, iv }: { ciphertext: Uint8Array; iv: Uint8Array },
 	mediaKey: Uint8Array,
-	msgId: string
+	msgId: string,
+	runtime: MediaCryptoRuntime = defaultCryptoRuntime
 ): proto.MediaRetryNotification =>
 	proto.MediaRetryNotification.decode(
-		aesGcm256DecryptPortable(getMediaRetryKey(mediaKey), iv, utf8Encode(msgId), ciphertext)
+		runtime.aesGcm256Decrypt(getMediaRetryKey(mediaKey, runtime), iv, utf8Encode(msgId), ciphertext)
 	)
