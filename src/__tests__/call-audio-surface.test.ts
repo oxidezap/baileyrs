@@ -124,6 +124,36 @@ const offlineAudioClient = async (): Promise<CallAudioBridgeClient> => {
 }
 
 describe('call audio bridge surface', { timeout: 60_000 }, () => {
+	it('constructs two isolated media backends for concurrent clients', async () => {
+		const a = loadVoip({
+			connect: async () => {
+				throw new Error('relay A is offline')
+			}
+		})
+		const b = loadVoip({
+			connect: async () => {
+				throw new Error('relay B is offline')
+			}
+		})
+		expect(a.voipBackend === b.voipBackend).toBe(false)
+		const create = (voipBackend: typeof a.voipBackend) =>
+			createWhatsAppClient(deadTransport(), deadHttp(), null, memoryStore(), null, null, null, null, null, {
+				voipBackend
+			})
+		const first = await create(a.voipBackend)
+		const second = await create(b.voipBackend)
+		try {
+			for (const client of [first, second]) {
+				expect(typeof client.acceptCallPcm).toBe('function')
+				const error = await rejection(client.acceptCall('NEVER-RANG', 'mlow'))
+				expect(error.field).toBe('callId')
+			}
+		} finally {
+			first.free()
+			second.free()
+		}
+	})
+
 	it('accepting needs a live offer for the id', async () => {
 		const client = await offlineAudioClient()
 		try {
