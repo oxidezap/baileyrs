@@ -93,6 +93,10 @@ const auth = await createAuthenticationState(store)
 const socket = makeWASocket({ auth })
 ```
 
+Reuse the same byte-preserving store on restart: `await createAuthenticationState(store)`
+rehydrates the device written by the Rust engine, including its registration ID
+(which may exceed the 14-bit ID used to seed fresh Baileys-style credentials).
+Do not reset or truncate an existing device record to work around a failed read.
 Node consumers should continue using the root entrypoint and
 `useMultiFileAuthState` unchanged.
 
