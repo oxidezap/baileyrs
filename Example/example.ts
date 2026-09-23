@@ -108,9 +108,9 @@ const reconnectDelayFor = (statusCode: number | undefined, error: Boom | undefin
 			// The server rejected this build; the next one is rejected too.
 			return undefined
 		case 500:
-			// Startup failures need their cause inspected before another attempt;
-			// a persistent auth-store error would otherwise loop forever.
-			return undefined
+			// Startup failures carry the initialization cause. Log it and retry
+			// after the normal delay; persistent store errors need operator action.
+			return 5_000
 		case DisconnectReason.forbidden: {
 			// Temporary ban. `expire` is unix-seconds, carried on the Boom's data.
 			const expire = (error?.data as { expire?: number } | undefined)?.expire
@@ -185,7 +185,10 @@ const startSock = async () => {
 							'connection closed for good; inspect the cause before reconnecting'
 						)
 					} else {
-						logger.warn({ statusCode, retryDelayMs }, 'connection closed for good, starting a new socket')
+						logger.warn(
+							{ statusCode, retryDelayMs, cause: boom?.cause },
+							'connection closed for good, starting a new socket'
+						)
 						// `ev.process` invokes this handler with `void handler(events)`
 						// and attaches no rejection handler, so anything thrown here —
 						// `fetchLatestWaWebVersion()` failing, the auth store refusing

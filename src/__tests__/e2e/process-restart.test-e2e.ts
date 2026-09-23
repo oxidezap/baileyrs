@@ -7,12 +7,39 @@ import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 
 const worker = fileURLToPath(new URL('./restart-worker.ts', import.meta.url))
+const testFlagsWithValue = new Set([
+	'--test-concurrency',
+	'--test-coverage-branches',
+	'--test-coverage-exclude',
+	'--test-coverage-functions',
+	'--test-coverage-include',
+	'--test-coverage-lines',
+	'--test-name-pattern',
+	'--test-reporter',
+	'--test-reporter-destination',
+	'--test-shard',
+	'--test-skip-pattern',
+	'--test-timeout'
+])
+
+const filterTestRunnerArgs = (args: string[]): string[] => {
+	const runtimeArgs: string[] = []
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!
+		if (arg === '--test' || arg.startsWith('--test-')) {
+			if (testFlagsWithValue.has(arg) && !arg.includes('=')) index++
+			continue
+		}
+		runtimeArgs.push(arg)
+	}
+	return runtimeArgs
+}
 
 async function generation(folder: string, format: string, phase: string, signal: 'SIGINT' | 'SIGKILL') {
 	const runtime = process.env.BAILEYRS_RESTART_RUNTIME
 	const args = runtime
 		? [worker, phase, folder, format]
-		: [...process.execArgv.filter(arg => arg !== '--test' && !arg.startsWith('--test-')), worker, phase, folder, format]
+		: [...filterTestRunnerArgs(process.execArgv), worker, phase, folder, format]
 	const child = spawn(runtime ?? process.execPath, args, {
 		env: process.env,
 		stdio: ['pipe', 'pipe', 'pipe']
@@ -68,6 +95,21 @@ async function generation(folder: string, format: string, phase: string, signal:
 }
 
 describe('E2E: four sessions across process restarts', { timeout: 300_000 }, () => {
+	it('inherits Node loader flags without forwarding test-runner arguments', () => {
+		assert.deepEqual(
+			filterTestRunnerArgs([
+				'--expose-gc',
+				'--test',
+				'--test-concurrency',
+				'1',
+				'--import',
+				'tsx/esm',
+				'--test-reporter=spec'
+			]),
+			['--expose-gc', '--import', 'tsx/esm']
+		)
+	})
+
 	for (const format of ['native', 'legacy']) {
 		const restoreSignal = format === 'native' ? 'SIGKILL' : 'SIGINT'
 		it(`restores ${format} auth without QR and decrypts traffic after ${restoreSignal}`, async () => {
