@@ -332,6 +332,11 @@ const SHAPED: Record<string, (random: Random) => Record<string, unknown>> = {
 		error: random.bool(0.3) ? generateString(random) : undefined
 	}),
 	raw_node: random => ({ tag: generateString(random), attrs: payload(random, 0), content: generateAnyValue(random) }),
+	status_privacy_update: random => ({ action: { mode: random.int(0, 999), userJid: [generateJid(random)] } }),
+	unarchive_chats_setting_update: random => ({ unarchive_chats: random.bool() }),
+	reachout_timelock_update: random => ({
+		state: { is_active: random.bool(), enforcement_type: generateString(random) }
+	}),
 	mex_notification: random => ({
 		op_name: generateString(random),
 		from: random.bool(0.7) ? bridgeJid(random) : undefined,

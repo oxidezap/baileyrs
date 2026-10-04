@@ -26,14 +26,14 @@ export const bridgeNewsletterRoleToBaileys = (role: string | undefined): Newslet
 /**
  * Neutral newsletter metadata in upstream's shape.
  *
- * Four upstream fields have no source in the bridge result and stay absent
+ * Three upstream fields have no source in the bridge result and stay absent
  * rather than being invented: `owner` (the result carries the viewer's role,
- * not the owner's jid), `mute_state` (the result's `state` is the newsletter's
- * lifecycle, Active/Suspended, not a mute), `reaction_codes`, and
+ * not the owner's jid), `reaction_codes`, and
  * `thread_metadata`.
  */
 export const bridgeNewsletterMetadataToBaileys = (result: NewsletterMetadataResult): NewsletterMetadata => ({
 	id: result.jid,
+	...(result.muted !== undefined ? { mute_state: result.muted ? ('ON' as const) : ('OFF' as const) } : {}),
 	name: result.name,
 	...(result.description !== undefined ? { description: result.description } : {}),
 	...(result.inviteCode !== undefined ? { invite: result.inviteCode } : {}),

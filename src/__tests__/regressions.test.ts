@@ -2316,3 +2316,92 @@ describe('assertNodeErrorFree', () => {
 		).not.toThrow()
 	})
 })
+
+describe('bridge 0.25 app-state and reachout events', () => {
+	it('emits a typed restriction once even when its raw MEX twin follows', () => {
+		const { ctx, ev } = makeCtx()
+		const updates: unknown[] = []
+		ev.on('connection.update', value => updates.push(value))
+		const handle = makeEventHandler(ctx)
+		const state = { enforcement_type: 'RESTRICT_ALL_COMPANIONS', is_active: true, time_enforcement_ends: '1790761645' }
+		handle({ type: 'reachout_timelock_update', data: { state } } as never)
+		handle({
+			type: 'mex_notification',
+			data: {
+				op_name: 'NotificationUserReachoutTimelockUpdate',
+				payload: {
+					data: { xwa2_notify_account_reachout_timelock: state }
+				}
+			}
+		} as never)
+		expect(updates).toEqual([
+			{
+				reachoutTimeLock: {
+					isActive: true,
+					enforcementType: 'RESTRICT_ALL_COMPANIONS',
+					timeEnforcementEnds: new Date(1790761645000)
+				}
+			}
+		])
+	})
+	it('reports a lifted restriction and preserves an unknown active state', () => {
+		for (const [state, expected] of [
+			[{ is_active: false }, { isActive: false }],
+			[{ enforcement_type: 'FUTURE' }, { enforcementType: 'FUTURE' }]
+		]) {
+			expect(collect({ type: 'reachout_timelock_update', data: { state } }, 'connection.update')).toEqual([
+				{ reachoutTimeLock: expected }
+			])
+		}
+	})
+	it('forwards status privacy actions intact, including unknown modes and full-sync provenance', () => {
+		for (const from_full_sync of [true, false]) {
+			const action = { mode: 987, userJid: ['member@lid'], extra: 'future' }
+			expect(collect({ type: 'status_privacy_update', data: { action, from_full_sync } }, 'settings.update')).toEqual([
+				{ setting: 'statusPrivacy', value: action }
+			])
+		}
+	})
+	it('matches upstream unarchive setting credentials updates for both switch positions', () => {
+		for (const unarchiveChats of [true, false]) {
+			expect(
+				collect({ type: 'unarchive_chats_setting_update', data: { unarchive_chats: unarchiveChats } }, 'creds.update')
+			).toEqual([{ accountSettings: { unarchiveChats } }])
+		}
+	})
+	it('acknowledges historical calls and sticker/favorites actions without fabricating live calls', () => {
+		for (const type of [
+			'call_log_history',
+			'favorite_sticker_update',
+			'remove_recent_sticker_update',
+			'favorites_update'
+		]) {
+			expect(adaptBridgeEvent({ type, data: {} } as never)).toEqual({ type: 'noop', bridgeType: type })
+		}
+	})
+})
+
+describe('bridge newsletter object envelope', () => {
+	it('preserves zero and large server IDs without falling back to the legacy zero sentinel', () => {
+		for (const newsletter_server_id of [0, '18446744073709551615', undefined]) {
+			const updates = collect(
+				{
+					type: 'message',
+					data: {
+						info: {
+							...baseMessageInfo,
+							source: { chat: jid('120', 'newsletter'), is_from_me: false, is_group: false },
+							server_id: 0,
+							newsletter_server_id
+						},
+						message: { conversation: 'channel post' }
+					}
+				},
+				'messages.upsert'
+			)
+			expect(updates[0]?.messages[0]?.key.server_id).toBe(
+				newsletter_server_id === undefined ? undefined : String(newsletter_server_id)
+			)
+		}
+	})
+})

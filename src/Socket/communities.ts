@@ -27,11 +27,16 @@ export const makeCommunityMethods = (ctx: SocketContext, groups = makeGroupMetho
 	const communityMetadata = async (jid: string): Promise<GroupMetadata> => groups.groupMetadata(jid)
 
 	const communityFetchAllParticipating = async (): Promise<Record<string, GroupMetadata>> => {
-		const bridgeCommunities = await ctx.withClient(client => client.communityFetchAllParticipating())
-		const result: Record<string, GroupMetadata> = {}
-		for (const [communityJid, metadata] of Object.entries(bridgeCommunities)) {
-			result[communityJid] = bridgeGroupMetadataToBaileys(metadata)
-		}
+		// The bridge listing contains only overviews. Fetch the full records
+		// while holding one client lease; never publish a partial roster.
+		const result = await ctx.withClient(async client => {
+			const overviews = await client.communityFetchAllParticipating()
+			const metadata: Record<string, GroupMetadata> = {}
+			for (const jid of Object.keys(overviews)) {
+				metadata[jid] = bridgeGroupMetadataToBaileys(await client.getGroupMetadata(jid))
+			}
+			return metadata
+		})
 
 		ctx.ev.emit('groups.update', Object.values(result))
 		return result

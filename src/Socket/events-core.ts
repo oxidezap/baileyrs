@@ -54,7 +54,6 @@ import {
 } from '../Compatibility/group-notifications.ts'
 import { emitMessageUpsert, type MessageUpsertMetadata } from '../Compatibility/message-upsert.ts'
 import { extractMessageCappingPayload } from './message-capping.ts'
-import { mapReachoutTimelock } from './reachout.ts'
 import { isReconnectableConnectFailure, mapConnectFailureToDisconnect } from './terminal-close.ts'
 import type { SocketContext } from './types.ts'
 type EventBridgeRuntime = {
@@ -122,6 +121,7 @@ const canonicalMessageToWAMessage = (m: CanonicalMessage, Long: typeof DefaultLo
 	key.remoteJid = m.chatJid
 	key.fromMe = m.isFromMe
 	key.id = m.id
+	if (m.serverId !== undefined) key.server_id = m.serverId
 	if (m.senderJid !== undefined) key.participant = m.senderJid
 	const wm = new WAProto.WebMessageInfo() as WAMessage
 	wm.key = key
@@ -833,7 +833,13 @@ const DISPATCHERS: DispatcherMap = {
 	// Straight onto upstream's own channel for this: `settings.update` already
 	// declares the `disableLinkPreviews` arm, and a consumer that reads it is
 	// reading the account-wide setting whichever device changed it.
-	settingUpdate: (evt, { ctx }) => ctx.ev.emit('settings.update', { setting: evt.setting, value: evt.value }),
+	settingUpdate: (evt, { ctx }) => {
+		const { type: _type, ...update } = evt
+		ctx.ev.emit('settings.update', update)
+	},
+	unarchiveChatsSetting: (evt, { ctx }) =>
+		ctx.ev.emit('creds.update', { accountSettings: { unarchiveChats: evt.unarchiveChats } }),
+	reachoutTimelock: (evt, { ctx }) => emitConnectionUpdate(ctx, { reachoutTimeLock: evt.state }),
 
 	// ── Calls ──
 	incomingCall: (evt, { ctx, callbacks }) => {
@@ -881,12 +887,8 @@ const DISPATCHERS: DispatcherMap = {
 	mexNotification: (evt, { ctx }) => {
 		// Route by op_name. Adding a new MEX-driven event means a new entry
 		// here — no per-op_name plumbing in the Bridge layer.
-		if (evt.opName === 'NotificationUserReachoutTimelockUpdate') {
-			const state = mapReachoutTimelock(evt.payload)
-			if (state) emitConnectionUpdate(ctx, { reachoutTimeLock: state })
-			else ctx.logger.warn({ payload: evt.payload }, 'reachout-timelock push: payload missing expected fields')
-			return
-		}
+		// Bridge 0.25 emits the typed update before this raw twin.
+		if (evt.opName === 'NotificationUserReachoutTimelockUpdate') return
 		if (evt.opName === 'MessageCappingInfoNotification') {
 			const payload = extractMessageCappingPayload(evt.payload)
 			if (payload) ctx.ev.emit('message-capping.update', payload)

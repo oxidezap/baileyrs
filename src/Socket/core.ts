@@ -419,8 +419,8 @@ const createWASocketFactoryInner = (
 		} else if (completion.reason === 'auto-reconnect-disabled') {
 			const protocol = completion.protocolError
 			if (protocol?.kind === 'conflict') {
-				statusCode = DisconnectReason.connectionReplaced
-				message = 'Connection replaced'
+				statusCode = protocol.cause === 'replaced' ? DisconnectReason.connectionReplaced : DisconnectReason.loggedOut
+				message = protocol.cause === 'replaced' ? 'Connection replaced' : `Logged out: ${protocol.cause}`
 			} else if (protocol?.kind === 'stream-error') {
 				statusCode = mapConnectFailureToDisconnect(protocol.code)
 			} else if (protocol?.kind === 'connect-failure') {
