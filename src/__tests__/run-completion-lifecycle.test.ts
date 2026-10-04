@@ -37,6 +37,29 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		await rm(authFolder, { recursive: true, force: true })
 	})
 
+	it('preserves sibling account settings before credential-save listeners run', async () => {
+		const { state } = await useMultiFileAuthState(authFolder)
+		const defaultDisappearingMode = { ephemeralExpiration: 86400, ephemeralSettingTimestamp: 123 }
+		state.creds.accountSettings = { unarchiveChats: false, defaultDisappearingMode }
+		const sock = makeWASocket({ auth: state, logger: silentLogger, waWebSocketUrl: 'ws://127.0.0.1:1' })
+		try {
+			const observed: unknown[] = []
+			sock.ev.on('creds.update', () => observed.push({ ...sock.authState.creds.accountSettings }))
+			for (const unarchiveChats of [true, false]) {
+				const update = { accountSettings: { unarchiveChats } }
+				sock.ev.emit('creds.update', update)
+				expect(sock.authState.creds.accountSettings).toEqual({ unarchiveChats, defaultDisappearingMode })
+				expect(update).toEqual({ accountSettings: { unarchiveChats } })
+			}
+			expect(observed).toEqual([
+				{ unarchiveChats: true, defaultDisappearingMode },
+				{ unarchiveChats: false, defaultDisappearingMode }
+			])
+		} finally {
+			await sock.end(undefined)
+		}
+	})
+
 	it('owns and reports a spontaneous supervised-run exit', async () => {
 		let releaseConnection!: () => void
 		const connectionGate = new Promise<void>(resolve => {
