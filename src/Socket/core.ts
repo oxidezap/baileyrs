@@ -205,7 +205,14 @@ const createWASocketFactoryInner = (
 	// Upstream mutates authState.creds before notifying user listeners. Register
 	// this first so `ev.on('creds.update', saveCreds)` persists the merged state
 	// rather than the pre-pair placeholder.
-	ev.on('creds.update', update => Object.assign(auth.creds, update))
+	ev.on('creds.update', update => {
+		// App-state emits partial account settings. Preserve sibling settings
+		// before saveCreds listeners read the updated credentials.
+		const merged = update.accountSettings
+			? { ...update, accountSettings: { ...auth.creds.accountSettings, ...update.accountSettings } }
+			: update
+		Object.assign(auth.creds, merged)
+	})
 	let user: { id?: string; lid?: string } | undefined
 	/** True once `init()` has finished wiring the client and started its read loop. */
 	let initialized = false
@@ -419,8 +426,8 @@ const createWASocketFactoryInner = (
 		} else if (completion.reason === 'auto-reconnect-disabled') {
 			const protocol = completion.protocolError
 			if (protocol?.kind === 'conflict') {
-				statusCode = DisconnectReason.connectionReplaced
-				message = 'Connection replaced'
+				statusCode = protocol.cause === 'replaced' ? DisconnectReason.connectionReplaced : DisconnectReason.loggedOut
+				message = protocol.cause === 'replaced' ? 'Connection replaced' : `Logged out: ${protocol.cause}`
 			} else if (protocol?.kind === 'stream-error') {
 				statusCode = mapConnectFailureToDisconnect(protocol.code)
 			} else if (protocol?.kind === 'connect-failure') {

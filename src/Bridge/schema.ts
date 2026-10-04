@@ -25,6 +25,7 @@
 
 import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
+import { mapReachoutTimelock } from '../Compatibility/reachout.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { processHistoryMessage } from '../Utils/process-history-message-core.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
@@ -472,6 +473,21 @@ const ADAPTERS = {
 	contact_removed: () => ({ type: 'noop', bridgeType: 'contact_removed' }),
 	quick_reply_update: () => ({ type: 'noop', bridgeType: 'quick_reply_update' }),
 	call_log_sync: () => ({ type: 'noop', bridgeType: 'call_log_sync' }),
+	// Baileys rc14 has no events for historical calls, favorites or stickers.
+	call_log_history: () => ({ type: 'noop', bridgeType: 'call_log_history' }),
+	favorite_sticker_update: () => ({ type: 'noop', bridgeType: 'favorite_sticker_update' }),
+	remove_recent_sticker_update: () => ({ type: 'noop', bridgeType: 'remove_recent_sticker_update' }),
+	favorites_update: () => ({ type: 'noop', bridgeType: 'favorites_update' }),
+	status_privacy_update: data =>
+		isObject(data?.action) ? { type: 'settingUpdate', setting: 'statusPrivacy', value: data.action } : null,
+	unarchive_chats_setting_update: data =>
+		typeof data?.unarchive_chats === 'boolean'
+			? { type: 'unarchiveChatsSetting', unarchiveChats: data.unarchive_chats }
+			: null,
+	reachout_timelock_update: data => {
+		const state = mapReachoutTimelock(data?.state)
+		return state ? { type: 'reachoutTimelock', state } : null
+	},
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
@@ -841,6 +857,7 @@ const adaptMessageParts = (
 		isFromMe,
 		id,
 		timestamp,
+		serverId: asString(info.newsletter_server_id) ?? asNumber(info.newsletter_server_id)?.toString(),
 		pushName: asString(info.push_name),
 		participantAlt: resolveParticipantAlt(senderAlt, isGroup),
 		remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),

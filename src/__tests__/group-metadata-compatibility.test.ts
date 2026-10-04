@@ -161,7 +161,7 @@ describe('bridge group metadata compatibility boundary', () => {
 			ephemeral: { expiration: 0, trigger: 7 },
 			membershipApproval: true,
 			memberAddMode: 'all_member_add',
-			size: 3,
+			participantCount: 3,
 			isParentGroup: true,
 			parentGroupJid: 'parent-community@g.us',
 			isDefaultSubGroup: true,
@@ -244,7 +244,12 @@ describe('bridge group metadata compatibility boundary', () => {
 			ev,
 			withClient: async <T>(operation: (client: MockClient) => T | Promise<T>) =>
 				operation(
-					(await { groupFetchAllParticipating: async () => ({ '120363@g.us': fixture }) }) as unknown as MockClient
+					(await {
+						groupFetchAllParticipating: async () => ({
+							'120363@g.us': { id: '120363@g.us', hierarchy: { type: 'standalone' } }
+						}),
+						getGroupMetadata: async () => fixture
+					}) as unknown as MockClient
 				)
 		} as unknown as SocketContext
 
@@ -252,5 +257,20 @@ describe('bridge group metadata compatibility boundary', () => {
 		expect(Object.keys(result)).toEqual(['120363@g.us'])
 		expect(emitted).toHaveLength(1)
 		expect(emitted[0]).toEqual(Object.values(result))
+	})
+})
+
+describe('bridge 0.25 optional group fields', () => {
+	it('keeps the established string subject default and distinguishes a zero participant count', () => {
+		const result = bridgeGroupMetadataToBaileys(
+			neutralGroup({
+				subject: undefined,
+				participantCount: 0,
+				participants: [{ jid: 'member@lid', participantType: 'member', isAdmin: false, isSuperAdmin: false }]
+			})
+		)
+		expect(result.subject).toBe('')
+		expect(result.size).toBe(0)
+		expect(result.participants).toHaveLength(1)
 	})
 })

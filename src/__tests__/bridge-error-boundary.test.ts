@@ -144,3 +144,21 @@ describe('wrapBridgeClient', () => {
 		expect(wrapBridgeClient(raw as never)).toBe(wrapBridgeClient(raw as never))
 	})
 })
+
+describe('community configuration partial success', () => {
+	it('preserves recovery context and the nested server cause across the caller-stack boundary', async () => {
+		const cause = bridgeError({ serverCode: 500, serverText: 'internal-server-error' })
+		const original = bridgeError({ createdJid: 'parent@g.us', step: 'set-description', cause, serverCode: 500 })
+		const translated = withCallerStack(original) as Error & {
+			createdJid: string
+			step: string
+			kind: string
+			serverCode: number
+		}
+		expect(translated.createdJid).toBe('parent@g.us')
+		expect(translated.step).toBe('set-description')
+		expect(translated.kind).toBe('server')
+		expect(translated.serverCode).toBe(500)
+		expect(translated.cause).toBe(cause)
+	})
+})

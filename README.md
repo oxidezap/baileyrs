@@ -60,6 +60,35 @@ both directions, for fields nested at any depth. An own public property wins ove
 bridge name, including an explicit `null` or `undefined`, and inputs are never
 mutated. The bridge keeps its own names.
 
+### Bridge 0.25 compatibility
+
+The runtime dependency is pinned to `@oxidezap/whatsapp-rust-bridge@0.25.0`.
+The public API still targets `baileys@7.0.0-rc14`.
+
+- `groupFetchAllParticipating()` and `communityFetchAllParticipating()` fetch full
+  metadata for each slim bridge listing entry. This adds one metadata request per
+  group, preserves participants and settings, and rejects on any failed fetch
+  before emitting `groups.update`.
+- Reachout pushes use the typed bridge event once, ignoring its raw MEX twin.
+  `connection.update.reachoutTimeLock` preserves unknown enforcement names at
+  runtime; a missing `isActive` means unknown, not a lifted restriction. This
+  reports server state and does not prevent device removal or impose send policy.
+- A terminal `device_removed` or unknown conflict reports `loggedOut` rather than
+  `connectionReplaced`, including when run completion arrives before the event.
+- `newsletterMute()` and `newsletterUnmute()` change channel-update notifications.
+  Metadata exposes that setting as `mute_state`, independently of admin-facing
+  follower-activity notifications. Reactions still resolve to `undefined`.
+  History results may omit `messageId`; `serverId` and large counters remain
+  strings. The bridge's packed live-message format does not carry the new
+  newsletter server ID; only object events and history results expose it.
+- A failed community configuration can reject after creation succeeded. Preserve
+  the error's `createdJid`, `step`, `kind` and `cause`, then resume configuration on
+  that JID instead of repeating `communityCreate()`.
+- Synced status privacy reaches `settings.update`; the unarchive setting reaches
+  `creds.update`. Historical calls, favorite chats and sticker-list updates have
+  no corresponding event in the pinned Baileys API and are acknowledged without
+  emitting unrelated live-call or message events.
+
 ## Documentation
 
 The full API reference and guides live in the

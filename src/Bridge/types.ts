@@ -15,6 +15,8 @@
  */
 
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
+import type { ReachoutTimelockState } from '../Types/Reachout.ts'
+import type { BaileysEventMap } from '../Types/Events.ts'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
@@ -134,6 +136,8 @@ export interface CanonicalQrScannedWithoutMultidevice {
  */
 export interface CanonicalMessage {
 	type: 'message'
+	/** Exact newsletter server ID when the bridge object envelope carries it. */
+	serverId?: string
 	chatJid: string
 	senderJid?: string
 	isGroup: boolean
@@ -504,10 +508,16 @@ export interface CanonicalAppStateSyncFailed {
  * new contract. The shape is the event's rather than one setting's: another
  * setting the bridge starts reporting is a new arm here, not a new event.
  */
-export interface CanonicalSettingUpdate {
-	type: 'settingUpdate'
-	setting: 'disableLinkPreviews'
-	value: proto.SyncActionValue.IPrivacySettingDisableLinkPreviewsAction
+export type CanonicalSettingUpdate = { type: 'settingUpdate' } & BaileysEventMap['settings.update']
+
+export interface CanonicalReachoutTimelock {
+	type: 'reachoutTimelock'
+	state: ReachoutTimelockState
+}
+
+export interface CanonicalUnarchiveChatsSetting {
+	type: 'unarchiveChatsSetting'
+	unarchiveChats: boolean
 }
 
 // ── Calls ──
@@ -777,6 +787,8 @@ export type CanonicalEvent =
 	| CanonicalAppStateSyncFailed
 	| CanonicalQrCodesExhausted
 	| CanonicalSettingUpdate
+	| CanonicalReachoutTimelock
+	| CanonicalUnarchiveChatsSetting
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate
