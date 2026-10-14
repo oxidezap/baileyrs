@@ -71,16 +71,23 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 		touchTcTokenSenderTimestamp: (...args) => track(Promise.resolve(store.touchTcTokenSenderTimestamp(...args))),
 		async flush() {
 			const deadline = Date.now() + 30_000
+			const errors: unknown[] = []
 			for (;;) {
 				const admitted = [...pending]
 				const results = await Promise.allSettled(admitted)
 				for (const operation of admitted) pending.delete(operation)
-				const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
-				if (errors.length === 1) throw errors[0]
-				if (errors.length) throw new AggregateError(errors, 'legacy store flush failed')
+				errors.push(...results.flatMap(result => (result.status === 'rejected' ? [result.reason] : [])))
 				await new Promise<void>(resolve => setImmediate(resolve))
-				if (pending.size === 0) return
-				if (Date.now() >= deadline) throw new Error('legacy store flush did not quiesce within 30s')
+				if (pending.size === 0) {
+					if (errors.length === 1) throw errors[0]
+					if (errors.length) throw new AggregateError(errors, 'legacy store flush failed')
+					return
+				}
+				if (Date.now() >= deadline)
+					throw new AggregateError(
+						[...errors, new Error('legacy store flush did not quiesce within 30s')],
+						'legacy store flush did not quiesce within 30s'
+					)
 			}
 		}
 	}

@@ -549,3 +549,76 @@ test('file flush retains a settled durability failure until it is observed', () 
 		await assert.rejects(store.flush!(), /retained barrier failure/)
 		await store.flush!()
 	}))
+
+for (const backend of ['legacy', 'snapshot'] as const) {
+	test(`${backend} flush drains rejection-handler admissions before reporting errors`, () =>
+		withFolder(async folder => {
+			let releaseFirst!: () => void
+			let releaseSecond!: () => void
+			let enteredSecond!: () => void
+			const firstGate = new Promise<void>(resolve => {
+				releaseFirst = resolve
+			})
+			const secondGate = new Promise<void>(resolve => {
+				releaseSecond = resolve
+			})
+			const secondEntered = new Promise<void>(resolve => {
+				enteredSecond = resolve
+			})
+			let calls = 0
+			const work = async () => {
+				if (++calls === 1) {
+					await firstGate
+					throw new Error('initial failure')
+				}
+				enteredSecond()
+				await secondGate
+			}
+			let operation: () => Promise<unknown>
+			let flush: () => Promise<void>
+			if (backend === 'legacy') {
+				const { initAuthCreds } = await import('../generics.ts')
+				const { wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+				const store = await wrapLegacyStore(
+					{
+						creds: initAuthCreds(),
+						keys: {
+							get: async () => ({}),
+							set: async () => {},
+							bridgeTransaction: async () => {
+								await work()
+								return undefined as never
+							}
+						}
+					},
+					async () => {}
+				)
+				operation = () => store.touchTcTokenSenderTimestamp('jid', '1')
+				flush = () => store.flush()
+			} else {
+				const { createSnapshotTransactions } = await import('../snapshot-transactions.ts')
+				const store = createSnapshotTransactions(
+					folder,
+					'test.json',
+					new Set(),
+					async () => new Map(),
+					async () => {}
+				)
+				operation = () => store.transaction(work)
+				flush = () => store.flush()
+			}
+			const first = operation()
+			const chained = first.catch(() => operation())
+			let settled = false
+			const draining = flush().finally(() => {
+				settled = true
+			})
+			const rejected = assert.rejects(draining, /initial failure/)
+			releaseFirst()
+			await secondEntered
+			await new Promise<void>(resolve => setImmediate(resolve))
+			assert.equal(settled, false)
+			releaseSecond()
+			await Promise.all([chained, rejected])
+		}))
+}

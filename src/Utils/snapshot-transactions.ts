@@ -89,16 +89,23 @@ export const createSnapshotTransactions = (
 			// A finished host callback can admit the next callback in the same
 			// engine operation. Drain new admissions too, with a bounded idle turn.
 			const deadline = Date.now() + 30_000
+			const errors: unknown[] = []
 			for (;;) {
 				const admitted = [...inFlight]
 				const results = await Promise.allSettled(admitted)
 				for (const operation of admitted) inFlight.delete(operation)
-				const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
-				if (errors.length === 1) throw errors[0]
-				if (errors.length) throw new AggregateError(errors, 'snapshot flush failed')
+				errors.push(...results.flatMap(result => (result.status === 'rejected' ? [result.reason] : [])))
 				await new Promise<void>(resolve => setImmediate(resolve))
-				if (inFlight.size === 0) return
-				if (Date.now() >= deadline) throw new Error('snapshot flush did not quiesce within 30s')
+				if (inFlight.size === 0) {
+					if (errors.length === 1) throw errors[0]
+					if (errors.length) throw new AggregateError(errors, 'snapshot flush failed')
+					return
+				}
+				if (Date.now() >= deadline)
+					throw new AggregateError(
+						[...errors, new Error('snapshot flush did not quiesce within 30s')],
+						'snapshot flush did not quiesce within 30s'
+					)
 			}
 		}
 	}

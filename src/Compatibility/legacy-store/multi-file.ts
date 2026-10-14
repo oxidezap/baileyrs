@@ -24,6 +24,16 @@ const keyFile = (type: string, id: string): string =>
 const isMissingFile = (error: unknown): boolean =>
 	error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
 
+/** Load an upstream JSON auth directory using durable backend-wide transactions.
+ * Existing key records require an explicit offline migration:
+ *
+ *     await useLegacyMultiFileAuthState(folder, { migrate: true })
+ *
+ * Stop every old writer and back up the entire directory before opting in.
+ * The new snapshot becomes authoritative; retained JSON files are backups.
+ * To hand the directory back to upstream, stop all writers and first call
+ * prepareLegacyAuthRollback(folder, { offline: true }).
+ */
 export async function useLegacyMultiFileAuthState(
 	folder: string,
 	options: StoreMigrationOptions = {}
