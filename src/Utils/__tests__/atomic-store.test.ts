@@ -459,6 +459,8 @@ test('legacy undefined buckets are no-ops and valid mirror reads do not publish 
 		if (process.platform !== 'win32') await chmod(folder, 0o500)
 		try {
 			assert.deepEqual(decodeTokenRow((await store.get('tc_token', 'jid'))!).token, [7])
+			assert.equal(await store.get('session', '551100@s.whatsapp.net.0'), null)
+			assert.equal(await store.get('identity', '551100@s.whatsapp.net.0'), null)
 			await auth.state.keys.set({ session: undefined })
 			const after = await stat(path, { bigint: true })
 			assert.equal(after.ino, before.ino)

@@ -117,7 +117,11 @@ export async function wrapLegacyStore(
 
 			const nativeValue = legacyValue == null ? null : codecs[store].fromLegacy(nativeKey, legacyValue)
 			imported.set(nativeKey, nativeValue)
-			mirrorUpdates[nativeKey] = nativeValue == null ? null : encodeNativeEnvelope(nativeValue, legacyValue)
+			// A negative lookup has nothing to persist when neither side exists.
+			// Retain deletion when a stale native mirror actually needs removing.
+			if (nativeValue != null || ownValue(nativeBucket, nativeKey) != null) {
+				mirrorUpdates[nativeKey] = nativeValue == null ? null : encodeNativeEnvelope(nativeValue, legacyValue)
+			}
 		}
 
 		if (Object.keys(mirrorUpdates).length > 0) await persist({ [route.nativeType]: mirrorUpdates })
@@ -144,7 +148,9 @@ export async function wrapLegacyStore(
 				continue
 			}
 			imported.set(rawKey, legacyValue)
-			mirrorUpdates[rawKey] = legacyValue ? encodeNativeEnvelope(legacyValue, legacyValue) : null
+			if (legacyValue != null || ownValue(nativeBucket, rawKey) != null) {
+				mirrorUpdates[rawKey] = legacyValue ? encodeNativeEnvelope(legacyValue, legacyValue) : null
+			}
 		}
 
 		if (Object.keys(mirrorUpdates).length > 0) await persist({ [route.nativeType]: mirrorUpdates })
