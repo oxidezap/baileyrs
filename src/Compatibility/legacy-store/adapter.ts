@@ -54,7 +54,7 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 		pending.add(operation)
 		void operation.then(
 			() => pending.delete(operation),
-			() => pending.delete(operation)
+			() => {} // Retain failure until a flush observes it.
 		)
 		return operation
 	}
@@ -72,7 +72,9 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 		async flush() {
 			const deadline = Date.now() + 30_000
 			for (;;) {
-				const results = await Promise.allSettled(pending)
+				const admitted = [...pending]
+				const results = await Promise.allSettled(admitted)
+				for (const operation of admitted) pending.delete(operation)
 				const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
 				if (errors.length === 1) throw errors[0]
 				if (errors.length) throw new AggregateError(errors, 'legacy store flush failed')

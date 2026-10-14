@@ -500,3 +500,52 @@ test('legacy flush waits for admitted atomic transactions and propagates their f
 	rejectCommit(new Error('commit barrier failed'))
 	await Promise.all([writeRejected, flushRejected])
 })
+
+test('legacy flush retains fast failures admitted by a completing callback', async () => {
+	const { initAuthCreds } = await import('../generics.ts')
+	const { wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+	let release!: () => void
+	const barrier = new Promise<void>(resolve => {
+		release = resolve
+	})
+	let calls = 0
+	const store = await wrapLegacyStore(
+		{
+			creds: initAuthCreds(),
+			keys: {
+				get: async () => ({}),
+				set: async () => {},
+				bridgeTransaction: async () => {
+					if (++calls === 1) {
+						await barrier
+						return undefined as never
+					}
+					throw new Error('chained commit failed')
+				}
+			}
+		},
+		async () => {}
+	)
+	const first = store.touchTcTokenSenderTimestamp('jid', '1')
+	const chained = first.then(() =>
+		assert.rejects(store.touchTcTokenSenderTimestamp('jid', '2'), /chained commit failed/)
+	)
+	const flushed = assert.rejects(store.flush(), /chained commit failed/)
+	release()
+	await Promise.all([chained, flushed])
+	await store.flush()
+})
+
+test('file flush retains a settled durability failure until it is observed', () =>
+	withFolder(async folder => {
+		const store = await useBridgeStore(folder, {
+			io: {
+				syncDir: async () => {
+					throw new Error('retained barrier failure')
+				}
+			}
+		})
+		await assert.rejects(store.touchTcTokenSenderTimestamp('jid', '1'), /retained barrier failure/)
+		await assert.rejects(store.flush!(), /retained barrier failure/)
+		await store.flush!()
+	}))

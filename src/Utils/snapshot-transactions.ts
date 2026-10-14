@@ -48,7 +48,7 @@ export const createSnapshotTransactions = (
 		inFlight.add(result)
 		void result.then(
 			() => inFlight.delete(result),
-			() => inFlight.delete(result)
+			() => {} // Retain failure until a flush observes it.
 		)
 		tail = result.catch(() => {})
 		return result
@@ -90,7 +90,9 @@ export const createSnapshotTransactions = (
 			// engine operation. Drain new admissions too, with a bounded idle turn.
 			const deadline = Date.now() + 30_000
 			for (;;) {
-				const results = await Promise.allSettled(inFlight)
+				const admitted = [...inFlight]
+				const results = await Promise.allSettled(admitted)
+				for (const operation of admitted) inFlight.delete(operation)
 				const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
 				if (errors.length === 1) throw errors[0]
 				if (errors.length) throw new AggregateError(errors, 'snapshot flush failed')
