@@ -469,3 +469,34 @@ test('legacy undefined buckets are no-ops and valid mirror reads do not publish 
 			if (process.platform !== 'win32') await chmod(folder, 0o700)
 		}
 	}))
+
+test('legacy flush waits for admitted atomic transactions and propagates their failure', async () => {
+	const { initAuthCreds } = await import('../generics.ts')
+	const { wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+	let rejectCommit!: (error: Error) => void
+	const barrier = new Promise<never>((_resolve, reject) => {
+		rejectCommit = reject
+	})
+	const store = await wrapLegacyStore(
+		{
+			creds: initAuthCreds(),
+			keys: {
+				get: async () => ({}),
+				set: async () => {},
+				bridgeTransaction: async () => barrier
+			}
+		},
+		async () => {}
+	)
+	const write = store.touchTcTokenSenderTimestamp('jid', '1')
+	const writeRejected = assert.rejects(write, /commit barrier failed/)
+	let flushed = false
+	const flush = store.flush().then(() => {
+		flushed = true
+	})
+	await new Promise<void>(resolve => setImmediate(resolve))
+	assert.equal(flushed, false)
+	const flushRejected = assert.rejects(flush, /commit barrier failed/)
+	rejectCommit(new Error('commit barrier failed'))
+	await Promise.all([writeRejected, flushRejected])
+})

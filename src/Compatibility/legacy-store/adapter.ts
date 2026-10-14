@@ -46,6 +46,43 @@ function createWarn(logger?: LegacyStoreLogger): Warn {
 	return logger ? (message, error) => logger.warn({ err: error }, message) : () => {}
 }
 
+// Track complete callbacks, including backend commit barriers. A socket flush
+// must join work already admitted even when its caller has not awaited it yet.
+function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
+	const pending = new Set<Promise<unknown>>()
+	const track = <T>(operation: Promise<T>): Promise<T> => {
+		pending.add(operation)
+		void operation.then(
+			() => pending.delete(operation),
+			() => pending.delete(operation)
+		)
+		return operation
+	}
+	return {
+		...store,
+		get: (...args) => track(Promise.resolve(store.get(...args))),
+		getMany: (...args) => track(Promise.resolve(store.getMany!(...args))),
+		set: (...args) => track(Promise.resolve(store.set(...args))),
+		setMany: (...args) => track(Promise.resolve(store.setMany!(...args))),
+		delete: (...args) => track(Promise.resolve(store.delete(...args))),
+		deleteMany: (...args) => track(Promise.resolve(store.deleteMany!(...args))),
+		commitPatch: (...args) => track(Promise.resolve(store.commitPatch(...args))),
+		storeReceivedTcToken: (...args) => track(Promise.resolve(store.storeReceivedTcToken(...args))),
+		touchTcTokenSenderTimestamp: (...args) => track(Promise.resolve(store.touchTcTokenSenderTimestamp(...args))),
+		async flush() {
+			for (let pass = 0; pass < 64; pass++) {
+				const results = await Promise.allSettled(pending)
+				const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
+				if (errors.length === 1) throw errors[0]
+				if (errors.length) throw new AggregateError(errors, 'legacy store flush failed')
+				await new Promise<void>(resolve => setImmediate(resolve))
+				if (pending.size === 0) return
+			}
+			throw new Error('legacy store flush did not quiesce')
+		}
+	}
+}
+
 export async function wrapLegacyStore(
 	state: AuthenticationState,
 	saveCreds: () => Promise<void>,
@@ -401,7 +438,7 @@ export async function wrapLegacyStore(
 		async flush() {},
 		dispose() {}
 	}
-	if (!keys.bridgeTransaction) return result
+	if (!keys.bridgeTransaction) return withPendingCallbacks(result)
 	const transaction = <T>(work: (adapter: WrappedLegacyStore) => Promise<T>) =>
 		keys.bridgeTransaction!(async transactionalKeys =>
 			work(
@@ -418,7 +455,7 @@ export async function wrapLegacyStore(
 				)
 			)
 		)
-	return {
+	return withPendingCallbacks({
 		...result,
 		get: (store, key) => transaction(adapter => adapter.get(store, key)),
 		getMany: (store, requested) => {
@@ -438,5 +475,5 @@ export async function wrapLegacyStore(
 			const snapshot = [...requested]
 			return transaction(adapter => adapter.deleteMany!(store, snapshot))
 		}
-	}
+	})
 }

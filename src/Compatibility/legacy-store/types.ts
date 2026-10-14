@@ -21,7 +21,7 @@ export type LegacyKeysStore = {
 }
 
 export interface WrappedLegacyStore extends JsStoreCallbacks {
-	/** Kept for socket lifecycle compatibility. All key writes are already durable. */
+	/** Drain admitted callbacks and their durable commit barriers. */
 	flush(): Promise<void>
 	/** Kept for socket lifecycle compatibility. The adapter owns no background resources. */
 	dispose(): void
