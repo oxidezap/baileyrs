@@ -220,6 +220,10 @@ jobs:
 
       - run: npm run build
 
+      - run: npm run typecheck:compat-declarations
+
+      - run: npm run check:host-boundaries
+
       # The publish guard, run on every pull request rather than for the first
       # time at `prepack` on a release. A tarball that ships sourcemaps or
       # duplicated files is a defect of the diff that introduced it, and this is

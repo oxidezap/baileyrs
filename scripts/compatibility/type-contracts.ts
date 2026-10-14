@@ -138,7 +138,16 @@ type JoinRequestEventExact = Assert<Exact<LocalEventMap['group.join-request'], U
 //
 // Upstream's map is not copied verbatim: `app-state-sync.failed` (bridge 0.10.0, #55)
 // and the stub fields pinned below are deliberate, so a new addition still fails.
-const INTENDED_EVENT_ADDITIONS = ['app-state-sync.failed'] as const
+const INTENDED_EVENT_ADDITIONS = ['app-state-sync.failed', 'labels.sublist'] as const
+// Bridge main adds a distinct sublist event; keep its extension contract exact.
+type LabelSublistEventExact = Assert<Exact<LocalEventMap['labels.sublist'], {
+	predefinedId: number
+	chatJid: string
+	change: 'upsert' | 'remove'
+	subListId?: number
+	actionTimestamp?: string
+	fromFullSync: boolean
+}>>
 type IntendedEventAdditions = (typeof INTENDED_EVENT_ADDITIONS)[number]
 type EventNamesExact = Assert<
 	Exact<Exclude<keyof LocalEventMap, IntendedEventAdditions>, keyof UpstreamEventMap>
@@ -338,6 +347,7 @@ export type CompatibilityTypeAssertions = [
 	GroupsUpdateEventExact,
 	JoinRequestEventExact,
 	EventNamesExact,
+	LabelSublistEventExact,
 	EventMapLocalToUpstream,
 	CallPayloadAdditions,
 	UpsertMessageAdditions,

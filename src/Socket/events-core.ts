@@ -859,7 +859,9 @@ const DISPATCHERS: DispatcherMap = {
 			from: evt.action.callCreator ?? evt.from,
 			...(evt.action.callCreator ? { callCreator: evt.action.callCreator } : {}),
 			id: evt.action.callId,
-			date: new Date(evt.timestamp * 1000),
+			// Upstream uses new Date(+attrs.t * 1000), including Invalid Date
+			// when t is absent. Preserve that contract without inventing a time.
+			date: new Date((evt.timestamp ?? Number.NaN) * 1000),
 			status,
 			offline: evt.offline,
 			isGroup,

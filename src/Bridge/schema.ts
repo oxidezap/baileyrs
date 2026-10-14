@@ -1045,16 +1045,10 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 		return null
 	}
 
-	// The call offer is timeline-ordered by its timestamp downstream; an
-	// unparseable one drops the event rather than dating it at the epoch.
+	// Core can omit timestamps on call control stanzas. Preserve the action;
+	// a present malformed timestamp remains invalid input.
 	const timestamp = asUnixSeconds(data.timestamp)
-	if (timestamp === undefined) {
-		logger?.debug(
-			invalidTimestampDetail('incoming_call', data.timestamp),
-			'incoming_call adapter: missing or invalid timestamp'
-		)
-		return null
-	}
+	if (data.timestamp != null && timestamp === undefined) return null
 
 	const canonicalAction: CanonicalCallAction = {
 		type: actionType,

@@ -1,8 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { transactionalFileStore } from '../../Utils/transactional-file-store.ts'
-import { defaultSyncDir } from '../../Utils/use-bridge-store.ts'
-import { useMemoryStore } from '../../Utils/use-memory-store.ts'
+import { createSnapshotTransactions } from '../../Utils/snapshot-transactions.ts'
+import { defaultSyncDir } from '../../Utils/durable-directory.ts'
 import { rowKey, type AtomicRows } from '../../Utils/atomic-store.ts'
 import { BufferJSON } from '../../Utils/generics.ts'
 import type { LegacyKeysStore } from './types.ts'
@@ -14,18 +13,21 @@ export const legacySnapshotKeys = async (
 	folder: string,
 	fileName: (type: string, id: string) => string
 ): Promise<LegacyKeysStore> => {
-	const store = await transactionalFileStore(folder, useMemoryStore(), defaultSyncDir, {
-		namespaces: new Set(['legacy']),
-		snapshotName: 'bridge-legacy-v1.json',
-		importRows: async () => {
+	const store = createSnapshotTransactions(
+		folder,
+		'bridge-legacy-v1.json',
+		new Set(['legacy']),
+		async () => {
 			const rows: AtomicRows = new Map()
 			for (const name of await readdir(folder)) {
 				if (!name.endsWith('.json') || name === 'creds.json' || name === 'bridge-legacy-v1.json') continue
 				rows.set(rowKey('legacy', name), await readFile(join(folder, name)))
 			}
 			return rows
-		}
-	})
+		},
+		defaultSyncDir
+	)
+
 	const decode = (bytes: Uint8Array | undefined | null): unknown =>
 		bytes ? JSON.parse(Buffer.from(bytes).toString(), BufferJSON.reviver) : null
 	const transactionView = (rows: AtomicRows): LegacyKeysStore => ({
@@ -43,12 +45,14 @@ export const legacySnapshotKeys = async (
 	return {
 		get: async (type, ids) =>
 			Object.fromEntries(
-				await Promise.all(ids.map(async id => [id, decode(await store.get('legacy', fileName(type, id)))]))
+				await Promise.all(
+					ids.map(async id => [id, decode(await store.read(rows => rows.get(rowKey('legacy', fileName(type, id)))))])
+				)
 			),
 		set: data =>
-			store.transactionRows(async rows => {
+			store.transaction(async rows => {
 				await transactionView(rows).set(data)
 			}),
-		bridgeTransaction: work => store.transactionRows(rows => work(transactionView(rows)))
+		bridgeTransaction: work => store.transaction(rows => work(transactionView(rows)))
 	}
 }

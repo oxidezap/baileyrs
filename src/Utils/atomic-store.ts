@@ -1,5 +1,11 @@
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 
+export type AtomicStoreCallbacks = Pick<
+	JsStoreCallbacks,
+	'commitPatch' | 'touchTcTokenSenderTimestamp' | 'storeReceivedTcToken'
+>
+export type OrdinaryStoreCallbacks = Omit<JsStoreCallbacks, keyof AtomicStoreCallbacks> & { flush?(): Promise<void> }
+
 export type AtomicRows = Map<string, Uint8Array>
 export const rowKey = (store: string, key: string): string => JSON.stringify([store, key])
 const encode = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
@@ -52,7 +58,7 @@ const readIndex = (rows: AtomicRows, key: string): Set<string> => {
 /** The caller supplies a real transaction covering all reads and writes. */
 export const atomicCallbacks = (
 	transaction: (change: (rows: AtomicRows) => void) => Promise<void>
-): Pick<JsStoreCallbacks, 'commitPatch' | 'touchTcTokenSenderTimestamp' | 'storeReceivedTcToken'> => ({
+): AtomicStoreCallbacks => ({
 	commitPatch(name, state, removed, added, maintainIndex) {
 		const snapshot = Uint8Array.from(state)
 		const additions = added.map(([key, bytes]) => [key, Uint8Array.from(bytes)] as const)

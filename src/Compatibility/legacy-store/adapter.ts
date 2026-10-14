@@ -287,7 +287,13 @@ export async function wrapLegacyStore(
 			)
 		await keys.bridgeTransaction(async transactionalKeys => {
 			const adapter = await wrapLegacyStore(
-				{ ...state, keys: transactionalKeys as AuthenticationState['keys'] },
+				{
+					...state,
+					keys: {
+						get: (type, ids) => transactionalKeys.get(type, ids),
+						set: data => transactionalKeys.set(data)
+					} as AuthenticationState['keys']
+				},
 				saveCreds,
 				logger
 			)
@@ -388,7 +394,17 @@ export async function wrapLegacyStore(
 	const transaction = <T>(work: (adapter: WrappedLegacyStore) => Promise<T>) =>
 		keys.bridgeTransaction!(async transactionalKeys =>
 			work(
-				await wrapLegacyStore({ ...state, keys: transactionalKeys as AuthenticationState['keys'] }, saveCreds, logger)
+				await wrapLegacyStore(
+					{
+						...state,
+						keys: {
+							get: (type, ids) => transactionalKeys.get(type, ids),
+							set: data => transactionalKeys.set(data)
+						} as AuthenticationState['keys']
+					},
+					saveCreds,
+					logger
+				)
 			)
 		)
 	return {

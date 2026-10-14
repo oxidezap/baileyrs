@@ -570,7 +570,7 @@ export interface CanonicalCallAction {
 export interface CanonicalIncomingCall {
 	type: 'incomingCall'
 	from: string
-	timestamp: number
+	timestamp?: number
 	offline: boolean
 	/** Stanza-level `id` (distinct from `action.callId`). */
 	stanzaId?: string

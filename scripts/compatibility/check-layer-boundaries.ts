@@ -29,6 +29,8 @@ const inspect = async (root: string, files: string[], forbidden: readonly Forbid
 	for (const file of files) {
 		const lines = (await readFile(file, 'utf8')).split(/\r?\n/u)
 		for (const [index, line] of lines.entries()) {
+			// Standalone documentation comments are not executable dependencies.
+			if (line.trimStart().startsWith('//')) continue
 			for (const { label, pattern } of forbidden) {
 				if (pattern.test(line)) {
 					violations.push(`${relative(root, file)}:${index + 1}: forbidden ${label}: ${line.trim()}`)

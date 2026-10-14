@@ -131,3 +131,114 @@ test('file: separate processes share token merges and ordinary writers', () =>
 		const snapshot = JSON.parse(await readFile(join(folder, 'bridge-atomic-v1.json'), 'utf8'))
 		assert.ok(snapshot.some(([key]: [string, string]) => key === rowKey('tc_token', 'jid')))
 	}))
+
+test('legacy JSON migration: patch and exact i64 token projections survive reopening', () =>
+	withFolder(async folder => {
+		const { initAuthCreds, BufferJSON } = await import('../generics.ts')
+		const { useLegacyMultiFileAuthState, wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+		await writeFile(join(folder, 'creds.json'), JSON.stringify(initAuthCreds(), BufferJSON.replacer))
+		await writeFile(
+			join(folder, 'tctoken-jid.json'),
+			JSON.stringify({ token: Buffer.from([1]), timestamp: '12' }, BufferJSON.replacer)
+		)
+		const auth = await useLegacyMultiFileAuthState(folder)
+		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
+		await store.touchTcTokenSenderTimestamp('jid', '9223372036854775807')
+		await store.storeReceivedTcToken('jid', new Uint8Array([2]), '13')
+		const version = { version: 2, hash: Array.from({ length: 128 }, () => 0), index_value_map: {} }
+		await store.commitPatch('regular', enc(version), [], [['regular:key', enc([3])]], true)
+		const nextAuth = await useLegacyMultiFileAuthState(folder)
+		const reopened = await wrapLegacyStore(nextAuth.state, nextAuth.saveCreds)
+		assert.deepEqual(decodeTokenRow((await reopened.get('tc_token', 'jid'))!), {
+			token: [2],
+			token_timestamp: 13n,
+			sender_timestamp: (1n << 63n) - 1n
+		})
+		assert.deepEqual(parse(await reopened.get('sync_version', 'regular')), version)
+		assert.deepEqual(parse(await reopened.get('meta', 'mutation_mac_keys')), ['regular:key'])
+		await reopened.set('meta', 'mutation_mac_keys', enc({ invalid: true }))
+		await assert.rejects(reopened.commitPatch('regular', enc({ ...version, version: 3 }), ['regular:key'], [], true))
+		assert.deepEqual(parse(await reopened.get('sync_version', 'regular')), version)
+		assert.deepEqual(parse(await reopened.get('mutation_mac', 'regular:key')), [3])
+		assert.deepEqual(
+			JSON.parse(await readFile(join(folder, 'tctoken-jid.json'), 'utf8'), BufferJSON.reviver).token,
+			Buffer.from([1])
+		)
+	}))
+
+test('file: flush observes an admitted atomic transaction and its durability failure', () =>
+	withFolder(async folder => {
+		let entered!: () => void
+		let release!: () => void
+		const arrived = new Promise<void>(resolve => {
+			entered = resolve
+		})
+		const gate = new Promise<void>(resolve => {
+			release = resolve
+		})
+		const store = await useBridgeStore(folder, {
+			io: {
+				syncDir: async () => {
+					entered()
+					await gate
+					throw new Error('atomic barrier failed')
+				}
+			}
+		})
+		const write = store.storeReceivedTcToken('jid', new Uint8Array([1]), '1')
+		void write.catch(() => {})
+		await arrived
+		const flush = store.flush!()
+		void flush.catch(() => {})
+		release()
+		await assert.rejects(write, /atomic barrier failed/)
+		await assert.rejects(flush, /atomic barrier failed/)
+	}))
+
+test('file: a SIGKILL inside a published transaction recovers the exited owner and complete snapshot', () =>
+	withFolder(async folder => {
+		const { spawn } = await import('node:child_process')
+		const { once } = await import('node:events')
+		const moduleUrl = new URL('../use-bridge-store.ts', import.meta.url).href
+		const child = spawn(
+			process.execPath,
+			[
+				'--input-type=module',
+				'-e',
+				`
+		import { useBridgeStore } from ${JSON.stringify(moduleUrl)};
+		const store = await useBridgeStore(${JSON.stringify(folder)}, { io: { syncDir: async () => {
+			process.stdout.write('PUBLISHED\\n'); await new Promise(() => {});
+		} } });
+		setInterval(() => {}, 1000);
+		await store.commitPatch('regular', new TextEncoder().encode('{"version":2}'), [], [['regular:key', new Uint8Array([3])]], true);
+	`
+			],
+			{ stdio: ['ignore', 'pipe', 'pipe'] }
+		)
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('child did not publish snapshot')), 10000)
+				child.once('error', reject)
+				child.stdout.on('data', bytes => {
+					if (String(bytes).includes('PUBLISHED')) {
+						clearTimeout(timer)
+						resolve()
+					}
+				})
+				child.once('exit', code => {
+					clearTimeout(timer)
+					if (code !== null) reject(new Error(`child exited ${code}`))
+				})
+			})
+			const exited = once(child, 'exit')
+			child.kill('SIGKILL')
+			await exited
+			const store = await useBridgeStore(folder)
+			assert.deepEqual(parse(await store.get('sync_version', 'regular')), { version: 2 })
+			assert.deepEqual(Array.from((await store.get('mutation_mac', 'regular:key'))!), [3])
+			assert.deepEqual(parse(await store.get('meta', 'mutation_mac_keys')), ['regular:key'])
+		} finally {
+			child.kill('SIGKILL')
+		}
+	}))

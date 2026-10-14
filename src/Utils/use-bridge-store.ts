@@ -1,3 +1,5 @@
+import type { OrdinaryStoreCallbacks } from './atomic-store.ts'
+import { defaultSyncDir } from './durable-directory.ts'
 import { transactionalFileStore } from './transactional-file-store.ts'
 import { Buffer } from 'node:buffer'
 import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises'
@@ -81,12 +83,7 @@ const copyBytes = (value: Uint8Array): Uint8Array => Uint8Array.from(value)
  * `platform` defaults to the running platform; tests pass explicit values
  * to cover the matrix deterministically on any OS.
  */
-export const isUnsupportedDirSync = (e: unknown, platform: NodeJS.Platform = process.platform): boolean => {
-	const code = errnoOf(e)
-	if (code === 'ENOSYS' || code === 'ENOTSUP') return true
-	if (platform === 'win32' && (code === 'EINVAL' || code === 'EPERM' || code === 'EISDIR')) return true
-	return false
-}
+export { isUnsupportedDirSync } from './durable-directory.ts'
 
 // File-creation steps behind one durable write plus the directory barrier.
 // Scoped per store via the `options` parameter of `useBridgeStore` — never
@@ -124,26 +121,6 @@ class BarrierUncertainty extends Error {
 		super('use-bridge-store: post-rename barrier uncertified; prior durable knowledge invalidated')
 		this.name = 'BarrierUncertainty'
 		this.detail = detail
-	}
-}
-
-export const defaultSyncDir = async (dir: string): Promise<void> => {
-	let handle: Awaited<ReturnType<typeof open>> | undefined
-	try {
-		handle = await open(dir, 'r')
-	} catch (e) {
-		// A store folder that cannot even be opened is not a platform
-		// quirk, except where the platform cannot open directory handles
-		// at all (classified above).
-		if (!isUnsupportedDirSync(e)) throw e
-		return
-	}
-	try {
-		await handle.sync()
-	} catch (e) {
-		if (!isUnsupportedDirSync(e)) throw e
-	} finally {
-		await handle.close().catch(() => {})
 	}
 }
 
@@ -230,10 +207,7 @@ let tmpSeq = 0
  *   seam only: the default implementation is the sole provider of the
  *   durability contract above.
  */
-async function usePerKeyBridgeStore(
-	folder: string,
-	options?: BridgeStoreOptions
-): Promise<NonNullable<AuthenticationState['store']>> {
+async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions): Promise<OrdinaryStoreCallbacks> {
 	await mkdir(folder, { recursive: true })
 
 	const openTmp = options?.io?.openTmp ?? realOpenTmp
@@ -701,15 +675,6 @@ async function usePerKeyBridgeStore(
 	}
 
 	return {
-		commitPatch: async () => {
-			throw new Error('atomic namespace must use transactional store')
-		},
-		touchTcTokenSenderTimestamp: async () => {
-			throw new Error('atomic namespace must use transactional store')
-		},
-		storeReceivedTcToken: async () => {
-			throw new Error('atomic namespace must use transactional store')
-		},
 		get: doGet,
 
 		set: doSet,
