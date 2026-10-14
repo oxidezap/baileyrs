@@ -397,7 +397,7 @@ test('snapshot flush joins callbacks admitted by completion of an outstanding op
 		const initial = store.set('meta', 'first', enc(1))
 		let finished = false
 		const next = initial.then(async () => {
-			await store.set('meta', 'next', enc(2))
+			for (let index = 0; index < 80; index++) await store.set('meta', 'next', enc(index))
 			finished = true
 		})
 		await arrived
