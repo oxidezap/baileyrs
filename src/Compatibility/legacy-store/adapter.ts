@@ -1,3 +1,4 @@
+import { atomicCallbacks, rowKey, type AtomicRows } from '../../Utils/atomic-store.ts'
 // Baileys legacy auth-state projection onto the bridge's neutral byte store.
 import { Buffer } from 'node:buffer'
 import type { AuthenticationState } from '../../Types/index.ts'
@@ -279,7 +280,58 @@ export async function wrapLegacyStore(
 		return deleteProjected(store, requested)
 	}
 
-	return {
+	const atomic = async (stores: { store: string; keys: string[] }[], change: (rows: AtomicRows) => void) => {
+		if (!keys.bridgeTransaction)
+			throw new TypeError(
+				'legacy storage requires bridgeTransaction with backend-wide isolation and atomic durable commit'
+			)
+		await keys.bridgeTransaction(async transactionalKeys => {
+			const adapter = await wrapLegacyStore(
+				{ ...state, keys: transactionalKeys as AuthenticationState['keys'] },
+				saveCreds,
+				logger
+			)
+			const rows: AtomicRows = new Map()
+			for (const { store, keys: requested } of stores) {
+				for (const [key, value] of await adapter.getMany!(store, requested)) rows.set(rowKey(store, key), value)
+			}
+			const before = new Map(rows)
+			change(rows)
+			for (const key of before.keys())
+				if (!rows.has(key)) {
+					const [store, id]: [string, string] = JSON.parse(key)
+					await adapter.delete(store, id)
+				}
+			for (const [key, value] of rows)
+				if (before.get(key) !== value) {
+					const [store, id]: [string, string] = JSON.parse(key)
+					await adapter.set(store, id, value)
+				}
+		})
+	}
+	const atomicMethods = (stores: { store: string; keys: string[] }[]) =>
+		atomicCallbacks(change => atomic(stores, change))
+
+	const result: WrappedLegacyStore = {
+		commitPatch(name, stateBytes, removed, added, maintainIndex) {
+			return atomicMethods([
+				{ store: 'sync_version', keys: [name] },
+				{ store: 'mutation_mac', keys: [...new Set([...removed, ...added.map(([key]) => key)])] },
+				{ store: 'meta', keys: maintainIndex ? ['mutation_mac_keys'] : [] }
+			]).commitPatch(name, stateBytes, removed, added, maintainIndex)
+		},
+		touchTcTokenSenderTimestamp(jid, timestamp) {
+			return atomicMethods([
+				{ store: 'tc_token', keys: [jid] },
+				{ store: 'meta', keys: ['tc_token_jids'] }
+			]).touchTcTokenSenderTimestamp(jid, timestamp)
+		},
+		storeReceivedTcToken(jid, token, timestamp) {
+			return atomicMethods([
+				{ store: 'tc_token', keys: [jid] },
+				{ store: 'meta', keys: ['tc_token_jids'] }
+			]).storeReceivedTcToken(jid, token, timestamp)
+		},
 		async get(store, key) {
 			try {
 				return (await readMany(store, [key]))[0]?.[1] ?? null
@@ -331,5 +383,33 @@ export async function wrapLegacyStore(
 		capabilities: { batch: true },
 		async flush() {},
 		dispose() {}
+	}
+	if (!keys.bridgeTransaction) return result
+	const transaction = <T>(work: (adapter: WrappedLegacyStore) => Promise<T>) =>
+		keys.bridgeTransaction!(async transactionalKeys =>
+			work(
+				await wrapLegacyStore({ ...state, keys: transactionalKeys as AuthenticationState['keys'] }, saveCreds, logger)
+			)
+		)
+	return {
+		...result,
+		get: (store, key) => transaction(adapter => adapter.get(store, key)),
+		getMany: (store, requested) => {
+			const snapshot = [...requested]
+			return transaction(adapter => adapter.getMany!(store, snapshot))
+		},
+		set: (store, key, value) => {
+			const snapshot = Uint8Array.from(value)
+			return transaction(adapter => adapter.set(store, key, snapshot))
+		},
+		setMany: (store, entries) => {
+			const snapshot = entries.map(([key, value]) => [key, Uint8Array.from(value)] as [string, Uint8Array])
+			return transaction(adapter => adapter.setMany!(store, snapshot))
+		},
+		delete: (store, key) => transaction(adapter => adapter.delete(store, key)),
+		deleteMany: (store, requested) => {
+			const snapshot = [...requested]
+			return transaction(adapter => adapter.deleteMany!(store, snapshot))
+		}
 	}
 }

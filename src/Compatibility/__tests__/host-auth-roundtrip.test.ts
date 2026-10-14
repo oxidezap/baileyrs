@@ -1,3 +1,4 @@
+import { useMemoryStore } from '../../Utils/use-memory-store.ts'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
@@ -24,6 +25,7 @@ const logger = {
 test('a fresh host socket persists a device that the next auth state can hydrate', { timeout: 20_000 }, async () => {
 	const records = new Map<string, Uint8Array>()
 	const store: HostStoreCallbacks = {
+		...useMemoryStore(),
 		get: async (namespace, key) => records.get(`${namespace}/${key}`)?.slice() ?? null,
 		set: async (namespace, key, value) => {
 			records.set(`${namespace}/${key}`, value.slice())

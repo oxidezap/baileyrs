@@ -1,3 +1,4 @@
+import { useMemoryStore } from '../../Utils/use-memory-store.ts'
 /**
  * Regression guard: the bridge must not leak JS handles per operation.
  *
@@ -54,11 +55,7 @@ function makeFailingHttp(): JsHttpClientConfig {
 }
 
 function makeFastStore(): JsStoreCallbacks {
-	return {
-		get: async () => null,
-		set: async () => undefined,
-		delete: async () => undefined
-	}
+	return useMemoryStore()
 }
 
 async function quiesce(ticks = 5): Promise<void> {

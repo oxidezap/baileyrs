@@ -63,7 +63,12 @@ export const makeChatActionMethods = (ctx: SocketContext) => {
 				} else if ('delete' in mod) {
 					await client.deleteChat(jid)
 				} else if ('deleteForMe' in mod) {
-					await client.deleteMessageForMe(jid, mod.deleteForMe.key.id!, !!mod.deleteForMe.key.fromMe)
+					await client.deleteMessageForMe(
+						jid,
+						mod.deleteForMe.key.id!,
+						!!mod.deleteForMe.key.fromMe,
+						mod.deleteForMe.key.participant
+					)
 				} else if ('pushNameSetting' in mod) {
 					await client.setPushName(mod.pushNameSetting)
 				} else if ('contact' in mod) {

@@ -1,3 +1,4 @@
+import { useMemoryStore } from '../../Utils/use-memory-store.ts'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
@@ -18,6 +19,7 @@ const makeNativeStore = () => {
 		return result
 	}
 	const store: JsStoreCallbacks = {
+		...useMemoryStore(),
 		get: async (namespace, key) => bucket(namespace).get(key) ?? null,
 		set: async (namespace, key, value) => {
 			bucket(namespace).set(key, value)

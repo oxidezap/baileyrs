@@ -285,7 +285,7 @@ const ADAPTERS = {
 		return {
 			type: 'presence',
 			from,
-			unavailable: asBoolOr(data?.unavailable, false),
+			unavailable: data?.status === 'unavailable',
 			lastSeen: asUnixSeconds(data?.last_seen)
 		}
 	},
@@ -296,20 +296,14 @@ const ADAPTERS = {
 		const chat = asJidString(src.chat)
 		const sender = asJidString(src.sender)
 		if (!chat || !sender) return null
-		// Bridge sends `media: ''` for "no media" — normalize to undefined
-		// so consumers can rely on field omission as the absence signal.
-		const media = asString(data?.media)
-		// Bridge `state` MUST be one of the two canonical values; defaulting
-		// to 'composing' on an unknown/missing value would synthesize a
-		// false typing indicator. Drop the event instead.
 		const rawState = asString(data?.state)
-		if (rawState !== 'composing' && rawState !== 'paused') return null
+		if (rawState !== 'typing' && rawState !== 'recording_audio' && rawState !== 'idle') return null
 		return {
 			type: 'chatPresence',
 			chatJid: chat,
 			senderJid: sender,
-			state: rawState,
-			media: media === 'audio' ? 'audio' : undefined
+			state: rawState === 'idle' ? 'paused' : 'composing',
+			media: rawState === 'recording_audio' ? 'audio' : undefined
 		}
 	},
 
@@ -355,6 +349,28 @@ const ADAPTERS = {
 		if (!jid) return null
 		return { type: 'lockChatUpdate', jid, locked: asBoolOr(extractAction(data)?.locked, true) }
 	},
+	label_sublist_update: data => {
+		const chatJid = asJidString(data?.chat_jid)
+		const predefinedId = asNumber(data?.predefined_id)
+		const change = data?.change
+		const subListId = isObject(change) && isObject(change.Upsert) ? asNumber(change.Upsert.sub_list_id) : undefined
+		if (
+			!chatJid ||
+			predefinedId === undefined ||
+			!Number.isInteger(predefinedId) ||
+			(change !== 'Remove' && (subListId === undefined || !Number.isInteger(subListId)))
+		)
+			return null
+		return {
+			type: 'labelSublist',
+			predefinedId,
+			chatJid,
+			change: change === 'Remove' ? 'remove' : 'upsert',
+			...(change === 'Remove' ? {} : { subListId }),
+			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
+			fromFullSync: asBoolOr(data?.from_full_sync, false)
+		}
+	},
 	label_edit_update: data => {
 		const labelId = asString(data?.label_id)
 		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }
@@ -364,6 +380,7 @@ const ADAPTERS = {
 		const predefined = asNumber(action?.predefinedId) ?? asNumber(action?.predefined_id)
 		return {
 			type: 'labelEdit',
+			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
 			labelId,
 			name: asString(action?.name) ?? '',
 			color: asNumber(action?.color) ?? 0,
@@ -376,7 +393,13 @@ const ADAPTERS = {
 		const chatJid = asJidString(data?.chat_jid)
 		if (!labelId || !chatJid) return { type: 'noop', bridgeType: 'label_association_update' }
 		// `action.labeled === true` → label added to the chat, else removed.
-		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
+		return {
+			type: 'labelAssociation',
+			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
+			labelId,
+			chatJid,
+			labeled: asBoolOr(extractAction(data)?.labeled, true)
+		}
 	},
 
 	/**
@@ -392,6 +415,7 @@ const ADAPTERS = {
 		}
 		return {
 			type: 'labelAssociation',
+			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
 			labelId,
 			chatJid,
 			messageId,

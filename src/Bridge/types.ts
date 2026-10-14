@@ -441,8 +441,19 @@ export interface CanonicalMarkChatAsReadUpdate {
  * A label was created, renamed/recolored, or deleted on a linked device
  * (bridge `label_edit_update`). Maps to upstream `labels.edit` (`Label`).
  */
+export interface CanonicalLabelSublist {
+	type: 'labelSublist'
+	predefinedId: number
+	chatJid: string
+	change: 'upsert' | 'remove'
+	subListId?: number
+	actionTimestamp?: string
+	fromFullSync: boolean
+}
+
 export interface CanonicalLabelEdit {
 	type: 'labelEdit'
+	actionTimestamp?: string
 	labelId: string
 	name: string
 	color: number
@@ -457,6 +468,7 @@ export interface CanonicalLabelEdit {
  */
 export interface CanonicalLabelAssociation {
 	type: 'labelAssociation'
+	actionTimestamp?: string
 	labelId: string
 	chatJid: string
 	/**
@@ -782,6 +794,7 @@ export type CanonicalEvent =
 	| CanonicalStarUpdate
 	| CanonicalMarkChatAsReadUpdate
 	| CanonicalLockChatUpdate
+	| CanonicalLabelSublist
 	| CanonicalLabelEdit
 	| CanonicalLabelAssociation
 	| CanonicalAppStateSyncFailed

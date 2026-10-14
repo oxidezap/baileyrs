@@ -1,4 +1,5 @@
-import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { legacySnapshotKeys } from './snapshot.ts'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../../Types/index.ts'
@@ -47,18 +48,12 @@ export async function useLegacyMultiFileAuthState(
 		await writeFile(join(folder, safeLegacyFileName(file)), JSON.stringify(data, BufferJSON.replacer))
 	}
 
-	const removeData = async (file: string): Promise<void> => {
-		try {
-			await unlink(join(folder, safeLegacyFileName(file)))
-		} catch (error) {
-			if (!isMissingFile(error)) throw error
-		}
-	}
-
 	const creds = (await readData(LegacyMultiFile.CREDS_FILE)) as AuthenticationCreds | null
 	if (!creds) {
 		throw new Error(`no ${LegacyMultiFile.CREDS_FILE} found in legacy auth directory: ${folder}`)
 	}
+
+	const snapshot = await legacySnapshotKeys(folder, (type, id) => safeLegacyFileName(keyFile(type, id)))
 
 	return {
 		state: {
@@ -67,7 +62,7 @@ export async function useLegacyMultiFileAuthState(
 				get: async (type, ids) => {
 					const entries = await Promise.all(
 						ids.map(async id => {
-							let value = await readData(keyFile(type, id))
+							let value = (await snapshot.get(type, [id]))[id]
 							if (type === LegacyStore.SYNC_KEY && value) {
 								value = proto.Message.AppStateSyncKeyData.fromObject(value as Record<string, unknown>)
 							}
@@ -76,16 +71,8 @@ export async function useLegacyMultiFileAuthState(
 					)
 					return Object.fromEntries(entries) as { [id: string]: SignalDataTypeMap[typeof type] }
 				},
-				set: async data => {
-					const writes: Promise<void>[] = []
-					for (const [type, values] of Object.entries(data)) {
-						for (const [id, value] of Object.entries(values ?? {})) {
-							const file = keyFile(type, id)
-							writes.push(value == null ? removeData(file) : writeData(value, file))
-						}
-					}
-					await Promise.all(writes)
-				}
+				set: async data => await snapshot.set(data as Record<string, Record<string, unknown>>),
+				bridgeTransaction: snapshot.bridgeTransaction
 			}
 		},
 		saveCreds: () => writeData(creds, LegacyMultiFile.CREDS_FILE)

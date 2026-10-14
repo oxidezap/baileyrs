@@ -1746,31 +1746,30 @@ describe('dispatch: app-state deletes', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('dispatch: chat_presence → presence.update', () => {
-	const collectAll = (state: string, media?: string) =>
+	const collectAll = (state: string) =>
 		collect(
 			{
 				type: 'chat_presence',
-				data: { source: { chat: jid('group', 'g.us'), sender: jid('5511') }, state, media: media ?? '' }
+				data: { source: { chat: jid('group', 'g.us'), sender: jid('5511') }, state }
 			},
 			'presence.update'
 		)
-	const collectPresence = (state: string, media?: string) =>
-		Object.values(collectAll(state, media)[0]?.presences ?? {})[0]?.lastKnownPresence
+	const collectPresence = (state: string) => Object.values(collectAll(state)[0]?.presences ?? {})[0]?.lastKnownPresence
 
-	it("composing without media → 'composing'", () => {
-		expect(collectPresence('composing', '')).toBe('composing')
+	it("typing → 'composing'", () => {
+		expect(collectPresence('typing')).toBe('composing')
 	})
 
-	it("composing + media='audio' → 'recording'", () => {
-		expect(collectPresence('composing', 'audio')).toBe('recording')
+	it("recording_audio → 'recording'", () => {
+		expect(collectPresence('recording_audio')).toBe('recording')
 	})
 
-	it("paused → 'paused'", () => {
-		expect(collectPresence('paused')).toBe('paused')
+	it("idle → 'paused'", () => {
+		expect(collectPresence('idle')).toBe('paused')
 	})
 
 	it('drops the event entirely for unknown wire states (no false typing indicators)', () => {
-		expect(collectAll('typing')).toEqual([])
+		expect(collectAll('unknown')).toEqual([])
 	})
 })
 
@@ -2267,8 +2266,10 @@ describe('useBridgeStore: critical stores write through synchronously', () => {
 				const s = await useBridgeStore(folder)
 				const value = new Uint8Array([1, 2, 3])
 				await s.set(store, 'k1', value)
-				const written = await readFile(join(folder, `${store}-k1.bin`))
-				expect(new Uint8Array(written)).toEqual(value)
+				const written = ['sync_version', 'mutation_mac'].includes(store)
+					? await (await useBridgeStore(folder)).get(store, 'k1')
+					: await readFile(join(folder, `${store}-k1.bin`))
+				expect(new Uint8Array(written!)).toEqual(value)
 			})
 		})
 	}

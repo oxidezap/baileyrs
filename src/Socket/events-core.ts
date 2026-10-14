@@ -784,11 +784,16 @@ const DISPATCHERS: DispatcherMap = {
 		ctx.ev.emit('chats.update', [{ id: evt.jid, unreadCount: evt.read ? 0 : -1 }]),
 	// Upstream `chat-utils.ts:819` emits `chats.lock` from `lockChatAction.locked`.
 	lockChatUpdate: (evt, { ctx }) => ctx.ev.emit('chats.lock', { id: evt.jid, locked: evt.locked }),
+	labelSublist: (evt, { ctx }) => {
+		const { type: _type, ...update } = evt
+		ctx.ev.emit('labels.sublist', update)
+	},
 	labelEdit: (evt, { ctx }) =>
 		// Upstream `labels.edit` carries a `Label`. A delete arrives with
 		// `deleted: true` (consumers remove it from their store).
 		ctx.ev.emit('labels.edit', {
 			id: evt.labelId,
+			actionTimestamp: evt.actionTimestamp,
 			name: evt.name,
 			color: evt.color,
 			deleted: evt.deleted,
@@ -796,6 +801,7 @@ const DISPATCHERS: DispatcherMap = {
 		}),
 	labelAssociation: (evt, { ctx }) =>
 		ctx.ev.emit('labels.association', {
+			actionTimestamp: evt.actionTimestamp,
 			// The two halves arrive on separate bridge events and upstream tells
 			// them apart by the association's own type, so a message id is what
 			// decides which of the two shapes this is.

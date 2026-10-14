@@ -1,3 +1,4 @@
+import { transactionalFileStore } from './transactional-file-store.ts'
 import { Buffer } from 'node:buffer'
 import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
@@ -126,7 +127,7 @@ class BarrierUncertainty extends Error {
 	}
 }
 
-const defaultSyncDir = async (dir: string): Promise<void> => {
+export const defaultSyncDir = async (dir: string): Promise<void> => {
 	let handle: Awaited<ReturnType<typeof open>> | undefined
 	try {
 		handle = await open(dir, 'r')
@@ -229,7 +230,7 @@ let tmpSeq = 0
  *   seam only: the default implementation is the sole provider of the
  *   durability contract above.
  */
-export async function useBridgeStore(
+async function usePerKeyBridgeStore(
 	folder: string,
 	options?: BridgeStoreOptions
 ): Promise<NonNullable<AuthenticationState['store']>> {
@@ -700,6 +701,15 @@ export async function useBridgeStore(
 	}
 
 	return {
+		commitPatch: async () => {
+			throw new Error('atomic namespace must use transactional store')
+		},
+		touchTcTokenSenderTimestamp: async () => {
+			throw new Error('atomic namespace must use transactional store')
+		},
+		storeReceivedTcToken: async () => {
+			throw new Error('atomic namespace must use transactional store')
+		},
 		get: doGet,
 
 		set: doSet,
@@ -760,4 +770,12 @@ export async function useBridgeStore(
 
 		flush: flushAll
 	}
+}
+
+export async function useBridgeStore(
+	folder: string,
+	options: BridgeStoreOptions = {}
+): Promise<NonNullable<AuthenticationState['store']>> {
+	const ordinary = await usePerKeyBridgeStore(folder, options)
+	return transactionalFileStore(folder, ordinary, options.io?.syncDir ?? defaultSyncDir)
 }

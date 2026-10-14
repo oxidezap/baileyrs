@@ -622,3 +622,56 @@ violations of WhatsApp's Terms of Service that may result from the use of this s
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Testing bridge main before its release
+
+This draft pins the real preview package at
+`https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@a75d376`, from bridge main
+`a75d3768d87969c0a5eb61e80014d5ac5d6b8193`. Use `npm ci --ignore-scripts` with
+the committed lockfile. Publication remains blocked by the existing preview
+dependency guard. After qualification, replace this URL with the matching bridge
+registry release in this same PR and rerun validation. Do not publish this pin.
+
+Custom native stores must provide `get`, `set`, `delete`, `commitPatch`,
+`touchTcTokenSenderTimestamp`, and `storeReceivedTcToken`. Follow the bridge's
+`JsStoreCallbacks` declaration for namespaces, indices, durability, signed i64
+timestamps, and merge ordering. A batch of independent writes is insufficient.
+The host entrypoint uses the same required callback contract.
+
+`useMemoryStore` implements these operations with synchronous copy-on-commit.
+`useBridgeStore` places `sync_version`, `mutation_mac`, `tc_token`, and `meta` in
+one `bridge-atomic-v1.json` snapshot. Every access to those namespaces shares a
+filesystem lock, including ordinary CRUD, batches, and prefix deletes. Commits
+sync a private temporary file, rename it over the snapshot, then sync the directory.
+Failures after rename still reject. Directory-sync platform limitations are the
+same as for existing file writes. These guarantees assume a local filesystem
+with atomic rename and exclusive directory creation.
+
+The first mutation imports the old `.bin` records under that lock. Original files
+remain as backups and are never consulted after the snapshot exists. Back up the
+whole auth directory, including snapshots. Stop all older adapters before migration;
+older releases do not coordinate with this lock or understand the snapshot. Do not
+run an older release against a migrated directory or delete its snapshot to roll back.
+
+`useLegacyMultiFileAuthState` similarly migrates legacy JSON keys and native mirrors
+into `bridge-legacy-v1.json`. Custom legacy `keys` backends must expose
+`bridgeTransaction(work)`, passing an isolated transactional keys view to `work`
+and committing all changes durably together. All external writers must share that
+backend isolation. The Baileys adapter-local `transaction` helper cannot provide
+this guarantee. Without this hook, atomic operations reject rather than emulate a
+transaction. Prefer a native store when integrating a new backend.
+
+Lock directories are named after their snapshot, for example
+`.bridge-atomic-v1.json.lock`. They are never stolen on a timeout. If a writer
+crashes, first stop and verify all processes using that auth directory, then remove
+only the abandoned lock directory. A concurrent process must never remove a live
+lock. Snapshot publication remains all-or-nothing across a process crash.
+
+Presence translates the bridge's `status` and `typing | recording_audio | idle`
+model to the existing Baileys presence events. `labels.sublist` is a separate
+extension carrying `predefinedId`, `chatJid`, `change`, optional `subListId`,
+optional `actionTimestamp`, and `fromFullSync`. Zero and unknown signed IDs are
+preserved. Apply upserts/removals by `(predefinedId, chatJid)`; do not interpret
+this event as parent-label membership. Label edit/association events also retain
+optional `actionTimestamp`. These timestamps are carried action times, not receipt
+times or proof of live delivery.

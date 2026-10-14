@@ -17,6 +17,7 @@ type Awaitable<T> = T | PromiseLike<T>
 export type LegacyKeysStore = {
 	get(type: string, ids: string[]): Awaitable<Record<string, unknown>>
 	set(data: Record<string, Record<string, unknown>>): Awaitable<void>
+	bridgeTransaction?<T>(work: (keys: LegacyKeysStore) => Promise<T>): Promise<T>
 }
 
 export interface WrappedLegacyStore extends JsStoreCallbacks {

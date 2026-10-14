@@ -1,3 +1,4 @@
+import { useMemoryStore } from '../Utils/use-memory-store.ts'
 /**
  * Plumbing for the testing-only Noise cert-chain bypass.
  *
@@ -57,11 +58,7 @@ const deadHttp = (): JsHttpClientConfig => ({
 	execute: async () => ({ statusCode: 503, body: new Uint8Array() })
 })
 
-const memoryStore = (): JsStoreCallbacks => ({
-	get: async () => null,
-	set: async () => undefined,
-	delete: async () => undefined
-})
+const memoryStore = (): JsStoreCallbacks => useMemoryStore()
 
 initWasmEngine(silentLogger)
 
