@@ -101,9 +101,15 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 			}
 		})
 	})
-	const [jid] = await Promise.all([connected, startupSync])
-
-	return { sock, jid, lid: sock.user?.lid, authFolder: folder, label: opts.label }
+	try {
+		const [jid] = await Promise.all([connected, startupSync])
+		return { sock, jid, lid: sock.user?.lid, authFolder: folder, label: opts.label }
+	} catch (error) {
+		// A failed factory has no returned owner to tear down its live socket.
+		sock.setAutoReconnect(false)
+		await sock.end(undefined)
+		throw error
+	}
 }
 
 /** Disable auto-reconnect, close the socket, then remove the auth folder.
