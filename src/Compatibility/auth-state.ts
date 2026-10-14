@@ -1,3 +1,4 @@
+import { assertStoreCallbacks } from '../Utils/atomic-store.ts'
 /**
  * Host-neutral credential seeding + store hydration for `auth: { store }`.
  *
@@ -97,6 +98,7 @@ export const createAuthenticationState = async (
 	store: JsStoreCallbacks,
 	keys?: AuthenticationState['keys']
 ): Promise<AuthenticationState> => {
+	assertStoreCallbacks(store)
 	const creds = initHostAuthCreds()
 	await hydrateFromStore(store, creds)
 	const { projectNativeStore } = await import('./legacy-store/native-projection.ts')

@@ -1,3 +1,4 @@
+import type { StoreMigrationOptions } from './store-migration.ts'
 import type { OrdinaryStoreCallbacks } from './atomic-store.ts'
 import { defaultSyncDir } from './durable-directory.ts'
 import { transactionalFileStore } from './transactional-file-store.ts'
@@ -107,7 +108,7 @@ type BridgeStoreFileIO = {
 	openTmp?(tmpPath: string): Promise<BridgeStoreFileHandle>
 }
 
-type BridgeStoreOptions = {
+type BridgeStoreOptions = StoreMigrationOptions & {
 	io?: BridgeStoreFileIO
 }
 
@@ -742,5 +743,5 @@ export async function useBridgeStore(
 	options: BridgeStoreOptions = {}
 ): Promise<NonNullable<AuthenticationState['store']>> {
 	const ordinary = await usePerKeyBridgeStore(folder, options)
-	return transactionalFileStore(folder, ordinary, options.io?.syncDir ?? defaultSyncDir)
+	return transactionalFileStore(folder, ordinary, options.io?.syncDir ?? defaultSyncDir, options)
 }

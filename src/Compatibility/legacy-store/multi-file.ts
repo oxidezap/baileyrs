@@ -1,3 +1,5 @@
+import type { LegacyKeysStore } from './types.ts'
+import type { StoreMigrationOptions } from '../../Utils/store-migration.ts'
 import { legacySnapshotKeys } from './snapshot.ts'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -23,7 +25,8 @@ const isMissingFile = (error: unknown): boolean =>
 	error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
 
 export async function useLegacyMultiFileAuthState(
-	folder: string
+	folder: string,
+	options: StoreMigrationOptions = {}
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> {
 	const folderInfo = await stat(folder).catch(error => {
 		if (isMissingFile(error)) return null
@@ -53,7 +56,30 @@ export async function useLegacyMultiFileAuthState(
 		throw new Error(`no ${LegacyMultiFile.CREDS_FILE} found in legacy auth directory: ${folder}`)
 	}
 
-	const snapshot = await legacySnapshotKeys(folder, (type, id) => safeLegacyFileName(keyFile(type, id)))
+	const rawSnapshot = await legacySnapshotKeys(folder, (type, id) => safeLegacyFileName(keyFile(type, id)), options)
+
+	// The transaction view must use the same protobuf revival as ordinary
+	// reads. Persisted protobuf toJSON bytes are base64 strings, not Buffers.
+	const normalizeKeys = (backend: LegacyKeysStore): LegacyKeysStore => ({
+		get: async (type, ids) => {
+			const values = await backend.get(type, ids)
+			if (type !== LegacyStore.SYNC_KEY) return values
+			return Object.fromEntries(
+				Object.entries(values).map(([id, value]) => [
+					id,
+					value ? proto.Message.AppStateSyncKeyData.fromObject(value as Record<string, unknown>) : value
+				])
+			)
+		},
+		set: data => backend.set(data),
+		...(backend.bridgeTransaction
+			? {
+					bridgeTransaction: <T>(work: (keys: LegacyKeysStore) => Promise<T>) =>
+						backend.bridgeTransaction!(keys => work(normalizeKeys(keys)))
+				}
+			: {})
+	})
+	const snapshot = normalizeKeys(rawSnapshot)
 
 	return {
 		state: {
@@ -62,10 +88,7 @@ export async function useLegacyMultiFileAuthState(
 				get: async (type, ids) => {
 					const entries = await Promise.all(
 						ids.map(async id => {
-							let value = (await snapshot.get(type, [id]))[id]
-							if (type === LegacyStore.SYNC_KEY && value) {
-								value = proto.Message.AppStateSyncKeyData.fromObject(value as Record<string, unknown>)
-							}
+							const value = (await snapshot.get(type, [id]))[id]
 							return [id, value] as const
 						})
 					)

@@ -793,7 +793,7 @@ const DISPATCHERS: DispatcherMap = {
 		// `deleted: true` (consumers remove it from their store).
 		ctx.ev.emit('labels.edit', {
 			id: evt.labelId,
-			actionTimestamp: evt.actionTimestamp,
+			...(evt.actionTimestamp !== undefined ? { actionTimestamp: evt.actionTimestamp } : {}),
 			name: evt.name,
 			color: evt.color,
 			deleted: evt.deleted,
@@ -801,7 +801,7 @@ const DISPATCHERS: DispatcherMap = {
 		}),
 	labelAssociation: (evt, { ctx }) =>
 		ctx.ev.emit('labels.association', {
-			actionTimestamp: evt.actionTimestamp,
+			...(evt.actionTimestamp !== undefined ? { actionTimestamp: evt.actionTimestamp } : {}),
 			// The two halves arrive on separate bridge events and upstream tells
 			// them apart by the association's own type, so a message id is what
 			// decides which of the two shapes this is.

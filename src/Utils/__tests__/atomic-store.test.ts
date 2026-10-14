@@ -75,7 +75,8 @@ test('file: import old binary records once, preserve source backups and survive 
 		await writeFile(join(folder, 'sync_version-regular.bin'), enc({ version: 1 }))
 		await writeFile(join(folder, 'mutation_mac-regular%3Aold.bin'), enc([1]))
 		await writeFile(join(folder, 'meta-mutation_mac_keys.bin'), enc(['regular:old']))
-		const store = await useBridgeStore(folder)
+		await assert.rejects(useBridgeStore(folder), /offline migration/)
+		const store = await useBridgeStore(folder, { migrate: true })
 		await store.commitPatch('regular', enc({ version: 2 }), ['regular:old'], [['regular:new', enc([2])]], true)
 		const reopened = await useBridgeStore(folder)
 		assert.deepEqual(parse(await reopened.get('sync_version', 'regular')), { version: 2 })
@@ -141,7 +142,8 @@ test('legacy JSON migration: patch and exact i64 token projections survive reope
 			join(folder, 'tctoken-jid.json'),
 			JSON.stringify({ token: Buffer.from([1]), timestamp: '12' }, BufferJSON.replacer)
 		)
-		const auth = await useLegacyMultiFileAuthState(folder)
+		await assert.rejects(useLegacyMultiFileAuthState(folder), /offline migration/)
+		const auth = await useLegacyMultiFileAuthState(folder, { migrate: true })
 		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
 		await store.touchTcTokenSenderTimestamp('jid', '9223372036854775807')
 		await store.storeReceivedTcToken('jid', new Uint8Array([2]), '13')
@@ -240,5 +242,184 @@ test('file: a SIGKILL inside a published transaction recovers the exited owner a
 			assert.deepEqual(parse(await store.get('meta', 'mutation_mac_keys')), ['regular:key'])
 		} finally {
 			child.kill('SIGKILL')
+		}
+	}))
+
+test('file: getMany/deleteMany snapshot key arrays synchronously at admission', () =>
+	withFolder(async folder => {
+		const store = await useBridgeStore(folder)
+		await store.set('meta', 'first', enc(1))
+		await store.set('meta', 'second', enc(2))
+		const reads = ['first']
+		const reading = store.getMany!('meta', reads)
+		reads[0] = 'second'
+		assert.deepEqual(
+			(await reading).map(([key]) => key),
+			['first']
+		)
+		const deletes = ['first']
+		const deleting = store.deleteMany!('meta', deletes)
+		deletes[0] = 'second'
+		await deleting
+		assert.equal(await store.get('meta', 'first'), null)
+		assert.deepEqual(parse(await store.get('meta', 'second')), 2)
+	}))
+
+test('native migration requires an explicit offline handoff and imports only after opt-in', () =>
+	withFolder(async folder => {
+		await writeFile(join(folder, 'sync_version-regular.bin'), enc({ version: 7 }))
+		await assert.rejects(useBridgeStore(folder), /offline migration/)
+		const store = await useBridgeStore(folder, { migrate: true })
+		await store.commitPatch('regular', enc({ version: 8 }), [], [], true)
+		assert.deepEqual(parse(await (await useBridgeStore(folder)).get('sync_version', 'regular')), { version: 8 })
+	}))
+
+test('legacy rollback exports current JSON, applies deletions, archives the snapshot and requires a new handoff', () =>
+	withFolder(async folder => {
+		const { initAuthCreds, BufferJSON } = await import('../generics.ts')
+		const { useLegacyMultiFileAuthState, wrapLegacyStore, prepareLegacyAuthRollback } =
+			await import('../wrap-legacy-store.ts')
+		await writeFile(join(folder, 'creds.json'), JSON.stringify(initAuthCreds(), BufferJSON.replacer))
+		await writeFile(
+			join(folder, 'tctoken-removed.json'),
+			JSON.stringify({ token: Buffer.from([1]), timestamp: '1' }, BufferJSON.replacer)
+		)
+		const auth = await useLegacyMultiFileAuthState(folder, { migrate: true })
+		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
+		await store.storeReceivedTcToken('current', new Uint8Array([9]), '9223372036854775807')
+		await store.touchTcTokenSenderTimestamp('current', '-9223372036854775808')
+		await store.delete('tc_token', 'removed')
+		await prepareLegacyAuthRollback(folder, { offline: true })
+		const exported = JSON.parse(await readFile(join(folder, 'tctoken-current.json'), 'utf8'), BufferJSON.reviver)
+		assert.deepEqual(exported, {
+			token: Buffer.from([9]),
+			timestamp: '9223372036854775807',
+			senderTimestamp: '-9223372036854775808'
+		})
+		await assert.rejects(readFile(join(folder, 'tctoken-removed.json')), { code: 'ENOENT' })
+		await assert.rejects(readFile(join(folder, 'bridge-legacy-v1.json')), { code: 'ENOENT' })
+		await assert.rejects(useLegacyMultiFileAuthState(folder), /offline migration/)
+		const next = await useLegacyMultiFileAuthState(folder, { migrate: true })
+		const restored = await wrapLegacyStore(next.state, next.saveCreds)
+		assert.deepEqual(decodeTokenRow((await restored.get('tc_token', 'current'))!), {
+			token: [9],
+			token_timestamp: (1n << 63n) - 1n,
+			sender_timestamp: -(1n << 63n)
+		})
+	}))
+
+test('legacy transactional views revive persisted protobuf bytes exactly like ordinary reads', () =>
+	withFolder(async folder => {
+		const { initAuthCreds, BufferJSON } = await import('../generics.ts')
+		const { proto } = await import('../../WAProto/runtime.ts')
+		const { useLegacyMultiFileAuthState, wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+		await writeFile(join(folder, 'creds.json'), JSON.stringify(initAuthCreds(), BufferJSON.replacer))
+		const auth = await useLegacyMultiFileAuthState(folder)
+		const keyData = Uint8Array.from({ length: 32 }, (_, i) => i + 1)
+		await auth.state.keys.set({
+			'app-state-sync-key': {
+				'AQ==': proto.Message.AppStateSyncKeyData.fromObject({
+					keyData,
+					timestamp: 123,
+					fingerprint: { rawId: 7, currentIndex: 0, deviceIndexes: [0] }
+				})
+			}
+		})
+		const ordinary = await auth.state.keys.get('app-state-sync-key', ['AQ=='])
+		await auth.state.keys.bridgeTransaction!(async keys => {
+			const value = (await keys.get('app-state-sync-key', ['AQ==']))['AQ=='] as { keyData: Uint8Array }
+			assert.deepEqual(Array.from(value.keyData), Array.from(keyData))
+			assert.deepEqual(value, ordinary['AQ=='])
+		})
+		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
+		const native = parse(await store.get('sync_key', '01'))
+		assert.deepEqual(native.key_data, Array.from(keyData))
+		assert.equal(native.timestamp, 123)
+		const next = await useLegacyMultiFileAuthState(folder)
+		const reopened = await wrapLegacyStore(next.state, next.saveCreds)
+		assert.deepEqual(await reopened.get('sync_key', '01'), await store.get('sync_key', '01'))
+	}))
+
+test('legacy transaction views may retain their backend hook without recursive re-entry', () =>
+	withFolder(async folder => {
+		const { initAuthCreds, BufferJSON } = await import('../generics.ts')
+		const { useLegacyMultiFileAuthState, wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+		await writeFile(join(folder, 'creds.json'), JSON.stringify(initAuthCreds(), BufferJSON.replacer))
+		const auth = await useLegacyMultiFileAuthState(folder)
+		const transaction = auth.state.keys.bridgeTransaction!
+		let nested = 0
+		auth.state.keys.bridgeTransaction = work =>
+			transaction(keys =>
+				work({
+					...keys,
+					bridgeTransaction: async () => {
+						nested++
+						throw new Error('a transaction view must not be re-entered')
+					}
+				})
+			)
+		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
+		await store.storeReceivedTcToken('jid', new Uint8Array([7]), '10')
+		await store.touchTcTokenSenderTimestamp('jid', '20')
+		await store.set('meta', 'test', enc(true))
+		assert.deepEqual(decodeTokenRow((await store.get('tc_token', 'jid'))!), {
+			token: [7],
+			token_timestamp: 10n,
+			sender_timestamp: 20n
+		})
+		assert.equal(nested, 0)
+	}))
+
+test('snapshot flush joins callbacks admitted by completion of an outstanding operation', () =>
+	withFolder(async folder => {
+		const { defaultSyncDir } = await import('../durable-directory.ts')
+		let entered!: () => void
+		let release!: () => void
+		const arrived = new Promise<void>(resolve => {
+			entered = resolve
+		})
+		const gate = new Promise<void>(resolve => {
+			release = resolve
+		})
+		let first = true
+		const store = await useBridgeStore(folder, {
+			io: {
+				syncDir: async path => {
+					if (first) {
+						first = false
+						entered()
+						await gate
+					}
+					await defaultSyncDir(path)
+				}
+			}
+		})
+		const initial = store.set('meta', 'first', enc(1))
+		let finished = false
+		const next = initial.then(async () => {
+			await store.set('meta', 'next', enc(2))
+			finished = true
+		})
+		await arrived
+		const flushed = store.flush!()
+		release()
+		await flushed
+		assert.equal(finished, true)
+		await next
+	}))
+
+test('malformed native token rows reject without rewriting the row or its index', () =>
+	withFolder(async folder => {
+		for (const store of [useMemoryStore(), await useBridgeStore(folder)]) {
+			for (const malformed of [
+				{ token: ['1'], token_timestamp: 1, sender_timestamp: null },
+				{ token: [1], token_timestamp: '1', sender_timestamp: null }
+			]) {
+				const bytes = enc(malformed)
+				await store.set('tc_token', 'invalid', bytes)
+				await assert.rejects(store.touchTcTokenSenderTimestamp('invalid', '2'), /invalid TC token row/)
+				assert.deepEqual(Array.from((await store.get('tc_token', 'invalid'))!), Array.from(bytes))
+				assert.equal(await store.get('meta', 'tc_token_jids'), null)
+			}
 		}
 	}))

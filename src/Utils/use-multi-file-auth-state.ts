@@ -1,3 +1,4 @@
+import type { StoreMigrationOptions } from './store-migration.ts'
 import { mkdir, stat } from 'node:fs/promises'
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import type { AuthenticationCreds, AuthenticationState } from '../Types/index.ts'
@@ -59,7 +60,8 @@ const hydrateFromStore = async (store: JsStoreCallbacks, creds: AuthenticationCr
  * @param folder Directory to store bridge state files
  */
 export const useMultiFileAuthState = async (
-	folder: string
+	folder: string,
+	options: StoreMigrationOptions = {}
 ): Promise<{ state: AuthenticationState; saveCreds: () => Promise<void> }> => {
 	const folderInfo = await stat(folder).catch(() => {})
 	if (folderInfo) {
@@ -72,7 +74,7 @@ export const useMultiFileAuthState = async (
 		await mkdir(folder, { recursive: true })
 	}
 
-	const store = await useBridgeStore(folder)
+	const store = await useBridgeStore(folder, options)
 	const creds = initAuthCreds()
 	// Before `projectNativeStore`, and that ordering is the whole point: the
 	// projection captures `signedIdentityKey.public` and `registrationId` off

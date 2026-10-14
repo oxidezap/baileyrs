@@ -1,3 +1,4 @@
+import { createAuthenticationState } from '../Compatibility/auth-state.ts'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import P from 'pino'
@@ -135,7 +136,7 @@ describe('startup failures close the socket', { timeout: 10_000 }, () => {
 			}
 		})
 		const sock = factory({
-			auth: { creds: initAuthCreds(), keys: { get: async () => ({}), set: async () => {} } },
+			auth: await createAuthenticationState(useMemoryStore()),
 			logger: {
 				...logger,
 				level: 'silent',

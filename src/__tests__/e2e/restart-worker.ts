@@ -43,7 +43,11 @@ try {
 			const loaded =
 				format === 'native'
 					? await api.useMultiFileAuthState(path)
-					: await (await import('baileys')).useMultiFileAuthState(path)
+					: await (async () => {
+							const seed = await (await import('baileys')).useMultiFileAuthState(path)
+							await seed.saveCreds()
+							return api.useLegacyMultiFileAuthState(path, { migrate: true })
+						})()
 			if (phase === 'restore') assert.equal(loaded.state.creds.registered, true)
 			return loaded
 		})

@@ -146,7 +146,7 @@ describe('wrap-legacy-store: upstream-generated session handoff', () => {
 			JSON.stringify(s.alice.sessions.get(s.bobAddr.toString())!.serialize(), BufferJSON.replacer)
 		)
 
-		const { state, saveCreds } = await useLegacyMultiFileAuthState(dir)
+		const { state, saveCreds } = await useLegacyMultiFileAuthState(dir, { migrate: true })
 		const wrapped = await wrapLegacyStore(
 			{ creds: state.creds, keys: state.keys as SignalKeyStore | SignalKeyStoreWithTransaction },
 			saveCreds

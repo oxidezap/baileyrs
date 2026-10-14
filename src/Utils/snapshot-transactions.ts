@@ -83,10 +83,17 @@ export const createSnapshotTransactions = (
 		read: <T>(read: (rows: AtomicRows) => T | Promise<T>): Promise<T> => exclusive(async () => read(await readRows())),
 		transaction,
 		flush: async (): Promise<void> => {
-			const results = await Promise.allSettled(inFlight)
-			const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
-			if (errors.length === 1) throw errors[0]
-			if (errors.length) throw new AggregateError(errors, 'snapshot flush failed')
+			// A finished host callback can admit the next callback in the same
+			// engine operation. Drain new admissions too, with a bounded idle turn.
+			for (let pass = 0; pass < 64; pass++) {
+				const results = await Promise.allSettled(inFlight)
+				const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
+				if (errors.length === 1) throw errors[0]
+				if (errors.length) throw new AggregateError(errors, 'snapshot flush failed')
+				await new Promise<void>(resolve => setImmediate(resolve))
+				if (inFlight.size === 0) return
+			}
+			throw new Error('snapshot flush did not quiesce')
 		}
 	}
 }

@@ -49,3 +49,17 @@ test('a fresh host socket persists a device that the next auth state can hydrate
 	assert.deepEqual(Array.from(restored.creds.noiseKey.public), noise_key.slice(32))
 	assert.equal(restored.creds.registered, false)
 })
+
+test('host auth rejects an unmigrated three-callback store before storage I/O', async () => {
+	let reads = 0
+	const oldStore = {
+		get: async () => {
+			reads++
+			return null
+		},
+		set: async () => {},
+		delete: async () => {}
+	}
+	await assert.rejects(createAuthenticationState(oldStore as unknown as HostStoreCallbacks), /requires commitPatch/)
+	assert.equal(reads, 0)
+})

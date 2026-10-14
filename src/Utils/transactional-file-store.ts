@@ -1,3 +1,4 @@
+import { requireOfflineMigration, type StoreMigrationOptions } from './store-migration.ts'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AuthenticationState } from '../Types/index.ts'
@@ -10,13 +11,26 @@ type Store = NonNullable<AuthenticationState['store']>
 export const transactionalFileStore = async (
 	folder: string,
 	ordinary: OrdinaryStoreCallbacks,
-	syncDir: (path: string) => Promise<void>
+	syncDir: (path: string) => Promise<void>,
+	options: StoreMigrationOptions = {}
 ): Promise<Store> => {
+	await requireOfflineMigration(
+		folder,
+		'bridge-atomic-v1.json',
+		name => namespaces.has(name.slice(0, name.indexOf('-'))) && name.endsWith('.bin'),
+		options
+	)
 	const snapshot = createSnapshotTransactions(
 		folder,
 		'bridge-atomic-v1.json',
 		namespaces,
 		async () => {
+			await requireOfflineMigration(
+				folder,
+				'bridge-atomic-v1.json',
+				name => namespaces.has(name.slice(0, name.indexOf('-'))) && name.endsWith('.bin'),
+				options
+			)
 			const rows: AtomicRows = new Map()
 			for (const file of await readdir(folder)) {
 				const separator = file.indexOf('-')
@@ -68,21 +82,25 @@ export const transactionalFileStore = async (
 				for (const [key, value] of additions) rows.set(rowKey(store, key), value)
 			})
 		},
-		deleteMany: (store, keys) =>
-			namespaces.has(store)
+		deleteMany(store, keys) {
+			const requested = [...keys]
+			return namespaces.has(store)
 				? transaction(rows => {
-						for (const key of keys) rows.delete(rowKey(store, key))
+						for (const key of requested) rows.delete(rowKey(store, key))
 					})
-				: ordinary.deleteMany!(store, keys),
-		getMany: (store, keys) =>
-			namespaces.has(store)
-				? snapshot.read(rows => {
-						return keys.flatMap(key => {
+				: ordinary.deleteMany!(store, requested)
+		},
+		getMany(store, keys) {
+			const requested = [...keys]
+			return namespaces.has(store)
+				? snapshot.read(rows =>
+						requested.flatMap(key => {
 							const value = rows.get(rowKey(store, key))
 							return value ? [[key, value] as [string, Uint8Array]] : []
 						})
-					})
-				: ordinary.getMany!(store, keys),
+					)
+				: ordinary.getMany!(store, requested)
+		},
 		listKeys: (store, prefix) =>
 			namespaces.has(store)
 				? snapshot.read(rows => list(rows, store, prefix).map(([key]) => key))

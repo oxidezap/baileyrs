@@ -1,3 +1,4 @@
+import { requireOfflineMigration, type StoreMigrationOptions } from '../../Utils/store-migration.ts'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createSnapshotTransactions } from '../../Utils/snapshot-transactions.ts'
@@ -11,13 +12,26 @@ import type { LegacyKeysStore } from './types.ts'
  */
 export const legacySnapshotKeys = async (
 	folder: string,
-	fileName: (type: string, id: string) => string
+	fileName: (type: string, id: string) => string,
+	options: StoreMigrationOptions = {}
 ): Promise<LegacyKeysStore> => {
+	await requireOfflineMigration(
+		folder,
+		'bridge-legacy-v1.json',
+		name => name.endsWith('.json') && name !== 'creds.json',
+		options
+	)
 	const store = createSnapshotTransactions(
 		folder,
 		'bridge-legacy-v1.json',
 		new Set(['legacy']),
 		async () => {
+			await requireOfflineMigration(
+				folder,
+				'bridge-legacy-v1.json',
+				name => name.endsWith('.json') && name !== 'creds.json',
+				options
+			)
 			const rows: AtomicRows = new Map()
 			for (const name of await readdir(folder)) {
 				if (!name.endsWith('.json') || name === 'creds.json' || name === 'bridge-legacy-v1.json') continue

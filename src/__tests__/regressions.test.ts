@@ -2406,3 +2406,28 @@ describe('bridge newsletter object envelope', () => {
 		}
 	})
 })
+
+describe('label action timestamp ownership', () => {
+	for (const timestamp of [undefined, '1970-01-01T00:00:00Z']) {
+		it(`label events ${timestamp === undefined ? 'omit absent' : 'retain explicit epoch'} timestamps`, () => {
+			const extension = timestamp === undefined ? {} : { action_timestamp: timestamp }
+			const edits = collect(
+				{ type: 'label_edit_update', data: { label_id: '1', action: { name: 'label', color: 0 }, ...extension } },
+				'labels.edit'
+			)
+			const associations = collect(
+				{
+					type: 'label_association_update',
+					data: { label_id: '1', chat_jid: jid('5511'), action: { labeled: true }, ...extension }
+				},
+				'labels.association'
+			)
+			for (const event of [...edits, ...associations]) {
+				expect(Object.hasOwn(event, 'actionTimestamp')).toBe(timestamp !== undefined)
+				expect(event.actionTimestamp).toBe(timestamp)
+			}
+			expect(edits.length).toBe(1)
+			expect(associations.length).toBe(1)
+		})
+	}
+})

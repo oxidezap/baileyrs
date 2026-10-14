@@ -11,7 +11,8 @@
  * [`attachQrAutoresponder`] directly from `qr-autoresponder.ts`.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import process from 'node:process'
@@ -116,7 +117,7 @@ export async function destroyTestClient(client: { sock: WASocket; authFolder: st
 	}
 
 	try {
-		rmSync(client.authFolder, { recursive: true, force: true })
+		await rm(client.authFolder, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 	} catch {
 		/* ignore */
 	}

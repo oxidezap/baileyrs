@@ -24,7 +24,17 @@ export type TokenRow = { token: number[]; token_timestamp: bigint; sender_timest
 // without JSON.parse reviver context or rounding i64 through a JS number.
 export const decodeTokenRow = (bytes: Uint8Array): TokenRow => {
 	const text = new TextDecoder().decode(bytes)
-	JSON.parse(text) // Validate the original JSON grammar before rewriting tokens.
+	const original = JSON.parse(text)
+	if (
+		!original ||
+		typeof original !== 'object' ||
+		!Array.isArray(original.token) ||
+		original.token.some((n: unknown) => typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 255) ||
+		typeof original.token_timestamp !== 'number' ||
+		(original.sender_timestamp != null && typeof original.sender_timestamp !== 'number')
+	) {
+		throw new TypeError('invalid TC token row')
+	}
 	const row = JSON.parse(
 		text.replace(/"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, token =>
 			token.startsWith('"') ? token : JSON.stringify(token)
@@ -106,3 +116,21 @@ export const atomicCallbacks = (
 		})
 	}
 })
+
+/** Validate migration requirements before hydration or other storage I/O. */
+export function assertStoreCallbacks(store: unknown): asserts store is JsStoreCallbacks {
+	if (!store || typeof store !== 'object') throw new TypeError('auth store must implement the bridge storage contract')
+	for (const method of [
+		'get',
+		'set',
+		'delete',
+		'commitPatch',
+		'touchTcTokenSenderTimestamp',
+		'storeReceivedTcToken'
+	] as const) {
+		if (typeof (store as Record<string, unknown>)[method] !== 'function')
+			throw new TypeError(
+				`auth store requires ${method}; migrate to the six-callback atomic bridge storage contract or use useMemoryStore()`
+			)
+	}
+}

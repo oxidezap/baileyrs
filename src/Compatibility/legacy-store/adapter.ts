@@ -285,35 +285,40 @@ export async function wrapLegacyStore(
 			throw new TypeError(
 				'legacy storage requires bridgeTransaction with backend-wide isolation and atomic durable commit'
 			)
-		await keys.bridgeTransaction(async transactionalKeys => {
-			const adapter = await wrapLegacyStore(
-				{
-					...state,
-					keys: {
-						get: (type, ids) => transactionalKeys.get(type, ids),
-						set: data => transactionalKeys.set(data)
-					} as AuthenticationState['keys']
-				},
-				saveCreds,
-				logger
-			)
-			const rows: AtomicRows = new Map()
-			for (const { store, keys: requested } of stores) {
-				for (const [key, value] of await adapter.getMany!(store, requested)) rows.set(rowKey(store, key), value)
-			}
-			const before = new Map(rows)
-			change(rows)
-			for (const key of before.keys())
-				if (!rows.has(key)) {
-					const [store, id]: [string, string] = JSON.parse(key)
-					await adapter.delete(store, id)
+		await keys
+			.bridgeTransaction(async transactionalKeys => {
+				const adapter = await wrapLegacyStore(
+					{
+						...state,
+						keys: {
+							get: (type, ids) => transactionalKeys.get(type, ids),
+							set: data => transactionalKeys.set(data)
+						} as AuthenticationState['keys']
+					},
+					saveCreds,
+					logger
+				)
+				const rows: AtomicRows = new Map()
+				for (const { store, keys: requested } of stores) {
+					for (const [key, value] of await adapter.getMany!(store, requested)) rows.set(rowKey(store, key), value)
 				}
-			for (const [key, value] of rows)
-				if (before.get(key) !== value) {
-					const [store, id]: [string, string] = JSON.parse(key)
-					await adapter.set(store, id, value)
-				}
-		})
+				const before = new Map(rows)
+				change(rows)
+				for (const key of before.keys())
+					if (!rows.has(key)) {
+						const [store, id]: [string, string] = JSON.parse(key)
+						await adapter.delete(store, id)
+					}
+				for (const [key, value] of rows)
+					if (before.get(key) !== value) {
+						const [store, id]: [string, string] = JSON.parse(key)
+						await adapter.set(store, id, value)
+					}
+			})
+			.catch(error => {
+				warn('atomic legacy transaction failed', error)
+				throw error
+			})
 	}
 	const atomicMethods = (stores: { store: string; keys: string[] }[]) =>
 		atomicCallbacks(change => atomic(stores, change))
