@@ -44,18 +44,32 @@ export const legacySnapshotKeys = async (
 
 	const decode = (bytes: Uint8Array | undefined | null): unknown =>
 		bytes ? JSON.parse(Buffer.from(bytes).toString(), BufferJSON.reviver) : null
-	const transactionView = (rows: AtomicRows): LegacyKeysStore => ({
+	const transactionView = (rows: AtomicRows, mutated: () => void): LegacyKeysStore => ({
 		get: async (type, ids) =>
 			Object.fromEntries(ids.map(id => [id, decode(rows.get(rowKey('legacy', fileName(type, id))))])),
 		set: async data => {
 			for (const [type, values] of Object.entries(data))
-				for (const [id, value] of Object.entries(values)) {
+				for (const [id, value] of Object.entries(values ?? {})) {
 					const key = rowKey('legacy', fileName(type, id))
+					mutated()
 					if (value == null) rows.delete(key)
 					else rows.set(key, Buffer.from(JSON.stringify(value, BufferJSON.replacer)))
 				}
 		}
 	})
+	const transaction = <T>(work: (keys: LegacyKeysStore) => Promise<T>): Promise<T> => {
+		let dirty = false
+		return store.transaction(
+			rows =>
+				work(
+					transactionView(rows, () => {
+						dirty = true
+					})
+				),
+			() => dirty
+		)
+	}
+
 	return {
 		get: async (type, ids) =>
 			Object.fromEntries(
@@ -64,9 +78,9 @@ export const legacySnapshotKeys = async (
 				)
 			),
 		set: data =>
-			store.transaction(async rows => {
-				await transactionView(rows).set(data)
+			transaction(async keys => {
+				await keys.set(data)
 			}),
-		bridgeTransaction: work => store.transaction(rows => work(transactionView(rows)))
+		bridgeTransaction: transaction
 	}
 }

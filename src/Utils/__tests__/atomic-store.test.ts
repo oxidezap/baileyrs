@@ -423,3 +423,47 @@ test('malformed native token rows reject without rewriting the row or its index'
 			}
 		}
 	}))
+
+test('OS locks ignore stale PID metadata and abandoned recovery directories', () =>
+	withFolder(async folder => {
+		const { mkdir } = await import('node:fs/promises')
+		await writeFile(join(folder, '.bridge-atomic-v1.json.lock'), JSON.stringify({ pid: process.pid }))
+		await mkdir(join(folder, '.bridge-atomic-v1.json.lock.recovery'))
+		const store = await useBridgeStore(folder)
+		await store.storeReceivedTcToken('jid', new Uint8Array([1]), '1')
+		assert.deepEqual(decodeTokenRow((await store.get('tc_token', 'jid'))!).token, [1])
+	}))
+
+test('OS locks serialize separate adapters in the same process', () =>
+	withFolder(async folder => {
+		const stores = await Promise.all([useBridgeStore(folder), useBridgeStore(folder)])
+		await Promise.all(
+			Array.from({ length: 20 }, (_, i) => stores[i % 2]!.touchTcTokenSenderTimestamp('jid', String(i)))
+		)
+		assert.equal(decodeTokenRow((await stores[0]!.get('tc_token', 'jid'))!).sender_timestamp, 19n)
+	}))
+
+test('legacy undefined buckets are no-ops and valid mirror reads do not publish snapshots', () =>
+	withFolder(async folder => {
+		const { chmod, stat } = await import('node:fs/promises')
+		const { initAuthCreds, BufferJSON } = await import('../generics.ts')
+		const { useLegacyMultiFileAuthState, wrapLegacyStore } = await import('../wrap-legacy-store.ts')
+		await writeFile(join(folder, 'creds.json'), JSON.stringify(initAuthCreds(), BufferJSON.replacer))
+		const auth = await useLegacyMultiFileAuthState(folder)
+		await auth.state.keys.set({ session: undefined })
+		await assert.rejects(readFile(join(folder, 'bridge-legacy-v1.json')), { code: 'ENOENT' })
+		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
+		await store.storeReceivedTcToken('jid', new Uint8Array([7]), '7')
+		const path = join(folder, 'bridge-legacy-v1.json')
+		const before = await stat(path, { bigint: true })
+		if (process.platform !== 'win32') await chmod(folder, 0o500)
+		try {
+			assert.deepEqual(decodeTokenRow((await store.get('tc_token', 'jid'))!).token, [7])
+			await auth.state.keys.set({ session: undefined })
+			const after = await stat(path, { bigint: true })
+			assert.equal(after.ino, before.ino)
+			assert.equal(after.mtimeNs, before.mtimeNs)
+		} finally {
+			if (process.platform !== 'win32') await chmod(folder, 0o700)
+		}
+	}))

@@ -7,7 +7,7 @@ import { rowKey, type AtomicRows } from './atomic-store.ts'
 const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === 'ENOENT'
 
 /** Snapshot publication and backend-wide isolation, independent of row codecs.
- * Owner recovery never relies on a timeout or a process-local mutex.
+ * The OS lock is shared across adapters/processes; there is no stale-owner lease.
  */
 export const createSnapshotTransactions = (
 	folder: string,
@@ -72,11 +72,14 @@ export const createSnapshotTransactions = (
 			})
 		}
 	}
-	const transaction = <T>(change: (rows: AtomicRows) => T | Promise<T>): Promise<T> =>
+	const transaction = <T>(
+		change: (rows: AtomicRows) => T | Promise<T>,
+		shouldPersist: () => boolean = () => true
+	): Promise<T> =>
 		exclusive(async () => {
 			const rows = await readRows()
 			const result = await change(rows)
-			await persist(rows)
+			if (shouldPersist()) await persist(rows)
 			return result
 		})
 	return {
