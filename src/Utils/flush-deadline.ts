@@ -15,16 +15,24 @@ export const flushDeadlineError = (label: string, errors: Iterable<unknown> = []
 	return previous.length ? new AggregateError([...previous, timeout], timeout.message, { cause: timeout }) : timeout
 }
 
-export async function beforeFlushDeadline<T>(
-	work: Promise<T>,
+export async function settleBeforeFlushDeadline(
+	operations: Iterable<Promise<unknown>>,
 	deadline: number,
 	label: string,
-	errors: Iterable<unknown> = []
-): Promise<T> {
+	errors: Set<unknown>
+): Promise<void> {
+	// Capture each rejection when it settles. Waiting for allSettled first
+	// loses known backend failures if another operation exceeds the deadline.
+	const observed = [...operations].map(operation =>
+		operation.catch(error => {
+			errors.add(error)
+			throw error
+		})
+	)
 	let timer: ReturnType<typeof setTimeout> | undefined
 	try {
-		return await Promise.race([
-			work,
+		await Promise.race([
+			Promise.allSettled(observed),
 			new Promise<never>((_resolve, reject) => {
 				timer = setTimeout(() => reject(flushDeadlineError(label, errors)), Math.max(0, deadline - Date.now()))
 			})

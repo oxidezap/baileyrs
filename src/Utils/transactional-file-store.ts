@@ -1,4 +1,4 @@
-import { beforeFlushDeadline, flushDeadlineError } from './flush-deadline.ts'
+import { settleBeforeFlushDeadline, flushDeadlineError } from './flush-deadline.ts'
 import { nativeAtomicNamespaces as namespaces, isNativeAtomicRecordFile } from './native-auth-rollback.ts'
 import { requireOfflineMigration, type StoreMigrationOptions } from './store-migration.ts'
 import { readFile, readdir } from 'node:fs/promises'
@@ -61,14 +61,13 @@ export const transactionalFileStore = async (
 				for (;;) {
 					const before = admissions
 					const admitted = [...pendingCallbacks]
-					const results: PromiseSettledResult<unknown>[] = await beforeFlushDeadline(
-						Promise.allSettled([snapshot.flush(), drainOrdinary(), ...admitted]),
+					await settleBeforeFlushDeadline(
+						[snapshot.flush(), drainOrdinary(), ...admitted],
 						deadline,
 						'bridge store flush',
 						errors
 					)
 					for (const callback of admitted) pendingCallbacks.delete(callback)
-					for (const settled of results) if (settled.status === 'rejected') errors.add(settled.reason)
 					await new Promise<void>(resolve => setImmediate(resolve))
 					if (admissions === before && pendingCallbacks.size === 0) {
 						if (errors.size === 1) throw [...errors][0]

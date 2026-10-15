@@ -279,3 +279,119 @@ for (const alias of ['meta-%41.bin', 'meta-%2f.bin']) {
 		}
 	})
 }
+
+for (const backend of ['legacy', 'snapshot', 'file'] as const) {
+	test(`${backend}: timeout includes an already-settled backend failure`, async context => {
+		const fault = new Error('settled backend failure')
+		const entered = gate(),
+			release = gate(),
+			failEntered = gate(),
+			releaseFailure = gate()
+		const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-errors-'))
+		let flushStore!: () => Promise<void>
+		let failed: Promise<unknown>
+		let blocked: Promise<unknown>
+		if (backend === 'legacy') {
+			const keys = makeTransactionalMemKeys()
+			const transaction = keys.bridgeTransaction
+			let first = true
+			keys.bridgeTransaction = async work => {
+				if (first) {
+					first = false
+					failEntered.release()
+					await releaseFailure.promise
+					throw fault
+				}
+				entered.release()
+				await release.promise
+				return transaction(work)
+			}
+			const store = await wrapLegacyStore(
+				{ creds: initAuthCreds(), keys: keys as AuthenticationState['keys'] },
+				async () => {}
+			)
+			failed = store.touchTcTokenSenderTimestamp('bad', '1')
+			blocked = store.touchTcTokenSenderTimestamp('good', '2')
+			flushStore = () => store.flush()
+		} else if (backend === 'snapshot') {
+			const { createSnapshotTransactions } = await import('../snapshot-transactions.ts')
+			const { defaultSyncDir } = await import('../durable-directory.ts')
+			const snapshot = createSnapshotTransactions(
+				folder,
+				'state.json',
+				new Set(['meta']),
+				async () => new Map(),
+				defaultSyncDir
+			)
+			failed = snapshot.transaction(async () => {
+				failEntered.release()
+				await releaseFailure.promise
+				throw fault
+			})
+			blocked = snapshot.transaction(async () => {
+				entered.release()
+				await release.promise
+			})
+			flushStore = () => snapshot.flush()
+		} else {
+			let first = true
+			const store = await useBridgeStore(folder, {
+				io: {
+					writeTmp: async (path, bytes) => {
+						if (bytes[0] === 1 && first) {
+							first = false
+							failEntered.release()
+							await releaseFailure.promise
+							throw fault
+						}
+						if (bytes[0] === 2) {
+							entered.release()
+							await release.promise
+						}
+						await writeTmp(path, bytes)
+					}
+				}
+			})
+			failed = store.set('session', 'bad', new Uint8Array([1]))
+			blocked = store.set('session', 'good', new Uint8Array([2]))
+			flushStore = () => store.flush!()
+		}
+		const failedObserved = assert.rejects(failed, error => error === fault)
+		await failEntered.promise
+		context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+		let settled = false
+		let error: unknown
+		const flush = flushStore().then(
+			() => {
+				settled = true
+			},
+			reason => {
+				settled = true
+				error = reason
+			}
+		)
+		try {
+			releaseFailure.release()
+			await failedObserved
+			await entered.promise
+			await turn()
+			context.mock.timers.tick(30_000)
+			await turn()
+			assert.equal(settled, true)
+			assert.ok(error instanceof AggregateError)
+			assert.ok(error.errors.includes(fault), 'timeout must retain the known backend failure')
+			assert.ok(error.errors.some(item => item?.code === 'ERR_STORE_FLUSH_TIMEOUT'))
+		} finally {
+			releaseFailure.release()
+			release.release()
+			context.mock.timers.reset()
+			await failedObserved
+			await blocked
+			await flush
+			// Timed-out drains leave failures owned until a later drain observes them.
+			await flushStore().catch(() => {})
+			await flushStore()
+			await rm(folder, { recursive: true, force: true })
+		}
+	})
+}

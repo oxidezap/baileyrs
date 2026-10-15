@@ -1,4 +1,4 @@
-import { beforeFlushDeadline, flushDeadlineError } from '../../Utils/flush-deadline.ts'
+import { settleBeforeFlushDeadline, flushDeadlineError } from '../../Utils/flush-deadline.ts'
 import { atomicCallbacks, rowKey, type AtomicRows } from '../../Utils/atomic-store.ts'
 // Baileys legacy auth-state projection onto the bridge's neutral byte store.
 import { Buffer } from 'node:buffer'
@@ -72,16 +72,15 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 		touchTcTokenSenderTimestamp: (...args) => track(Promise.resolve(store.touchTcTokenSenderTimestamp(...args))),
 		async flush() {
 			const deadline = Date.now() + 30_000
-			const errors: unknown[] = []
+			const errors = new Set<unknown>()
 			for (;;) {
 				const admitted = [...pending]
-				const results = await beforeFlushDeadline(Promise.allSettled(admitted), deadline, 'legacy store flush', errors)
+				await settleBeforeFlushDeadline(admitted, deadline, 'legacy store flush', errors)
 				for (const operation of admitted) pending.delete(operation)
-				errors.push(...results.flatMap(result => (result.status === 'rejected' ? [result.reason] : [])))
 				await new Promise<void>(resolve => setImmediate(resolve))
 				if (pending.size === 0) {
-					if (errors.length === 1) throw errors[0]
-					if (errors.length) throw new AggregateError(errors, 'legacy store flush failed')
+					if (errors.size === 1) throw [...errors][0]
+					if (errors.size) throw new AggregateError(errors, 'legacy store flush failed')
 					return
 				}
 				if (Date.now() >= deadline) throw flushDeadlineError('legacy store flush', errors)
