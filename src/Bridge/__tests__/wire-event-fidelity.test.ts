@@ -203,14 +203,14 @@ describe('wire-event fidelity — optional timestamps stay absent when invalid',
 	it('omits presence last_seen on invalid input instead of reporting the epoch', () => {
 		const invalid = adaptBridgeEvent({
 			type: 'presence',
-			data: { from: jid('5511'), unavailable: false, last_seen: 'not-a-date' }
+			data: { from: jid('5511'), status: 'available', last_seen: 'not-a-date' }
 		} as unknown as WhatsAppEvent)
 		if (invalid?.type !== 'presence') throw new Error('expected canonical presence')
 		expect(invalid.lastSeen).toBeUndefined()
 
 		const valid = adaptBridgeEvent({
 			type: 'presence',
-			data: { from: jid('5511'), unavailable: false, last_seen: '2026-04-18T05:00:00Z' }
+			data: { from: jid('5511'), status: 'available', last_seen: '2026-04-18T05:00:00Z' }
 		} as unknown as WhatsAppEvent)
 		if (valid?.type !== 'presence') throw new Error('expected canonical presence')
 		expect(valid.lastSeen).toBe(Math.floor(Date.parse('2026-04-18T05:00:00Z') / 1000))

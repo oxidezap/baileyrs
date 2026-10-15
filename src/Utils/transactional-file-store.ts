@@ -49,14 +49,47 @@ export const transactionalFileStore = async (
 			const [namespace, id]: [string, string] = JSON.parse(key)
 			return namespace === store && id.startsWith(prefix) ? [[id, Uint8Array.from(value)]] : []
 		})
-	return {
+	let admissions = 0
+	let activeFlushes = 0
+	const pendingCallbacks = new Set<Promise<unknown>>()
+	const result: Store = {
 		...ordinary,
 		async flush() {
-			const pending = snapshot.flush()
-			const results = await Promise.allSettled([pending, ordinary.flush?.()])
-			const errors = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
-			if (errors.length === 1) throw errors[0]
-			if (errors.length) throw new AggregateError(errors, 'bridge store flush failed')
+			activeFlushes++
+			try {
+				const deadline = Date.now() + 30_000
+				const errors = new Set<unknown>()
+				// Failed backends retain entries for the next explicit flush.
+				// Join public callbacks and the other queue without retrying those failures.
+				let snapshotFailed = false
+				let ordinaryFailed = false
+				for (;;) {
+					const before = admissions
+					const admitted = [...pendingCallbacks]
+					const results: PromiseSettledResult<unknown>[] = await Promise.allSettled([
+						snapshotFailed ? undefined : snapshot.flush(),
+						ordinaryFailed ? undefined : ordinary.flush?.(),
+						...admitted
+					])
+					snapshotFailed ||= results[0]!.status === 'rejected'
+					ordinaryFailed ||= results[1]!.status === 'rejected'
+					for (const callback of admitted) pendingCallbacks.delete(callback)
+					for (const settled of results) if (settled.status === 'rejected') errors.add(settled.reason)
+					await new Promise<void>(resolve => setImmediate(resolve))
+					if (admissions === before && pendingCallbacks.size === 0) {
+						if (errors.size === 1) throw [...errors][0]
+						if (errors.size) throw new AggregateError(errors, 'bridge store flush failed')
+						return
+					}
+					if (Date.now() >= deadline)
+						throw new AggregateError(
+							[...errors, new Error('bridge store flush did not quiesce within 30s')],
+							'bridge store flush did not quiesce within 30s'
+						)
+				}
+			} finally {
+				activeFlushes--
+			}
 		},
 		...atomicCallbacks(transaction),
 		get: (store, key) =>
@@ -113,5 +146,36 @@ export const transactionalFileStore = async (
 						return entries.length
 					})
 				: ordinary.deletePrefix!(store, prefix)
+	}
+	// Every public callback shares the admission counter, so cross-backend
+	// completion handlers cannot escape the combined durability barrier.
+	const admit =
+		<A extends unknown[], R>(callback: (...args: A) => R) =>
+		(...args: A): R => {
+			admissions++
+			const returned = callback(...args)
+			const tracked = Promise.resolve(returned)
+			pendingCallbacks.add(tracked)
+			void tracked.then(
+				() => pendingCallbacks.delete(tracked),
+				() => {
+					if (activeFlushes === 0) pendingCallbacks.delete(tracked)
+				} // Keep failures admitted during a drain.
+			)
+			return returned
+		}
+	return {
+		...result,
+		get: admit(result.get),
+		set: admit(result.set),
+		delete: admit(result.delete),
+		getMany: admit(result.getMany!),
+		setMany: admit(result.setMany!),
+		deleteMany: admit(result.deleteMany!),
+		listKeys: admit(result.listKeys!),
+		deletePrefix: admit(result.deletePrefix!),
+		commitPatch: admit(result.commitPatch),
+		storeReceivedTcToken: admit(result.storeReceivedTcToken),
+		touchTcTokenSenderTimestamp: admit(result.touchTcTokenSenderTimestamp)
 	}
 }

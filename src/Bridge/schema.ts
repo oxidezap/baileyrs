@@ -282,6 +282,7 @@ const ADAPTERS = {
 	presence: data => {
 		const from = asJidString(data?.from)
 		if (!from) return null
+		if (data?.status !== 'available' && data?.status !== 'unavailable') return null
 		return {
 			type: 'presence',
 			from,

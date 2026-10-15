@@ -622,3 +622,58 @@ for (const backend of ['legacy', 'snapshot'] as const) {
 			await Promise.all([chained, rejected])
 		}))
 }
+
+for (const firstStore of ['session', 'meta']) {
+	test(`combined file flush joins ${firstStore} completion admitting the other backend`, () =>
+		withFolder(async folder => {
+			let firstEntered!: () => void
+			let secondEntered!: () => void
+			let releaseFirst!: () => void
+			let releaseSecond!: () => void
+			const firstArrival = new Promise<void>(resolve => {
+				firstEntered = resolve
+			})
+			const secondArrival = new Promise<void>(resolve => {
+				secondEntered = resolve
+			})
+			const firstGate = new Promise<void>(resolve => {
+				releaseFirst = resolve
+			})
+			const secondGate = new Promise<void>(resolve => {
+				releaseSecond = resolve
+			})
+			let barriers = 0
+			const store = await useBridgeStore(folder, {
+				io: {
+					syncDir: async () => {
+						if (++barriers === 1) {
+							firstEntered()
+							await firstGate
+						} else if (barriers === 2) {
+							secondEntered()
+							await secondGate
+						}
+					}
+				}
+			})
+			const first = store.set(firstStore, 'first', enc(1))
+			const chained = first.then(() => store.set(firstStore === 'meta' ? 'session' : 'meta', 'second', enc(2)))
+			await firstArrival
+			let settled = false
+			const flushed = store.flush!().finally(() => {
+				settled = true
+			})
+			await new Promise<void>(resolve => setImmediate(resolve))
+			await new Promise<void>(resolve => setImmediate(resolve))
+			releaseFirst()
+			await secondArrival
+			await new Promise<void>(resolve => setImmediate(resolve))
+			try {
+				assert.equal(settled, false)
+			} finally {
+				releaseSecond()
+				await Promise.all([chained, flushed])
+			}
+			assert.deepEqual(parse(await store.get(firstStore === 'meta' ? 'session' : 'meta', 'second')), 2)
+		}))
+}

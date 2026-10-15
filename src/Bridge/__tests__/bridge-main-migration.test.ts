@@ -69,3 +69,14 @@ test('call control actions with absent timestamps remain observable', () => {
 	assert.equal(result.timestamp, undefined)
 	assert.equal(result.action.type, 'terminate')
 })
+
+test('global presence rejects absent, malformed and unknown statuses', () => {
+	for (const status of [undefined, null, 0, true, {}, 'future', 'Available'])
+		assert.equal(adapt({ type: 'presence', data: { from: jid, status } }), null)
+	assert.deepEqual(adapt({ type: 'presence', data: { from: jid, status: 'available' } }), {
+		type: 'presence',
+		from: '123@s.whatsapp.net',
+		unavailable: false,
+		lastSeen: undefined
+	})
+})
