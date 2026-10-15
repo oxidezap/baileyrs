@@ -12,7 +12,10 @@ export async function prepareLegacyAuthRollback(folder: string, options: { offli
 		folder,
 		'bridge-legacy-v1.json',
 		new Set(['legacy']),
-		(_namespace, name) => (isLegacyAuthRecordFile(name) ? name : undefined),
+		(_namespace, name) => {
+			if (/[\\/\0]/.test(name)) throw new Error('invalid legacy rollback filename')
+			return isLegacyAuthRecordFile(name) ? name : undefined
+		},
 		isLegacyAuthRecordFile
 	)
 }

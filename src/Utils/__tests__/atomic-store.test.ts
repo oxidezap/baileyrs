@@ -783,3 +783,13 @@ test('offline rollback retries the directory barrier after an archival barrier f
 		assert.equal(barriers, 3)
 		assert.equal(await readFile(join(folder, 'meta-value.bin'), 'utf8'), JSON.stringify('current'))
 	}))
+
+test('legacy rollback rejects unsafe snapshot filenames without archiving or discarding auth rows', () =>
+	withFolder(async folder => {
+		const { prepareLegacyAuthRollback } = await import('../wrap-legacy-store.ts')
+		const path = join(folder, 'bridge-legacy-v1.json')
+		const bytes = enc([[rowKey('legacy', 'session-../escape.json'), Buffer.from('{}').toString('base64')]])
+		await writeFile(path, bytes)
+		await assert.rejects(prepareLegacyAuthRollback(folder, { offline: true }), /filename/)
+		assert.deepEqual(await readFile(path), bytes)
+	}))
