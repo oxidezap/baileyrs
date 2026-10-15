@@ -704,7 +704,7 @@ test('legacy migration and rollback leave unrelated JSON files untouched, includ
 
 test('native offline rollback exports current rows, deletes removed records and preserves other files', () =>
 	withFolder(async folder => {
-		const { prepareNativeAuthRollback } = await import('../../node-surface.ts')
+		const { prepareNativeAuthRollback } = await import('../../index.ts')
 		const { readdir } = await import('node:fs/promises')
 		await writeFile(join(folder, 'sync_version-regular.bin'), enc({ version: 1 }))
 		await writeFile(join(folder, 'meta-removed.bin'), enc('obsolete'))
@@ -765,7 +765,7 @@ test('offline rollback retries the directory barrier after an archival barrier f
 		await store.set('meta', 'value', enc('current'))
 		let barriers = 0
 		const syncDir = async (path: string) => {
-			if (++barriers === 2) throw new Error('archival barrier failed')
+			if (++barriers === 3) throw new Error('archival barrier failed')
 			await defaultSyncDir(path)
 		}
 		const rollback = () =>
@@ -780,7 +780,7 @@ test('offline rollback retries the directory barrier after an archival barrier f
 		await assert.rejects(rollback(), /archival barrier failed/)
 		await assert.rejects(readFile(join(folder, 'bridge-atomic-v1.json')), { code: 'ENOENT' })
 		await rollback()
-		assert.equal(barriers, 3)
+		assert.equal(barriers, 4)
 		assert.equal(await readFile(join(folder, 'meta-value.bin'), 'utf8'), JSON.stringify('current'))
 	}))
 
@@ -792,4 +792,42 @@ test('legacy rollback rejects unsafe snapshot filenames without archiving or dis
 		await writeFile(path, bytes)
 		await assert.rejects(prepareLegacyAuthRollback(folder, { offline: true }), /filename/)
 		assert.deepEqual(await readFile(path), bytes)
+	}))
+
+test('native rollback fails closed when an authoritative snapshot was lost before export', () =>
+	withFolder(async folder => {
+		const { unlink } = await import('node:fs/promises')
+		const { prepareNativeAuthRollback } = await import('../native-auth-rollback.ts')
+		await writeFile(join(folder, 'meta-value.bin'), enc('stale'))
+		const store = await useBridgeStore(folder, { migrate: true })
+		await store.set('meta', 'value', enc('current'))
+		await unlink(join(folder, 'bridge-atomic-v1.json'))
+		await assert.rejects(prepareNativeAuthRollback(folder, { offline: true }), /proof|authoritative/)
+		assert.equal(await readFile(join(folder, 'meta-value.bin'), 'utf8'), JSON.stringify('stale'))
+	}))
+
+test('an older rollback archive cannot certify a lost newer snapshot generation', () =>
+	withFolder(async folder => {
+		const { unlink } = await import('node:fs/promises')
+		const { prepareNativeAuthRollback } = await import('../native-auth-rollback.ts')
+		const initial = await useBridgeStore(folder)
+		await initial.set('meta', 'value', enc('old'))
+		await prepareNativeAuthRollback(folder, { offline: true })
+		const next = await useBridgeStore(folder, { migrate: true })
+		await next.set('meta', 'value', enc('new'))
+		await unlink(join(folder, 'bridge-atomic-v1.json'))
+		await assert.rejects(prepareNativeAuthRollback(folder, { offline: true }), /proof|authoritative/)
+		assert.equal(await readFile(join(folder, 'meta-value.bin'), 'utf8'), JSON.stringify('old'))
+	}))
+
+test('completed rollback proof rejects an archive whose contents changed', () =>
+	withFolder(async folder => {
+		const { readdir } = await import('node:fs/promises')
+		const { prepareNativeAuthRollback } = await import('../native-auth-rollback.ts')
+		const store = await useBridgeStore(folder)
+		await store.set('meta', 'value', enc('current'))
+		await prepareNativeAuthRollback(folder, { offline: true })
+		const archive = (await readdir(folder)).find(name => name.startsWith('bridge-atomic-v1.json.rollback-'))!
+		await writeFile(join(folder, archive), '[]')
+		await assert.rejects(prepareNativeAuthRollback(folder, { offline: true }), /proof|archive|authoritative/)
 	}))

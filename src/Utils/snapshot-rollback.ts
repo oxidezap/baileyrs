@@ -1,3 +1,5 @@
+import { rollbackProofName, snapshotDigest, verifyRollbackProof } from './snapshot-rollback-proof.ts'
+import { withProcessFileLock } from './process-file-lock.ts'
 import { open, readFile, readdir, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -19,8 +21,10 @@ export async function exportAuthSnapshot(
 		await readFile(join(folder, snapshotName))
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error
-		// Also retry a directory barrier that failed after snapshot archival.
-		await syncDir(folder)
+		await withProcessFileLock(folder, `.${snapshotName}.lock`, async () => {
+			await verifyRollbackProof(folder, snapshotName)
+			await syncDir(folder)
+		})
 		return
 	}
 	const snapshot = createSnapshotTransactions(
@@ -42,7 +46,7 @@ export async function exportAuthSnapshot(
 				throw new Error('invalid or duplicate auth rollback filename')
 			files.set(name, bytes)
 		}
-		for (const [name, bytes] of files) {
+		const publish = async (name: string, bytes: Uint8Array): Promise<void> => {
 			const tmp = join(folder, `.rollback-${randomUUID()}.tmp`)
 			const handle = await open(tmp, 'wx', 0o600)
 			try {
@@ -57,10 +61,15 @@ export async function exportAuthSnapshot(
 				})
 			}
 		}
+		for (const [name, bytes] of files) await publish(name, bytes)
 		for (const name of await readdir(folder))
 			if (isRecordFile(name) && !files.has(name)) await unlink(join(folder, name))
 		await syncDir(folder)
-		await rename(join(folder, snapshotName), join(folder, `${snapshotName}.rollback-${randomUUID()}`))
+		const archive = `${snapshotName}.rollback-${randomUUID()}`
+		const sha256 = snapshotDigest(await readFile(join(folder, snapshotName)))
+		await publish(rollbackProofName(snapshotName), Buffer.from(JSON.stringify({ version: 1, archive, sha256 })))
+		await syncDir(folder)
+		await rename(join(folder, snapshotName), join(folder, archive))
 		await syncDir(folder)
 	})
 }

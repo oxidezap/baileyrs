@@ -1,3 +1,4 @@
+import { clearRollbackProof } from './snapshot-rollback-proof.ts'
 import { withProcessFileLock } from './process-file-lock.ts'
 import { open, readFile, rename, unlink } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -57,6 +58,7 @@ export const createSnapshotTransactions = (
 		const bytes = Buffer.from(
 			JSON.stringify([...rows].map(([key, value]) => [key, Buffer.from(value).toString('base64')]))
 		)
+		await clearRollbackProof(folder, snapshotName, syncDir)
 		const tmp = `${path}.${randomUUID()}.tmp`
 		const handle = await open(tmp, 'wx', 0o600)
 		try {
