@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.11](https://github.com/oxidezap/baileyrs/compare/v0.3.10...v0.3.11) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** integrate whatsapp-rust-bridge 0.26.0 ([#171](https://github.com/oxidezap/baileyrs/issues/171)) ([2a89b4a](https://github.com/oxidezap/baileyrs/commit/2a89b4a69cd82b77649ee8566f672630b1701260))
+
 ## [0.3.10](https://github.com/oxidezap/baileyrs/compare/v0.3.9...v0.3.10) (2026-10-04)
 
 
