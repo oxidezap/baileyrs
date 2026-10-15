@@ -192,6 +192,8 @@ let tmpSeq = 0
  *   with any failure stops at that pass and leaves the failed entries
  *   for the next explicit flush. `flush()` never reports quiescence
  *   while prior admitted work is still running.
+ * - A 30s flush timeout leaves backend operations and their locks pending.
+ *   Await a later successful flush before deleting auth state or starting an older writer.
  * - All operations on one key (set, delete, flush, concurrent batches) run
  *   through a per-key chain, so a stale failure can never erase newer
  *   state and an in-flight write can never resurrect a deleted key.
@@ -208,7 +210,10 @@ let tmpSeq = 0
  *   seam only: the default implementation is the sole provider of the
  *   durability contract above.
  */
-async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions): Promise<OrdinaryStoreCallbacks> {
+async function usePerKeyBridgeStore(
+	folder: string,
+	options?: BridgeStoreOptions
+): Promise<{ callbacks: OrdinaryStoreCallbacks; createFlushDrain: () => () => Promise<void> }> {
 	await mkdir(folder, { recursive: true })
 
 	const openTmp = options?.io?.openTmp ?? realOpenTmp
@@ -377,15 +382,20 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 	// `flush()` wait on itself). On failure the entry is RETAINED (timer
 	// cleared) so an explicit `flush()` retries the same bytes, and the
 	// error propagates to that caller.
-	const flushOne = (cacheKey: string): Promise<void> =>
+	const flushOne = (cacheKey: string, failedEntries?: WeakSet<object>): Promise<void> =>
 		withKeyLockInternal(cacheKey, async () => {
 			const pending = pendingWrites.get(cacheKey)
-			if (!pending) return
+			if (!pending || failedEntries?.has(pending)) return
 			if (pending.timer) {
 				clearTimeout(pending.timer)
 				pending.timer = undefined
 			}
-			await certifyWrite(cacheKey, pending.path, pending.value)
+			try {
+				await certifyWrite(cacheKey, pending.path, pending.value)
+			} catch (error) {
+				failedEntries?.add(pending)
+				throw error
+			}
 			if (pendingWrites.get(cacheKey) === pending) pendingWrites.delete(cacheKey)
 		})
 
@@ -407,7 +417,12 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 	}
 
 	const FLUSH_MAX_PASSES = 32
-	const flushAll = async () => {
+	type DrainScope = { failedEntries: WeakSet<object>; exhausted?: Error }
+	const newDrainScope = (): DrainScope => ({ failedEntries: new WeakSet<object>() })
+	const flushAll = async (scope: DrainScope = newDrainScope()): Promise<void> => {
+		if (scope.exhausted) throw scope.exhausted
+		const eligibleKeys = () =>
+			[...pendingWrites].filter(([, entry]) => !scope.failedEntries.has(entry)).map(([key]) => key)
 		// Each pass first waits for every operation admitted so far
 		// (barrier), then drains the pending writes those operations
 		// produced. A `set()` queued just before `flush()` is therefore
@@ -434,15 +449,15 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 					if (result.status === 'rejected') errors.push(result.reason)
 				}
 			}
-			if (pendingWrites.size === 0) {
+			if (eligibleKeys().length === 0) {
 				if (admitted.size === 0) break
 				continue
 			}
-			const keys = [...pendingWrites.keys()]
+			const keys = eligibleKeys()
 			let failed = false
 			await Promise.all(
 				keys.map(key =>
-					flushOne(key).then(
+					flushOne(key, scope.failedEntries).then(
 						() => {},
 						e => {
 							failed = true
@@ -454,10 +469,11 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 			if (failed) break
 		}
 		if (errors.length > 0) throw errors[0]
-		if (pendingWrites.size > 0 || admitted.size > 0) {
-			throw new Error(
+		if (eligibleKeys().length > 0 || admitted.size > 0) {
+			scope.exhausted = new Error(
 				`use-bridge-store flushAll did not quiesce after ${FLUSH_MAX_PASSES} passes (${pendingWrites.size} pending writes, ${admitted.size} in-flight operations remain)`
 			)
+			throw scope.exhausted
 		}
 	}
 
@@ -471,7 +487,7 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 		// resolving without persisting.
 		const pending = pendingWrites.get(cacheKey)
 		if (pending) {
-			if (bytesEqual(pending.value, incoming)) return
+			if (bytesEqual(pending.value, incoming) && pending.timer !== undefined) return
 		} else {
 			const known = durable.get(cacheKey)
 			if (known && bytesEqual(known, incoming)) return
@@ -675,7 +691,7 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 		return [...found]
 	}
 
-	return {
+	const callbacks: OrdinaryStoreCallbacks = {
 		get: doGet,
 
 		set: doSet,
@@ -734,7 +750,14 @@ async function usePerKeyBridgeStore(folder: string, options?: BridgeStoreOptions
 		// drop its hand-maintained meta-indexes for this backend.
 		capabilities: { batch: true, enumerate: true, prefixDelete: true },
 
-		flush: flushAll
+		flush: () => flushAll()
+	}
+	return {
+		callbacks,
+		createFlushDrain: () => {
+			const scope = newDrainScope()
+			return () => flushAll(scope)
+		}
 	}
 }
 
@@ -742,6 +765,6 @@ export async function useBridgeStore(
 	folder: string,
 	options: BridgeStoreOptions = {}
 ): Promise<NonNullable<AuthenticationState['store']>> {
-	const ordinary = await usePerKeyBridgeStore(folder, options)
-	return transactionalFileStore(folder, ordinary, options.io?.syncDir ?? defaultSyncDir, options)
+	const { callbacks, createFlushDrain } = await usePerKeyBridgeStore(folder, options)
+	return transactionalFileStore(folder, callbacks, options.io?.syncDir ?? defaultSyncDir, options, createFlushDrain)
 }

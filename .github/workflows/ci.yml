@@ -217,7 +217,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
       - run: npm ci --ignore-scripts
-      - run: node --test src/Utils/__tests__/atomic-store.test.ts
+      - run: node --test src/Utils/__tests__/atomic-store.test.ts src/Utils/__tests__/flush-boundaries.test.ts
 
   build:
     name: Build

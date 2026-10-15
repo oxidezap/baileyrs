@@ -21,7 +21,9 @@ export type LegacyKeysStore = {
 }
 
 export interface WrappedLegacyStore extends JsStoreCallbacks {
-	/** Drain admitted callbacks and their durable commit barriers. */
+	/** Drain admitted callbacks and their durable commit barriers. A 30s timeout
+	 * leaves backend operations pending. Await a later successful flush before
+	 * deleting auth state or starting an older writer. */
 	flush(): Promise<void>
 	/** Kept for socket lifecycle compatibility. The adapter owns no background resources. */
 	dispose(): void

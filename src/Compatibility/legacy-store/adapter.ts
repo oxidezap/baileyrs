@@ -1,3 +1,4 @@
+import { beforeFlushDeadline, flushDeadlineError } from '../../Utils/flush-deadline.ts'
 import { atomicCallbacks, rowKey, type AtomicRows } from '../../Utils/atomic-store.ts'
 // Baileys legacy auth-state projection onto the bridge's neutral byte store.
 import { Buffer } from 'node:buffer'
@@ -74,7 +75,7 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 			const errors: unknown[] = []
 			for (;;) {
 				const admitted = [...pending]
-				const results = await Promise.allSettled(admitted)
+				const results = await beforeFlushDeadline(Promise.allSettled(admitted), deadline, 'legacy store flush', errors)
 				for (const operation of admitted) pending.delete(operation)
 				errors.push(...results.flatMap(result => (result.status === 'rejected' ? [result.reason] : [])))
 				await new Promise<void>(resolve => setImmediate(resolve))
@@ -83,11 +84,7 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 					if (errors.length) throw new AggregateError(errors, 'legacy store flush failed')
 					return
 				}
-				if (Date.now() >= deadline)
-					throw new AggregateError(
-						[...errors, new Error('legacy store flush did not quiesce within 30s')],
-						'legacy store flush did not quiesce within 30s'
-					)
+				if (Date.now() >= deadline) throw flushDeadlineError('legacy store flush', errors)
 			}
 		}
 	}

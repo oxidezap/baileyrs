@@ -1,3 +1,4 @@
+import { beforeFlushDeadline, flushDeadlineError } from './flush-deadline.ts'
 import { nativeAtomicNamespaces as namespaces, isNativeAtomicRecordFile } from './native-auth-rollback.ts'
 import { requireOfflineMigration, type StoreMigrationOptions } from './store-migration.ts'
 import { readFile, readdir } from 'node:fs/promises'
@@ -12,7 +13,10 @@ export const transactionalFileStore = async (
 	folder: string,
 	ordinary: OrdinaryStoreCallbacks,
 	syncDir: (path: string) => Promise<void>,
-	options: StoreMigrationOptions = {}
+	options: StoreMigrationOptions = {},
+	createOrdinaryDrain: () => () => Promise<void> = () => async () => {
+		await ordinary.flush?.()
+	}
 ): Promise<Store> => {
 	await requireOfflineMigration(folder, 'bridge-atomic-v1.json', isNativeAtomicRecordFile, options)
 	const snapshot = createSnapshotTransactions(
@@ -26,8 +30,12 @@ export const transactionalFileStore = async (
 				const separator = file.indexOf('-')
 				const store = file.slice(0, separator)
 				if (!namespaces.has(store) || !file.endsWith('.bin')) continue
-				const key = decodeURIComponent(file.slice(separator + 1, -4))
-				rows.set(rowKey(store, key), await readFile(join(folder, file)))
+				const encoded = file.slice(separator + 1, -4)
+				const key = decodeURIComponent(encoded)
+				if (encodeURIComponent(key) !== encoded) throw new TypeError(`noncanonical native auth filename: ${file}`)
+				const row = rowKey(store, key)
+				if (rows.has(row)) throw new TypeError(`duplicate native auth key: ${file}`)
+				rows.set(row, await readFile(join(folder, file)))
 			}
 			return rows
 		},
@@ -49,20 +57,16 @@ export const transactionalFileStore = async (
 			try {
 				const deadline = Date.now() + 30_000
 				const errors = new Set<unknown>()
-				// Failed backends retain entries for the next explicit flush.
-				// Join public callbacks and the other queue without retrying those failures.
-				let snapshotFailed = false
-				let ordinaryFailed = false
+				const drainOrdinary = createOrdinaryDrain()
 				for (;;) {
 					const before = admissions
 					const admitted = [...pendingCallbacks]
-					const results: PromiseSettledResult<unknown>[] = await Promise.allSettled([
-						snapshotFailed ? undefined : snapshot.flush(),
-						ordinaryFailed ? undefined : ordinary.flush?.(),
-						...admitted
-					])
-					snapshotFailed ||= results[0]!.status === 'rejected'
-					ordinaryFailed ||= results[1]!.status === 'rejected'
+					const results: PromiseSettledResult<unknown>[] = await beforeFlushDeadline(
+						Promise.allSettled([snapshot.flush(), drainOrdinary(), ...admitted]),
+						deadline,
+						'bridge store flush',
+						errors
+					)
 					for (const callback of admitted) pendingCallbacks.delete(callback)
 					for (const settled of results) if (settled.status === 'rejected') errors.add(settled.reason)
 					await new Promise<void>(resolve => setImmediate(resolve))
@@ -71,11 +75,7 @@ export const transactionalFileStore = async (
 						if (errors.size) throw new AggregateError(errors, 'bridge store flush failed')
 						return
 					}
-					if (Date.now() >= deadline)
-						throw new AggregateError(
-							[...errors, new Error('bridge store flush did not quiesce within 30s')],
-							'bridge store flush did not quiesce within 30s'
-						)
+					if (Date.now() >= deadline) throw flushDeadlineError('bridge store flush', errors)
 				}
 			} finally {
 				activeFlushes--
