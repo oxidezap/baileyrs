@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, open, readFile, rm, writeFile, access } from 'node:fs/promises'
+import { mkdtemp, open, readFile, rm, writeFile, access, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -415,52 +415,61 @@ for (const backend of ['legacy', 'snapshot', 'file'] as const) {
 }
 
 for (const namespace of ['meta', 'session', 'msg_secret']) {
-	test(`file: one ${namespace} failure is reported once across backing and public drains`, async () => {
-		const { defaultSyncDir } = await import('../durable-directory.ts')
-		const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-once-'))
-		const entered = gate(),
-			release = gate()
-		const fault = new Error('one backend failure')
-		let failOnce = true
-		const fail = async () => {
-			if (!failOnce) return
-			failOnce = false
-			entered.release()
-			await release.promise
-			throw fault
-		}
-		const store = await useBridgeStore(folder, {
-			io: {
-				writeTmp: async (path, bytes) => {
-					if (namespace !== 'meta') await fail()
-					await writeTmp(path, bytes)
-				},
-				syncDir: async path => {
-					await defaultSyncDir(path)
-					if (namespace === 'meta') await fail()
+	for (const method of ['set', 'setMany']) {
+		test(`file: one ${namespace} ${method} failure is reported once across backing and public drains`, async () => {
+			const { defaultSyncDir } = await import('../durable-directory.ts')
+			const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-once-'))
+			const entered = gate(),
+				release = gate()
+			const fault = new Error('one backend failure')
+			let failOnce = true
+			const fail = async () => {
+				if (!failOnce) return
+				failOnce = false
+				entered.release()
+				await release.promise
+				throw fault
+			}
+			const store = await useBridgeStore(folder, {
+				io: {
+					writeTmp: async (path, bytes) => {
+						if (namespace !== 'meta') await fail()
+						await writeTmp(path, bytes)
+					},
+					syncDir: async path => {
+						await defaultSyncDir(path)
+						if (namespace === 'meta') await fail()
+					}
 				}
+			})
+			const write =
+				method === 'set'
+					? store.set(namespace, 'key', Buffer.from('[]'))
+					: store.setMany!(namespace, [['key', Buffer.from('[]')]])
+			const observed = namespace === 'msg_secret' ? write : assert.rejects(write, error => error === fault)
+			let error: unknown
+			const flush = store.flush!().catch(reason => {
+				error = reason
+			})
+			try {
+				await entered.promise
+				release.release()
+				await observed
+				await flush
+				assert.equal(
+					error,
+					fault,
+					'one failed operation must preserve its original error, not an aggregate of wrappers'
+				)
+			} finally {
+				release.release()
+				await observed
+				await flush
+				await store.flush!()
+				await rm(folder, { recursive: true, force: true })
 			}
 		})
-		const write = store.set(namespace, 'key', Buffer.from('[]'))
-		const observed = namespace === 'msg_secret' ? write : assert.rejects(write, error => error === fault)
-		let error: unknown
-		const flush = store.flush!().catch(reason => {
-			error = reason
-		})
-		try {
-			await entered.promise
-			release.release()
-			await observed
-			await flush
-			assert.equal(error, fault, 'one failed operation must preserve its original error, not an aggregate of wrappers')
-		} finally {
-			release.release()
-			await observed
-			await flush
-			await store.flush!()
-			await rm(folder, { recursive: true, force: true })
-		}
-	})
+	}
 }
 
 test('file: timeout retains distinct failed debounced writes while their backing drain remains pending', async context => {
@@ -506,3 +515,74 @@ test('file: timeout retains distinct failed debounced writes while their backing
 		await rm(folder, { recursive: true, force: true })
 	}
 })
+
+for (const method of ['getMany', 'deleteMany'] as const) {
+	test(`file: ${method} failure retains one identity across its batch wrapper`, async () => {
+		const folder = await mkdtemp(join(tmpdir(), 'baileyrs-batch-failure-'))
+		await mkdir(join(folder, 'session-bad.bin'))
+		const store = await useBridgeStore(folder)
+		let callbackError: unknown
+		let flushError: unknown
+		const callback = store[method]!('session', ['bad']).catch(error => {
+			callbackError = error
+		})
+		const flush = store.flush!().catch(error => {
+			flushError = error
+		})
+		try {
+			await callback
+			await flush
+			assert.ok(callbackError instanceof Error)
+			assert.equal(flushError, callbackError)
+		} finally {
+			await callback
+			await flush
+			await store.flush!()
+			await rm(folder, { recursive: true, force: true })
+		}
+	})
+}
+
+for (const method of ['listKeys', 'deletePrefix'] as const) {
+	test(`file: ${method} preserves the identity of a failing enumeration flush`, async () => {
+		const folder = await mkdtemp(join(tmpdir(), 'baileyrs-enumeration-failure-'))
+		const entered = gate(),
+			release = gate()
+		const fault = new Error('enumeration dependency failure')
+		let failOnce = true
+		const store = await useBridgeStore(folder, {
+			io: {
+				writeTmp: async (path, bytes) => {
+					if (failOnce) {
+						failOnce = false
+						entered.release()
+						await release.promise
+						throw fault
+					}
+					await writeTmp(path, bytes)
+				}
+			}
+		})
+		const write = assert.rejects(store.set('session', 'bad', new Uint8Array([1])), error => error === fault)
+		await entered.promise
+		const callback = assert.rejects(store[method]!('session', 'bad'), error => error === fault)
+		let flushError: unknown
+		const flush = store.flush!().catch(error => {
+			flushError = error
+		})
+		try {
+			release.release()
+			await write
+			await callback
+			await flush
+			assert.equal(flushError, fault)
+		} finally {
+			release.release()
+			await write
+			await callback
+			await flush
+			await store.flush!()
+			await rm(folder, { recursive: true, force: true })
+		}
+	})
+}

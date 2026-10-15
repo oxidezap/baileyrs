@@ -18,6 +18,25 @@ export const trackFlushFailures = <T>(operation: Promise<T>, errors: FlushFailur
 	return operation
 }
 
+/** Carry child failure identities through a public batch or sequential wrapper. */
+export const withTrackedFailures = <T>(
+	work: (observe: <R>(operation: Promise<R>) => Promise<R>) => Promise<T>
+): Promise<T> => {
+	const errors: FlushFailures = new Map()
+	const observe = <R>(operation: Promise<R>): Promise<R> =>
+		operation.catch(error => {
+			recordFlushFailure(errors, operation, error)
+			throw error
+		})
+	let operation: Promise<T>
+	try {
+		operation = work(observe)
+	} catch (error) {
+		operation = Promise.reject(error)
+	}
+	return trackFlushFailures(operation, errors)
+}
+
 export const recordFlushFailure = (errors: FlushFailures, operation: Promise<unknown>, error: unknown): void => {
 	const underlying = origins.get(operation)
 	if (underlying?.size) {

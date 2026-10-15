@@ -1,4 +1,4 @@
-import { recordFlushFailure, settledFlushError, trackFlushFailures } from './flush-deadline.ts'
+import { recordFlushFailure, settledFlushError, trackFlushFailures, withTrackedFailures } from './flush-deadline.ts'
 import type { StoreMigrationOptions } from './store-migration.ts'
 import type { OrdinaryStoreCallbacks } from './atomic-store.ts'
 import { defaultSyncDir } from './durable-directory.ts'
@@ -650,10 +650,11 @@ async function usePerKeyBridgeStore(
 	// don't depend on `this` — the bridge invokes every store callback with
 	// `this = null`. Best-effort across keys: every key is attempted even
 	// when a sibling fails, and the first error propagates.
-	const doDeleteMany = async (store: string, keys: string[]): Promise<void> => {
-		if (keys.length === 0) return
-		await Promise.all(keys.map(key => doDeleteOne(store, key)))
-	}
+	const doDeleteMany = (store: string, keys: string[]): Promise<void> =>
+		withTrackedFailures(async observe => {
+			if (keys.length === 0) return
+			await Promise.all(keys.map(key => observe(doDeleteOne(store, key))))
+		})
 
 	// Enumerate live keys in a namespace (shared by `listKeys` and
 	// `deletePrefix`). Closure, not a method, so it never depends on `this`.
@@ -663,48 +664,49 @@ async function usePerKeyBridgeStore(
 	// before the readdir; its failure propagates rather than enumerating a
 	// stale view. Pending deletes both cancel their `pendingWrites` entry
 	// AND unlink immediately, so they never appear here.
-	const doListKeys = async (store: string, prefix?: string): Promise<string[]> => {
-		await flushAll()
+	const doListKeys = (store: string, prefix?: string): Promise<string[]> =>
+		withTrackedFailures(async observe => {
+			await observe(flushAll())
 
-		const filePrefix = `${store}-`
-		const found = new Set<string>()
+			const filePrefix = `${store}-`
+			const found = new Set<string>()
 
-		let entries: string[]
-		try {
-			entries = await readdir(folder)
-		} catch (e) {
-			// Folder removed (shutdown) → genuinely empty. Any other error
-			// (EACCES/EIO) must NOT masquerade as "no keys", or the core would
-			// think persisted state is gone and could prune live indexes.
-			if (isEnoent(e)) entries = []
-			else throw e
-		}
-
-		for (const file of entries) {
-			if (!file.startsWith(filePrefix) || !file.endsWith('.bin')) continue
-			const encoded = file.slice(filePrefix.length, -'.bin'.length)
-			let key: string
+			let entries: string[]
 			try {
-				key = decodeURIComponent(encoded)
-			} catch {
-				continue // skip a filename we can't decode rather than crash
+				entries = await readdir(folder)
+			} catch (e) {
+				// Folder removed (shutdown) → genuinely empty. Any other error
+				// (EACCES/EIO) must NOT masquerade as "no keys", or the core would
+				// think persisted state is gone and could prune live indexes.
+				if (isEnoent(e)) entries = []
+				else throw e
 			}
-			if (prefix && !key.startsWith(prefix)) continue
-			found.add(key)
-		}
 
-		// Union any writes still pending after the flush (a fresh set could land
-		// while flushAll awaited). Belt-and-suspenders.
-		for (const cacheKey of pendingWrites.keys()) {
-			const sep = cacheKey.indexOf('\0')
-			if (sep < 0 || cacheKey.slice(0, sep) !== store) continue
-			const key = cacheKey.slice(sep + 1)
-			if (prefix && !key.startsWith(prefix)) continue
-			found.add(key)
-		}
+			for (const file of entries) {
+				if (!file.startsWith(filePrefix) || !file.endsWith('.bin')) continue
+				const encoded = file.slice(filePrefix.length, -'.bin'.length)
+				let key: string
+				try {
+					key = decodeURIComponent(encoded)
+				} catch {
+					continue // skip a filename we can't decode rather than crash
+				}
+				if (prefix && !key.startsWith(prefix)) continue
+				found.add(key)
+			}
 
-		return [...found]
-	}
+			// Union any writes still pending after the flush (a fresh set could land
+			// while flushAll awaited). Belt-and-suspenders.
+			for (const cacheKey of pendingWrites.keys()) {
+				const sep = cacheKey.indexOf('\0')
+				if (sep < 0 || cacheKey.slice(0, sep) !== store) continue
+				const key = cacheKey.slice(sep + 1)
+				if (prefix && !key.startsWith(prefix)) continue
+				found.add(key)
+			}
+
+			return [...found]
+		})
 
 	const callbacks: OrdinaryStoreCallbacks = {
 		get: doGet,
@@ -722,14 +724,16 @@ async function usePerKeyBridgeStore(
 		// a sibling fails (writes are idempotent by key, so the core can
 		// retry the batch), and the first error propagates. No multi-key
 		// transaction is attempted — the filesystem does not provide one.
-		async setMany(store: string, entries: [key: string, value: Uint8Array][]): Promise<void> {
-			// Empty batch is a valid no-op.
-			if (entries.length === 0) return
+		setMany(store: string, entries: [key: string, value: Uint8Array][]): Promise<void> {
+			return withTrackedFailures(async observe => {
+				// Empty batch is a valid no-op.
+				if (entries.length === 0) return
 
-			// Schedule every entry synchronously so same-key duplicates chain
-			// in batch order; per-key locks serialize against concurrent
-			// sets, deletes and flushes.
-			await Promise.all(entries.map(([key, value]) => doSet(store, key, value)))
+				// Schedule every entry synchronously so same-key duplicates chain
+				// in batch order; per-key locks serialize against concurrent
+				// sets, deletes and flushes.
+				await Promise.all(entries.map(([key, value]) => observe(doSet(store, key, value))))
+			})
 		},
 
 		// Batched variant of `delete`. Per-key semantics are identical to
@@ -739,26 +743,30 @@ async function usePerKeyBridgeStore(
 		// Read many keys at once. Cache-aside per key (like `get`), so a hit
 		// never touches disk; misses read the file. Missing keys are omitted;
 		// real read failures propagate rather than silently dropping keys.
-		async getMany(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]> {
-			if (keys.length === 0) return []
+		getMany(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]> {
+			return withTrackedFailures(async observe => {
+				if (keys.length === 0) return []
 
-			const results = await Promise.all(
-				keys.map(async (key): Promise<[string, Uint8Array] | null> => {
-					const value = await doGet(store, key)
-					return value === null ? null : [key, value]
-				})
-			)
+				const results = await Promise.all(
+					keys.map(async (key): Promise<[string, Uint8Array] | null> => {
+						const value = await observe(doGet(store, key))
+						return value === null ? null : [key, value]
+					})
+				)
 
-			return results.filter((r): r is [string, Uint8Array] => r !== null)
+				return results.filter((r): r is [string, Uint8Array] => r !== null)
+			})
 		},
 
 		listKeys: doListKeys,
 
-		async deletePrefix(store: string, prefix: string): Promise<number> {
-			const keys = await doListKeys(store, prefix)
-			await doDeleteMany(store, keys)
+		deletePrefix(store: string, prefix: string): Promise<number> {
+			return withTrackedFailures(async observe => {
+				const keys = await observe(doListKeys(store, prefix))
+				await observe(doDeleteMany(store, keys))
 
-			return keys.length
+				return keys.length
+			})
 		},
 
 		// File-per-key can do everything; enumeration via readdir lets the core
