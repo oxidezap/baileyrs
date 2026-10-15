@@ -19,13 +19,13 @@ export async function settleBeforeFlushDeadline(
 	operations: Iterable<Promise<unknown>>,
 	deadline: number,
 	label: string,
-	errors: Set<unknown>
+	errors: Map<Promise<unknown>, unknown>
 ): Promise<void> {
 	// Capture each rejection when it settles. Waiting for allSettled first
 	// loses known backend failures if another operation exceeds the deadline.
 	const observed = [...operations].map(operation =>
 		operation.catch(error => {
-			errors.add(error)
+			errors.set(operation, error)
 			throw error
 		})
 	)
@@ -34,10 +34,24 @@ export async function settleBeforeFlushDeadline(
 		await Promise.race([
 			Promise.allSettled(observed),
 			new Promise<never>((_resolve, reject) => {
-				timer = setTimeout(() => reject(flushDeadlineError(label, errors)), Math.max(0, deadline - Date.now()))
+				timer = setTimeout(() => reject(flushDeadlineError(label, errors.values())), Math.max(0, deadline - Date.now()))
 			})
 		])
 	} finally {
 		if (timer !== undefined) clearTimeout(timer)
 	}
+}
+
+/** Preserve individual failures and keep their messages visible to callers. */
+export const settledFlushError = (label: string, errors: Iterable<unknown>): unknown => {
+	const failures = [...errors]
+	if (failures.length === 1) return failures[0]
+	const messages = failures.map(error => {
+		try {
+			return String(error)
+		} catch {
+			return '<unprintable backend rejection>'
+		}
+	})
+	return new AggregateError(failures, `${label}: ${messages.join('; ')}`)
 }

@@ -1,4 +1,4 @@
-import { settleBeforeFlushDeadline, flushDeadlineError } from './flush-deadline.ts'
+import { settleBeforeFlushDeadline, flushDeadlineError, settledFlushError } from './flush-deadline.ts'
 import { clearRollbackProof } from './snapshot-rollback-proof.ts'
 import { withProcessFileLock } from './process-file-lock.ts'
 import { open, readFile, rename, unlink } from 'node:fs/promises'
@@ -92,18 +92,17 @@ export const createSnapshotTransactions = (
 			// A finished host callback can admit the next callback in the same
 			// engine operation. Drain new admissions too, with a bounded idle turn.
 			const deadline = Date.now() + 30_000
-			const errors = new Set<unknown>()
+			const errors = new Map<Promise<unknown>, unknown>()
 			for (;;) {
 				const admitted = [...inFlight]
 				await settleBeforeFlushDeadline(admitted, deadline, 'snapshot flush', errors)
 				for (const operation of admitted) inFlight.delete(operation)
 				await new Promise<void>(resolve => setImmediate(resolve))
 				if (inFlight.size === 0) {
-					if (errors.size === 1) throw [...errors][0]
-					if (errors.size) throw new AggregateError(errors, 'snapshot flush failed')
+					if (errors.size) throw settledFlushError('snapshot flush failed', errors.values())
 					return
 				}
-				if (Date.now() >= deadline) throw flushDeadlineError('snapshot flush', errors)
+				if (Date.now() >= deadline) throw flushDeadlineError('snapshot flush', errors.values())
 			}
 		}
 	}

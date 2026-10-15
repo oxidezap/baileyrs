@@ -1,4 +1,4 @@
-import { settleBeforeFlushDeadline, flushDeadlineError } from './flush-deadline.ts'
+import { settleBeforeFlushDeadline, flushDeadlineError, settledFlushError } from './flush-deadline.ts'
 import { nativeAtomicNamespaces as namespaces, isNativeAtomicRecordFile } from './native-auth-rollback.ts'
 import { requireOfflineMigration, type StoreMigrationOptions } from './store-migration.ts'
 import { readFile, readdir } from 'node:fs/promises'
@@ -56,7 +56,7 @@ export const transactionalFileStore = async (
 			activeFlushes++
 			try {
 				const deadline = Date.now() + 30_000
-				const errors = new Set<unknown>()
+				const errors = new Map<Promise<unknown>, unknown>()
 				const drainOrdinary = createOrdinaryDrain()
 				for (;;) {
 					const before = admissions
@@ -70,11 +70,10 @@ export const transactionalFileStore = async (
 					for (const callback of admitted) pendingCallbacks.delete(callback)
 					await new Promise<void>(resolve => setImmediate(resolve))
 					if (admissions === before && pendingCallbacks.size === 0) {
-						if (errors.size === 1) throw [...errors][0]
-						if (errors.size) throw new AggregateError(errors, 'bridge store flush failed')
+						if (errors.size) throw settledFlushError('bridge store flush failed', errors.values())
 						return
 					}
-					if (Date.now() >= deadline) throw flushDeadlineError('bridge store flush', errors)
+					if (Date.now() >= deadline) throw flushDeadlineError('bridge store flush', errors.values())
 				}
 			} finally {
 				activeFlushes--
