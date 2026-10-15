@@ -80,3 +80,21 @@ test('global presence rejects absent, malformed and unknown statuses', () => {
 		lastSeen: undefined
 	})
 })
+
+test('all label variants omit malformed action timestamps and preserve valid strings', () => {
+	const variants = [
+		{ type: 'label_sublist_update', data: { predefined_id: 1, chat_jid: jid, change: 'Remove' } },
+		{ type: 'label_edit_update', data: { label_id: '1', action: {} } },
+		{ type: 'label_association_update', data: { label_id: '1', chat_jid: jid, action: {} } },
+		{ type: 'message_label_association_update', data: { label_id: '1', chat_jid: jid, message_id: 'm', action: {} } }
+	]
+	for (const event of variants) {
+		for (const action_timestamp of [undefined, null, 0, true, {}, []]) {
+			const got = adapt({ ...event, data: { ...event.data, action_timestamp } })
+			assert.ok(got)
+			assert.equal(Object.hasOwn(got, 'actionTimestamp'), false)
+		}
+		const got = adapt({ ...event, data: { ...event.data, action_timestamp: '1970-01-01T00:00:00Z' } })
+		assert.equal((got as { actionTimestamp?: string }).actionTimestamp, '1970-01-01T00:00:00Z')
+	}
+})

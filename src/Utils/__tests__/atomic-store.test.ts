@@ -677,3 +677,109 @@ for (const firstStore of ['session', 'meta']) {
 			assert.deepEqual(parse(await store.get(firstStore === 'meta' ? 'session' : 'meta', 'second')), 2)
 		}))
 }
+
+test('legacy migration and rollback leave unrelated JSON files untouched, including old snapshot rows', () =>
+	withFolder(async folder => {
+		const { initAuthCreds, BufferJSON } = await import('../generics.ts')
+		const { useLegacyMultiFileAuthState, wrapLegacyStore, prepareLegacyAuthRollback } =
+			await import('../wrap-legacy-store.ts')
+		await writeFile(join(folder, 'creds.json'), JSON.stringify(initAuthCreds(), BufferJSON.replacer))
+		await writeFile(join(folder, 'settings.json'), '{"theme":"old"}')
+		const auth = await useLegacyMultiFileAuthState(folder)
+		const store = await wrapLegacyStore(auth.state, auth.saveCreds)
+		await store.touchTcTokenSenderTimestamp('jid', '1')
+		const path = join(folder, 'bridge-legacy-v1.json')
+		const rows = JSON.parse(await readFile(path, 'utf8'))
+		assert.equal(
+			rows.some(([key]: [string, string]) => key === rowKey('legacy', 'settings.json')),
+			false
+		)
+		// Older snapshots may already contain an unrelated file; never export it.
+		rows.push([rowKey('legacy', 'settings.json'), Buffer.from('{"theme":"stale"}').toString('base64')])
+		await writeFile(path, JSON.stringify(rows))
+		await writeFile(join(folder, 'settings.json'), '{"theme":"current"}')
+		await prepareLegacyAuthRollback(folder, { offline: true })
+		assert.equal(await readFile(join(folder, 'settings.json'), 'utf8'), '{"theme":"current"}')
+	}))
+
+test('native offline rollback exports current rows, deletes removed records and preserves other files', () =>
+	withFolder(async folder => {
+		const { prepareNativeAuthRollback } = await import('../../node-surface.ts')
+		const { readdir } = await import('node:fs/promises')
+		await writeFile(join(folder, 'sync_version-regular.bin'), enc({ version: 1 }))
+		await writeFile(join(folder, 'meta-removed.bin'), enc('obsolete'))
+		await writeFile(join(folder, 'session-other.bin'), enc('session'))
+		await writeFile(join(folder, 'settings.bin'), enc('foreign'))
+		const store = await useBridgeStore(folder, { migrate: true })
+		await store.commitPatch('regular', enc({ version: 2 }), [], [['regular:new', enc([7])]], true)
+		await store.delete('meta', 'removed')
+		await store.touchTcTokenSenderTimestamp('jid', '9223372036854775807')
+		await store.storeReceivedTcToken('jid', new Uint8Array([8]), '-9223372036854775808')
+		await store.flush!()
+		await assert.rejects(
+			() => Reflect.apply(prepareNativeAuthRollback, undefined, [folder, { offline: false }]),
+			/offline/
+		)
+		await prepareNativeAuthRollback(folder, { offline: true })
+		assert.deepEqual(JSON.parse(await readFile(join(folder, 'sync_version-regular.bin'), 'utf8')), { version: 2 })
+		assert.deepEqual(JSON.parse(await readFile(join(folder, 'mutation_mac-regular%3Anew.bin'), 'utf8')), [7])
+		assert.deepEqual(JSON.parse(await readFile(join(folder, 'meta-mutation_mac_keys.bin'), 'utf8')), ['regular:new'])
+		assert.deepEqual(decodeTokenRow(await readFile(join(folder, 'tc_token-jid.bin'))), {
+			token: [8],
+			token_timestamp: -(1n << 63n),
+			sender_timestamp: (1n << 63n) - 1n
+		})
+		await assert.rejects(readFile(join(folder, 'meta-removed.bin')), { code: 'ENOENT' })
+		assert.equal(await readFile(join(folder, 'session-other.bin'), 'utf8'), JSON.stringify('session'))
+		assert.equal(await readFile(join(folder, 'settings.bin'), 'utf8'), JSON.stringify('foreign'))
+		const files = await readdir(folder)
+		assert.equal(files.includes('bridge-atomic-v1.json'), false)
+		assert.ok(files.some(file => file.startsWith('bridge-atomic-v1.json.rollback-')))
+		await assert.rejects(useBridgeStore(folder), /offline migration/)
+		assert.deepEqual(parse(await (await useBridgeStore(folder, { migrate: true })).get('sync_version', 'regular')), {
+			version: 2
+		})
+	}))
+
+test('native rollback publication failure keeps the authoritative snapshot until a successful retry', () =>
+	withFolder(async folder => {
+		const { mkdir } = await import('node:fs/promises')
+		const { prepareNativeAuthRollback } = await import('../native-auth-rollback.ts')
+		const store = await useBridgeStore(folder)
+		await store.commitPatch('regular', enc({ version: 3 }), [], [], true)
+		const snapshot = await readFile(join(folder, 'bridge-atomic-v1.json'))
+		await mkdir(join(folder, 'sync_version-regular.bin'))
+		await assert.rejects(prepareNativeAuthRollback(folder, { offline: true }))
+		assert.deepEqual(await readFile(join(folder, 'bridge-atomic-v1.json')), snapshot)
+		await rm(join(folder, 'sync_version-regular.bin'), { recursive: true })
+		await prepareNativeAuthRollback(folder, { offline: true })
+		assert.deepEqual(JSON.parse(await readFile(join(folder, 'sync_version-regular.bin'), 'utf8')), { version: 3 })
+	}))
+
+test('offline rollback retries the directory barrier after an archival barrier failure', () =>
+	withFolder(async folder => {
+		const { exportAuthSnapshot } = await import('../snapshot-rollback.ts')
+		const { nativeAtomicNamespaces, isNativeAtomicRecordFile } = await import('../native-auth-rollback.ts')
+		const { defaultSyncDir } = await import('../durable-directory.ts')
+		const store = await useBridgeStore(folder)
+		await store.set('meta', 'value', enc('current'))
+		let barriers = 0
+		const syncDir = async (path: string) => {
+			if (++barriers === 2) throw new Error('archival barrier failed')
+			await defaultSyncDir(path)
+		}
+		const rollback = () =>
+			exportAuthSnapshot(
+				folder,
+				'bridge-atomic-v1.json',
+				nativeAtomicNamespaces,
+				(namespace, id) => `${namespace}-${encodeURIComponent(id)}.bin`,
+				isNativeAtomicRecordFile,
+				syncDir
+			)
+		await assert.rejects(rollback(), /archival barrier failed/)
+		await assert.rejects(readFile(join(folder, 'bridge-atomic-v1.json')), { code: 'ENOENT' })
+		await rollback()
+		assert.equal(barriers, 3)
+		assert.equal(await readFile(join(folder, 'meta-value.bin'), 'utf8'), JSON.stringify('current'))
+	}))

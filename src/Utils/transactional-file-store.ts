@@ -1,3 +1,4 @@
+import { nativeAtomicNamespaces as namespaces, isNativeAtomicRecordFile } from './native-auth-rollback.ts'
 import { requireOfflineMigration, type StoreMigrationOptions } from './store-migration.ts'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -5,7 +6,6 @@ import type { AuthenticationState } from '../Types/index.ts'
 import { atomicCallbacks, rowKey, type AtomicRows, type OrdinaryStoreCallbacks } from './atomic-store.ts'
 import { createSnapshotTransactions } from './snapshot-transactions.ts'
 
-const namespaces = new Set(['sync_version', 'mutation_mac', 'tc_token', 'meta'])
 type Store = NonNullable<AuthenticationState['store']>
 
 export const transactionalFileStore = async (
@@ -14,23 +14,13 @@ export const transactionalFileStore = async (
 	syncDir: (path: string) => Promise<void>,
 	options: StoreMigrationOptions = {}
 ): Promise<Store> => {
-	await requireOfflineMigration(
-		folder,
-		'bridge-atomic-v1.json',
-		name => namespaces.has(name.slice(0, name.indexOf('-'))) && name.endsWith('.bin'),
-		options
-	)
+	await requireOfflineMigration(folder, 'bridge-atomic-v1.json', isNativeAtomicRecordFile, options)
 	const snapshot = createSnapshotTransactions(
 		folder,
 		'bridge-atomic-v1.json',
 		namespaces,
 		async () => {
-			await requireOfflineMigration(
-				folder,
-				'bridge-atomic-v1.json',
-				name => namespaces.has(name.slice(0, name.indexOf('-'))) && name.endsWith('.bin'),
-				options
-			)
+			await requireOfflineMigration(folder, 'bridge-atomic-v1.json', isNativeAtomicRecordFile, options)
 			const rows: AtomicRows = new Map()
 			for (const file of await readdir(folder)) {
 				const separator = file.indexOf('-')

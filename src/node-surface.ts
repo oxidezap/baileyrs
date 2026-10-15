@@ -12,3 +12,5 @@ export { getUrlInfo } from './Utils/link-preview.ts'
 export { makeNativeCryptoProvider } from './Utils/native-crypto-provider.ts'
 export { nodeRuntime } from './Runtime/node.ts'
 export { default, makeNodeWASocket, createWASocketFactory, createWASocketFactoryFor } from './Socket/index.ts'
+
+export { prepareNativeAuthRollback } from './Utils/native-auth-rollback.ts'

@@ -3,7 +3,10 @@ import { join } from 'node:path'
 
 export type StoreMigrationOptions = {
 	/** Explicit handoff: every adapter/process using the old files has stopped.
-	 * The snapshot becomes authoritative. Older writers cannot share its lock. */
+	 * Back up the whole directory first. The snapshot becomes authoritative.
+	 * Older writers cannot share its lock. Before reverting storage formats, stop
+	 * all writers and run prepareNativeAuthRollback or prepareLegacyAuthRollback
+	 * with { offline: true }; do not reopen stale per-key backups directly. */
 	migrate?: true
 }
 

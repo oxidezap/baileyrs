@@ -351,6 +351,7 @@ const ADAPTERS = {
 		return { type: 'lockChatUpdate', jid, locked: asBoolOr(extractAction(data)?.locked, true) }
 	},
 	label_sublist_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const chatJid = asJidString(data?.chat_jid)
 		const predefinedId = asNumber(data?.predefined_id)
 		const change = data?.change
@@ -368,11 +369,12 @@ const ADAPTERS = {
 			chatJid,
 			change: change === 'Remove' ? 'remove' : 'upsert',
 			...(change === 'Remove' ? {} : { subListId }),
-			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
 			fromFullSync: asBoolOr(data?.from_full_sync, false)
 		}
 	},
 	label_edit_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const labelId = asString(data?.label_id)
 		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }
 		const action = extractAction(data)
@@ -381,7 +383,7 @@ const ADAPTERS = {
 		const predefined = asNumber(action?.predefinedId) ?? asNumber(action?.predefined_id)
 		return {
 			type: 'labelEdit',
-			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
 			labelId,
 			name: asString(action?.name) ?? '',
 			color: asNumber(action?.color) ?? 0,
@@ -390,13 +392,14 @@ const ADAPTERS = {
 		}
 	},
 	label_association_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const labelId = asString(data?.label_id)
 		const chatJid = asJidString(data?.chat_jid)
 		if (!labelId || !chatJid) return { type: 'noop', bridgeType: 'label_association_update' }
 		// `action.labeled === true` → label added to the chat, else removed.
 		return {
 			type: 'labelAssociation',
-			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
 			labelId,
 			chatJid,
 			labeled: asBoolOr(extractAction(data)?.labeled, true)
@@ -408,6 +411,7 @@ const ADAPTERS = {
 	 * Same canonical event as the chat one, told apart by carrying a message.
 	 */
 	message_label_association_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const labelId = asString(data?.label_id)
 		const chatJid = asJidString(data?.chat_jid)
 		const messageId = asString(data?.message_id)
@@ -416,7 +420,7 @@ const ADAPTERS = {
 		}
 		return {
 			type: 'labelAssociation',
-			...(data?.action_timestamp != null ? { actionTimestamp: data.action_timestamp } : {}),
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
 			labelId,
 			chatJid,
 			messageId,
