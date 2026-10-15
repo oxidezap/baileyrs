@@ -390,7 +390,7 @@ for (const backend of ['legacy', 'snapshot', 'file'] as const) {
 					assert.equal(settled, true)
 					assert.ok(error instanceof AggregateError)
 					assert.ok(
-						error.errors.filter(reason => reason === fault).length >= 2,
+						error.errors.filter(reason => reason === fault).length === 2,
 						'each failed operation must retain its reason, even when both reuse the same reason'
 					)
 					assert.equal(
@@ -413,3 +413,96 @@ for (const backend of ['legacy', 'snapshot', 'file'] as const) {
 		}
 	}
 }
+
+for (const namespace of ['meta', 'session', 'msg_secret']) {
+	test(`file: one ${namespace} failure is reported once across backing and public drains`, async () => {
+		const { defaultSyncDir } = await import('../durable-directory.ts')
+		const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-once-'))
+		const entered = gate(),
+			release = gate()
+		const fault = new Error('one backend failure')
+		let failOnce = true
+		const fail = async () => {
+			if (!failOnce) return
+			failOnce = false
+			entered.release()
+			await release.promise
+			throw fault
+		}
+		const store = await useBridgeStore(folder, {
+			io: {
+				writeTmp: async (path, bytes) => {
+					if (namespace !== 'meta') await fail()
+					await writeTmp(path, bytes)
+				},
+				syncDir: async path => {
+					await defaultSyncDir(path)
+					if (namespace === 'meta') await fail()
+				}
+			}
+		})
+		const write = store.set(namespace, 'key', Buffer.from('[]'))
+		const observed = namespace === 'msg_secret' ? write : assert.rejects(write, error => error === fault)
+		let error: unknown
+		const flush = store.flush!().catch(reason => {
+			error = reason
+		})
+		try {
+			await entered.promise
+			release.release()
+			await observed
+			await flush
+			assert.equal(error, fault, 'one failed operation must preserve its original error, not an aggregate of wrappers')
+		} finally {
+			release.release()
+			await observed
+			await flush
+			await store.flush!()
+			await rm(folder, { recursive: true, force: true })
+		}
+	})
+}
+
+test('file: timeout retains distinct failed debounced writes while their backing drain remains pending', async context => {
+	const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-pending-errors-'))
+	const entered = gate(),
+		release = gate()
+	const fault = new Error('debounced backend failure')
+	let failing = true
+	const store = await useBridgeStore(folder, {
+		io: {
+			writeTmp: async (path, bytes) => {
+				if (bytes[0] === 1 && failing) throw fault
+				if (bytes[0] === 2) {
+					entered.release()
+					await release.promise
+				}
+				await writeTmp(path, bytes)
+			}
+		}
+	})
+	await store.set('msg_secret', 'bad', new Uint8Array([1]))
+	await store.set('msg_secret', 'bad-again', new Uint8Array([1]))
+	await store.set('msg_secret', 'blocked', new Uint8Array([2]))
+	context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+	let error: unknown
+	const flush = store.flush!().catch(reason => {
+		error = reason
+	})
+	try {
+		await entered.promise
+		await turn()
+		context.mock.timers.tick(30_000)
+		await flush
+		assert.ok(error instanceof AggregateError)
+		assert.equal(error.errors.filter(reason => reason === fault).length, 2)
+		assert.ok(error.errors.some(reason => reason?.code === 'ERR_STORE_FLUSH_TIMEOUT'))
+	} finally {
+		failing = false
+		release.release()
+		context.mock.timers.reset()
+		await flush
+		await store.flush!()
+		await rm(folder, { recursive: true, force: true })
+	}
+})

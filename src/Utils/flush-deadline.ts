@@ -9,9 +9,27 @@ export class StoreFlushTimeoutError extends Error {
 	}
 }
 
-export const flushDeadlineError = (label: string, errors: Iterable<unknown> = []): Error => {
+type FlushFailures = Map<Promise<unknown>, unknown>
+const origins = new WeakMap<Promise<unknown>, FlushFailures>()
+
+/** Keep the original backend operations visible through a drain wrapper. */
+export const trackFlushFailures = <T>(operation: Promise<T>, errors: FlushFailures): Promise<T> => {
+	origins.set(operation, errors)
+	return operation
+}
+
+export const recordFlushFailure = (errors: FlushFailures, operation: Promise<unknown>, error: unknown): void => {
+	const underlying = origins.get(operation)
+	if (underlying?.size) {
+		for (const [source, reason] of underlying) errors.set(source, reason)
+	} else errors.set(operation, error)
+}
+
+export const flushDeadlineError = (label: string, errors: FlushFailures): Error => {
 	const timeout = new StoreFlushTimeoutError(label)
-	const previous = [...errors]
+	const previous = [...errors.values()]
+	// The deadline is its own failed barrier, distinct from backend callbacks.
+	errors.set(Promise.resolve(), timeout)
 	return previous.length ? new AggregateError([...previous, timeout], timeout.message, { cause: timeout }) : timeout
 }
 
@@ -19,13 +37,14 @@ export async function settleBeforeFlushDeadline(
 	operations: Iterable<Promise<unknown>>,
 	deadline: number,
 	label: string,
-	errors: Map<Promise<unknown>, unknown>
+	errors: FlushFailures
 ): Promise<void> {
 	// Capture each rejection when it settles. Waiting for allSettled first
 	// loses known backend failures if another operation exceeds the deadline.
-	const observed = [...operations].map(operation =>
+	const admitted = [...operations]
+	const observed = admitted.map(operation =>
 		operation.catch(error => {
-			errors.set(operation, error)
+			recordFlushFailure(errors, operation, error)
 			throw error
 		})
 	)
@@ -34,7 +53,19 @@ export async function settleBeforeFlushDeadline(
 		await Promise.race([
 			Promise.allSettled(observed),
 			new Promise<never>((_resolve, reject) => {
-				timer = setTimeout(() => reject(flushDeadlineError(label, errors.values())), Math.max(0, deadline - Date.now()))
+				timer = setTimeout(
+					() => {
+						// A backing drain may still be pending after some of its writes
+						// failed. Include those known failures without inventing a second
+						// identity for its wrapper or waiting for the stalled sibling.
+						for (const operation of admitted) {
+							const underlying = origins.get(operation)
+							if (underlying) for (const [source, reason] of underlying) errors.set(source, reason)
+						}
+						reject(flushDeadlineError(label, errors))
+					},
+					Math.max(0, deadline - Date.now())
+				)
 			})
 		])
 	} finally {

@@ -1,3 +1,4 @@
+import { recordFlushFailure, settledFlushError, trackFlushFailures } from './flush-deadline.ts'
 import type { StoreMigrationOptions } from './store-migration.ts'
 import type { OrdinaryStoreCallbacks } from './atomic-store.ts'
 import { defaultSyncDir } from './durable-directory.ts'
@@ -417,64 +418,78 @@ async function usePerKeyBridgeStore(
 	}
 
 	const FLUSH_MAX_PASSES = 32
-	type DrainScope = { failedEntries: WeakSet<object>; exhausted?: Error }
+	type DrainScope = { failedEntries: WeakSet<object>; exhausted?: { operation: Promise<void>; error: Error } }
 	const newDrainScope = (): DrainScope => ({ failedEntries: new WeakSet<object>() })
-	const flushAll = async (scope: DrainScope = newDrainScope()): Promise<void> => {
-		if (scope.exhausted) throw scope.exhausted
-		const eligibleKeys = () =>
-			[...pendingWrites].filter(([, entry]) => !scope.failedEntries.has(entry)).map(([key]) => key)
-		// Each pass first waits for every operation admitted so far
-		// (barrier), then drains the pending writes those operations
-		// produced. A `set()` queued just before `flush()` is therefore
-		// observed even if it had not reached `pendingWrites` yet, and an
-		// already-running critical write completes before quiescence is
-		// declared. `flushOne` internals are not admitted, so the barrier
-		// never waits on the drain loop itself (no self-deadlock).
-		// Failures observed by the barrier propagate: a failed admitted
-		// write fails the flush. Only operations outstanding during this
-		// flush are reported — settled history never poisons later flushes.
-		// After a drain pass with any failure, stop and leave the failed
-		// entries for a subsequent explicit flush: retrying them inside the
-		// same call would resolve-or-reject on a stale error while hiding
-		// whether the retry itself persisted. A fully successful pass loops,
-		// since new work may have landed during the drain. The pass cap only
-		// guards a caller emitting writes in a tight loop —
-		// `Socket/index.ts.end()` waits on this and must return.
-		const errors: unknown[] = []
-		for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
-			const outstanding = [...admitted]
-			if (outstanding.length > 0) {
-				const settled = await Promise.allSettled(outstanding)
-				for (const result of settled) {
-					if (result.status === 'rejected') errors.push(result.reason)
-				}
+	const flushAll = (scope: DrainScope = newDrainScope()): Promise<void> => {
+		const errors = new Map<Promise<unknown>, unknown>()
+		const drain = async () => {
+			if (scope.exhausted) {
+				errors.set(scope.exhausted.operation, scope.exhausted.error)
+				throw scope.exhausted.error
 			}
-			if (eligibleKeys().length === 0) {
-				if (admitted.size === 0) break
-				continue
-			}
-			const keys = eligibleKeys()
-			let failed = false
-			await Promise.all(
-				keys.map(key =>
-					flushOne(key, scope.failedEntries).then(
-						() => {},
-						e => {
-							failed = true
-							errors.push(e)
-						}
+			const eligibleKeys = () =>
+				[...pendingWrites].filter(([, entry]) => !scope.failedEntries.has(entry)).map(([key]) => key)
+			// Each pass first waits for every operation admitted so far
+			// (barrier), then drains the pending writes those operations
+			// produced. A `set()` queued just before `flush()` is therefore
+			// observed even if it had not reached `pendingWrites` yet, and an
+			// already-running critical write completes before quiescence is
+			// declared. `flushOne` internals are not admitted, so the barrier
+			// never waits on the drain loop itself (no self-deadlock).
+			// Failures observed by the barrier propagate: a failed admitted
+			// write fails the flush. Only operations outstanding during this
+			// flush are reported — settled history never poisons later flushes.
+			// After a drain pass with any failure, stop and leave the failed
+			// entries for a subsequent explicit flush: retrying them inside the
+			// same call would resolve-or-reject on a stale error while hiding
+			// whether the retry itself persisted. A fully successful pass loops,
+			// since new work may have landed during the drain. The pass cap only
+			// guards a caller emitting writes in a tight loop —
+			// `Socket/index.ts.end()` waits on this and must return.
+			for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
+				const outstanding = [...admitted]
+				if (outstanding.length > 0) {
+					await Promise.all(
+						outstanding.map(operation =>
+							operation.catch(error => {
+								recordFlushFailure(errors, operation, error)
+							})
+						)
 					)
+				}
+				if (eligibleKeys().length === 0) {
+					if (admitted.size === 0) break
+					continue
+				}
+				const keys = eligibleKeys()
+				let failed = false
+				await Promise.all(
+					keys.map(key => {
+						const operation = flushOne(key, scope.failedEntries)
+						return operation.then(
+							() => {},
+							e => {
+								failed = true
+								recordFlushFailure(errors, operation, e)
+							}
+						)
+					})
 				)
-			)
-			if (failed) break
+				if (failed) break
+			}
+			if (errors.size) throw settledFlushError('use-bridge-store flush failed', errors.values())
+			if (eligibleKeys().length > 0 || admitted.size > 0) {
+				scope.exhausted = {
+					operation: Promise.resolve(),
+					error: new Error(
+						`use-bridge-store flushAll did not quiesce after ${FLUSH_MAX_PASSES} passes (${pendingWrites.size} pending writes, ${admitted.size} in-flight operations remain)`
+					)
+				}
+				errors.set(scope.exhausted.operation, scope.exhausted.error)
+				throw scope.exhausted.error
+			}
 		}
-		if (errors.length > 0) throw errors[0]
-		if (eligibleKeys().length > 0 || admitted.size > 0) {
-			scope.exhausted = new Error(
-				`use-bridge-store flushAll did not quiesce after ${FLUSH_MAX_PASSES} passes (${pendingWrites.size} pending writes, ${admitted.size} in-flight operations remain)`
-			)
-			throw scope.exhausted
-		}
+		return trackFlushFailures(drain(), errors)
 	}
 
 	// Write path shared by `set` and `setMany`. `incoming` is already a

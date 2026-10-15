@@ -82,7 +82,7 @@ function withPendingCallbacks(store: WrappedLegacyStore): WrappedLegacyStore {
 					if (errors.size) throw settledFlushError('legacy store flush failed', errors.values())
 					return
 				}
-				if (Date.now() >= deadline) throw flushDeadlineError('legacy store flush', errors.values())
+				if (Date.now() >= deadline) throw flushDeadlineError('legacy store flush', errors)
 			}
 		}
 	}

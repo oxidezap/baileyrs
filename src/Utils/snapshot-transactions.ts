@@ -1,4 +1,9 @@
-import { settleBeforeFlushDeadline, flushDeadlineError, settledFlushError } from './flush-deadline.ts'
+import {
+	settleBeforeFlushDeadline,
+	flushDeadlineError,
+	settledFlushError,
+	trackFlushFailures
+} from './flush-deadline.ts'
 import { clearRollbackProof } from './snapshot-rollback-proof.ts'
 import { withProcessFileLock } from './process-file-lock.ts'
 import { open, readFile, rename, unlink } from 'node:fs/promises'
@@ -88,22 +93,25 @@ export const createSnapshotTransactions = (
 	return {
 		read: <T>(read: (rows: AtomicRows) => T | Promise<T>): Promise<T> => exclusive(async () => read(await readRows())),
 		transaction,
-		flush: async (): Promise<void> => {
-			// A finished host callback can admit the next callback in the same
-			// engine operation. Drain new admissions too, with a bounded idle turn.
-			const deadline = Date.now() + 30_000
+		flush: (): Promise<void> => {
 			const errors = new Map<Promise<unknown>, unknown>()
-			for (;;) {
-				const admitted = [...inFlight]
-				await settleBeforeFlushDeadline(admitted, deadline, 'snapshot flush', errors)
-				for (const operation of admitted) inFlight.delete(operation)
-				await new Promise<void>(resolve => setImmediate(resolve))
-				if (inFlight.size === 0) {
-					if (errors.size) throw settledFlushError('snapshot flush failed', errors.values())
-					return
+			const drain = async () => {
+				// A finished host callback can admit the next callback in the same
+				// engine operation. Drain new admissions too, with a bounded idle turn.
+				const deadline = Date.now() + 30_000
+				for (;;) {
+					const admitted = [...inFlight]
+					await settleBeforeFlushDeadline(admitted, deadline, 'snapshot flush', errors)
+					for (const operation of admitted) inFlight.delete(operation)
+					await new Promise<void>(resolve => setImmediate(resolve))
+					if (inFlight.size === 0) {
+						if (errors.size) throw settledFlushError('snapshot flush failed', errors.values())
+						return
+					}
+					if (Date.now() >= deadline) throw flushDeadlineError('snapshot flush', errors)
 				}
-				if (Date.now() >= deadline) throw flushDeadlineError('snapshot flush', errors.values())
 			}
+			return trackFlushFailures(drain(), errors)
 		}
 	}
 }

@@ -14,8 +14,12 @@ export const transactionalFileStore = async (
 	ordinary: OrdinaryStoreCallbacks,
 	syncDir: (path: string) => Promise<void>,
 	options: StoreMigrationOptions = {},
-	createOrdinaryDrain: () => () => Promise<void> = () => async () => {
-		await ordinary.flush?.()
+	createOrdinaryDrain: () => () => Promise<void> = () => () => {
+		try {
+			return ordinary.flush?.() ?? Promise.resolve()
+		} catch (error) {
+			return Promise.reject(error)
+		}
 	}
 ): Promise<Store> => {
 	await requireOfflineMigration(folder, 'bridge-atomic-v1.json', isNativeAtomicRecordFile, options)
@@ -73,7 +77,7 @@ export const transactionalFileStore = async (
 						if (errors.size) throw settledFlushError('bridge store flush failed', errors.values())
 						return
 					}
-					if (Date.now() >= deadline) throw flushDeadlineError('bridge store flush', errors.values())
+					if (Date.now() >= deadline) throw flushDeadlineError('bridge store flush', errors)
 				}
 			} finally {
 				activeFlushes--
