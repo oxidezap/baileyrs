@@ -232,6 +232,9 @@ test('snapshot flush deadline retains the OS transaction lock until completion',
 		await turn()
 		assert.equal(settled, true)
 		assert.match(String(error), /30s.*remain pending/)
+		// The lock retry must use real timers. Resetting a pending mocked retry
+		// would discard its timer and strand the peer during test cleanup.
+		context.mock.timers.reset()
 		// A separate adapter must still wait on the real OS lock.
 		const peer = createSnapshotTransactions(
 			folder,
@@ -244,8 +247,7 @@ test('snapshot flush deadline retains the OS transaction lock until completion',
 			nextEntered = true
 			rows.set(rowKey('meta', 'key'), new Uint8Array([2]))
 		})
-		await turn()
-		await turn()
+		await new Promise(resolve => setTimeout(resolve, 25))
 		assert.equal(nextEntered, false)
 	} finally {
 		release.release()
