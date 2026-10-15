@@ -586,3 +586,75 @@ for (const method of ['listKeys', 'deletePrefix'] as const) {
 		}
 	})
 }
+
+test('file: prefix failure does not finish flush while a sibling delete remains pending', async () => {
+	const { defaultSyncDir } = await import('../durable-directory.ts')
+	const folder = await mkdtemp(join(tmpdir(), 'baileyrs-prefix-drain-'))
+	await writeFile(join(folder, 'session-bad.bin'), new Uint8Array([1]))
+	await writeFile(join(folder, 'session-good.bin'), new Uint8Array([2]))
+	const atomicEntered = gate(),
+		releaseAtomic = gate(),
+		failedEntered = gate(),
+		releaseFailure = gate(),
+		siblingEntered = gate(),
+		releaseSibling = gate()
+	const fault = new Error('prefix child failure')
+	let barriers = 0
+	const store = await useBridgeStore(folder, {
+		io: {
+			syncDir: async path => {
+				const barrier = ++barriers
+				if (barrier === 1) {
+					atomicEntered.release()
+					await releaseAtomic.promise
+				}
+				if (barrier === 2) {
+					failedEntered.release()
+					await releaseFailure.promise
+					throw fault
+				}
+				if (barrier === 3) {
+					siblingEntered.release()
+					await releaseSibling.promise
+				}
+				await defaultSyncDir(path)
+			}
+		}
+	})
+	const atomic = store.set('meta', 'key', Buffer.from('[]'))
+	await atomicEntered.promise
+	const prefix = assert.rejects(store.deletePrefix!('session', ''), error => error === fault)
+	let settled = false
+	let error: unknown
+	const flush = store.flush!().then(
+		() => {
+			settled = true
+		},
+		reason => {
+			settled = true
+			error = reason
+		}
+	)
+	try {
+		await failedEntered.promise
+		await siblingEntered.promise
+		releaseFailure.release()
+		await prefix
+		releaseAtomic.release()
+		await atomic
+		await new Promise(resolve => setTimeout(resolve, 50))
+		assert.equal(settled, false, 'early batch rejection must not detach a still-running sibling')
+		releaseSibling.release()
+		await flush
+		assert.equal(error, fault)
+	} finally {
+		releaseFailure.release()
+		releaseAtomic.release()
+		releaseSibling.release()
+		await prefix
+		await atomic
+		await flush
+		await store.flush!()
+		await rm(folder, { recursive: true, force: true })
+	}
+})

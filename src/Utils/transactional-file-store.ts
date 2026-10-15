@@ -73,7 +73,9 @@ export const transactionalFileStore = async (
 					)
 					for (const callback of admitted) pendingCallbacks.delete(callback)
 					await new Promise<void>(resolve => setImmediate(resolve))
-					if (admissions === before && pendingCallbacks.size === 0) {
+					// A callback can reject early after admitting batch children. Join
+					// backing queues once more after observing its completion.
+					if (admitted.length === 0 && admissions === before && pendingCallbacks.size === 0) {
 						if (errors.size) throw settledFlushError('bridge store flush failed', errors.values())
 						return
 					}
