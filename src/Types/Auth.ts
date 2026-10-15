@@ -1,3 +1,4 @@
+import type { LegacyKeysStore } from '../Compatibility/legacy-store/types.ts'
 import type Long from 'long'
 import type { Buffer } from 'node:buffer'
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
@@ -111,6 +112,10 @@ type Awaitable<T> = T | Promise<T>
 
 /** @deprecated Signal keys are managed by the Rust bridge. */
 export type SignalKeyStore = {
+	/** Backend transaction, isolated against every writer in the device scope.
+	 * Must commit all mutations durably or none, including native mirror rows.
+	 * The upstream adapter-local transaction helper does not meet this contract. */
+	bridgeTransaction?<T>(work: (keys: LegacyKeysStore) => Promise<T>): Promise<T>
 	get<T extends keyof SignalDataTypeMap>(type: T, ids: string[]): Awaitable<{ [id: string]: SignalDataTypeMap[T] }>
 	set(data: SignalDataSet): Awaitable<void>
 	/** clear all the data in the store */

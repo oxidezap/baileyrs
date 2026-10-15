@@ -7,8 +7,7 @@ import {
 	makeWASocket,
 	proto,
 	useLegacyMultiFileAuthState,
-	useMultiFileAuthState,
-	wrapLegacyStore
+	useMultiFileAuthState
 } from '../lib/index.js'
 import { getWasmMemoryBytes } from '@oxidezap/whatsapp-rust-bridge'
 import P from 'pino'
@@ -35,6 +34,8 @@ const logger = P({
 
 const usePairingCode = process.argv.includes('--use-pairing-code')
 const useLegacyStore = process.argv.includes('--use-legacy-store')
+// Pass this only after stopping every old auth writer and taking a full backup.
+const offlineMigrateAuth = process.argv.includes('--offline-migrate-auth')
 
 // Read line interface
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -126,19 +127,21 @@ const reconnectDelayFor = (statusCode: number | undefined, error: Boom | undefin
 
 // start a connection
 const startSock = async () => {
-	// Two auth modes:
-	// 1. Default: bridge-native binary store (useMultiFileAuthState)
-	// 2. Legacy: load an existing upstream Baileys session via wrapLegacyStore
-	//    Usage: node ./Example/example.ts --use-legacy-store /path/to/baileys_auth_info
+	// Native binary auth is the default. Existing upstream JSON needs the
+	// transactional legacy loader and an explicit offline migration handoff.
+	// node ./Example/example.ts --use-legacy-store /path/to/auth --offline-migrate-auth
 	let state: Awaited<ReturnType<typeof useMultiFileAuthState>>['state']
+	let saveCreds: () => Promise<void>
 	if (useLegacyStore) {
-		const legacyPath = process.argv[process.argv.indexOf('--use-legacy-store') + 1] || 'baileys_auth_info'
-		logger.info({ path: legacyPath }, 'loading upstream Baileys session via wrapLegacyStore')
-		const legacy = await useLegacyMultiFileAuthState(legacyPath)
-		const store = await wrapLegacyStore(legacy.state, legacy.saveCreds)
-		state = { store }
+		const next = process.argv[process.argv.indexOf('--use-legacy-store') + 1]
+		const legacyPath = next && !next.startsWith('--') ? next : 'baileys_auth_info'
+		logger.info({ path: legacyPath }, 'loading transactional legacy auth')
+		;({ state, saveCreds } = await useLegacyMultiFileAuthState(legacyPath, offlineMigrateAuth ? { migrate: true } : {}))
 	} else {
-		;({ state } = await useMultiFileAuthState('baileys_auth_info'))
+		;({ state, saveCreds } = await useMultiFileAuthState(
+			'baileys_auth_info',
+			offlineMigrateAuth ? { migrate: true } : {}
+		))
 	}
 
 	// fetch latest version of WA Web
@@ -158,6 +161,7 @@ const startSock = async () => {
 	sock.ev.process(
 		// events is a map for event name => event data
 		async events => {
+			if (events['creds.update']) await saveCreds()
 			// something about the connection changed
 			// maybe it closed, or we received all offline message or connection opened
 			if (events['connection.update']) {

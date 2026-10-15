@@ -1,3 +1,4 @@
+import { useMemoryStore } from '../../Utils/use-memory-store.ts'
 /**
  * Isolated smoke test for the `WasmWhatsAppClient::Drop` fix in
  * `whatsapp-rust-bridge`.
@@ -97,11 +98,7 @@ function makeStuckHttp(): JsHttpClientConfig {
 }
 
 function makeFastStore(): JsStoreCallbacks {
-	return {
-		get: async () => null,
-		set: async () => undefined,
-		delete: async () => undefined
-	}
+	return useMemoryStore()
 }
 
 type RuntimeWithGc = typeof globalThis & {

@@ -1,3 +1,5 @@
+import type { SignalKeyStore } from '../../Types/index.ts'
+import { makeTransactionalMemKeys } from '../../Utils/__tests__/_legacy-store-fixtures.ts'
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { describe, it } from 'node:test'
@@ -15,14 +17,18 @@ const makeKeys = () => ({
 })
 
 describe('socket authentication normalization', () => {
-	it('preserves a complete legacy authentication state by reference', () => {
+	it('rejects an unmigrated legacy backend before socket startup', () => {
 		const creds = initAuthCreds()
 		const keys = makeKeys()
-		const normalized = normalizeSocketAuthenticationState({ creds, keys })
+		assert.throws(() => normalizeSocketAuthenticationState({ creds, keys }), /keys.bridgeTransaction/)
+	})
 
-		assert.equal(normalized.creds, creds)
-		assert.equal(normalized.keys, keys)
-		assert.equal(normalized.store, undefined)
+	it('preserves a migrated legacy state by reference', () => {
+		const creds = initAuthCreds()
+		const keys = makeTransactionalMemKeys() as unknown as SignalKeyStore
+		const state = normalizeSocketAuthenticationState({ creds, keys })
+		assert.equal(state.creds, creds)
+		assert.equal(state.keys, keys)
 	})
 
 	it('completes store-only native authentication without duplicating its storage', async () => {

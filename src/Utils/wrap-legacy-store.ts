@@ -15,3 +15,5 @@ export {
 	isBridgeInternalKeyType
 } from '../Compatibility/legacy-store/namespaces.ts'
 export type { WrappedLegacyStore } from '../Compatibility/legacy-store/types.ts'
+
+export { prepareLegacyAuthRollback } from '../Compatibility/legacy-store/rollback.ts'

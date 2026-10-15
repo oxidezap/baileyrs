@@ -11,7 +11,8 @@
  * [`attachQrAutoresponder`] directly from `qr-autoresponder.ts`.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import process from 'node:process'
@@ -100,9 +101,15 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 			}
 		})
 	})
-	const [jid] = await Promise.all([connected, startupSync])
-
-	return { sock, jid, lid: sock.user?.lid, authFolder: folder, label: opts.label }
+	try {
+		const [jid] = await Promise.all([connected, startupSync])
+		return { sock, jid, lid: sock.user?.lid, authFolder: folder, label: opts.label }
+	} catch (error) {
+		// A failed factory has no returned owner to tear down its live socket.
+		sock.setAutoReconnect(false)
+		await sock.end(undefined)
+		throw error
+	}
 }
 
 /** Disable auto-reconnect, close the socket, then remove the auth folder.
@@ -116,7 +123,7 @@ export async function destroyTestClient(client: { sock: WASocket; authFolder: st
 	}
 
 	try {
-		rmSync(client.authFolder, { recursive: true, force: true })
+		await rm(client.authFolder, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 	} catch {
 		/* ignore */
 	}

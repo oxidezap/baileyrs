@@ -1,3 +1,4 @@
+import { makeTransactionalMemKeys } from '../Utils/__tests__/_legacy-store-fixtures.ts'
 /**
  * The keystore divergence, written down as executable form.
  *
@@ -54,31 +55,9 @@ const startDeadEndServer = async () => {
 	}
 }
 
-type Bucket = Record<string, unknown>
-
-/** Upstream-shaped keys store that records every namespace it is written to. */
 const makeRecordingKeys = () => {
-	const rows = new Map<string, unknown>()
 	const writtenTypes: string[] = []
-	return {
-		rows,
-		writtenTypes,
-		count: () => rows.size,
-		async get(type: string, ids: string[]): Promise<Bucket> {
-			const bucket: Bucket = {}
-			for (const id of ids) bucket[id] = rows.get(`${type}\0${id}`) ?? null
-			return bucket
-		},
-		async set(updates: Record<string, Bucket>): Promise<void> {
-			for (const [type, bucket] of Object.entries(updates)) {
-				for (const [id, value] of Object.entries(bucket)) {
-					writtenTypes.push(type)
-					if (value === null || value === undefined) rows.delete(`${type}\0${id}`)
-					else rows.set(`${type}\0${id}`, value)
-				}
-			}
-		}
-	}
+	return { ...makeTransactionalMemKeys(type => writtenTypes.push(type)), writtenTypes }
 }
 
 describe('bridge keystore namespaces: the observed behavior', { timeout: 120_000 }, () => {

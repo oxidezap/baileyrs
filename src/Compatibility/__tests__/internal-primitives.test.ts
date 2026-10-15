@@ -25,7 +25,8 @@ describe('compatibility internal primitives', () => {
 		}
 	})
 
-	it('expires entries, refreshes TTL and evicts the least-recently-used key', async () => {
+	it('expires entries, refreshes TTL and evicts the least-recently-used key', context => {
+		context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
 		const disposed: string[] = []
 		const cache = new ExpiringLruMap<string, number>({
 			ttl: 20,
@@ -40,11 +41,11 @@ describe('compatibility internal primitives', () => {
 		assert.equal(cache.get('b'), undefined)
 		assert.deepEqual(disposed, ['b'])
 
-		await delay(12)
+		context.mock.timers.tick(12)
 		assert.equal(cache.get('a'), 1)
-		await delay(12)
+		context.mock.timers.tick(12)
 		assert.equal(cache.get('a'), 1)
-		await delay(25)
+		context.mock.timers.tick(25)
 		assert.equal(cache.get('a'), undefined)
 		assert.ok(disposed.includes('a'))
 		cache.clear()

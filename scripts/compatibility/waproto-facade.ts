@@ -223,9 +223,10 @@ const generatedSchemaContents = () => {
 	const { messages, enums } = collectSchemaObjects(namespace)
 	const messageIds = new Map(messages.map((message, index) => [message.fullName, index]))
 	const enumIds = new Map(enums.map((enumType, index) => [enumType.fullName, index]))
-	const messageSchemas = messages.map(message => [
+	type SchemaField = [name: string, kind: number, reference: number, flags: number, oneof: string, wireType: number]
+	const messageSchemas = messages.map((message): [string, SchemaField[]] => [
 		schemaPath(message),
-		message.fieldsArray.map(field => {
+		message.fieldsArray.map((field): SchemaField => {
 			const isProto3Optional = field.options?.proto3_optional === true
 			const flags =
 				(field.repeated ? FIELD_FLAG.repeated : 0) |
@@ -259,8 +260,8 @@ const generatedSchemaContents = () => {
 	const mapKeyWireTypeSchemas = messages
 		.map(message => [
 			schemaPath(message),
-			message.fieldsArray.filter(field => field.map).map(field => [field.name, scalarWireType(field.keyType)])
-		])
+			message.fieldsArray.filter((field): field is protobuf.Field & protobuf.MapField => field instanceof protobuf.MapField).map(field => [field.name, scalarWireType(field.keyType)])
+		] as const)
 		.filter(([, fields]) => fields.length > 0)
 	const publicMessageSchemas = messageSchemas.map(([path, fields]) => [path, fields.map(field => field.slice(0, 5))])
 	const packageMetadata = JSON.parse(readFileSync(upstreamPackage, 'utf8')) as { name: string; version: string }

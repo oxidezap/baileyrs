@@ -1,3 +1,4 @@
+import type { CanonicalLabelSublist } from '../Bridge/types.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import type { Boom } from '../Utils/boom.ts'
 import type { AuthenticationCreds, LIDMapping } from './Auth.ts'
@@ -122,8 +123,9 @@ export type BaileysEventMap = {
 
 	/** Receive an update on a call, including when the call was received, rejected, accepted */
 	call: WACallEvent[]
-	'labels.edit': Label
-	'labels.association': { association: LabelAssociation; type: 'add' | 'remove' }
+	'labels.sublist': Omit<CanonicalLabelSublist, 'type'>
+	'labels.edit': Label & { actionTimestamp?: string }
+	'labels.association': { association: LabelAssociation; type: 'add' | 'remove'; actionTimestamp?: string }
 
 	/**
 	 * A batched app-state sync left collections unsynced. Not an upstream event:

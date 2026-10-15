@@ -1,3 +1,4 @@
+import { atomicCallbacks, rowKey, type AtomicRows } from '../../Utils/atomic-store.ts'
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
@@ -18,6 +19,17 @@ const makeNativeStore = () => {
 		return result
 	}
 	const store: JsStoreCallbacks = {
+		...atomicCallbacks(async change => {
+			const rows: AtomicRows = new Map()
+			for (const [namespace, values] of buckets)
+				for (const [key, value] of values) rows.set(rowKey(namespace, key), value)
+			change(rows)
+			buckets.clear()
+			for (const [encoded, value] of rows) {
+				const [namespace, key]: [string, string] = JSON.parse(encoded)
+				bucket(namespace).set(key, value)
+			}
+		}),
 		get: async (namespace, key) => bucket(namespace).get(key) ?? null,
 		set: async (namespace, key, value) => {
 			bucket(namespace).set(key, value)

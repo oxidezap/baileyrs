@@ -1,3 +1,4 @@
+import { assertStoreCallbacks } from '../Utils/atomic-store.ts'
 /** Host-only auth bootstrap. It deliberately does not import legacy-store codecs. */
 import { calculateSignature, generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
@@ -161,6 +162,7 @@ export const hydrateHostAuthCreds = async (
 
 /** Build host auth from the caller-owned native byte store. Rust remains the Signal authority. */
 export const createAuthenticationState = async (store: HostStoreCallbacks): Promise<HostAuthenticationState> => {
+	assertStoreCallbacks(store)
 	const creds = initHostAuthCreds()
 	await hydrateHostAuthCreds(store, creds)
 	return { creds: creds as unknown as HostAuthenticationState['creds'], store }

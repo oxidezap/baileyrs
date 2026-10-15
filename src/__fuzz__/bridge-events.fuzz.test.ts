@@ -84,6 +84,7 @@ const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
 	contact_updated: 'contactUpdate',
 	// The `_update` suffix is dropped on the two label events.
 	label_edit_update: 'labelEdit',
+	label_sublist_update: 'labelSublist',
 	label_association_update: 'labelAssociation',
 	// Named after what the event *is* rather than after the wire signal that
 	// carries it — verb first, and the `_update` suffix dropped again.

@@ -16,7 +16,8 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -116,7 +117,8 @@ describe('E2E: lifecycle contract', { timeout: 180_000 }, () => {
 				/* best effort: the run is over either way */
 			}
 		}
-		rmSync(folder, { recursive: true, force: true })
+		// Let final filesystem callbacks release their handles during cleanup.
+		await rm(folder, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 	})
 
 	test('a freshly paired session keeps every promise upstream makes', () => {

@@ -1,3 +1,4 @@
+import { assertStoreCallbacks } from '../../Utils/atomic-store.ts'
 import { Buffer } from 'node:buffer'
 import type { AuthenticationCreds, AuthenticationState, NativeAuthenticationState } from '../../Types/index.ts'
 import { initAuthCreds } from '../../Utils/generics.ts'
@@ -43,6 +44,12 @@ export const normalizeSocketAuthenticationState = (
 	}
 
 	const store = input.store
+	if (store) assertStoreCallbacks(store)
+	else if (input.keys && typeof input.keys.bridgeTransaction !== 'function') {
+		throw new TypeError(
+			'legacy auth requires keys.bridgeTransaction with backend-wide atomicity; stop old writers and load file auth with useLegacyMultiFileAuthState(folder, { migrate: true })'
+		)
+	}
 	const creds = input.creds ?? (store ? initAuthCreds() : undefined)
 	const keys = input.keys ?? (store && creds ? projectNativeStore(store, creds) : undefined)
 

@@ -1,3 +1,4 @@
+import { useLegacyMultiFileAuthState, prepareLegacyAuthRollback } from '../../index.ts'
 /**
  * E2E: Cross-impl session compatibility (baileyrs ↔ upstream baileys).
  *
@@ -148,14 +149,15 @@ function waitForUpstreamMessage(
  * but come from different proto builds, hence the cast at the boundary. */
 async function createBridgeClient(label: string, authFolder?: string): Promise<BridgeClient> {
 	const folder = authFolder ?? mkdtempSync(join(tmpdir(), `handoff-bridge-${label}-`))
-	const { state, saveCreds } = await upstreamBaileys.useMultiFileAuthState(folder)
+	const seed = await upstreamBaileys.useMultiFileAuthState(folder)
+	await seed.saveCreds()
+	const { state, saveCreds } = await useLegacyMultiFileAuthState(folder, { migrate: true })
 
 	const sock = makeWASocket({
 		// upstream's AuthenticationCreds is the same shape as the bridge's
 		// (both ship from a forked WAProto), but TS treats them as distinct
 		// nominal types. Runtime is fine; the bridge reads only fields that
 		// exist in both.
-		// @ts-expect-error -- nominal mismatch between two forked WAProto builds
 		auth: state,
 		// A unique initial push name follows whatsapp-rust's E2E isolation
 		// discipline and gives Barback a deterministic, protocol-valid first
@@ -198,6 +200,7 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
  * mock server's TLS uses a self-signed cert, so the test:e2e script sets
  * NODE_TLS_REJECT_UNAUTHORIZED=0 — we rely on that here too. */
 async function createUpstreamClient(label: string, authFolder: string): Promise<UpstreamClient> {
+	await prepareLegacyAuthRollback(authFolder, { offline: true })
 	const { state, saveCreds } = await upstreamBaileys.useMultiFileAuthState(authFolder)
 
 	const sock = upstreamBaileys.makeWASocket({
@@ -542,6 +545,7 @@ describe(
 			// the upstream rebuild can read sessions + sender keys that bridge
 			// wrote in Phases 1–4.
 			await destroyClient(bob, false)
+			await prepareLegacyAuthRollback(folder, { offline: true })
 
 			// Snapshot every OPEN session baseKey on bob's disk RIGHT NOW
 			// (after bridge has flushed its writes via destroyClient's `end()`,
