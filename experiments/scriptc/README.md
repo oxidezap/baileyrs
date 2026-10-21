@@ -13,7 +13,7 @@ bash experiments/scriptc/install.sh /tmp/scriptc-0.4.0
 SCRIPTC=/tmp/scriptc-0.4.0/bin/scriptc node experiments/scriptc/run.mjs
 ```
 
-The runner saves compiler diagnostics, coverage, native object/link recipes, executable output, exit statuses and a verdict in `.scriptc/results`. The dedicated GitHub Actions workflow uploads these as `scriptc-0.4.0-evidence`, including on failure. Unknown compiler errors, timeouts, signals, failed positive controls and changed negative reproductions fail the job. There is no blanket `continue-on-error`.
+The runner saves each attempt in a fresh `.scriptc/results/run-*` directory. `.scriptc/results/current.json` points to the latest started attempt; `status.json` records running, failed or completed. Compiler diagnostics, coverage, native object/link recipes, executable output, exit statuses and any completed verdict belong only to that attempt. Older runs and legacy flat outputs remain historical data and are never uploaded or summarized as current. The dedicated GitHub Actions workflow consumes the directory recorded in the current step output and uploads it as `scriptc-0.4.0-evidence`, including on failure. Unknown compiler errors, timeouts, signals, failed positive controls and changed negative reproductions fail the job. There is no blanket `continue-on-error`.
 
 The investigation environment had GCC but no clang or sudo. For local reproduction only, `SCRIPTC_POC_GCC=1` consumes the compiler's official `native-link-info` recipe with GCC, removing its clang-specific `-target x86_64-unknown-linux-gnu` pair. It asserts the recipe's compiler version and Linux x64 target. CI uses clang and the unchanged recipe. This is linking the emitted native objects, not running JavaScript through Node.
 
@@ -25,7 +25,7 @@ node --test experiments/scriptc/offline-check.mjs
 node --import ./experiments/scriptc/network-guard.mjs Example/example.ts --offline-smoke
 ```
 
-`--offline-smoke` keeps the example's static imports and full bot implementation. It selects an offline entry branch before opening readline, creating Pino transports, fetching a version or constructing a socket. It compares bridge SHA-256 with Node crypto, checks two-party key agreement, round-trips the public protobuf facade, and writes/flushes/reopens/deletes synthetic session bytes through the real file auth store. It creates a unique temporary directory and removes it in `finally`. It rejects pairing and migration flags. It never reads the usual auth directory, prints keys, pairs a device or connects an account. The regression test uses a sentinel at the normal auth path, checks cleanup and intercepts fetch, WebSocket, TCP, TLS and HTTP connection entrypoints. This JavaScript guard is a regression detector, not an OS security boundary.
+`--offline-smoke` keeps the example's static imports and full bot implementation. It selects an offline entry branch before opening readline, creating Pino transports, fetching a version or constructing a socket. It compares bridge SHA-256 with Node crypto, checks two-party key agreement, round-trips the public protobuf facade, and writes/flushes/reopens/deletes synthetic bytes in both the ordinary `session` namespace and the atomic `meta` namespace through the real file auth store. It reopens once more to verify deletion. The `meta` operations execute snapshot transactions and the real native kernel lock. It creates a unique temporary directory and removes it in `finally`. It rejects pairing and migration flags. It never reads the usual auth directory, prints keys, pairs a device or connects an account. The regression test uses a sentinel at the normal auth path, checks cleanup, verifies failure when native-lock module loading is denied, and intercepts fetch, WebSocket, TCP, TLS and HTTP connection entrypoints. This JavaScript guard is a regression detector, not an OS security boundary.
 
 ## Observed results
 
@@ -69,3 +69,17 @@ Next steps are therefore compiler/frontend reproductions, a supported bridge WAS
 ## Upstream investigation
 
 The [upstream follow-up](upstream/README.md) contains independent clean-project reproductions, duplicate checks, source analysis and a local filesystem prototype with a regression test. The issue publication attempts were denied by the GitHub integration with HTTP 403; these are reviewed drafts, not published issues. The CI runner also builds and executes the independent 29-byte SIMD reproduction.
+
+## Harness review checks
+
+The two review concerns were reproduced on head `3881b483c0eaf3930f61558e7ecd5eca90f15abc`. Denying `fs-native-extensions` loading still allowed the old session-only smoke to pass. A runner failure at compiler-version validation also preserved an earlier verdict and an unreached binary in the reused output directory.
+
+The smoke now retains the session check and adds an atomic meta round trip, flush, reopen and deletion verification. The negative regression injects a module-load failure only in its child process; the positive smoke uses the real addon. No socket is constructed.
+
+Each runner attempt now has its own directory and status. CI uploads exactly the directory emitted by that attempt, including failures, and reports a verdict only when that run's status is completed. The harness regression starts from completed historical evidence, fails two subsequent attempts early, verifies that each selects a new directory, and checks that even a stray verdict cannot override failed status. No historical directories are deleted.
+
+```sh
+node --test experiments/scriptc/offline-check.mjs experiments/scriptc/harness-check.mjs
+```
+
+These harness changes do not remove the compiler, SIMD, finalization or native-lock portability limitations documented above.

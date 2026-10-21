@@ -27,15 +27,31 @@ export const runOfflineSmoke = async () => {
 	try {
 		const first = await useMultiFileAuthState(folder)
 		if (!first.state.store) throw new Error('file store missing')
-		await first.state.store.set('session', 'synthetic-offline-fixture', input)
+		// session uses ordinary files; meta also exercises snapshot transactions
+		// and the real fs-native-extensions kernel lock.
+		const namespaces = ['session', 'meta']
+		for (const namespace of namespaces) await first.state.store.set(namespace, 'synthetic-offline-fixture', input)
 		await first.state.store.flush?.()
 		const second = await useMultiFileAuthState(folder)
-		const saved = await second.state.store?.get('session', 'synthetic-offline-fixture')
-		if (!saved || !Buffer.from(saved).equals(input)) throw new Error('persistent store round trip failed')
-		await second.state.store?.delete('session', 'synthetic-offline-fixture')
-		await second.state.store?.flush?.()
+		if (!second.state.store) throw new Error('reopened file store missing')
+		for (const namespace of namespaces) {
+			const saved = await second.state.store.get(namespace, 'synthetic-offline-fixture')
+			if (!saved || !Buffer.from(saved).equals(input)) throw new Error(`${namespace} persistent round trip failed`)
+			await second.state.store.delete(namespace, 'synthetic-offline-fixture')
+		}
+		await second.state.store.flush?.()
+		const third = await useMultiFileAuthState(folder)
+		if (!third.state.store) throw new Error('deleted file store missing')
+		for (const namespace of namespaces) {
+			if (await third.state.store.get(namespace, 'synthetic-offline-fixture')) {
+				throw new Error(`${namespace} deletion did not persist`)
+			}
+		}
+		await third.state.store.flush?.()
 	} finally {
 		await rm(folder, { recursive: true, force: true })
 	}
-	console.log('BAILEYRS_OFFLINE_SMOKE_OK bridge crypto protobuf persistence; no socket created')
+	console.log(
+		'BAILEYRS_OFFLINE_SMOKE_OK bridge crypto protobuf persistence (session and atomic meta); no socket created'
+	)
 }

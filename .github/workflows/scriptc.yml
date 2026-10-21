@@ -26,24 +26,22 @@ jobs:
       - name: Install verified official compiler
         run: bash experiments/scriptc/install.sh "$RUNNER_TEMP/scriptc-0.4.0"
       - name: Build and run isolated probes and full example analysis
+        id: experiment
         env:
           SCRIPTC: ${{ runner.temp }}/scriptc-0.4.0/bin/scriptc
           SCRIPTC_CACHE_DIR: ${{ runner.temp }}/scriptc-cache
         run: node experiments/scriptc/run.mjs
       - name: Preserve diagnostics and native build evidence
-        if: always()
+        if: ${{ always() && steps.experiment.outputs.results != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scriptc-0.4.0-evidence
-          path: .scriptc/results
+          path: ${{ steps.experiment.outputs.results }}
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
       - name: Report the experiment's meaning
         if: always()
-        run: |
-          if test -f .scriptc/results/verdict.txt; then
-            cat .scriptc/results/verdict.txt >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'Experiment did not finish. Inspect logs; this is not a compatibility pass.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+        env:
+          SCRIPTC_RUN_RESULTS: ${{ steps.experiment.outputs.results }}
+        run: node experiments/scriptc/report.mjs >> "$GITHUB_STEP_SUMMARY"
