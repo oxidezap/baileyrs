@@ -35,3 +35,7 @@ Native execution of the patched main runtime was blocked. Its runtime ABI is 23,
 - V8 heap-space methods remain an intentional unsupported engine-specific API in the changes described by merged PR #1318. No generic array-method bug is claimed from those diagnostics.
 
 Existing reports #577 and #34 and the merged URL and fs-extra work #645 and #1504 were reviewed while checking the filesystem cases. Searches covered open and closed issues and PRs; no matching pending fix was found for the three drafted reports. Recheck the tracker before a later publication, since upstream may have moved.
+
+## CI checkout correction
+
+The first follow-up run failed its unchanged WASM hash assertion because GitHub tested a synthetic merge with a newer base containing bridge 0.26.1. The experiment head and documented reproduction still pin 0.26.0. Its workflow now checks out `github.event.pull_request.head.sha`, preserving the integrity check and the declared inputs. The normal repository CI retains its existing merge-context checks.
