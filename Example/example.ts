@@ -1,4 +1,4 @@
-import readline from 'node:readline'
+import { createInterface } from 'node:readline'
 import {
 	type Boom,
 	DEFAULT_CONNECTION_CONFIG,
@@ -10,27 +10,38 @@ import {
 	useMultiFileAuthState
 } from '../lib/index.js'
 import { getWasmMemoryBytes } from '@oxidezap/whatsapp-rust-bridge'
-import P from 'pino'
-import process from 'node:process'
+import P, { type Logger } from 'pino'
+import * as process from 'node:process'
+import { runOfflineSmoke } from './offline-smoke.ts'
+
+const offlineSmoke = process.argv.includes('--offline-smoke')
+if (
+	offlineSmoke &&
+	process.argv.some(arg => ['--use-pairing-code', '--use-legacy-store', '--offline-migrate-auth'].includes(arg))
+) {
+	throw new Error('--offline-smoke cannot be combined with account or migration options')
+}
 
 const logLevel = process.env.LOG_LEVEL ?? 'trace'
-const logger = P({
-	level: logLevel,
-	transport: {
-		targets: [
-			{
-				target: 'pino-pretty', // pretty-print for console
-				options: { colorize: true },
-				level: 'trace'
-			},
-			{
-				target: 'pino/file', // raw file output
-				options: { destination: './wa-logs.txt' },
-				level: 'trace'
+const logger: Logger = offlineSmoke
+	? P({ level: 'silent' })
+	: P({
+			level: logLevel,
+			transport: {
+				targets: [
+					{
+						target: 'pino-pretty', // pretty-print for console
+						options: { colorize: true },
+						level: 'trace'
+					},
+					{
+						target: 'pino/file', // raw file output
+						options: { destination: './wa-logs.txt' },
+						level: 'trace'
+					}
+				]
 			}
-		]
-	}
-})
+		})
 
 const usePairingCode = process.argv.includes('--use-pairing-code')
 const useLegacyStore = process.argv.includes('--use-legacy-store')
@@ -38,8 +49,8 @@ const useLegacyStore = process.argv.includes('--use-legacy-store')
 const offlineMigrateAuth = process.argv.includes('--offline-migrate-auth')
 
 // Read line interface
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-const question = (text: string) => new Promise<string>(resolve => rl.question(text, resolve))
+const rl = offlineSmoke ? undefined : createInterface({ input: process.stdin, output: process.stdout })
+const question = (text: string) => new Promise<string>(resolve => rl!.question(text, resolve))
 
 const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MiB'
 const numFmt = (v: number) => new Intl.NumberFormat('en').format(v)
@@ -146,7 +157,7 @@ const startSock = async () => {
 
 	// fetch latest version of WA Web
 	const latest = await fetchLatestWaWebVersion()
-	const { version } = latest
+	const version = latest.version
 	logger.debug({ version: version.join('.'), isLatest: latest.isLatest }, `using latest WA version`)
 
 	const sock = makeWASocket({
@@ -445,4 +456,8 @@ const startSock = async () => {
 	return sock
 }
 
-startSock()
+if (offlineSmoke) {
+	await runOfflineSmoke()
+} else {
+	void startSock()
+}
