@@ -609,6 +609,10 @@ session with no skipped keys buffered at the time is unaffected either way: the
 difference only exists while a chain is holding keys for messages that arrived
 out of order.
 
+## Experimental native compilation
+
+The [scriptc 0.4.0 proof of concept](experiments/scriptc/README.md) records native build and initialization blockers and provides reproducible CI probes. It is not a supported runtime target. To exercise the real example offline after `npm run build`, run `node Example/example.ts --offline-smoke`. This checks bridge crypto, protobuf and temporary file persistence without creating a socket.
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or in any way officially connected to
