@@ -1,0 +1,309 @@
+diff --git a/packages/compiler/src/backend/llvm/lib-shared.ts b/packages/compiler/src/backend/llvm/lib-shared.ts
+index 11fee3acf..e6cd86f73 100644
+--- a/packages/compiler/src/backend/llvm/lib-shared.ts
++++ b/packages/compiler/src/backend/llvm/lib-shared.ts
+@@ -791,6 +791,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
+   "fsp.rename": "scr_fsp_rename",
+   "fsp.readdir": "scr_fsp_readdir",
+   "fsp.rm": "scr_fsp_rm",
++  "fsp.rmOpts": "scr_fsp_rm_opts",
++  "fsp.rmRetry": "scr_fsp_rm_opts_retry",
+   "fsp.stat": "scr_fsp_stat",
+   "fsp.realpath": "scr_fsp_realpath",
+   "fsp.lstat": "scr_fsp_lstat",
+diff --git a/packages/compiler/src/frontend/lowering/builtins/filesystem-calls.ts b/packages/compiler/src/frontend/lowering/builtins/filesystem-calls.ts
+index 05028e1df..5091e7cb8 100644
+--- a/packages/compiler/src/frontend/lowering/builtins/filesystem-calls.ts
++++ b/packages/compiler/src/frontend/lowering/builtins/filesystem-calls.ts
+@@ -617,6 +617,24 @@ function encodingOptions(lowerer: Lowerer, options: ts.Expression, type: IrType)
+   return typeEquals(value.type, type) ? value : lowerer.coerceInto(options, value, type);
+ }
+ 
++/** Node accepts a file URL as the path in readFileSync. */
++export function lowerFsReadPathArgument(
++  lowerer: Lowerer,
++  path: ts.Expression,
++  loc: SrcLoc,
++): IrExpr {
++  if (lowerer.mapTypeOf(lowerer.typeOf(path))?.kind === "url") {
++    return {
++      kind: "libCall",
++      fn: "url.fileURLToPathUrl",
++      args: [lowerer.lowerExpr(path)],
++      type: STRING,
++      loc,
++    };
++  }
++  return lowerer.lowerExprExpecting(path, STRING);
++}
++
+ /** Encoding-bearing reads share Buffer's decoder and runtime alias checks.
+  * Keep the read and encoding evaluation in source order in one helper. */
+ export function lowerFsEncodedRead(
+@@ -640,8 +658,10 @@ export function lowerFsEncodedRead(
+       return null;
+   }
+   const sourceType = descriptor ? F64 : STRING;
+-  const source = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, sourceType);
+-  const encoding: IrExpr =
++  let source = descriptor
++    ? lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, sourceType)
++    : lowerFsReadPathArgument(lowerer, expr.arguments.nodes[0]!, loc);
++  let encoding: IrExpr =
+     optionsType.kind === "string"
+       ? lowerer.lowerExprExpecting(options, STRING)
+       : {
+@@ -652,24 +672,44 @@ export function lowerFsEncodedRead(
+           type: STRING,
+           loc,
+         };
++  const staged: IrStmt[] = [];
++  if (!descriptor && lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind === "url") {
++    const value = lowerer.lowerExpr(expr.arguments.nodes[0]!);
++    const pathLocal = lowerer.declareHiddenLocal("%readFileUrl", value.type);
++    const encodingLocal = lowerer.declareHiddenLocal("%readFileEncoding", encoding.type);
++    staged.push({ kind: "varDecl", localId: pathLocal.id, init: value, loc });
++    staged.push({ kind: "varDecl", localId: encodingLocal.id, init: encoding, loc });
++    source = {
++      kind: "libCall",
++      fn: "url.fileURLToPathUrl",
++      args: [varRef(pathLocal.id, pathLocal.type, loc)],
++      type: STRING,
++      loc,
++    };
++    encoding = varRef(encodingLocal.id, encodingLocal.type, loc);
++  }
++  const finish = (result: IrExpr): IrExpr =>
++    staged.length === 0
++      ? result
++      : { kind: "seqExpr", stmts: staged, result, type: result.type, loc };
+   // Empty encodings return a Buffer, and unknown string spellings may
+   // throw. Keep the runtime result when the selected overload admits both
+   // strings and Buffers rather than promising a string from its argument.
+   if (!descriptor && lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind !== "string")
+-    return {
++    return finish({
+       kind: "libCall",
+       fn: "fs.readFileSyncDyn",
+       args: [source, lowerer.coerceToExpected(encoding, DYN)],
+       type: DYN,
+       loc,
+-    };
+-  return {
++    });
++  return finish({
+     kind: "libCall",
+     fn: descriptor ? "fs.readFdEncoded" : "fs.readFileEncoded",
+     args: [source, encoding],
+     type: STRING,
+     loc,
+-  };
++  });
+ }
+ 
+ /** fs.promises.readFile(path, encoding | { encoding }) when its result is a
+@@ -871,7 +911,12 @@ export function lowerFsPromisesMkdirCall(
+ // runtime implements Node's linear-backoff retry on
+ // EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM. The retry-free shape keeps the
+ // historical rmOptsSync lowering unchanged.
+-export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
++export function lowerFsRemoveCall(
++  lowerer: Lowerer,
++  expr: ts.CallExpression,
++  loc: SrcLoc,
++  promise = false,
++): IrExpr {
+   const opts = literalBoolOptions(
+     expr.arguments.nodes[1]!,
+     ["recursive", "force"],
+@@ -879,7 +924,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
+   );
+   if (opts === null) {
+     lowerer.noLowering(
+-      "rmSync with an options argument beyond { recursive, force, maxRetries, retryDelay }",
++      `${promise ? "fs.promises.rm" : "rmSync"} with an options argument beyond { recursive, force, maxRetries, retryDelay }`,
+       expr.arguments.nodes[1]!,
+       "the recursive/force flags must be boolean literals; maxRetries/retryDelay are numbers; other options have no lowering",
+     );
+@@ -891,9 +936,9 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
+   if (opts.exprs["maxRetries"] === undefined && opts.exprs["retryDelay"] === undefined) {
+     return {
+       kind: "libCall",
+-      fn: "fs.rmOptsSync",
++      fn: promise ? "fsp.rmOpts" : "fs.rmOptsSync",
+       args: [path, recursive, force],
+-      type: VOID,
++      type: promise ? { kind: "promise", inner: VOID } : VOID,
+       loc,
+     };
+   }
+@@ -904,7 +949,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
+     node ? lowerer.lowerExprExpecting(node, F64) : { kind: "numLit", value: dflt, type: F64, loc };
+   return {
+     kind: "libCall",
+-    fn: "fs.rmRetrySync",
++    fn: promise ? "fsp.rmRetry" : "fs.rmRetrySync",
+     args: [
+       path,
+       recursive,
+@@ -912,7 +957,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
+       num(opts.exprs["maxRetries"], 0),
+       num(opts.exprs["retryDelay"], 100),
+     ],
+-    type: VOID,
++    type: promise ? { kind: "promise", inner: VOID } : VOID,
+     loc,
+   };
+ }
+diff --git a/packages/compiler/src/frontend/lowering/builtins/module-calls.ts b/packages/compiler/src/frontend/lowering/builtins/module-calls.ts
+index c85f2c777..227715a30 100644
+--- a/packages/compiler/src/frontend/lowering/builtins/module-calls.ts
++++ b/packages/compiler/src/frontend/lowering/builtins/module-calls.ts
+@@ -24,6 +24,7 @@ import {
+   lowerFsWriteBytesCall,
+   lowerFsWriteOptionsCall,
+   lowerFsReadPathCall,
++  lowerFsReadPathArgument,
+ } from "./filesystem-calls.js";
+ import { lowerBufferEncodingCall } from "./text-codecs.js";
+ import { lowerUtilTypeCall } from "./util-types.js";
+@@ -240,7 +241,7 @@ export function lowerBuiltinModuleCall(
+     expr.arguments.nodes.length === 1 &&
+     lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[0]!))?.kind !== "f64"
+   ) {
+-    const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
++    const path = lowerFsReadPathArgument(lowerer, expr.arguments.nodes[0]!, loc);
+     return { kind: "libCall", fn: "fs.readFileSyncBytes", args: [path], type: BYTES_U8, loc };
+   }
+   if (
+@@ -291,8 +292,12 @@ export function lowerBuiltinModuleCall(
+   if (bi.module === "fs/promises" && bi.member === "mkdir" && expr.arguments.nodes.length === 2) {
+     return lowerFsPromisesMkdirCall(lowerer, expr, loc);
+   }
+-  if (bi.module === "fs" && bi.member === "rmSync" && expr.arguments.nodes.length === 2) {
+-    return lowerFsRemoveCall(lowerer, expr, loc);
++  if (
++    ((bi.module === "fs" && bi.member === "rmSync") ||
++      (bi.module === "fs/promises" && bi.member === "rm")) &&
++    expr.arguments.nodes.length === 2
++  ) {
++    return lowerFsRemoveCall(lowerer, expr, loc, bi.module === "fs/promises");
+   }
+   // accessSync(p, mode?) and truncateSync(p, len?), with their promise
+   // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
+diff --git a/packages/compiler/src/frontend/lowering/surfaces.ts b/packages/compiler/src/frontend/lowering/surfaces.ts
+index ee6676e81..fe1876108 100644
+--- a/packages/compiler/src/frontend/lowering/surfaces.ts
++++ b/packages/compiler/src/frontend/lowering/surfaces.ts
+@@ -2099,6 +2099,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
+     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
+     // The string-data { mode } options form.
+     writeFile: ["fsp.writeFileMode"],
++    rm: ["fsp.rmOpts", "fsp.rmRetry"],
+     // The { withFileTypes: true } Dirent form.
+     readdir: ["fsp.readdirTypes"],
+     glob: ["fsp.globTypes"],
+diff --git a/packages/compiler/src/ir/builtin-signatures.ts b/packages/compiler/src/ir/builtin-signatures.ts
+index 342e578c9..c977c8be3 100644
+--- a/packages/compiler/src/ir/builtin-signatures.ts
++++ b/packages/compiler/src/ir/builtin-signatures.ts
+@@ -3125,6 +3125,11 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
+    * scandir failure becomes its rejection. */
+   "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+   "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
++  "fsp.rmOpts": { argTypes: [STRING, BOOL, BOOL], result: { kind: "promise", inner: VOID } },
++  "fsp.rmRetry": {
++    argTypes: [STRING, BOOL, BOOL, F64, F64],
++    result: { kind: "promise", inner: VOID },
++  },
+   "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
+   "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+   "fsp.lstat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
+diff --git a/packages/runtime/src/scr_async.c b/packages/runtime/src/scr_async.c
+index ef91de6fb..ec3986bca 100644
+--- a/packages/runtime/src/scr_async.c
++++ b/packages/runtime/src/scr_async.c
+@@ -2895,6 +2895,16 @@ ScrPromise *scr_fsp_readdir(ScrStr *path) {
+   return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+ }
+ 
++ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force) {
++  scr_fs_rm_opts(path, recursive, force);
++  return scr_promise_settled_void();
++}
++
++ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay) {
++  scr_fs_rm_opts_retry(path, recursive, force, max_retries, retry_delay);
++  return scr_promise_settled_void();
++}
++
+ ScrPromise *scr_fsp_rm(ScrStr *path) {
+   scr_fs_rm(path);
+   return scr_promise_settled_void();
+diff --git a/packages/runtime/src/scr_lib.h b/packages/runtime/src/scr_lib.h
+index bae678292..40e644937 100644
+--- a/packages/runtime/src/scr_lib.h
++++ b/packages/runtime/src/scr_lib.h
+@@ -493,6 +493,8 @@ ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn
+ ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
+ ScrPromise *scr_fsp_readdir(ScrStr *path);
+ ScrPromise *scr_fsp_rm(ScrStr *path);
++ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
++ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay);
+ ScrPromise *scr_fsp_stat(ScrStr *path);
+ ScrPromise *scr_fsp_realpath(ScrStr *path);
+ ScrPromise *scr_fsp_lstat(ScrStr *path);
+
+diff --git a/packages/compiler/test/fs-inputs-experiment.test.ts b/packages/compiler/test/fs-inputs-experiment.test.ts
+new file mode 100644
+index 000000000..6fe20f078
+--- /dev/null
++++ b/packages/compiler/test/fs-inputs-experiment.test.ts
+@@ -0,0 +1,47 @@
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { join } from "node:path";
++import { expect, test } from "vitest";
++import { compile, deserializeModule, validateModule } from "../src/index.js";
++
++test("file URL readFileSync and promise rm options lower without discarding arguments", async () => {
++  const dir = await mkdtemp(join(import.meta.dirname, ".fs-inputs-"));
++  try {
++    const entry = join(dir, "main.ts");
++    const outPath = join(dir, "main.ir.json");
++    // Use installed declarations, as a consumer with @types/node does.
++    const types = join(import.meta.dirname, "../../../node_modules/@types");
++    await writeFile(
++      join(dir, "tsconfig.json"),
++      JSON.stringify({
++        compilerOptions: {
++          strict: true,
++          types: ["node"],
++          typeRoots: [types],
++          module: "ESNext",
++          moduleResolution: "Bundler",
++        },
++      }),
++    );
++    await writeFile(
++      entry,
++      `
++import { readFileSync } from "node:fs";
++import { rm } from "node:fs/promises";
++console.log(readFileSync(new URL("./fixture.txt", import.meta.url), "utf8"));
++console.log(readFileSync(new URL("./fixture.txt", import.meta.url)).length);
++await rm("missing", { recursive: true, force: true });
++await rm("missing", { recursive: false, force: true, maxRetries: 2, retryDelay: 10 });
++`,
++    );
++    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
++    if (!result.ok)
++      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
++    const text = await readFile(outPath, "utf8");
++    expect(validateModule(deserializeModule(text))).toEqual([]);
++    expect(text).toContain("url.fileURLToPathUrl");
++    expect(text).toContain("fsp.rmOpts");
++    expect(text).toContain("fsp.rmRetry");
++  } finally {
++    await rm(dir, { recursive: true, force: true });
++  }
++});
