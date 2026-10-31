@@ -601,3 +601,46 @@ describe('video cancellation and native ordering', () => {
 		await call.end()
 	})
 })
+
+describe('managed acceptance completion', () => {
+	it('closes a pending media factory when another device accepted the call', async () => {
+		const h = harness(),
+			entered = deferred<CallSession>(),
+			factory = deferred<CallSessionMedia>()
+		const opening = h.api.accept(offer, {
+			media: session => {
+				entered.resolve(session)
+				return factory.promise
+			}
+		})
+		const call = await entered.promise
+		h.terminal.add(call.id)
+		h.events.emit('call', [{ ...offer, status: 'accept' }])
+		factory.resolve({})
+		await assert.rejects(opening)
+		assert.equal((await call.closed).reason, 'remote')
+		assert.equal(h.api.active.length, 0)
+		assert.equal(h.counts.ends, 0)
+	})
+	it('shares pending media setup and its failure with repeated acceptance', async () => {
+		const h = harness(),
+			entered = deferred<void>(),
+			factory = deferred<CallSessionMedia>()
+		const first = h.api.accept(offer, {
+			media: () => {
+				entered.resolve()
+				return factory.promise
+			}
+		})
+		await entered.promise
+		const second = h.api.accept(offer)
+		const results = Promise.allSettled([first, second])
+		factory.reject(new Error('microphone unavailable'))
+		const settled = await results
+		assert.deepEqual(
+			settled.map(result => result.status),
+			['rejected', 'rejected']
+		)
+		assert.equal(first, second)
+	})
+})

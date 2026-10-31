@@ -112,7 +112,12 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 	}
 	const onCalls = (events: WACallEvent[]) => {
 		for (const event of events) {
-			if (event.status === 'terminate' || event.status === 'reject' || event.status === 'timeout') {
+			if (
+				runtime.isTerminal(event.id) ||
+				event.status === 'terminate' ||
+				event.status === 'reject' ||
+				event.status === 'timeout'
+			) {
 				void sessions.get(event.id)?.finish({ reason: 'remote' })
 			}
 		}
@@ -518,10 +523,10 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				!offer.chatId
 			)
 				return Promise.reject(new TypeError('accept requires a call offer'))
-			const existing = sessions.get(offer.id)
-			if (existing) return Promise.resolve(existing.handle)
 			const current = pending.get(offer.id)
 			if (current) return current
+			const existing = sessions.get(offer.id)
+			if (existing) return Promise.resolve(existing.handle)
 			const operation = start(offer.id, offer.chatId, true, {
 				...options,
 				video: options.video ?? offer.isVideo ?? false
