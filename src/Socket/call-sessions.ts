@@ -314,7 +314,9 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 					const request = requestEncoderKeyframe
 					if (request && scope && !scope.signal.aborted)
 						void Promise.resolve()
-							.then(request)
+							.then(() => {
+								if (!scope.signal.aborted) return request()
+							})
 							.catch(error => {
 								if (!scope.signal.aborted) runtime.reportError(error, 'requesting encoder keyframe')
 							})

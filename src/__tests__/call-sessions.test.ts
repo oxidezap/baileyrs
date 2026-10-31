@@ -510,6 +510,7 @@ describe('managed encoder feedback', () => {
 		h.events.emit('call.media', { kind: 'video-keyframe-needed', callId: call.id })
 		await tick()
 		assert.equal(requests, 1)
+		h.events.emit('call.media', { kind: 'video-keyframe-needed', callId: call.id })
 		await call.video.stop()
 		h.events.emit('call.media', { kind: 'video-keyframe-needed', callId: call.id })
 		await tick()
