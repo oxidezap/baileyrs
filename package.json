@@ -93,7 +93,7 @@
     "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json"
   },
   "dependencies": {
-    "@oxidezap/whatsapp-rust-bridge": "0.26.1",
+    "@oxidezap/whatsapp-rust-bridge": "0.26.3",
     "events": "^3.3.0",
     "fs-native-extensions": "1.5.2",
     "long": "^5.3.2"
