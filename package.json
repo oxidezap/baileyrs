@@ -22,7 +22,7 @@
     "url": "https://github.com/oxidezap/baileyrs/issues"
   },
   "license": "MIT",
-  "author": "João Lucas <jlucaso@hotmail.com>",
+  "author": "Jo\u00e3o Lucas <jlucaso@hotmail.com>",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -76,8 +76,9 @@
     "example": "node ./Example/example.ts",
     "format": "oxfmt src Example",
     "format:check": "oxfmt --check src Example",
-    "lint": "tsc && oxlint",
+    "lint": "npm run build --silent && tsc && tsc -p tsconfig.example.json && oxlint",
     "lint:fix": "oxlint --fix && oxfmt src Example",
+    "typecheck:example": "tsc -p tsconfig.example.json",
     "prepack": "npm run build && node scripts/check-pack.ts",
     "prepublishOnly": "node scripts/check-registry-deps.mjs",
     "prepare": "npm run build",
@@ -93,15 +94,18 @@
     "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json"
   },
   "dependencies": {
-    "@oxidezap/whatsapp-rust-bridge": "0.26.3",
+    "@oxidezap/whatsapp-rust-bridge": "https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@2b5b4b4",
     "events": "^3.3.0",
     "fs-native-extensions": "1.5.2",
-    "long": "^5.3.2"
+    "long": "^5.3.2",
+    "undici": "^7.29.1",
+    "@oxidezap/rtc-tunnel": "0.1.0"
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
     "@hapi/boom": "^10.0.1",
     "@types/node": "^26.1.1",
+    "@types/qrcode-terminal": "^0.12.2",
     "baileys": "7.0.0-rc14",
     "jimp": "^1.6.0",
     "link-preview-js": "^5.0.0",
@@ -112,6 +116,7 @@
     "pino-pretty": "^13.1.3",
     "pkg-pr-new": "^0.0.91",
     "protobufjs": "^8.8.0",
+    "qrcode-terminal": "^0.12.0",
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
     "typescript-compat-auditor": "npm:typescript@6.0.3",

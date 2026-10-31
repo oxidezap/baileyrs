@@ -178,7 +178,7 @@ now resolves to baileyrs.
 
 ### What gets installed
 
-`npm install @oxidezap/baileyrs` always brings two runtime dependencies.
+`npm install @oxidezap/baileyrs` brings the bridge, events, long, fs-native-extensions, undici and rtc-tunnel as runtime dependencies.
 
 - `@oxidezap/whatsapp-rust-bridge` is the Rust engine doing the protocol
   work. It is the library, not an add-on, so it stays a hard dependency.
@@ -301,6 +301,60 @@ async function connectToWhatsApp() {
 const sock = await connectToWhatsApp()
 await sock.sendMessage('1234567890@s.whatsapp.net', { text: 'Hello!' })
 ```
+
+## Calls
+
+Node sockets load their own VoIP engine and secure relay transport. Applications
+use the call API without creating a relay provider or running a relay server:
+
+```ts
+const callId = await sock.dialCallPcm(peerJid)
+const stopPlayback = sock.onCallPcm(callId, frame => playPcm16(frame.data))
+await sock.pushCallPcm(callId, samples) // 960 mono Int16 samples at 16 kHz
+await sock.endCall(callId)
+stopPlayback()
+```
+
+Accept an offer with `sock.acceptCallPcm(call.id)`. Use `sock.rejectCall(id, from)`
+for a ringing call or `sock.terminateCall(id, from)` for signaling and media teardown.
+`call` events preserve the offer's routing context, platform, video and group attributes.
+`call.media` reports media lifecycle and diagnostics. Encoded audio, synchronous
+writers, mute, statistics and H.264 Annex-B video methods remain available.
+
+For microphone/file input and playback, install ffmpeg and ffplay, then run:
+
+```sh
+npm run build
+node Example/call.ts dial <peer-jid> --mic
+node Example/call.ts listen --accept --mic
+node Example/call.ts dial <peer-jid> --audio-file audio.wav
+# Optional video source: camera, testsrc, file, or URL
+node Example/call.ts dial <peer-jid> --mic --video testsrc
+```
+
+The CLI handles call orchestration; `Example/call-media.ts` handles ffmpeg processes,
+PCM framing and H.264 access units. PCM decoding, codecs, encryption, timing and
+relay negotiation stay in the engine. A remote video offer never enables the
+local camera without an explicit video option or keyboard action.
+
+The relay is WhatsApp media infrastructure. The Node provider opens an outbound
+ICE/DTLS/SCTP DataChannel to that endpoint using the bridge's DTLS fingerprint;
+it does not host another server. The secure provider is loaded on the first media
+connection. `sock.setRelayTransportProvider(provider)` remains available for custom
+hosts and tests. Browser hosts use the bridge's RTCPeerConnection provider; custom
+hosts can supply `createCallRelayProvider` and an isolated `loadVoip` engine.
+
+For the local Bartender mock only, add
+`--socket wss://127.0.0.1:8080/ws/chat --mock-udp --danger-skip-cert-verify`.
+Cleartext UDP requires an explicit `--mock-udp` and a loopback socket URL. Changing
+the signaling URL or TLS verification never changes the production media transport.
+
+This branch currently pins an immutable bridge #115 preview. That PR is still open;
+replace the preview with a verified registry release before releasing this package.
+The pinned separate backend rejects video until its upstream implementation is
+available. The video API and CLI are retained, but this is an existing backend
+limitation, not validated live video support. No authenticated calls were made for
+this change.
 
 ## Migrating from Upstream Baileys
 
