@@ -272,7 +272,9 @@ const createWASocketFactoryInner = (
 		 */
 		teardown: async (client, error) => {
 			// Call pumps hold the bridge client; drain before disconnect and flush.
-			await callRelay.closeAll()
+			await callRelay.closeAll().catch(error => {
+				logger.error({ err: error }, 'error closing call relay transport')
+			})
 			await callMedia.drainAll()
 			try {
 				await ws.close()

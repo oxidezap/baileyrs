@@ -1,3 +1,8 @@
+import P from 'pino'
+import { createWASocketFactory } from '../Socket/core.ts'
+import { createAuthenticationState } from '../Compatibility/auth-state.ts'
+import { useMemoryStore } from '../Utils/use-memory-store.ts'
+import type { VoipRelayTransport } from '@oxidezap/whatsapp-rust-bridge/host'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { RELAY_DTLS_FINGERPRINT } from '@oxidezap/whatsapp-rust-bridge/host'
@@ -80,5 +85,51 @@ describe('default Node call transport', () => {
 	it('loads the packaged tunnel in Node without RTCPeerConnection or a live network', async () => {
 		const provider = await nodeRuntime.createCallRelayProvider!()
 		assert.equal(typeof provider.createRelayConnection, 'function')
+	})
+})
+
+describe('socket relay ownership', () => {
+	it('flushes auth and runs end handlers when a custom relay refuses close', async () => {
+		let flushes = 0
+		let ended = false
+		let transport!: VoipRelayTransport
+		const makeSocket = createWASocketFactory({
+			...nodeRuntime,
+			loadVoip: async pipe => {
+				transport = pipe
+				return nodeRuntime.loadVoip!(pipe)
+			}
+		})
+		const store = Object.assign(useMemoryStore(), {
+			async flush() {
+				flushes++
+			}
+		})
+		const socket = makeSocket({
+			auth: await createAuthenticationState(store),
+			logger: P({ level: 'silent' }),
+			waWebSocketUrl: 'ws://127.0.0.1:1'
+		})
+		try {
+			socket.registerSocketEndHandler(() => {
+				ended = true
+			})
+			await socket.setRelayTransportProvider({
+				async createRelayConnection() {
+					return {
+						send() {},
+						close() {
+							throw new Error('relay close refused')
+						}
+					}
+				}
+			})
+			await transport.connect(endpoint, events)
+			await socket.end(undefined)
+			assert.ok(flushes > 0)
+			assert.equal(ended, true)
+		} finally {
+			await socket.end(undefined).catch(() => undefined)
+		}
 	})
 })
