@@ -7,9 +7,10 @@ import type { BaileysRuntime } from '../Runtime/types.ts'
  * the Node runtime (bare bridge entrypoint, node:crypto randomness,
  * portable emitter, OpenSSL native crypto, stdout logger sink).
  */
-export const makeNodeWASocket = createWASocketFactory(nodeRuntime)
+export const makeNodeWASocket: ReturnType<typeof createWASocketFactory> = createWASocketFactory(nodeRuntime)
 /** Bind the socket core to a custom runtime (host entrypoints use this). */
-export const createWASocketFactoryFor = (runtime: BaileysRuntime) => createWASocketFactory(runtime)
-const makeWASocket = makeNodeWASocket
+export const createWASocketFactoryFor = (runtime: BaileysRuntime): ReturnType<typeof createWASocketFactory> =>
+	createWASocketFactory(runtime)
+const makeWASocket: typeof makeNodeWASocket = makeNodeWASocket
 export default makeWASocket
 export { createWASocketFactory }

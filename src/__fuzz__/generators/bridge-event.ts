@@ -254,13 +254,24 @@ const SHAPED: Record<string, (random: Random) => Record<string, unknown>> = {
 		author: random.bool(0.6) ? bridgeJid(random) : undefined,
 		picture_id: generateString(random)
 	}),
-	presence: random => ({ from: jidField(random), unavailable: random.bool(), last_seen: generateNumber(random) }),
+	presence: random => ({
+		from: jidField(random),
+		status: random.pick(['available', 'unavailable']),
+		last_seen: generateNumber(random)
+	}),
+	label_sublist_update: random => ({
+		chat_jid: bridgeJid(random),
+		predefined_id: random.pick([-17, 0, 999]),
+		change: random.bool() ? 'Remove' : { Upsert: { sub_list_id: random.pick([-1, 0, 97]) } },
+		from_full_sync: random.bool()
+	}),
 	chat_presence: random => ({
 		source: sourceBlock(random),
 		// Anything but these two drops the event, so they are the overwhelming draw.
 		state: random.weighted<string>([
-			[6, 'composing'],
-			[6, 'paused'],
+			[6, 'typing'],
+			[6, 'idle'],
+			[6, 'recording_audio'],
 			[1, ''],
 			[1, 'recording']
 		]),
@@ -332,6 +343,11 @@ const SHAPED: Record<string, (random: Random) => Record<string, unknown>> = {
 		error: random.bool(0.3) ? generateString(random) : undefined
 	}),
 	raw_node: random => ({ tag: generateString(random), attrs: payload(random, 0), content: generateAnyValue(random) }),
+	status_privacy_update: random => ({ action: { mode: random.int(0, 999), userJid: [generateJid(random)] } }),
+	unarchive_chats_setting_update: random => ({ unarchive_chats: random.bool() }),
+	reachout_timelock_update: random => ({
+		state: { is_active: random.bool(), enforcement_type: generateString(random) }
+	}),
 	mex_notification: random => ({
 		op_name: generateString(random),
 		from: random.bool(0.7) ? bridgeJid(random) : undefined,

@@ -15,6 +15,8 @@
  */
 
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
+import type { ReachoutTimelockState } from '../Types/Reachout.ts'
+import type { BaileysEventMap } from '../Types/Events.ts'
 import type { Chat, Contact, LIDMapping, WAMessage } from '../Types/index.ts'
 import type { BinaryNode, WAProto } from '../Types/index.ts'
 
@@ -134,6 +136,8 @@ export interface CanonicalQrScannedWithoutMultidevice {
  */
 export interface CanonicalMessage {
 	type: 'message'
+	/** Exact newsletter server ID when the bridge object envelope carries it. */
+	serverId?: string
 	chatJid: string
 	senderJid?: string
 	isGroup: boolean
@@ -437,8 +441,19 @@ export interface CanonicalMarkChatAsReadUpdate {
  * A label was created, renamed/recolored, or deleted on a linked device
  * (bridge `label_edit_update`). Maps to upstream `labels.edit` (`Label`).
  */
+export interface CanonicalLabelSublist {
+	type: 'labelSublist'
+	predefinedId: number
+	chatJid: string
+	change: 'upsert' | 'remove'
+	subListId?: number
+	actionTimestamp?: string
+	fromFullSync: boolean
+}
+
 export interface CanonicalLabelEdit {
 	type: 'labelEdit'
+	actionTimestamp?: string
 	labelId: string
 	name: string
 	color: number
@@ -453,6 +468,7 @@ export interface CanonicalLabelEdit {
  */
 export interface CanonicalLabelAssociation {
 	type: 'labelAssociation'
+	actionTimestamp?: string
 	labelId: string
 	chatJid: string
 	/**
@@ -504,10 +520,16 @@ export interface CanonicalAppStateSyncFailed {
  * new contract. The shape is the event's rather than one setting's: another
  * setting the bridge starts reporting is a new arm here, not a new event.
  */
-export interface CanonicalSettingUpdate {
-	type: 'settingUpdate'
-	setting: 'disableLinkPreviews'
-	value: proto.SyncActionValue.IPrivacySettingDisableLinkPreviewsAction
+export type CanonicalSettingUpdate = { type: 'settingUpdate' } & BaileysEventMap['settings.update']
+
+export interface CanonicalReachoutTimelock {
+	type: 'reachoutTimelock'
+	state: ReachoutTimelockState
+}
+
+export interface CanonicalUnarchiveChatsSetting {
+	type: 'unarchiveChatsSetting'
+	unarchiveChats: boolean
 }
 
 // ── Calls ──
@@ -556,7 +578,7 @@ export interface CanonicalCallAction {
 export interface CanonicalIncomingCall {
 	type: 'incomingCall'
 	from: string
-	timestamp: number
+	timestamp?: number
 	offline: boolean
 	/** Stanza-level `id` (distinct from `action.callId`). */
 	stanzaId?: string
@@ -792,11 +814,14 @@ export type CanonicalEvent =
 	| CanonicalStarUpdate
 	| CanonicalMarkChatAsReadUpdate
 	| CanonicalLockChatUpdate
+	| CanonicalLabelSublist
 	| CanonicalLabelEdit
 	| CanonicalLabelAssociation
 	| CanonicalAppStateSyncFailed
 	| CanonicalQrCodesExhausted
 	| CanonicalSettingUpdate
+	| CanonicalReachoutTimelock
+	| CanonicalUnarchiveChatsSetting
 	| CanonicalIncomingCall
 	| CanonicalUndecryptableMessage
 	| CanonicalLidMappingUpdate

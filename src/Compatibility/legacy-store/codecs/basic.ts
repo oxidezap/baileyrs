@@ -1,3 +1,4 @@
+import { decodeTokenRow, encodeTokenRow, signedTimestamp } from '../../../Utils/atomic-store.ts'
 // Basic value codecs for the Baileys legacy-store projection.
 import { Buffer } from 'node:buffer'
 import { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
@@ -118,22 +119,14 @@ function tcTokenCodec(): LegacyCodec {
 	return {
 		fromLegacy(_key, value) {
 			const token = value as { token?: unknown; timestamp?: string; senderTimestamp?: string }
-			return toJsonBytes({
+			return encodeTokenRow({
 				token: bytesToNumbers(requireBytes(token.token, 'TC token')),
-				token_timestamp: token.timestamp
-					? parseUnsignedDecimal(token.timestamp, 'TC token timestamp')
-					: TimeValue.UNKNOWN_SECONDS,
-				sender_timestamp: token.senderTimestamp
-					? parseUnsignedDecimal(token.senderTimestamp, 'TC token sender timestamp')
-					: null
+				token_timestamp: signedTimestamp(token.timestamp ?? '0'),
+				sender_timestamp: token.senderTimestamp == null ? null : signedTimestamp(token.senderTimestamp)
 			})
 		},
 		toLegacy(_key, value) {
-			const native = fromJsonBytes(value) as {
-				token?: unknown
-				token_timestamp?: number
-				sender_timestamp?: number | null
-			}
+			const native = decodeTokenRow(value)
 			// Added rather than set to `undefined`, matching upstream, which
 			// only carries the field when it has a value. An undefined-valued
 			// key survives in memory but not through a store, and the mirror

@@ -1,3 +1,8 @@
+import { recordFlushFailure, settledFlushError, trackFlushFailures, withTrackedFailures } from './flush-deadline.ts'
+import type { StoreMigrationOptions } from './store-migration.ts'
+import type { OrdinaryStoreCallbacks } from './atomic-store.ts'
+import { defaultSyncDir } from './durable-directory.ts'
+import { transactionalFileStore } from './transactional-file-store.ts'
 import { Buffer } from 'node:buffer'
 import { mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
@@ -80,12 +85,7 @@ const copyBytes = (value: Uint8Array): Uint8Array => Uint8Array.from(value)
  * `platform` defaults to the running platform; tests pass explicit values
  * to cover the matrix deterministically on any OS.
  */
-export const isUnsupportedDirSync = (e: unknown, platform: NodeJS.Platform = process.platform): boolean => {
-	const code = errnoOf(e)
-	if (code === 'ENOSYS' || code === 'ENOTSUP') return true
-	if (platform === 'win32' && (code === 'EINVAL' || code === 'EPERM' || code === 'EISDIR')) return true
-	return false
-}
+export { isUnsupportedDirSync } from './durable-directory.ts'
 
 // File-creation steps behind one durable write plus the directory barrier.
 // Scoped per store via the `options` parameter of `useBridgeStore` — never
@@ -109,7 +109,7 @@ type BridgeStoreFileIO = {
 	openTmp?(tmpPath: string): Promise<BridgeStoreFileHandle>
 }
 
-type BridgeStoreOptions = {
+type BridgeStoreOptions = StoreMigrationOptions & {
 	io?: BridgeStoreFileIO
 }
 
@@ -123,26 +123,6 @@ class BarrierUncertainty extends Error {
 		super('use-bridge-store: post-rename barrier uncertified; prior durable knowledge invalidated')
 		this.name = 'BarrierUncertainty'
 		this.detail = detail
-	}
-}
-
-const defaultSyncDir = async (dir: string): Promise<void> => {
-	let handle: Awaited<ReturnType<typeof open>> | undefined
-	try {
-		handle = await open(dir, 'r')
-	} catch (e) {
-		// A store folder that cannot even be opened is not a platform
-		// quirk, except where the platform cannot open directory handles
-		// at all (classified above).
-		if (!isUnsupportedDirSync(e)) throw e
-		return
-	}
-	try {
-		await handle.sync()
-	} catch (e) {
-		if (!isUnsupportedDirSync(e)) throw e
-	} finally {
-		await handle.close().catch(() => {})
 	}
 }
 
@@ -213,6 +193,8 @@ let tmpSeq = 0
  *   with any failure stops at that pass and leaves the failed entries
  *   for the next explicit flush. `flush()` never reports quiescence
  *   while prior admitted work is still running.
+ * - A 30s flush timeout leaves backend operations and their locks pending.
+ *   Await a later successful flush before deleting auth state or starting an older writer.
  * - All operations on one key (set, delete, flush, concurrent batches) run
  *   through a per-key chain, so a stale failure can never erase newer
  *   state and an in-flight write can never resurrect a deleted key.
@@ -229,10 +211,10 @@ let tmpSeq = 0
  *   seam only: the default implementation is the sole provider of the
  *   durability contract above.
  */
-export async function useBridgeStore(
+async function usePerKeyBridgeStore(
 	folder: string,
 	options?: BridgeStoreOptions
-): Promise<NonNullable<AuthenticationState['store']>> {
+): Promise<{ callbacks: OrdinaryStoreCallbacks; createFlushDrain: () => () => Promise<void> }> {
 	await mkdir(folder, { recursive: true })
 
 	const openTmp = options?.io?.openTmp ?? realOpenTmp
@@ -401,15 +383,20 @@ export async function useBridgeStore(
 	// `flush()` wait on itself). On failure the entry is RETAINED (timer
 	// cleared) so an explicit `flush()` retries the same bytes, and the
 	// error propagates to that caller.
-	const flushOne = (cacheKey: string): Promise<void> =>
+	const flushOne = (cacheKey: string, failedEntries?: WeakSet<object>): Promise<void> =>
 		withKeyLockInternal(cacheKey, async () => {
 			const pending = pendingWrites.get(cacheKey)
-			if (!pending) return
+			if (!pending || failedEntries?.has(pending)) return
 			if (pending.timer) {
 				clearTimeout(pending.timer)
 				pending.timer = undefined
 			}
-			await certifyWrite(cacheKey, pending.path, pending.value)
+			try {
+				await certifyWrite(cacheKey, pending.path, pending.value)
+			} catch (error) {
+				failedEntries?.add(pending)
+				throw error
+			}
 			if (pendingWrites.get(cacheKey) === pending) pendingWrites.delete(cacheKey)
 		})
 
@@ -431,58 +418,78 @@ export async function useBridgeStore(
 	}
 
 	const FLUSH_MAX_PASSES = 32
-	const flushAll = async () => {
-		// Each pass first waits for every operation admitted so far
-		// (barrier), then drains the pending writes those operations
-		// produced. A `set()` queued just before `flush()` is therefore
-		// observed even if it had not reached `pendingWrites` yet, and an
-		// already-running critical write completes before quiescence is
-		// declared. `flushOne` internals are not admitted, so the barrier
-		// never waits on the drain loop itself (no self-deadlock).
-		// Failures observed by the barrier propagate: a failed admitted
-		// write fails the flush. Only operations outstanding during this
-		// flush are reported — settled history never poisons later flushes.
-		// After a drain pass with any failure, stop and leave the failed
-		// entries for a subsequent explicit flush: retrying them inside the
-		// same call would resolve-or-reject on a stale error while hiding
-		// whether the retry itself persisted. A fully successful pass loops,
-		// since new work may have landed during the drain. The pass cap only
-		// guards a caller emitting writes in a tight loop —
-		// `Socket/index.ts.end()` waits on this and must return.
-		const errors: unknown[] = []
-		for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
-			const outstanding = [...admitted]
-			if (outstanding.length > 0) {
-				const settled = await Promise.allSettled(outstanding)
-				for (const result of settled) {
-					if (result.status === 'rejected') errors.push(result.reason)
-				}
+	type DrainScope = { failedEntries: WeakSet<object>; exhausted?: { operation: Promise<void>; error: Error } }
+	const newDrainScope = (): DrainScope => ({ failedEntries: new WeakSet<object>() })
+	const flushAll = (scope: DrainScope = newDrainScope()): Promise<void> => {
+		const errors = new Map<Promise<unknown>, unknown>()
+		const drain = async () => {
+			if (scope.exhausted) {
+				errors.set(scope.exhausted.operation, scope.exhausted.error)
+				throw scope.exhausted.error
 			}
-			if (pendingWrites.size === 0) {
-				if (admitted.size === 0) break
-				continue
-			}
-			const keys = [...pendingWrites.keys()]
-			let failed = false
-			await Promise.all(
-				keys.map(key =>
-					flushOne(key).then(
-						() => {},
-						e => {
-							failed = true
-							errors.push(e)
-						}
+			const eligibleKeys = () =>
+				[...pendingWrites].filter(([, entry]) => !scope.failedEntries.has(entry)).map(([key]) => key)
+			// Each pass first waits for every operation admitted so far
+			// (barrier), then drains the pending writes those operations
+			// produced. A `set()` queued just before `flush()` is therefore
+			// observed even if it had not reached `pendingWrites` yet, and an
+			// already-running critical write completes before quiescence is
+			// declared. `flushOne` internals are not admitted, so the barrier
+			// never waits on the drain loop itself (no self-deadlock).
+			// Failures observed by the barrier propagate: a failed admitted
+			// write fails the flush. Only operations outstanding during this
+			// flush are reported — settled history never poisons later flushes.
+			// After a drain pass with any failure, stop and leave the failed
+			// entries for a subsequent explicit flush: retrying them inside the
+			// same call would resolve-or-reject on a stale error while hiding
+			// whether the retry itself persisted. A fully successful pass loops,
+			// since new work may have landed during the drain. The pass cap only
+			// guards a caller emitting writes in a tight loop —
+			// `Socket/index.ts.end()` waits on this and must return.
+			for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
+				const outstanding = [...admitted]
+				if (outstanding.length > 0) {
+					await Promise.all(
+						outstanding.map(operation =>
+							operation.catch(error => {
+								recordFlushFailure(errors, operation, error)
+							})
+						)
 					)
+				}
+				if (eligibleKeys().length === 0) {
+					if (admitted.size === 0) break
+					continue
+				}
+				const keys = eligibleKeys()
+				let failed = false
+				await Promise.all(
+					keys.map(key => {
+						const operation = flushOne(key, scope.failedEntries)
+						return operation.then(
+							() => {},
+							e => {
+								failed = true
+								recordFlushFailure(errors, operation, e)
+							}
+						)
+					})
 				)
-			)
-			if (failed) break
+				if (failed) break
+			}
+			if (errors.size) throw settledFlushError('use-bridge-store flush failed', errors.values())
+			if (eligibleKeys().length > 0 || admitted.size > 0) {
+				scope.exhausted = {
+					operation: Promise.resolve(),
+					error: new Error(
+						`use-bridge-store flushAll did not quiesce after ${FLUSH_MAX_PASSES} passes (${pendingWrites.size} pending writes, ${admitted.size} in-flight operations remain)`
+					)
+				}
+				errors.set(scope.exhausted.operation, scope.exhausted.error)
+				throw scope.exhausted.error
+			}
 		}
-		if (errors.length > 0) throw errors[0]
-		if (pendingWrites.size > 0 || admitted.size > 0) {
-			throw new Error(
-				`use-bridge-store flushAll did not quiesce after ${FLUSH_MAX_PASSES} passes (${pendingWrites.size} pending writes, ${admitted.size} in-flight operations remain)`
-			)
-		}
+		return trackFlushFailures(drain(), errors)
 	}
 
 	// Write path shared by `set` and `setMany`. `incoming` is already a
@@ -495,7 +502,7 @@ export async function useBridgeStore(
 		// resolving without persisting.
 		const pending = pendingWrites.get(cacheKey)
 		if (pending) {
-			if (bytesEqual(pending.value, incoming)) return
+			if (bytesEqual(pending.value, incoming) && pending.timer !== undefined) return
 		} else {
 			const known = durable.get(cacheKey)
 			if (known && bytesEqual(known, incoming)) return
@@ -643,10 +650,11 @@ export async function useBridgeStore(
 	// don't depend on `this` — the bridge invokes every store callback with
 	// `this = null`. Best-effort across keys: every key is attempted even
 	// when a sibling fails, and the first error propagates.
-	const doDeleteMany = async (store: string, keys: string[]): Promise<void> => {
-		if (keys.length === 0) return
-		await Promise.all(keys.map(key => doDeleteOne(store, key)))
-	}
+	const doDeleteMany = (store: string, keys: string[]): Promise<void> =>
+		withTrackedFailures(async observe => {
+			if (keys.length === 0) return
+			await Promise.all(keys.map(key => observe(doDeleteOne(store, key))))
+		})
 
 	// Enumerate live keys in a namespace (shared by `listKeys` and
 	// `deletePrefix`). Closure, not a method, so it never depends on `this`.
@@ -656,50 +664,51 @@ export async function useBridgeStore(
 	// before the readdir; its failure propagates rather than enumerating a
 	// stale view. Pending deletes both cancel their `pendingWrites` entry
 	// AND unlink immediately, so they never appear here.
-	const doListKeys = async (store: string, prefix?: string): Promise<string[]> => {
-		await flushAll()
+	const doListKeys = (store: string, prefix?: string): Promise<string[]> =>
+		withTrackedFailures(async observe => {
+			await observe(flushAll())
 
-		const filePrefix = `${store}-`
-		const found = new Set<string>()
+			const filePrefix = `${store}-`
+			const found = new Set<string>()
 
-		let entries: string[]
-		try {
-			entries = await readdir(folder)
-		} catch (e) {
-			// Folder removed (shutdown) → genuinely empty. Any other error
-			// (EACCES/EIO) must NOT masquerade as "no keys", or the core would
-			// think persisted state is gone and could prune live indexes.
-			if (isEnoent(e)) entries = []
-			else throw e
-		}
-
-		for (const file of entries) {
-			if (!file.startsWith(filePrefix) || !file.endsWith('.bin')) continue
-			const encoded = file.slice(filePrefix.length, -'.bin'.length)
-			let key: string
+			let entries: string[]
 			try {
-				key = decodeURIComponent(encoded)
-			} catch {
-				continue // skip a filename we can't decode rather than crash
+				entries = await readdir(folder)
+			} catch (e) {
+				// Folder removed (shutdown) → genuinely empty. Any other error
+				// (EACCES/EIO) must NOT masquerade as "no keys", or the core would
+				// think persisted state is gone and could prune live indexes.
+				if (isEnoent(e)) entries = []
+				else throw e
 			}
-			if (prefix && !key.startsWith(prefix)) continue
-			found.add(key)
-		}
 
-		// Union any writes still pending after the flush (a fresh set could land
-		// while flushAll awaited). Belt-and-suspenders.
-		for (const cacheKey of pendingWrites.keys()) {
-			const sep = cacheKey.indexOf('\0')
-			if (sep < 0 || cacheKey.slice(0, sep) !== store) continue
-			const key = cacheKey.slice(sep + 1)
-			if (prefix && !key.startsWith(prefix)) continue
-			found.add(key)
-		}
+			for (const file of entries) {
+				if (!file.startsWith(filePrefix) || !file.endsWith('.bin')) continue
+				const encoded = file.slice(filePrefix.length, -'.bin'.length)
+				let key: string
+				try {
+					key = decodeURIComponent(encoded)
+				} catch {
+					continue // skip a filename we can't decode rather than crash
+				}
+				if (prefix && !key.startsWith(prefix)) continue
+				found.add(key)
+			}
 
-		return [...found]
-	}
+			// Union any writes still pending after the flush (a fresh set could land
+			// while flushAll awaited). Belt-and-suspenders.
+			for (const cacheKey of pendingWrites.keys()) {
+				const sep = cacheKey.indexOf('\0')
+				if (sep < 0 || cacheKey.slice(0, sep) !== store) continue
+				const key = cacheKey.slice(sep + 1)
+				if (prefix && !key.startsWith(prefix)) continue
+				found.add(key)
+			}
 
-	return {
+			return [...found]
+		})
+
+	const callbacks: OrdinaryStoreCallbacks = {
 		get: doGet,
 
 		set: doSet,
@@ -715,14 +724,16 @@ export async function useBridgeStore(
 		// a sibling fails (writes are idempotent by key, so the core can
 		// retry the batch), and the first error propagates. No multi-key
 		// transaction is attempted — the filesystem does not provide one.
-		async setMany(store: string, entries: [key: string, value: Uint8Array][]): Promise<void> {
-			// Empty batch is a valid no-op.
-			if (entries.length === 0) return
+		setMany(store: string, entries: [key: string, value: Uint8Array][]): Promise<void> {
+			return withTrackedFailures(async observe => {
+				// Empty batch is a valid no-op.
+				if (entries.length === 0) return
 
-			// Schedule every entry synchronously so same-key duplicates chain
-			// in batch order; per-key locks serialize against concurrent
-			// sets, deletes and flushes.
-			await Promise.all(entries.map(([key, value]) => doSet(store, key, value)))
+				// Schedule every entry synchronously so same-key duplicates chain
+				// in batch order; per-key locks serialize against concurrent
+				// sets, deletes and flushes.
+				await Promise.all(entries.map(([key, value]) => observe(doSet(store, key, value))))
+			})
 		},
 
 		// Batched variant of `delete`. Per-key semantics are identical to
@@ -732,32 +743,51 @@ export async function useBridgeStore(
 		// Read many keys at once. Cache-aside per key (like `get`), so a hit
 		// never touches disk; misses read the file. Missing keys are omitted;
 		// real read failures propagate rather than silently dropping keys.
-		async getMany(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]> {
-			if (keys.length === 0) return []
+		getMany(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]> {
+			return withTrackedFailures(async observe => {
+				if (keys.length === 0) return []
 
-			const results = await Promise.all(
-				keys.map(async (key): Promise<[string, Uint8Array] | null> => {
-					const value = await doGet(store, key)
-					return value === null ? null : [key, value]
-				})
-			)
+				const results = await Promise.all(
+					keys.map(async (key): Promise<[string, Uint8Array] | null> => {
+						const value = await observe(doGet(store, key))
+						return value === null ? null : [key, value]
+					})
+				)
 
-			return results.filter((r): r is [string, Uint8Array] => r !== null)
+				return results.filter((r): r is [string, Uint8Array] => r !== null)
+			})
 		},
 
 		listKeys: doListKeys,
 
-		async deletePrefix(store: string, prefix: string): Promise<number> {
-			const keys = await doListKeys(store, prefix)
-			await doDeleteMany(store, keys)
+		deletePrefix(store: string, prefix: string): Promise<number> {
+			return withTrackedFailures(async observe => {
+				const keys = await observe(doListKeys(store, prefix))
+				await observe(doDeleteMany(store, keys))
 
-			return keys.length
+				return keys.length
+			})
 		},
 
 		// File-per-key can do everything; enumeration via readdir lets the core
 		// drop its hand-maintained meta-indexes for this backend.
 		capabilities: { batch: true, enumerate: true, prefixDelete: true },
 
-		flush: flushAll
+		flush: () => flushAll()
 	}
+	return {
+		callbacks,
+		createFlushDrain: () => {
+			const scope = newDrainScope()
+			return () => flushAll(scope)
+		}
+	}
+}
+
+export async function useBridgeStore(
+	folder: string,
+	options: BridgeStoreOptions = {}
+): Promise<NonNullable<AuthenticationState['store']>> {
+	const { callbacks, createFlushDrain } = await usePerKeyBridgeStore(folder, options)
+	return transactionalFileStore(folder, callbacks, options.io?.syncDir ?? defaultSyncDir, options, createFlushDrain)
 }

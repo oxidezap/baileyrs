@@ -17,10 +17,13 @@ type Awaitable<T> = T | PromiseLike<T>
 export type LegacyKeysStore = {
 	get(type: string, ids: string[]): Awaitable<Record<string, unknown>>
 	set(data: Record<string, Record<string, unknown>>): Awaitable<void>
+	bridgeTransaction?<T>(work: (keys: LegacyKeysStore) => Promise<T>): Promise<T>
 }
 
 export interface WrappedLegacyStore extends JsStoreCallbacks {
-	/** Kept for socket lifecycle compatibility. All key writes are already durable. */
+	/** Drain admitted callbacks and their durable commit barriers. A 30s timeout
+	 * leaves backend operations pending. Await a later successful flush before
+	 * deleting auth state or starting an older writer. */
 	flush(): Promise<void>
 	/** Kept for socket lifecycle compatibility. The adapter owns no background resources. */
 	dispose(): void

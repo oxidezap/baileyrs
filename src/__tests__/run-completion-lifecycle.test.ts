@@ -37,6 +37,29 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		await rm(authFolder, { recursive: true, force: true })
 	})
 
+	it('preserves sibling account settings before credential-save listeners run', async () => {
+		const { state } = await useMultiFileAuthState(authFolder)
+		const defaultDisappearingMode = { ephemeralExpiration: 86400, ephemeralSettingTimestamp: 123 }
+		state.creds.accountSettings = { unarchiveChats: false, defaultDisappearingMode }
+		const sock = makeWASocket({ auth: state, logger: silentLogger, waWebSocketUrl: 'ws://127.0.0.1:1' })
+		try {
+			const observed: unknown[] = []
+			sock.ev.on('creds.update', () => observed.push({ ...sock.authState.creds.accountSettings }))
+			for (const unarchiveChats of [true, false]) {
+				const update = { accountSettings: { unarchiveChats } }
+				sock.ev.emit('creds.update', update)
+				expect(sock.authState.creds.accountSettings).toEqual({ unarchiveChats, defaultDisappearingMode })
+				expect(update).toEqual({ accountSettings: { unarchiveChats } })
+			}
+			expect(observed).toEqual([
+				{ unarchiveChats: true, defaultDisappearingMode },
+				{ unarchiveChats: false, defaultDisappearingMode }
+			])
+		} finally {
+			await sock.end(undefined)
+		}
+	})
+
 	it('owns and reports a spontaneous supervised-run exit', async () => {
 		let releaseConnection!: () => void
 		const connectionGate = new Promise<void>(resolve => {
@@ -58,8 +81,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		let releaseFlush!: () => void
 		try {
-			const folder = await mkdtemp(join(authFolder, 'test1-'))
-			const { state } = await useMultiFileAuthState(folder)
+			const { state } = await useMultiFileAuthState(authFolder)
 			const flushGate = new Promise<void>(resolve => {
 				releaseFlush = resolve
 			})
@@ -117,7 +139,6 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 			releaseConnection()
 			releaseFlush()
 			await sock?.end(undefined).catch(() => {})
-			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})
@@ -142,8 +163,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		try {
-			const folder = await mkdtemp(join(authFolder, 'test2-'))
-			const { state } = await useMultiFileAuthState(folder)
+			const { state } = await useMultiFileAuthState(authFolder)
 			sock = makeWASocket({
 				auth: state,
 				logger: silentLogger,
@@ -171,7 +191,6 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		} finally {
 			releaseConnection()
 			await sock?.end(undefined).catch(() => {})
-			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})
@@ -189,8 +208,7 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 
 		let sock: ReturnType<typeof makeWASocket> | undefined
 		try {
-			const folder = await mkdtemp(join(authFolder, 'test3-'))
-			const { state } = await useMultiFileAuthState(folder)
+			const { state } = await useMultiFileAuthState(authFolder)
 			sock = makeWASocket({
 				auth: state,
 				logger: throwingErrorLogger,
@@ -213,58 +231,57 @@ describe('run completion lifecycle adoption', { timeout: 30_000 }, () => {
 		} finally {
 			WasmWhatsAppClient.prototype.waitForRunCompletion = originalWait
 			await sock?.end(undefined).catch(() => {})
-			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
 			await new Promise<void>(resolve => server.close(() => resolve()))
 		}
 	})
 
-	it('maps a completion cause when it wins the terminal event race', async () => {
-		const originalWait = WasmWhatsAppClient.prototype.waitForRunCompletion
-		const completion: Awaited<ReturnType<WasmWhatsAppClient['waitForRunCompletion']>> = {
-			reason: 'auto-reconnect-disabled',
-			generation: 0,
-			protocolError: { kind: 'conflict' }
-		}
-		WasmWhatsAppClient.prototype.waitForRunCompletion = () => Promise.resolve(completion)
-		const server = createServer(socket => {
-			socket.on('error', () => {})
-			socket.destroy()
-		})
-		await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-		const address = server.address()
-		if (!address || typeof address === 'string') throw new Error('expected a local TCP address')
-
-		let sock: ReturnType<typeof makeWASocket> | undefined
-		try {
-			const folder = await mkdtemp(join(authFolder, 'test4-'))
-			const { state } = await useMultiFileAuthState(folder)
-			sock = makeWASocket({
-				auth: state,
-				logger: silentLogger,
-				waWebSocketUrl: `ws://127.0.0.1:${address.port}`
+	for (const cause of ['replaced', 'device_removed', 'unknown']) {
+		it(`maps ${cause} when completion wins the terminal event race`, async () => {
+			const originalWait = WasmWhatsAppClient.prototype.waitForRunCompletion
+			const completion: Awaited<ReturnType<WasmWhatsAppClient['waitForRunCompletion']>> = {
+				reason: 'auto-reconnect-disabled',
+				generation: 0,
+				protocolError: { kind: 'conflict', cause }
+			}
+			WasmWhatsAppClient.prototype.waitForRunCompletion = () => Promise.resolve(completion)
+			const server = createServer(socket => {
+				socket.on('error', () => {})
+				socket.destroy()
 			})
-			const close = new Promise<Error>((resolve, reject) => {
-				const timeout = setTimeout(() => reject(new Error('typed completion was not reported')), 5_000)
-				sock!.ev.on('connection.update', update => {
-					if (update.connection !== 'close') return
-					clearTimeout(timeout)
-					resolve(update.lastDisconnect!.error!)
+			await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+			const address = server.address()
+			if (!address || typeof address === 'string') throw new Error('expected a local TCP address')
+
+			let sock: ReturnType<typeof makeWASocket> | undefined
+			try {
+				const { state } = await useMultiFileAuthState(authFolder)
+				sock = makeWASocket({
+					auth: state,
+					logger: silentLogger,
+					waWebSocketUrl: `ws://127.0.0.1:${address.port}`
 				})
-			})
+				const close = new Promise<Error>((resolve, reject) => {
+					const timeout = setTimeout(() => reject(new Error('typed completion was not reported')), 5_000)
+					sock!.ev.on('connection.update', update => {
+						if (update.connection !== 'close') return
+						clearTimeout(timeout)
+						resolve(update.lastDisconnect!.error!)
+					})
+				})
 
-			const error = await close
-			expect((error as { output?: { statusCode?: number } }).output?.statusCode).toBe(
-				DisconnectReason.connectionReplaced
-			)
-			expect(
-				(error as { data?: { runCompletion?: { protocolError?: { kind?: string } } } }).data?.runCompletion
-					?.protocolError?.kind
-			).toBe('conflict')
-		} finally {
-			WasmWhatsAppClient.prototype.waitForRunCompletion = originalWait
-			await sock?.end(undefined).catch(() => {})
-			;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
-			await new Promise<void>(resolve => server.close(() => resolve()))
-		}
-	})
+				const error = await close
+				expect((error as { output?: { statusCode?: number } }).output?.statusCode).toBe(
+					cause === 'replaced' ? DisconnectReason.connectionReplaced : DisconnectReason.loggedOut
+				)
+				expect(
+					(error as { data?: { runCompletion?: { protocolError?: { kind?: string } } } }).data?.runCompletion
+						?.protocolError?.kind
+				).toBe('conflict')
+			} finally {
+				WasmWhatsAppClient.prototype.waitForRunCompletion = originalWait
+				await sock?.end(undefined).catch(() => {})
+				await new Promise<void>(resolve => server.close(() => resolve()))
+			}
+		})
+	}
 })

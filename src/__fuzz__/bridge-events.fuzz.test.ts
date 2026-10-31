@@ -84,6 +84,7 @@ const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
 	contact_updated: 'contactUpdate',
 	// The `_update` suffix is dropped on the two label events.
 	label_edit_update: 'labelEdit',
+	label_sublist_update: 'labelSublist',
 	label_association_update: 'labelAssociation',
 	// Named after what the event *is* rather than after the wire signal that
 	// carries it — verb first, and the `_update` suffix dropped again.
@@ -101,7 +102,10 @@ const TAG_EXCEPTIONS: Readonly<Record<string, string>> = {
 	pairing_code_error: 'pairError',
 	// Named after the channel it lands on — one of upstream's settings, not a
 	// signal of its own.
-	disable_link_previews_update: 'settingUpdate'
+	disable_link_previews_update: 'settingUpdate',
+	status_privacy_update: 'settingUpdate',
+	reachout_timelock_update: 'reachoutTimelock',
+	unarchive_chats_setting_update: 'unarchiveChatsSetting'
 }
 
 /**
@@ -148,7 +152,12 @@ const UNCONDITIONALLY_INERT: ReadonlySet<string> = new Set([
 	// `Bridge/schema.ts` for the reason on each.
 	'contact_removed',
 	'quick_reply_update',
-	'call_log_sync'
+	'call_log_sync',
+	// rc14 has no corresponding consumer channels for these new bridge events.
+	'call_log_history',
+	'favorite_sticker_update',
+	'remove_recent_sticker_update',
+	'favorites_update'
 ])
 
 /**

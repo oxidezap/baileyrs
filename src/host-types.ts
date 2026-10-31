@@ -29,19 +29,7 @@ import type Long from 'long'
 
 export type HostLoggerSink = (line: string, delivered: () => void) => void
 
-export type HostStoreCallbacks = {
-	get(store: string, key: string): Promise<Uint8Array | null>
-	set(store: string, key: string, value: Uint8Array): Promise<void>
-	delete(store: string, key: string): Promise<void>
-	setMany?(store: string, entries: [key: string, value: Uint8Array][]): Promise<void>
-	getMany?(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]>
-	deleteMany?(store: string, keys: string[]): Promise<void>
-	listKeys?(store: string, prefix?: string): Promise<string[]>
-	listEntries?(store: string, prefix?: string): Promise<[key: string, value: Uint8Array][]>
-	deletePrefix?(store: string, prefix: string): Promise<number>
-	capabilities?: { batch?: boolean; enumerate?: boolean; prefixDelete?: boolean }
-	flush?(): Promise<void>
-}
+export type HostStoreCallbacks = HostBridge.JsStoreCallbacks & { flush?(): Promise<void> }
 
 export type HostKeyPair = { public: Uint8Array; private: Uint8Array }
 export type HostSignedKeyPair = { keyPair: HostKeyPair; signature: Uint8Array; keyId: number; timestampS?: number }
@@ -112,6 +100,7 @@ export type HostRuntime = {
 	bridge: HostBridgeRuntime
 	/** Supply a separate host-loaded VoIP engine per socket if enabling media calls. */
 	loadVoip?: (transport: VoipRelayTransport) => Promise<VoipBackendCallbacks>
+	createCallRelayProvider?: () => Promise<CallRelayTransportProvider>
 	randomBytes: (length: number) => Uint8Array
 	setTimeout: (callback: () => void, ms: number) => unknown
 	clearTimeout: (handle: unknown) => void

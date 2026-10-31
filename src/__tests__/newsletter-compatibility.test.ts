@@ -95,12 +95,12 @@ describe('newsletterMetadata takes (type, key) and dispatches on the type', () =
 })
 
 describe('mute is two operations, as upstream has them', () => {
-	it('newsletterMute silences follower activity', async () => {
+	it('newsletterMute silences channel updates through admin activity', async () => {
 		const { calls, methods } = makeHarness()
 
 		await methods.newsletterMute(JID)
 
-		expect(calls).toEqual([['newsletterFollowerMute', [JID, true]]])
+		expect(calls).toEqual([['newsletterAdminMute', [JID, true]]])
 	})
 
 	it('newsletterUnmute is the same call with false, not a separate mute', async () => {
@@ -108,7 +108,7 @@ describe('mute is two operations, as upstream has them', () => {
 
 		await methods.newsletterUnmute(JID)
 
-		expect(calls).toEqual([['newsletterFollowerMute', [JID, false]]])
+		expect(calls).toEqual([['newsletterAdminMute', [JID, false]]])
 	})
 })
 
@@ -371,5 +371,50 @@ describe('newsletter methods do not swallow a bridge failure', () => {
 		})
 
 		await expect(methods.newsletterDelete(JID)).rejects.toThrow(/server error 403/)
+	})
+})
+
+describe('bridge 0.25 newsletter results', () => {
+	it('keeps the public reaction result void after the bridge starts returning the stanza id', async () => {
+		const { methods } = makeHarness({ newsletterReactMessage: async () => 'REACTION-ID' })
+		expect(await methods.newsletterReactMessage(JID, '18446744073709551615', '👍')).toBeUndefined()
+	})
+	it('preserves optional content IDs, raw tokens, byte fields and lossless history counters', async () => {
+		const rows = [
+			{
+				serverId: '18446744073709551615',
+				timestamp: 123,
+				messageType: 'poll',
+				messageTypeRaw: 'future',
+				reactions: [],
+				edit: '3',
+				isSender: false,
+				votes: [{ optionHash: new Uint8Array([1, 2]), count: '9007199254740993' }],
+				viewsCount: '9007199254740995',
+				forwardsCount: '0',
+				responsesCount: '7',
+				pollType: 'creation',
+				pollTypeRaw: 'future_poll',
+				mediaType: 'motion_photo',
+				questionType: 'reply',
+				messageAssociationType: 'media_poll',
+				isWamoSub: false,
+				rcat: new Uint8Array([3])
+			}
+		]
+		const { methods } = makeHarness({ newsletterMessages: async () => rows })
+		const result = await methods.newsletterFetchMessages(JID, 1)
+		expect(result).toBe(rows)
+		expect(result[0]?.messageId).toBeUndefined()
+		expect(result[0]?.serverId).toBe('18446744073709551615')
+	})
+})
+
+describe('newsletter viewer mute state', () => {
+	it('maps the channel mute without conflating follower activity or lifecycle state', () => {
+		for (const muted of [true, false, undefined]) {
+			const metadata = bridgeNewsletterMetadataToBaileys({ ...METADATA, muted, followerActivityMuted: !muted })
+			expect(metadata.mute_state).toBe(muted === undefined ? undefined : muted ? 'ON' : 'OFF')
+		}
 	})
 })

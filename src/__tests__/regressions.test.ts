@@ -1746,31 +1746,30 @@ describe('dispatch: app-state deletes', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('dispatch: chat_presence → presence.update', () => {
-	const collectAll = (state: string, media?: string) =>
+	const collectAll = (state: string) =>
 		collect(
 			{
 				type: 'chat_presence',
-				data: { source: { chat: jid('group', 'g.us'), sender: jid('5511') }, state, media: media ?? '' }
+				data: { source: { chat: jid('group', 'g.us'), sender: jid('5511') }, state }
 			},
 			'presence.update'
 		)
-	const collectPresence = (state: string, media?: string) =>
-		Object.values(collectAll(state, media)[0]?.presences ?? {})[0]?.lastKnownPresence
+	const collectPresence = (state: string) => Object.values(collectAll(state)[0]?.presences ?? {})[0]?.lastKnownPresence
 
-	it("composing without media → 'composing'", () => {
-		expect(collectPresence('composing', '')).toBe('composing')
+	it("typing → 'composing'", () => {
+		expect(collectPresence('typing')).toBe('composing')
 	})
 
-	it("composing + media='audio' → 'recording'", () => {
-		expect(collectPresence('composing', 'audio')).toBe('recording')
+	it("recording_audio → 'recording'", () => {
+		expect(collectPresence('recording_audio')).toBe('recording')
 	})
 
-	it("paused → 'paused'", () => {
-		expect(collectPresence('paused')).toBe('paused')
+	it("idle → 'paused'", () => {
+		expect(collectPresence('idle')).toBe('paused')
 	})
 
 	it('drops the event entirely for unknown wire states (no false typing indicators)', () => {
-		expect(collectAll('typing')).toEqual([])
+		expect(collectAll('unknown')).toEqual([])
 	})
 })
 
@@ -2267,8 +2266,10 @@ describe('useBridgeStore: critical stores write through synchronously', () => {
 				const s = await useBridgeStore(folder)
 				const value = new Uint8Array([1, 2, 3])
 				await s.set(store, 'k1', value)
-				const written = await readFile(join(folder, `${store}-k1.bin`))
-				expect(new Uint8Array(written)).toEqual(value)
+				const written = ['sync_version', 'mutation_mac'].includes(store)
+					? await (await useBridgeStore(folder)).get(store, 'k1')
+					: await readFile(join(folder, `${store}-k1.bin`))
+				expect(new Uint8Array(written!)).toEqual(value)
 			})
 		})
 	}
@@ -2315,4 +2316,118 @@ describe('assertNodeErrorFree', () => {
 			assertNodeErrorFree({ tag: 'iq', attrs: { type: 'result' }, content: [{ tag: 'pair-success', attrs: {} }] })
 		).not.toThrow()
 	})
+})
+
+describe('bridge 0.25 app-state and reachout events', () => {
+	it('emits a typed restriction once even when its raw MEX twin follows', () => {
+		const { ctx, ev } = makeCtx()
+		const updates: unknown[] = []
+		ev.on('connection.update', value => updates.push(value))
+		const handle = makeEventHandler(ctx)
+		const state = { enforcement_type: 'RESTRICT_ALL_COMPANIONS', is_active: true, time_enforcement_ends: '1790761645' }
+		handle({ type: 'reachout_timelock_update', data: { state } } as never)
+		handle({
+			type: 'mex_notification',
+			data: {
+				op_name: 'NotificationUserReachoutTimelockUpdate',
+				payload: {
+					data: { xwa2_notify_account_reachout_timelock: state }
+				}
+			}
+		} as never)
+		expect(updates).toEqual([
+			{
+				reachoutTimeLock: {
+					isActive: true,
+					enforcementType: 'RESTRICT_ALL_COMPANIONS',
+					timeEnforcementEnds: new Date(1790761645000)
+				}
+			}
+		])
+	})
+	it('reports a lifted restriction and preserves an unknown active state', () => {
+		for (const [state, expected] of [
+			[{ is_active: false }, { isActive: false }],
+			[{ enforcement_type: 'FUTURE' }, { enforcementType: 'FUTURE' }]
+		]) {
+			expect(collect({ type: 'reachout_timelock_update', data: { state } }, 'connection.update')).toEqual([
+				{ reachoutTimeLock: expected }
+			])
+		}
+	})
+	it('forwards status privacy actions intact, including unknown modes and full-sync provenance', () => {
+		for (const from_full_sync of [true, false]) {
+			const action = { mode: 987, userJid: ['member@lid'], extra: 'future' }
+			expect(collect({ type: 'status_privacy_update', data: { action, from_full_sync } }, 'settings.update')).toEqual([
+				{ setting: 'statusPrivacy', value: action }
+			])
+		}
+	})
+	it('matches upstream unarchive setting credentials updates for both switch positions', () => {
+		for (const unarchiveChats of [true, false]) {
+			expect(
+				collect({ type: 'unarchive_chats_setting_update', data: { unarchive_chats: unarchiveChats } }, 'creds.update')
+			).toEqual([{ accountSettings: { unarchiveChats } }])
+		}
+	})
+	it('acknowledges historical calls and sticker/favorites actions without fabricating live calls', () => {
+		for (const type of [
+			'call_log_history',
+			'favorite_sticker_update',
+			'remove_recent_sticker_update',
+			'favorites_update'
+		]) {
+			expect(adaptBridgeEvent({ type, data: {} } as never)).toEqual({ type: 'noop', bridgeType: type })
+		}
+	})
+})
+
+describe('bridge newsletter object envelope', () => {
+	it('preserves zero and large server IDs without falling back to the legacy zero sentinel', () => {
+		for (const newsletter_server_id of [0, '18446744073709551615', undefined]) {
+			const updates = collect(
+				{
+					type: 'message',
+					data: {
+						info: {
+							...baseMessageInfo,
+							source: { chat: jid('120', 'newsletter'), is_from_me: false, is_group: false },
+							server_id: 0,
+							newsletter_server_id
+						},
+						message: { conversation: 'channel post' }
+					}
+				},
+				'messages.upsert'
+			)
+			expect(updates[0]?.messages[0]?.key.server_id).toBe(
+				newsletter_server_id === undefined ? undefined : String(newsletter_server_id)
+			)
+		}
+	})
+})
+
+describe('label action timestamp ownership', () => {
+	for (const timestamp of [undefined, '1970-01-01T00:00:00Z']) {
+		it(`label events ${timestamp === undefined ? 'omit absent' : 'retain explicit epoch'} timestamps`, () => {
+			const extension = timestamp === undefined ? {} : { action_timestamp: timestamp }
+			const edits = collect(
+				{ type: 'label_edit_update', data: { label_id: '1', action: { name: 'label', color: 0 }, ...extension } },
+				'labels.edit'
+			)
+			const associations = collect(
+				{
+					type: 'label_association_update',
+					data: { label_id: '1', chat_jid: jid('5511'), action: { labeled: true }, ...extension }
+				},
+				'labels.association'
+			)
+			for (const event of [...edits, ...associations]) {
+				expect(Object.hasOwn(event, 'actionTimestamp')).toBe(timestamp !== undefined)
+				expect(event.actionTimestamp).toBe(timestamp)
+			}
+			expect(edits.length).toBe(1)
+			expect(associations.length).toBe(1)
+		})
+	}
 })

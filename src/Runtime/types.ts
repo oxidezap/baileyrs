@@ -10,6 +10,7 @@
  * pick `nodeRuntime` or `hostRuntime` (or a custom one) per socket.
  */
 
+import type { CallRelayTransportProvider } from '../Types/Call.ts'
 import type { AuthenticationState, NativeAuthenticationState } from '../Types/Auth.ts'
 import type {
 	aesGcm256Decrypt as BridgeAesGcm256Decrypt,
@@ -113,6 +114,7 @@ export interface BaileysRuntime {
 		url: string,
 		config: { options?: RequestInit; dangerSkipCertChainVerify?: boolean }
 	) => Promise<WebSocket>
+	createCallRelayProvider?: () => Promise<CallRelayTransportProvider>
 	/** Optional host loader for the separate VoIP engine, installed before client creation. */
 	loadVoip?: (transport: VoipRelayTransport) => Promise<NonNullable<ClientExtensions['voipBackend']>>
 	/** Cryptographically strong random bytes (WebCrypto-backed everywhere). */

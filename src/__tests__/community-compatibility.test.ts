@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
 import type { GroupMetadataResult, WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
+import { makeGroupMethods } from '../Socket/groups.ts'
 import { makeCommunityMethods } from '../Socket/communities.ts'
 import type { SocketContext } from '../Socket/types.ts'
 
@@ -117,5 +118,85 @@ describe('community socket compatibility', () => {
 				}
 			]
 		})
+	})
+})
+
+describe('bridge 0.25 full participating metadata', () => {
+	for (const community of [false, true]) {
+		it(`hydrates ${community ? 'community' : 'group'} overviews before emitting a complete update`, async () => {
+			const fetched: string[] = []
+			const listing = {
+				'parent@g.us': { id: 'parent@g.us', hierarchy: { type: 'community' as const } },
+				'child@g.us': {
+					id: 'child@g.us',
+					hierarchy: { type: 'subgroup' as const, parent: 'parent@g.us', kind: 'default' }
+				}
+			}
+			const client: Partial<WasmWhatsAppClient> = {
+				groupFetchAllParticipating: async () => listing,
+				communityFetchAllParticipating: async () => listing,
+				getGroupMetadata: async jid => {
+					fetched.push(jid)
+					return neutralGroup({
+						id: jid,
+						subject: 'Full metadata',
+						participantCount: 9,
+						participants: [{ jid: 'member@lid', participantType: 'admin', isAdmin: true, isSuperAdmin: false }]
+					})
+				}
+			}
+			const ctx = context(client)
+			const emitted: unknown[] = []
+			ctx.ev.on('groups.update', update => emitted.push(update))
+			const methods = community ? makeCommunityMethods(ctx) : makeGroupMethods(ctx)
+			const result = community
+				? await (methods as ReturnType<typeof makeCommunityMethods>).communityFetchAllParticipating()
+				: await (methods as ReturnType<typeof makeGroupMethods>).groupFetchAllParticipating()
+			assert.deepEqual(fetched, ['parent@g.us', 'child@g.us'])
+			assert.equal(result['parent@g.us']?.size, 9)
+			assert.equal(result['parent@g.us']?.subject, 'Full metadata')
+			assert.equal(result['parent@g.us']?.participants[0]?.admin, 'admin')
+			assert.deepEqual(emitted, [Object.values(result)])
+		})
+		it(`rejects ${community ? 'community' : 'group'} hydration failure without emitting partial metadata`, async () => {
+			const failure = Object.assign(new Error('metadata denied'), { kind: 'server', serverCode: 403 })
+			const listing = { 'parent@g.us': { id: 'parent@g.us', hierarchy: { type: 'community' as const } } }
+			const ctx = context({
+				groupFetchAllParticipating: async () => listing,
+				communityFetchAllParticipating: async () => listing,
+				getGroupMetadata: async () => {
+					throw failure
+				}
+			})
+			const emitted: unknown[] = []
+			ctx.ev.on('groups.update', update => emitted.push(update))
+			await assert.rejects(
+				community
+					? makeCommunityMethods(ctx).communityFetchAllParticipating()
+					: makeGroupMethods(ctx).groupFetchAllParticipating(),
+				error => error === failure
+			)
+			assert.deepEqual(emitted, [])
+		})
+	}
+	it('does not repeat community creation after a configuration failure', async () => {
+		let creates = 0
+		const cause = Object.assign(new Error('denied'), { kind: 'server', serverCode: 403 })
+		const failure = Object.assign(new Error('created but configuration failed'), {
+			kind: 'server',
+			createdJid: 'parent@g.us',
+			step: 'description',
+			cause
+		})
+		const methods = makeCommunityMethods(
+			context({
+				createCommunity: async () => {
+					creates++
+					throw failure
+				}
+			})
+		)
+		await assert.rejects(methods.communityCreate('Parent', 'Description'), error => error === failure)
+		assert.equal(creates, 1)
 	})
 })

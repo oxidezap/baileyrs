@@ -1,3 +1,4 @@
+import { atomicCallbacks, rowKey, type AtomicRows } from './atomic-store.ts'
 import type { AuthenticationState } from '../Types/index.ts'
 import { markNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
 
@@ -28,12 +29,23 @@ export function useMemoryStore(options: { native?: boolean } = {}): NonNullable<
 	}
 
 	const memoryStore: NonNullable<AuthenticationState['store']> = {
+		...atomicCallbacks(async change => {
+			const rows: AtomicRows = new Map()
+			for (const [namespace, bucket] of stores)
+				for (const [key, value] of bucket) rows.set(rowKey(namespace, key), value)
+			change(rows)
+			stores.clear()
+			for (const [rawKey, value] of rows) {
+				const [namespace, key]: [string, string] = JSON.parse(rawKey)
+				bucketForWrite(namespace).set(key, value)
+			}
+		}),
 		async get(store: string, key: string): Promise<Uint8Array | null> {
-			return stores.get(store)?.get(key) ?? null
+			return stores.get(store)?.get(key)?.slice() ?? null
 		},
 
 		async set(store: string, key: string, value: Uint8Array): Promise<void> {
-			bucketForWrite(store).set(key, value)
+			bucketForWrite(store).set(key, Uint8Array.from(value))
 		},
 
 		async delete(store: string, key: string): Promise<void> {
@@ -46,7 +58,7 @@ export function useMemoryStore(options: { native?: boolean } = {}): NonNullable<
 		async setMany(store: string, entries: [key: string, value: Uint8Array][]): Promise<void> {
 			if (entries.length === 0) return
 			const bucket = bucketForWrite(store)
-			for (const [key, value] of entries) bucket.set(key, value)
+			for (const [key, value] of entries) bucket.set(key, Uint8Array.from(value))
 		},
 
 		async getMany(store: string, keys: string[]): Promise<[key: string, value: Uint8Array][]> {
@@ -55,7 +67,7 @@ export function useMemoryStore(options: { native?: boolean } = {}): NonNullable<
 			const out: [string, Uint8Array][] = []
 			for (const key of keys) {
 				const value = bucket.get(key)
-				if (value !== undefined) out.push([key, value])
+				if (value !== undefined) out.push([key, Uint8Array.from(value)])
 			}
 
 			return out

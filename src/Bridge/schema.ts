@@ -25,6 +25,7 @@
 
 import type { MessageWireInfo, WhatsAppEvent } from '@oxidezap/whatsapp-rust-bridge'
 import type { proto } from '@oxidezap/whatsapp-rust-bridge/proto-types'
+import { mapReachoutTimelock } from '../Compatibility/reachout.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { processHistoryMessage } from '../Utils/process-history-message-core.ts'
 import { isJidGroup } from '../WABinary/jid-utils.ts'
@@ -281,10 +282,11 @@ const ADAPTERS = {
 	presence: data => {
 		const from = asJidString(data?.from)
 		if (!from) return null
+		if (data?.status !== 'available' && data?.status !== 'unavailable') return null
 		return {
 			type: 'presence',
 			from,
-			unavailable: asBoolOr(data?.unavailable, false),
+			unavailable: data?.status === 'unavailable',
 			lastSeen: asUnixSeconds(data?.last_seen)
 		}
 	},
@@ -295,20 +297,14 @@ const ADAPTERS = {
 		const chat = asJidString(src.chat)
 		const sender = asJidString(src.sender)
 		if (!chat || !sender) return null
-		// Bridge sends `media: ''` for "no media" — normalize to undefined
-		// so consumers can rely on field omission as the absence signal.
-		const media = asString(data?.media)
-		// Bridge `state` MUST be one of the two canonical values; defaulting
-		// to 'composing' on an unknown/missing value would synthesize a
-		// false typing indicator. Drop the event instead.
 		const rawState = asString(data?.state)
-		if (rawState !== 'composing' && rawState !== 'paused') return null
+		if (rawState !== 'typing' && rawState !== 'recording_audio' && rawState !== 'idle') return null
 		return {
 			type: 'chatPresence',
 			chatJid: chat,
 			senderJid: sender,
-			state: rawState,
-			media: media === 'audio' ? 'audio' : undefined
+			state: rawState === 'idle' ? 'paused' : 'composing',
+			media: rawState === 'recording_audio' ? 'audio' : undefined
 		}
 	},
 
@@ -354,7 +350,31 @@ const ADAPTERS = {
 		if (!jid) return null
 		return { type: 'lockChatUpdate', jid, locked: asBoolOr(extractAction(data)?.locked, true) }
 	},
+	label_sublist_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
+		const chatJid = asJidString(data?.chat_jid)
+		const predefinedId = asNumber(data?.predefined_id)
+		const change = data?.change
+		const subListId = isObject(change) && isObject(change.Upsert) ? asNumber(change.Upsert.sub_list_id) : undefined
+		if (
+			!chatJid ||
+			predefinedId === undefined ||
+			!Number.isInteger(predefinedId) ||
+			(change !== 'Remove' && (subListId === undefined || !Number.isInteger(subListId)))
+		)
+			return null
+		return {
+			type: 'labelSublist',
+			predefinedId,
+			chatJid,
+			change: change === 'Remove' ? 'remove' : 'upsert',
+			...(change === 'Remove' ? {} : { subListId }),
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
+			fromFullSync: asBoolOr(data?.from_full_sync, false)
+		}
+	},
 	label_edit_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const labelId = asString(data?.label_id)
 		if (!labelId) return { type: 'noop', bridgeType: 'label_edit_update' }
 		const action = extractAction(data)
@@ -363,6 +383,7 @@ const ADAPTERS = {
 		const predefined = asNumber(action?.predefinedId) ?? asNumber(action?.predefined_id)
 		return {
 			type: 'labelEdit',
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
 			labelId,
 			name: asString(action?.name) ?? '',
 			color: asNumber(action?.color) ?? 0,
@@ -371,11 +392,18 @@ const ADAPTERS = {
 		}
 	},
 	label_association_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const labelId = asString(data?.label_id)
 		const chatJid = asJidString(data?.chat_jid)
 		if (!labelId || !chatJid) return { type: 'noop', bridgeType: 'label_association_update' }
 		// `action.labeled === true` → label added to the chat, else removed.
-		return { type: 'labelAssociation', labelId, chatJid, labeled: asBoolOr(extractAction(data)?.labeled, true) }
+		return {
+			type: 'labelAssociation',
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
+			labelId,
+			chatJid,
+			labeled: asBoolOr(extractAction(data)?.labeled, true)
+		}
 	},
 
 	/**
@@ -383,6 +411,7 @@ const ADAPTERS = {
 	 * Same canonical event as the chat one, told apart by carrying a message.
 	 */
 	message_label_association_update: data => {
+		const actionTimestamp = asString(data?.action_timestamp)
 		const labelId = asString(data?.label_id)
 		const chatJid = asJidString(data?.chat_jid)
 		const messageId = asString(data?.message_id)
@@ -391,6 +420,7 @@ const ADAPTERS = {
 		}
 		return {
 			type: 'labelAssociation',
+			...(actionTimestamp !== undefined ? { actionTimestamp } : {}),
 			labelId,
 			chatJid,
 			messageId,
@@ -472,6 +502,21 @@ const ADAPTERS = {
 	contact_removed: () => ({ type: 'noop', bridgeType: 'contact_removed' }),
 	quick_reply_update: () => ({ type: 'noop', bridgeType: 'quick_reply_update' }),
 	call_log_sync: () => ({ type: 'noop', bridgeType: 'call_log_sync' }),
+	// Baileys rc14 has no events for historical calls, favorites or stickers.
+	call_log_history: () => ({ type: 'noop', bridgeType: 'call_log_history' }),
+	favorite_sticker_update: () => ({ type: 'noop', bridgeType: 'favorite_sticker_update' }),
+	remove_recent_sticker_update: () => ({ type: 'noop', bridgeType: 'remove_recent_sticker_update' }),
+	favorites_update: () => ({ type: 'noop', bridgeType: 'favorites_update' }),
+	status_privacy_update: data =>
+		isObject(data?.action) ? { type: 'settingUpdate', setting: 'statusPrivacy', value: data.action } : null,
+	unarchive_chats_setting_update: data =>
+		typeof data?.unarchive_chats === 'boolean'
+			? { type: 'unarchiveChatsSetting', unarchiveChats: data.unarchive_chats }
+			: null,
+	reachout_timelock_update: data => {
+		const state = mapReachoutTimelock(data?.state)
+		return state ? { type: 'reachoutTimelock', state } : null
+	},
 
 	// ── Calls ──
 	incoming_call: (data, logger) => adaptIncomingCall(data, logger),
@@ -842,6 +887,7 @@ const adaptMessageParts = (
 		isFromMe,
 		id,
 		timestamp,
+		serverId: asString(info.newsletter_server_id) ?? asNumber(info.newsletter_server_id)?.toString(),
 		pushName: asString(info.push_name),
 		participantAlt: resolveParticipantAlt(senderAlt, isGroup),
 		remoteJidAlt: resolveRemoteJidAlt(senderAlt, recipientAlt, isGroup, isFromMe),
@@ -1011,16 +1057,10 @@ const adaptIncomingCall = (data: BridgeData<'incoming_call'>, logger?: ILogger):
 	const effectiveType: CanonicalCallActionType =
 		actionType === 'terminate' && asString(fields.reason) === 'timeout' ? 'timeout' : actionType
 
-	// The call offer is timeline-ordered by its timestamp downstream; an
-	// unparseable one drops the event rather than dating it at the epoch.
+	// Core can omit timestamps on call control stanzas. Preserve the action;
+	// a present malformed timestamp remains invalid input.
 	const timestamp = asUnixSeconds(data.timestamp)
-	if (timestamp === undefined) {
-		logger?.debug(
-			invalidTimestampDetail('incoming_call', data.timestamp),
-			'incoming_call adapter: missing or invalid timestamp'
-		)
-		return null
-	}
+	if (data.timestamp != null && timestamp === undefined) return null
 
 	const canonicalAction: CanonicalCallAction = {
 		type: effectiveType,

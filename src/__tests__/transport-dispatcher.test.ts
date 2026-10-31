@@ -96,3 +96,38 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 		}
 	})
 })
+
+describe('async WebSocket factory readiness', () => {
+	for (const readyState of [WebSocket.OPEN, WebSocket.CLOSING, WebSocket.CLOSED]) {
+		it(`settles a socket already in state ${readyState} before factory resolution`, async () => {
+			class ReadySocket extends EventTarget {
+				readyState = readyState
+				binaryType = 'blob'
+				close() {}
+			}
+			let connected = 0
+			let disconnected = 0
+			const transport = makeTransport({
+				waWebSocketUrl: 'ws://127.0.0.1:1',
+				logger: silentLogger,
+				createWebSocket: async () => new ReadySocket() as unknown as WebSocket
+			})
+			const connecting = transport.connect({
+				onConnected() {
+					connected++
+				},
+				onDisconnected() {
+					disconnected++
+				},
+				onData() {}
+			})
+			if (readyState === WebSocket.OPEN) await connecting
+			else
+				await import('node:assert/strict').then(({ default: assert }) =>
+					assert.rejects(Promise.resolve(connecting), /closed before open/)
+				)
+			expect(connected).toBe(readyState === WebSocket.OPEN ? 1 : 0)
+			expect(disconnected).toBe(readyState === WebSocket.OPEN ? 0 : 1)
+		})
+	}
+})

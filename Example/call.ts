@@ -1,85 +1,35 @@
 /**
- * Voice and video calls with real media: dial or answer a call, stream
- * microphone or file PCM audio through ffmpeg, play the peer back through ffplay,
- * and upgrade to H.264 video with a camera or test pattern.
- *
- * This mirrors examples/voip-cli in the whatsapp-rust repo in behavior —
- * dial/accept a real call, decoded PCM both ways, mute, stats, hangup, plus
- * the video path (start/accept/resume keyed on `v`) adapted to what JavaScript
- * can do. The default audio path uses 16 kHz mono signed PCM. The core owns
- * codec work and playout timing. The encoded packet API remains available for
- * applications that need it.
- * Video is the same shape over Annex-B access units: ffmpeg encodes a camera,
- * access units: ffmpeg encodes a camera, file or test pattern to baseline
- * H.264, a splitter hands one AU per push to `pushCallVideo`, and peer AUs
- * fan out to a second ffplay window or a raw `.h264` file. The library only
- * transports the opaque packets, exactly like voip-cli's ffmpeg video path,
- * Production relay traffic uses rtc-tunnel for ICE, DTLS, SCTP, and its
- * pre-negotiated DataChannel. The mock path keeps its explicit UDP provider.
- *
- * Usage:
- *   node Example/call.ts dial <peer-jid> [--audio-file path | --mic [device]] [--auth dir] [--socket url] [--video [camera|testsrc|file|url]]
- *   node Example/call.ts listen [--accept] [--video ...] [...]
- *
- * During a call: `m` mute/unmute, `s` print media stats, `v` toggle video
- * (start upgrade / accept the peer's request / stop), `k` ask the peer for a
- * keyframe, `d` video diagnostics, `q` hang up and quit.
- * A dialed call exits after it ends; listen keeps serving the next ring.
- *
- * Requires ffmpeg and ffplay on PATH (checked at startup with a clear error)
- * and nothing else: only node builtins besides the built package in lib/.
- * Microphone capture uses ffmpeg device syntax for the OS (`-f alsa -i
- * <device>` on Linux, `-f avfoundation` / `-f dshow` elsewhere). Without
- * --audio-file or --mic nothing is pushed and the call stays quiet.
- *
- * Against the Bartender mock, point --socket at it the way the e2e suite
- * does; SOCKET_URL is honored too. With no --socket the production default
- * applies — the socket fix for Node's HTTP/2 WebSocket default plus an
- * explicit Origin header is what makes that path connect at all.
+ * PCM voice and H.264 video calls using ffmpeg/ffplay.
+ * node Example/call.ts dial <peer-jid> --mic
+ * node Example/call.ts listen --accept --mic
+ * Add --video [camera|testsrc|file|url] for video.
+ * Keys: m mute, s stats, v video, k keyframe, d video diagnostics, q quit.
  */
-
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
-import { endianness } from 'node:os'
+import type { ChildProcess } from 'node:child_process'
 import process from 'node:process'
 import readline from 'node:readline'
 import qrcode from 'qrcode-terminal'
-import { loadVoip, MlowAudioDecoder as BridgeMlowAudioDecoder } from '@oxidezap/whatsapp-rust-bridge/voip'
 import {
-	classifyStunPacket,
-	describeStunAllocate,
 	fetchLatestWaWebVersion,
 	makeWASocket,
 	useMultiFileAuthState,
-	type CallAudioFrame,
 	type CallPcmFrame,
 	type CallPcmWriter,
 	type CallVideoWriter,
 	type WACallEvent
 } from '../lib/index.js'
-import { createRtcTunnelRelayProvider, isProductionRelayMode } from './rtc-tunnel-relay.ts'
-
-export type MlowAudioDecoder = {
-	decode(packet: Uint8Array, payloadType?: number): Float32Array
-	reset(): void
-	free(): void
-}
-
-let standaloneCodecReady = false
-export const createMlowAudioDecoder = (): MlowAudioDecoder => {
-	if (!standaloneCodecReady) {
-		loadVoip({
-			connect: async () => {
-				throw new Error('standalone decoder has no relay')
-			}
-		})
-		standaloneCodecReady = true
-	}
-	return new BridgeMlowAudioDecoder()
-}
-
-export const decodeMlowAudioFrame = (decoder: MlowAudioDecoder, frame: CallAudioFrame): Float32Array =>
-	decoder.decode(frame.data, frame.payloadType)
+import {
+	requireBinary,
+	spawnPcmEncoder,
+	spawnPcmPlayer,
+	spawnVideoEncoder,
+	spawnVideoPlayer,
+	samplesToS16le,
+	splitPcm16Frames,
+	splitVideoAccessUnits,
+	auHasKeyframe
+} from './call-media.ts'
 
 const usage = (): never => {
 	console.error(
@@ -92,6 +42,7 @@ const usage = (): never => {
 			'video implies accept too). --video testsrc sends the ffmpeg pattern,',
 			'--video <file-or-url> plays that through the camera pipe.',
 			'',
+			'--mock-udp selects cleartext relay transport for a loopback mock only.',
 			'--danger-skip-cert-verify is testing-only (Bartender mock with a',
 			'self-signed cert). Never use it against production.',
 			'',
@@ -101,251 +52,21 @@ const usage = (): never => {
 	process.exit(2)
 }
 
-/**
- * Fail fast with a named binary when ffmpeg/ffplay are not installed. Runs
- * after the socket exists on every media path, so a missing binary takes
- * the installed shutdown (terminal restore, relay close, socket end)
- * instead of a bare exit that strands all three.
- */
-const requireBinary = (name: 'ffmpeg' | 'ffplay'): void => {
-	const found = spawnSync(name, ['-version'], { stdio: 'ignore' }).status === 0
-	if (!found) {
-		console.error(`${name} not found on PATH; install it to run Example/call.ts`)
-		if (shutdownExampleOnFatal) {
-			shutdownExampleOnFatal(2)
-			throw new Error(`${name} not found on PATH`)
-		}
-		process.exit(2)
-	}
-}
-
-// ── Ogg framing: ffmpeg speaks Ogg Opus, the bridge speaks bare packets ──
-
-/** CRC-32 as Ogg defines it: MSB-first, polynomial 0x04C11DB7, init 0, no
- * final xor — not the IEEE/zlib variant, which every page would fail. */
-const oggCrcTable = (() => {
-	const table = new Uint32Array(256)
-	for (let n = 0; n < 256; n++) {
-		let r = n << 24
-		for (let k = 0; k < 8; k++) r = (r << 1) ^ (r & 0x80000000 ? 0x04c11db7 : 0)
-		table[n] = r >>> 0
-	}
-	return table
-})()
-
-const oggCrc32 = (data: Uint8Array): number => {
-	let crc = 0
-	for (const byte of data) crc = ((crc << 8) ^ oggCrcTable[((crc >>> 24) ^ byte) & 0xff]!) >>> 0
-	return crc >>> 0
-}
-
-const concatBytes = (chunks: Uint8Array[]): Uint8Array => {
-	let total = 0
-	for (const chunk of chunks) total += chunk.length
-	const out = new Uint8Array(total)
-	let offset = 0
-	for (const chunk of chunks) {
-		out.set(chunk, offset)
-		offset += chunk.length
-	}
-	return out
-}
-
-const startsWithBytes = (data: Uint8Array, magic: number[]): boolean => {
-	if (data.length < magic.length) return false
-	return magic.every((byte, index) => data[index] === byte)
-}
-
-/** Split an Ogg Opus byte stream into bare Opus packets, skipping the OpusHead/OpusTags headers. */
-export const demuxOggOpus = (): { push(bytes: Uint8Array): Uint8Array[] } => {
-	// Annotated, not inferred: `new Uint8Array(0)` infers the ArrayBuffer
-	// flavor, which then refuses the ArrayBufferLike chunks `push` delivers.
-	let buffered: Uint8Array = new Uint8Array(0)
-	let pending: Uint8Array = new Uint8Array(0)
-	return {
-		push(bytes: Uint8Array): Uint8Array[] {
-			buffered = concatBytes([buffered, bytes])
-			const packets: Uint8Array[] = []
-			for (;;) {
-				if (buffered.length < 27) return packets
-				if (!startsWithBytes(buffered, [0x4f, 0x67, 0x67, 0x53])) {
-					throw new Error('ogg demuxer lost sync: no OggS capture pattern')
-				}
-				const segmentCount = buffered[26]!
-				if (buffered.length < 27 + segmentCount) return packets
-				const segments: number[] = []
-				let bodyLength = 0
-				for (let i = 0; i < segmentCount; i++) {
-					const size = buffered[27 + i]!
-					segments.push(size)
-					bodyLength += size
-				}
-				if (buffered.length < 27 + segmentCount + bodyLength) return packets
-				const body = buffered.subarray(27 + segmentCount, 27 + segmentCount + bodyLength)
-				buffered = buffered.slice(27 + segmentCount + bodyLength)
-				// A segment shorter than 255 bytes ends a packet; a page of
-				// full segments continues on the next page, which is why
-				// `pending` survives across pushes.
-				let position = 0
-				for (const size of segments) {
-					pending = concatBytes([pending, body.subarray(position, position + size)])
-					position += size
-					if (size < 255) {
-						if (
-							!startsWithBytes(pending, [0x4f, 0x70, 0x75, 0x73, 0x48]) &&
-							!startsWithBytes(pending, [0x4f, 0x70, 0x75, 0x73, 0x54])
-						) {
-							packets.push(pending)
-						}
-						pending = new Uint8Array(0)
-					}
-				}
-			}
-		}
-	}
-}
-
-/**
- * Calculate the number of audio samples in an Opus packet at 48 kHz (RFC 6716 Section 3.2.5).
- * WhatsApp voice call packets carry 60 ms frames (2880 samples @ 48 kHz). ffmpeg typically emits
- * 20 ms frames (960 samples @ 48 kHz). Accurate granule positions prevent ffplay desync, stutter, and cuts.
- */
-export const getOpusSamples48k = (packet: Uint8Array): number => {
-	if (packet.length === 0) return 960
-	const toc = packet[0]!
-	const config = toc >> 3
-	const frameCountCode = toc & 3
-	let frameDurationSamples: number
-	if (config >= 16) {
-		// CELT: configurations 16-31
-		const match = config & 3
-		frameDurationSamples = match === 0 ? 120 : match === 1 ? 240 : match === 2 ? 480 : 960
-	} else if (config >= 12) {
-		// Hybrid: configurations 12-15
-		frameDurationSamples = (config & 1) === 0 ? 480 : 960
-	} else {
-		// SILK: configurations 0-11
-		const match = config & 3
-		frameDurationSamples = match === 0 ? 480 : match === 1 ? 960 : match === 2 ? 1920 : 2880
-	}
-	let frameCount: number
-	if (frameCountCode === 0) {
-		frameCount = 1
-	} else if (frameCountCode === 1 || frameCountCode === 2) {
-		frameCount = 2
-	} else {
-		if (packet.length < 2) return frameDurationSamples
-		frameCount = packet[1]! & 0x3f
-	}
-	return frameCount * frameDurationSamples
-}
-
-/**
- * Identify whether an RFC Opus packet is CELT-only (configs 16..31).
- * Packets of length <= 2 are DTX comfort noise tokens accepted by the bridge MLOW escape.
- */
-export const isOpusCeltOnly = (packet: Uint8Array): boolean => {
-	if (packet.length === 0) return false
-	if (packet.length <= 2) return true
-	const config = packet[0]! >> 3
-	return config >= 16
-}
-
-export const getOpusConfig = (packet: Uint8Array): number => {
-	if (packet.length === 0) return -1
-	return packet[0]! >> 3
-}
-
-export interface InboundAudioRouterState {
-	peerCodec?: 'mlow' | 'opus'
-}
-
-export const processInboundCallAudioFrame = (
-	frame: CallAudioFrame,
-	state: InboundAudioRouterState,
-	onFrame?: (frame: CallAudioFrame) => void
-): 'opus' | 'mlow' => {
-	state.peerCodec = frame.codec
-	onFrame?.(frame)
-	return frame.codec
-}
-
-/** Wrap bare Opus packets in Ogg pages for ffplay's stdin. */
-export const muxOggOpus = (): {
-	headerPages(): Uint8Array[]
-	page(packet: Uint8Array, gapSamples48k?: number, frameSamples48k?: number): Uint8Array
-} => {
-	const serial = (Math.random() * 0xffffffff) >>> 0
-	let sequence = 0
-	// Samples at 48 kHz, incremented by the exact duration of each Opus packet.
-	let granule = 0
-	const framePage = (packet: Uint8Array, granulepos: number, flags: number): Uint8Array => {
-		const segments: number[] = []
-		let remaining = packet.length
-		while (remaining >= 255) {
-			segments.push(255)
-			remaining -= 255
-		}
-		segments.push(remaining)
-		const header = new Uint8Array(27 + segments.length)
-		header.set([0x4f, 0x67, 0x67, 0x53, 0x00, flags], 0)
-		header[26] = segments.length
-		const view = new DataView(header.buffer)
-		view.setBigUint64(6, BigInt(granulepos), true)
-		view.setUint32(14, serial, true)
-		view.setUint32(18, sequence++, true)
-		segments.forEach((size, index) => {
-			header[27 + index] = size
-		})
-		// Checksum over the page with its own checksum field zeroed (it
-		// still is: the header started zeroed), then stamped in place.
-		const page = concatBytes([header, packet])
-		new DataView(page.buffer, page.byteOffset).setUint32(22, oggCrc32(page), true)
-		return page
-	}
-	return {
-		// A decodable stream opens with identification and comment headers,
-		// mono 48 kHz with the stock libopus encoder delay as preskip.
-		headerPages(): Uint8Array[] {
-			const head = new Uint8Array(19)
-			head.set([0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, 0x01, 0x01], 0)
-			new DataView(head.buffer).setUint16(10, 312, true)
-			new DataView(head.buffer).setUint32(12, 48000, true)
-			const vendor = new TextEncoder().encode('baileyrs')
-			const tags = new Uint8Array(8 + 4 + vendor.length + 4)
-			tags.set([0x4f, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73], 0)
-			new DataView(tags.buffer).setUint32(8, vendor.length, true)
-			tags.set(vendor, 12)
-			const first = framePage(head, 0, 0x02)
-			const second = framePage(tags, 0, 0x00)
-			return [first, second]
-		},
-		page(packet: Uint8Array, gapSamples48k = 0, frameSamples48k?: number): Uint8Array {
-			granule += gapSamples48k + (frameSamples48k ?? getOpusSamples48k(packet))
-			return framePage(packet, granule, 0x00)
-		}
-	}
-}
-
-// ── ffmpeg in, ffplay out ──
-
 interface CallExampleArgs {
 	command: 'dial' | 'listen'
 	peer?: string
 	accept: boolean
 	audioFile?: string
 	mic?: string
-	/** Camera/file/pattern source for outgoing video; undefined means audio-only. */
+
 	video?: string
 	authDir: string
 	socketUrl: string | undefined
 	dangerSkipCertVerify: boolean
+	mockUdp: boolean
 }
 
-const parseArgs = (argv: string[]): CallExampleArgs => {
-	// A flag takes the next argument only when one is there and it is not
-	// itself a flag: `--mic --auth ./auth` means the default microphone,
-	// not a device literally named `--auth`.
+export const parseArgs = (argv: string[]): CallExampleArgs => {
 	const get = (flag: string): string | undefined => {
 		const index = argv.indexOf(flag)
 		if (index < 0) return undefined
@@ -360,9 +81,7 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		return value === undefined || value.startsWith('--') ? fallback : value
 	}
 	const rawCommand = argv[0]
-	// Positive check, not a cast: narrowing `string` by exclusion keeps it
-	// `string`, so the command is built only from the two accepted spellings
-	// and anything else prints usage, which never returns.
+
 	const command = rawCommand === 'dial' || rawCommand === 'listen' ? rawCommand : usage()
 	const peer = command === 'dial' ? argv[1] : undefined
 	if (command === 'dial' && (!peer || peer.startsWith('--'))) usage()
@@ -372,10 +91,16 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		console.error('pick one audio input: --audio-file or --mic')
 		process.exit(2)
 	}
-	// --video with no value means the camera, and video implies accept: there
-	// is no reason to request video while rejecting every call.
+
 	const video = getOptional('--video', 'camera')
+	if (argv.includes('--mock-udp')) {
+		const url = get('--socket') ?? process.env.SOCKET_URL
+		if (!url || !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(url).hostname)) {
+			throw new Error('--mock-udp requires a loopback --socket or SOCKET_URL')
+		}
+	}
 	return {
+		mockUdp: argv.includes('--mock-udp'),
 		command,
 		peer,
 		accept: (command === 'listen' && argv.includes('--accept')) || video !== undefined,
@@ -383,499 +108,12 @@ const parseArgs = (argv: string[]): CallExampleArgs => {
 		mic,
 		video,
 		authDir: get('--auth') ?? './baileys_auth_info',
-		// No mock fallback: without --socket or SOCKET_URL the socket keeps
-		// its production WhatsApp Web default, so an ordinary run places a
-		// real call instead of timing out against an absent localhost mock.
+
 		socketUrl: get('--socket') ?? process.env.SOCKET_URL,
 		dangerSkipCertVerify: argv.includes('--danger-skip-cert-verify')
 	}
 }
 
-/** ffmpeg turns a file or microphone into 16 kHz mono signed PCM on stdout. */
-const spawnPcmEncoder = (args: CallExampleArgs): ChildProcess | null => {
-	if (!args.audioFile && args.mic === undefined) return null
-	// Capture devices are OS-specific; only Linux names one here, the rest
-	// pass their own ffmpeg device through --mic.
-	const micInput: string[] =
-		process.platform === 'darwin'
-			? ['-f', 'avfoundation', '-i', args.mic === 'default' ? ':0' : (args.mic ?? ':0')]
-			: process.platform === 'win32'
-				? ['-f', 'dshow', '-i', `audio=${args.mic ?? 'default'}`]
-				: ['-f', 'alsa', '-i', args.mic ?? 'default']
-	const input: string[] =
-		args.audioFile !== undefined
-			? ['-re', '-i', args.audioFile]
-			: ['-fflags', 'nobuffer', '-flags', 'low_delay', ...micInput]
-	const ffmpeg = spawn(
-		'ffmpeg',
-		[...input, '-ac', '1', '-ar', '16000', '-flush_packets', '1', '-f', 's16le', 'pipe:1'],
-		{
-			stdio: ['ignore', 'pipe', 'inherit']
-		}
-	)
-	ffmpeg.on('error', err => console.error('ffmpeg failed to start:', (err as Error).message))
-	return ffmpeg
-}
-
-/**
- * ffmpeg emits `s16le` while `Int16Array` reads host order: identical on
- * little-endian hosts, byte-swapped everywhere else. Branch once here so
- * the fast reinterpret path costs nothing on LE and big-endian hosts
- * decode explicitly instead of shipping swapped samples.
- */
-const HOST_LITTLE_ENDIAN: boolean = endianness() === 'LE'
-
-/** Decode one s16le window to samples, honoring the host byte order. */
-const s16leToSamples = (bytes: Uint8Array, offset: number, samples: number): Int16Array => {
-	const byteOffset = bytes.byteOffset + offset
-	if (HOST_LITTLE_ENDIAN && byteOffset % Int16Array.BYTES_PER_ELEMENT === 0) {
-		return new Int16Array(bytes.buffer, byteOffset, samples)
-	}
-	const out = new Int16Array(samples)
-	if (HOST_LITTLE_ENDIAN) {
-		new Uint8Array(out.buffer).set(bytes.subarray(offset, offset + samples * 2))
-		return out
-	}
-	const view = new DataView(bytes.buffer, byteOffset, samples * 2)
-	for (let i = 0; i < samples; i++) out[i] = view.getInt16(i * 2, true)
-	return out
-}
-
-/** Encode samples to s16le bytes for the ffplay pipe, honoring host order. */
-const samplesToS16le = (samples: Int16Array): Buffer => {
-	if (HOST_LITTLE_ENDIAN) {
-		return Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)
-	}
-	const out = Buffer.allocUnsafe(samples.length * 2)
-	const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
-	for (let i = 0; i < samples.length; i++) view.setInt16(i * 2, samples[i]!, true)
-	return out
-}
-
-export const splitPcm16Frames = (
-	frameSamples = 960
-): { push(bytes: Uint8Array): Int16Array[]; flush(): Int16Array[] } => {
-	if (!Number.isInteger(frameSamples) || frameSamples <= 0) throw new Error('frameSamples must be a positive integer')
-	const frameBytes = frameSamples * 2
-	const scratch = new Uint8Array(frameBytes)
-	let pendingLength = 0
-	return {
-		push(bytes) {
-			const frames: Int16Array[] = []
-			let offset = 0
-			if (pendingLength > 0) {
-				const copied = Math.min(frameBytes - pendingLength, bytes.length)
-				scratch.set(bytes.subarray(0, copied), pendingLength)
-				pendingLength += copied
-				offset = copied
-				if (pendingLength < frameBytes) return frames
-				// The remainder of this chunk (or the next push) reuses scratch.
-				frames.push(s16leToSamples(scratch, 0, frameSamples).slice())
-				pendingLength = 0
-			}
-
-			while (offset + frameBytes <= bytes.length) {
-				frames.push(s16leToSamples(bytes, offset, frameSamples))
-				offset += frameBytes
-			}
-
-			if (offset < bytes.length) {
-				const remaining = bytes.length - offset
-				scratch.set(bytes.subarray(offset), 0)
-				pendingLength = remaining
-			}
-			return frames
-		},
-		flush() {
-			if (pendingLength !== 0) throw new Error('PCM16 input ended with a partial frame')
-			return []
-		}
-	}
-}
-
-/** ffmpeg turns a camera, file/URL or test pattern into baseline H.264 on stdout. */
-const spawnVideoEncoder = (source: string): ChildProcess => {
-	const input: string[] =
-		source === 'testsrc'
-			? ['-re', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=15']
-			: source.includes('://') || source.includes('.')
-				? ['-re', '-i', source]
-				: process.platform === 'darwin'
-					? ['-f', 'avfoundation', '-i', source === 'camera' ? '0' : source]
-					: process.platform === 'win32'
-						? ['-f', 'dshow', '-i', `video=${source === 'camera' ? 'default' : source}`]
-						: ['-f', 'v4l2', '-i', source === 'camera' ? '/dev/video0' : source]
-	const ffmpeg = spawn(
-		'ffmpeg',
-		[
-			...input,
-			'-vf',
-			'scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2:out_range=tv,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=15,format=yuv420p,setparams=range=limited:color_primaries=unknown:color_trc=unknown:colorspace=unknown',
-			'-r',
-			'15',
-			'-fps_mode',
-			'cfr',
-			'-c:v',
-			'libx264',
-			'-profile:v',
-			'baseline',
-			'-level:v',
-			'3.1',
-			'-pix_fmt',
-			'yuv420p',
-			'-preset',
-			'veryfast',
-			'-tune',
-			'zerolatency',
-			'-g',
-			'45',
-			'-keyint_min',
-			'45',
-			'-sc_threshold',
-			'0',
-			'-b:v',
-			'1980k',
-			'-maxrate',
-			'1980k',
-			'-bufsize',
-			'495k',
-			'-x264-params',
-			'repeat-headers=1:sliced-threads=0:threads=1',
-			'-bsf:v',
-			'h264_metadata=aud=insert',
-			'-an',
-			'-f',
-			'h264',
-			'pipe:1'
-		],
-		{ stdio: ['ignore', 'pipe', 'inherit'] }
-	)
-	ffmpeg.on('error', err => console.error('ffmpeg (video) failed to start:', (err as Error).message))
-	return ffmpeg
-}
-
-const seqDiff = (a: number, b: number): number => {
-	const diff = (a - b) & 0xffff
-	return diff > 0x7fff ? diff - 0x10000 : diff
-}
-
-interface AudioJitterBufferOptions {
-	preRoll: number
-	onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
-}
-
-/**
- * Playout jitter buffer and RTP sequence reorderer.
- * Releases one frame per playout tick after preRoll, so arrival bursts and
- * reordering drain at the media rate instead of racing into ffplay, and lost
- * slots advance the timeline with gap samples for Ogg Opus PLC.
- */
-export class AudioJitterBuffer {
-	private readonly preRoll: number
-	private readonly onPacket: (frame: CallAudioFrame, gapSamples48k: number) => void
-	private readonly buffer: CallAudioFrame[] = []
-	private expectedSeq: number | null = null
-	private primed = false
-	private pendingGapSamples = 0
-	private frameSamples48k = 2880
-	private lastRtpSeq: number | null = null
-	private lastRtpTimestamp: number | null = null
-	private timer: ReturnType<typeof setTimeout> | undefined
-
-	constructor(options: AudioJitterBufferOptions) {
-		this.preRoll = options.preRoll
-		this.onPacket = options.onPacket
-	}
-
-	get frameDurationSamples(): number {
-		return this.frameSamples48k
-	}
-
-	push(frame: CallAudioFrame): void {
-		const seq = frame.sequenceNumber
-		if (this.expectedSeq === null) {
-			this.expectedSeq = seq
-		}
-
-		const diff = seqDiff(seq, this.expectedSeq)
-		if (diff < 0) {
-			// Before playback starts, an earlier arrival simply moves the
-			// starting sequence; after the window has passed, the packet is stale.
-			if (this.primed) return
-			this.expectedSeq = seq
-		}
-
-		// Insert sorted by sequence number
-		let insertIdx = this.buffer.length
-		for (let i = 0; i < this.buffer.length; i++) {
-			const d = seqDiff(this.buffer[i]!.sequenceNumber, seq)
-			if (d === 0) return // duplicate packet
-			if (d > 0) {
-				insertIdx = i
-				break
-			}
-		}
-		this.buffer.splice(insertIdx, 0, frame)
-		this.learnFrameSamples(frame)
-
-		if (!this.primed && this.buffer.length >= this.preRoll) {
-			this.primed = true
-			this.scheduleTick()
-		}
-	}
-
-	private learnFrameSamples(frame: CallAudioFrame): void {
-		if (this.lastRtpSeq !== null && this.lastRtpTimestamp !== null) {
-			const seqDelta = seqDiff(frame.sequenceNumber, this.lastRtpSeq)
-			if (seqDelta > 0) {
-				const tsDelta = (frame.timestamp - this.lastRtpTimestamp) >>> 0
-				const perFrame = Math.round(tsDelta / seqDelta)
-				if (perFrame >= 120 && perFrame <= 48000) {
-					this.frameSamples48k = perFrame
-				}
-			}
-		}
-		this.lastRtpSeq = frame.sequenceNumber
-		this.lastRtpTimestamp = frame.timestamp
-	}
-
-	private scheduleTick(): void {
-		this.timer = setTimeout(() => {
-			this.timer = undefined
-			if (!this.primed) return
-			this.tick()
-			if (this.primed) this.scheduleTick()
-		}, this.frameSamples48k / 48)
-	}
-
-	private tick(): void {
-		if (this.expectedSeq === null) return
-		if (this.buffer.length === 0) return
-
-		const head = this.buffer[0]!
-		let diff = seqDiff(head.sequenceNumber, this.expectedSeq)
-		if (diff < 0) {
-			this.buffer.shift()
-			return
-		}
-		if (diff > 0) {
-			// A later frame already arrived, so the missing ones are lost:
-			// book their duration now and play the survivor this tick.
-			this.pendingGapSamples += diff * this.frameSamples48k
-			this.expectedSeq = head.sequenceNumber
-		}
-
-		this.buffer.shift()
-		this.expectedSeq = (this.expectedSeq + 1) & 0xffff
-		const gap = this.pendingGapSamples
-		this.pendingGapSamples = 0
-		this.onPacket(head, gap)
-	}
-
-	clear(): void {
-		if (this.timer !== undefined) {
-			clearTimeout(this.timer)
-			this.timer = undefined
-		}
-		this.buffer.length = 0
-		this.pendingGapSamples = 0
-		this.expectedSeq = null
-		this.primed = false
-		this.lastRtpSeq = null
-		this.lastRtpTimestamp = null
-	}
-}
-
-const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
-	// Checked here, not at startup: signaling-only runs never play audio.
-	requireBinary('ffplay')
-	const ffplay = spawn(
-		'ffplay',
-		[
-			'-hide_banner',
-			'-loglevel',
-			'warning',
-			'-nodisp',
-			'-f',
-			's16le',
-			'-ch_layout',
-			'mono',
-			'-sample_rate',
-			'16000',
-			'pipe:0'
-		],
-		{ stdio: ['pipe', 'ignore', 'inherit'] }
-	)
-	ffplay.on('error', err => console.error('ffplay PCM failed to start:', (err as Error).message))
-	// A dead ffplay (headless host, lost audio device, malformed input)
-	// fails the next write with an async EPIPE on the stdin Writable — not
-	// a sync throw the try/catch below could see. Without this listener
-	// that 'error' event is unhandled and takes down the example.
-	ffplay.stdin?.on('error', err => console.error('ffplay PCM pipe broke:', (err as Error).message))
-	// A stalled-but-alive ffplay stops consuming while frames keep
-	// arriving: write() then returns false and Node queues unboundedly,
-	// so shed while the drain is pending instead of buffering the call.
-	let needDrain = false
-	ffplay.stdin?.on('drain', () => {
-		needDrain = false
-	})
-	return {
-		write: bytes => {
-			const stdin = ffplay.stdin
-			if (!stdin || stdin.destroyed) return
-			if (needDrain) return
-			try {
-				if (stdin.write(bytes) === false) {
-					needDrain = true
-					console.log('ffplay PCM stalled: shedding until drain')
-				}
-			} catch {
-				// ignore
-			}
-		},
-		stop: () => {
-			try {
-				ffplay.stdin?.end()
-				ffplay.stdin?.destroy()
-			} catch {
-				// ignore
-			}
-			ffplay.kill('SIGKILL')
-		}
-	}
-}
-
-const MLOW_FRAME_DURATIONS_MS = [10, 20, 60, 120] as const
-
-export const getMlowFrameDurationMs = (toc: number): number => MLOW_FRAME_DURATIONS_MS[toc & 0x03]!
-
-// ── H.264 framing: ffmpeg speaks raw Annex-B, the bridge speaks access units ──
-
-/** Maximum buffered bytes before dropping runaway data (matches wacore H264_MAX_AU_BYTES). */
-const MAX_VIDEO_AU_BUFFER = 4 * 1024 * 1024
-
-/** Split a raw Annex-B byte stream into access units on AUD boundaries (NAL type 9). */
-export const splitVideoAccessUnits = (): {
-	push(bytes: Uint8Array): Uint8Array[]
-	flush(): Uint8Array[]
-} => {
-	let buffered: Uint8Array = new Uint8Array(0)
-	let scanPos = 0
-	let audStarts: number[] = []
-	let seenAud = false
-
-	return {
-		push(bytes: Uint8Array): Uint8Array[] {
-			if (bytes.length === 0) return []
-			const prevLen = buffered.length
-			if (prevLen === 0) {
-				buffered = bytes
-				scanPos = 0
-			} else {
-				const merged = new Uint8Array(prevLen + bytes.length)
-				merged.set(buffered)
-				merged.set(bytes, prevLen)
-				buffered = merged
-				// Four bytes back, not three: a chunk ending exactly after
-				// `00 00 00 01` leaves a start code whose header arrives in
-				// the next chunk, and a 3-byte overlap re-enters past it —
-				// seeing `00 00 01` rejected as preceded-by-zero and losing
-				// the AUD boundary. Classifications inside the rescan
-				// window are dropped and re-derived so the overlap cannot
-				// record the same start twice.
-				scanPos = Math.max(0, prevLen - 4)
-				audStarts = audStarts.filter(start => start < scanPos)
-			}
-
-			if (buffered.length > MAX_VIDEO_AU_BUFFER) {
-				buffered = new Uint8Array(0)
-				scanPos = 0
-				audStarts = []
-				seenAud = false
-				return []
-			}
-
-			for (let i = scanPos; i + 3 <= buffered.length; i++) {
-				if (buffered[i] === 0 && buffered[i + 1] === 0) {
-					let nalPos = -1
-					if (i + 4 <= buffered.length && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
-						nalPos = i + 4
-					} else if (buffered[i + 2] === 1) {
-						if (i === 0 || buffered[i - 1] !== 0) {
-							nalPos = i + 3
-						}
-					}
-					if (nalPos >= 0 && nalPos < buffered.length) {
-						const nalType = buffered[nalPos]! & 0x1f
-						if (nalType === 9) {
-							seenAud = true
-							audStarts.push(i)
-						}
-					}
-				}
-			}
-
-			const units: Uint8Array[] = []
-			if (seenAud) {
-				if (audStarts.length === 1 && audStarts[0]! > 0) {
-					const offset = audStarts[0]!
-					buffered = buffered.slice(offset)
-					audStarts[0] = 0
-				}
-				if (audStarts.length >= 2) {
-					for (let n = 0; n + 1 < audStarts.length; n++) {
-						units.push(buffered.slice(audStarts[n]!, audStarts[n + 1]!))
-					}
-					const lastStart = audStarts[audStarts.length - 1]!
-					buffered = buffered.slice(lastStart)
-					audStarts = [0]
-					scanPos = 1
-				}
-				return units
-			}
-
-			// Fallback if no AUD is present: split on start codes
-			const allStarts: number[] = []
-			for (let i = 0; i + 4 <= buffered.length; i++) {
-				if (buffered[i] === 0 && buffered[i + 1] === 0 && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
-					allStarts.push(i)
-				}
-			}
-			if (allStarts.length < 2) return units
-			for (let n = 0; n + 1 < allStarts.length; n++) {
-				units.push(buffered.slice(allStarts[n]!, allStarts[n + 1]!))
-			}
-			buffered = buffered.slice(allStarts[allStarts.length - 1]!)
-			scanPos = 0
-			return units
-		},
-		flush(): Uint8Array[] {
-			// The trailing access unit has all its bytes — only a successor
-			// AUD delimits it, so a finite source must flush it explicitly
-			// on encoder exit or the final frame is always dropped. Nothing
-			// classifiable buffered means nothing complete to return.
-			if (!seenAud || audStarts.length === 0) return []
-			const lastStart = audStarts[audStarts.length - 1]!
-			if (lastStart >= buffered.length) return []
-			const unit = buffered.slice(lastStart)
-			buffered = new Uint8Array(0)
-			scanPos = 0
-			audStarts = []
-			seenAud = false
-			return [unit]
-		}
-	}
-}
-
-/**
- * Show a live pairing QR as a scannable matrix on the console device only.
- * The raw payload would not scan, so it is encoded to a QR symbol first;
- * the console is local to the operator's session — unlike stdout/stderr it
- * is never redirected into transcripts or log collectors, so a captured log
- * cannot replay the credential (`/dev/tty` on POSIX, `CON` on Windows).
- * Headless runs have no console — they get instructions instead of the
- * secret.
- */
 export const showPairingQr = (qr: string): boolean => {
 	let rendered: string | undefined
 	qrcode.generate(qr, { small: true }, code => {
@@ -900,123 +138,6 @@ export const showPairingQr = (qr: string): boolean => {
 	console.error('pairing needed: re-run attached to a terminal to scan the QR')
 	return false
 }
-
-/** Map WhatsApp device orientation (0..=3) to an ffplay video filter string. */
-export const orientationFilter = (orientation: number): string | null => {
-	switch (orientation & 0x03) {
-		case 0:
-			return null
-		case 1:
-			return 'transpose=cclock'
-		case 2:
-			return 'hflip,vflip'
-		case 3:
-			return 'transpose=clock'
-		default:
-			return null
-	}
-}
-
-/** True when the AU carries an IDR slice or parameter set (SPS/PPS). */
-export const auHasKeyframe = (au: Uint8Array): boolean => {
-	for (let i = 0; i + 3 <= au.length; i++) {
-		if (au[i] === 0 && au[i + 1] === 0) {
-			let nalPos = -1
-			if (i + 4 <= au.length && au[i + 2] === 0 && au[i + 3] === 1) {
-				nalPos = i + 4
-			} else if (au[i + 2] === 1) {
-				if (i === 0 || au[i - 1] !== 0) {
-					nalPos = i + 3
-				}
-			}
-			if (nalPos >= 0 && nalPos < au.length) {
-				const nalType = au[nalPos]! & 0x1f
-				if (nalType === 5 || nalType === 7 || nalType === 8) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-/** ffplay renders raw H.264 fed on stdin. One window per call, like audio. */
-const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; stop(): void } => {
-	requireBinary('ffplay')
-	const filter = orientationFilter(orientation)
-	const vfArgs = filter ? ['-vf', filter] : []
-	const ffplay = spawn(
-		'ffplay',
-		[
-			'-hide_banner',
-			'-loglevel',
-			'error',
-			'-window_title',
-			'WhatsApp Video Call',
-			'-avioflags',
-			'direct',
-			'-fflags',
-			'nobuffer',
-			'-flags',
-			'low_delay',
-			'-probesize',
-			'32',
-			'-analyzeduration',
-			'0',
-			'-fpsprobesize',
-			'0',
-			'-max_delay',
-			'0',
-			'-framedrop',
-			'-use_wallclock_as_timestamps',
-			'1',
-			'-f',
-			'h264',
-			'-framerate',
-			'15',
-			...vfArgs,
-			'-i',
-			'pipe:0'
-		],
-		{ stdio: ['pipe', 'ignore', 'inherit'] }
-	)
-	ffplay.on('error', err => console.error('ffplay (video) failed to start:', (err as Error).message))
-	// Same async-EPIPE hazard as the audio player above: a dead viewer
-	// surfaces it on the stdin stream, outside any try/catch.
-	ffplay.stdin?.on('error', err => console.error('ffplay (video) pipe broke:', (err as Error).message))
-	// Same stall hazard: shed while the drain is pending rather than
-	// queueing access units without bound.
-	let needDrain = false
-	ffplay.stdin?.on('drain', () => {
-		needDrain = false
-	})
-	return {
-		write: unit => {
-			const stdin = ffplay.stdin
-			if (!stdin || stdin.destroyed) return
-			if (needDrain) return
-			try {
-				if (stdin.write(unit) === false) {
-					needDrain = true
-					console.log('ffplay (video) stalled: shedding until drain')
-				}
-			} catch {
-				// ignore
-			}
-		},
-		stop: () => {
-			try {
-				ffplay.stdin?.end()
-				ffplay.stdin?.destroy()
-			} catch {
-				// ignore
-			}
-			ffplay.kill('SIGKILL')
-		}
-	}
-}
-
-// ── the call ──
 
 export const isTerminalCallUpdate = (call: Pick<WACallEvent, 'status'>): boolean =>
 	call.status === 'timeout' || call.status === 'reject' || call.status === 'terminate'
@@ -1109,139 +230,10 @@ const main = async (): Promise<void> => {
 			}
 		})
 	})
-	// UDP pipe to the relay: the core builds every datagram, this only ships
-	// bytes. Same shape as the e2e helper, inlined so the example stands alone.
-	const dgram = await import('node:dgram')
-	// Every open relay socket or DataChannel handle, so a crash-time shutdown
-	// can close what the bridge client no longer drives.
-	const liveRelays = new Set<{ close(): unknown }>()
-
-	// For production WhatsApp Web calls, relays require DTLS + SCTP + DataChannel via rtc-tunnel.
-	// For local test mock, plain UDP cleartext allocate is accepted.
-	if (isProductionRelayMode(args)) {
-		const rtcProvider = await createRtcTunnelRelayProvider({ liveRelays })
-		await sock.setRelayTransportProvider(rtcProvider)
-	} else {
-		await sock.setRelayTransportProvider({
-			async createRelayConnection(params, events) {
-				// Host and port only, never credentials: this line tells the
-				// next transcript which relay the allocate went to, which is
-				// what a relay-allocate-timed-out needs after it.
-				console.log(`relay channel (mock cleartext UDP) to ${params.address}:${params.port}`)
-				const socket = dgram.createSocket('udp4')
-				liveRelays.add(socket)
-				const stunOut = new Map<string, number>()
-				const stunIn = new Map<string, number>()
-				const traceStun = (direction: string, counts: Map<string, number>, message: Uint8Array): void => {
-					const name = classifyStunPacket(message)
-					if (name === undefined) return
-					const total = (counts.get(name) ?? 0) + 1
-					counts.set(name, total)
-					if (total === 1 || total % 10 === 0) console.log(`relay ${direction} ${name} x${total}`)
-					// Shape only, never values: a tokenless or integrity-less
-					// allocate is one the relay drops silently, which reads
-					// exactly like a network failure without this line. The
-					// endpoint check beside it catches the allocate naming a
-					// different relay than the channel talks to.
-					if (direction === 'out' && name === 'allocate request' && total === 1) {
-						const shape = describeStunAllocate(message)
-						console.log('allocate shape:', JSON.stringify(shape))
-						if (shape && (shape.endpointIp !== params.address || shape.endpointPort !== params.port)) {
-							console.log(
-								`allocate endpoint mismatch: names ${shape.endpointIp ?? 'n/a'}:${shape.endpointPort ?? 'n/a'} but the channel talks to ${params.address}:${params.port}`
-							)
-						}
-					}
-				}
-				// Reachability ping on the same socket the Allocate leaves from,
-				// so the verdict covers the real NAT mapping, not a fresh one.
-				// A STUN binding request the relay answers proves UDP flows both
-				// ways; silence here followed by relay-allocate-timed-out means
-				// the network drops it, not the engine. The reply is consumed,
-				// never forwarded: its transaction id matches nothing the core
-				// sent. Skipped for non-IP literals, which answer nothing.
-				const pingTxn = Buffer.alloc(12)
-				for (let i = 0; i < pingTxn.length; i++) pingTxn[i] = Math.floor(Math.random() * 256)
-				let pingSettled = false
-				const isPingReply = (message: Buffer): boolean =>
-					message.length >= 20 &&
-					message.readUInt16BE(0) === 0x0101 &&
-					message.readUInt32BE(4) === 0x2112a442 &&
-					message.subarray(8, 20).equals(pingTxn)
-				const pingTimer = setTimeout(() => {
-					if (pingSettled) return
-					pingSettled = true
-					console.log(
-						`no STUN reply from relay ${params.address}:${params.port} within 2s; if allocate times out next, UDP to the relay is blocked on this network`
-					)
-				}, 2000)
-				pingTimer.unref()
-				const ping = Buffer.alloc(20)
-				ping.writeUInt16BE(0x0001, 0)
-				ping.writeUInt16BE(0, 2)
-				ping.writeUInt32BE(0x2112a442, 4)
-				pingTxn.copy(ping, 8)
-				await new Promise<void>((resolve, reject) => {
-					socket.once('error', reject)
-					socket.bind(0, () => {
-						// Off on success: a leftover one-shot would swallow the
-						// first operational error as a no-op reject instead of
-						// reporting the relay closed.
-						socket.off('error', reject)
-						resolve()
-					})
-				})
-				let opened = false
-				let finished = false
-				const finish = (reason?: string): void => {
-					if (finished) return
-					finished = true
-					liveRelays.delete(socket)
-					try {
-						events.onClose(reason)
-					} catch {
-						// The bridge is already gone; nothing left to tell.
-					}
-				}
-				socket.on('message', (message: Buffer) => {
-					if (!pingSettled && isPingReply(message)) {
-						pingSettled = true
-						clearTimeout(pingTimer)
-						console.log(`relay STUN reachable at ${params.address}:${params.port}`)
-						return
-					}
-					traceStun('in', stunIn, message)
-					if (!opened) {
-						opened = true
-						events.onOpen()
-					}
-					events.onPacket(new Uint8Array(message))
-				})
-				socket.on('error', () => finish('udp socket error'))
-				socket.on('close', () => finish())
-				queueMicrotask(() => {
-					if (!opened) {
-						opened = true
-						events.onOpen()
-					}
-				})
-				socket.send(ping, params.port, params.address, err => {
-					if (err) console.error(`relay STUN ping to ${params.address}:${params.port} failed:`, err.message)
-				})
-				return {
-					send: data => {
-						traceStun('out', stunOut, data)
-						socket.send(data, params.port, params.address, err => {
-							if (err) console.error(`relay send to ${params.address}:${params.port} failed:`, err.message)
-						})
-					},
-					close: async () => {
-						liveRelays.delete(socket)
-						socket.close()
-					}
-				}
-			}
-		})
+	// Cleartext UDP is confined to the local mock and never selected by TLS options.
+	if (args.mockUdp) {
+		const { makeUdpRelayProvider } = await import('../src/__tests__/e2e/udp-relay-provider.ts')
+		await sock.setRelayTransportProvider(makeUdpRelayProvider())
 	}
 
 	await connected
@@ -1256,7 +248,7 @@ const main = async (): Promise<void> => {
 	let muted = false
 	let shed = 0
 	// The application's outbound audio source promise.
-	let sourceFormat: 'pcm' | 'mlow' | 'opus' | 'opus-mlow' = 'pcm'
+
 	let inboundPcmFrames = 0
 	let outboundGenerated = 0
 	let outboundAccepted = 0
@@ -1347,7 +339,7 @@ const main = async (): Promise<void> => {
 	// The PCM encoder starts only after a call is live. Starting it before an
 	// answer would consume file input before the media handle exists.
 	const ensureEncoder = (): void => {
-		if (encoder || sourceFormat !== 'pcm' || (!args.audioFile && args.mic === undefined) || !liveCallId) return
+		if (encoder || (!args.audioFile && args.mic === undefined) || !liveCallId) return
 		// Checked here, not at startup: a sourceless dial and a
 		// signaling-only listen never spawn ffmpeg, so they must not
 		// require it either.
@@ -1567,7 +559,7 @@ const main = async (): Promise<void> => {
 		try {
 			const [stats, buffer] = await Promise.all([sock.getCallMediaStats(id), sock.getCallAudioBuffer(id)])
 			console.log(
-				`${label} stats source=${sourceFormat} generated=${outboundGenerated} accepted=${outboundAccepted} shed-at-push=${shed} push-errors=${outboundPushErrors} no-encoder=${stats.outboundFramesWithoutEncoder} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} inbound-pcm=${inboundPcmFrames} sink-dropped=${stats.audioSinkDropped} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
+				`${label} stats source=pcm generated=${outboundGenerated} accepted=${outboundAccepted} shed-at-push=${shed} push-errors=${outboundPushErrors} no-encoder=${stats.outboundFramesWithoutEncoder} decoded=${stats.audioFramesDecoded} delivered=${stats.audioFramesDelivered} inbound-pcm=${inboundPcmFrames} sink-dropped=${stats.audioSinkDropped} out-queue=${buffer.outboundQueued}/${buffer.outboundCapacity} in-queue=${buffer.inboundQueued}/${buffer.inboundCapacity} video-shed=${outboundVideoShed} video-sink-dropped=${stats.videoSinkDropped} keyframe-requests=${stats.peerKeyframeRequests}`
 			)
 		} catch (err) {
 			console.error(`${label} stats failed:`, (err as Error).message)
@@ -1614,20 +606,6 @@ const main = async (): Promise<void> => {
 		}
 		const filled = Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined))
 		console.log(`media ${event.kind} on ${event.callId}`, Object.keys(filled).length > 0 ? JSON.stringify(filled) : '')
-		// Proven by pcap against a working native call: production relays
-		// take the allocate inside the DTLS+SCTP DataChannel tunnel and
-		// drop the cleartext allocate this UDP pipe sends, while answering
-		// consent pings. A timeout here with ping/pong flowing is that gap,
-		// not the network, and only the tunnel (bridge lane) closes it.
-		if (event.kind === 'relay-allocate-timed-out') {
-			if (isProductionRelayMode(args)) {
-				console.log('media never came up: the allocate went unanswered inside the DTLS+SCTP tunnel.')
-			} else {
-				console.log(
-					'media never came up: the allocate went unanswered. Production relays expect it inside the DTLS+SCTP tunnel; this pipe has none.'
-				)
-			}
-		}
 		if (event.kind === 'audio-codec-switched') {
 			console.log(`audio codec switched ${event.from ?? 'unknown'} -> ${event.to ?? 'unknown'}`)
 		}
@@ -1679,14 +657,6 @@ const main = async (): Promise<void> => {
 		if (shuttingDown) return
 		shuttingDown = true
 		if (process.stdin.isTTY) process.stdin.setRawMode(false)
-		for (const relay of liveRelays) {
-			try {
-				relay.close()
-			} catch {
-				// Already gone; the loop is what matters.
-			}
-		}
-		liveRelays.clear()
 		stopEncoder()
 		stopVideoEncoder()
 		stopVideoPlayback()
@@ -1786,7 +756,6 @@ const main = async (): Promise<void> => {
 			outboundAccepted = 0
 			outboundPushErrors = 0
 			shed = 0
-			sourceFormat = 'pcm'
 			ensureEncoder()
 			startPcmPlayback()
 			if (acceptVideo) {
@@ -1831,7 +800,6 @@ const main = async (): Promise<void> => {
 	})
 
 	if (args.command === 'dial') {
-		sourceFormat = 'pcm'
 		const withVideo = args.video !== undefined
 		const id = await sock.dialCallPcm(args.peer!, withVideo)
 		if (terminalCalls.isDead(id)) {

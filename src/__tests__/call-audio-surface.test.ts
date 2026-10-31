@@ -1,3 +1,4 @@
+import { useMemoryStore } from '../Utils/use-memory-store.ts'
 /**
  * The bridge audio surface, driven directly against the preview package.
  *
@@ -51,11 +52,7 @@ const deadHttp = (): JsHttpClientConfig => ({
 	execute: async () => ({ statusCode: 503, body: new Uint8Array() })
 })
 
-const memoryStore = (): JsStoreCallbacks => ({
-	get: async () => null,
-	set: async () => undefined,
-	delete: async () => undefined
-})
+const memoryStore = (): JsStoreCallbacks => useMemoryStore()
 
 initWasmEngine(silentLogger)
 

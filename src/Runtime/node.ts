@@ -21,6 +21,7 @@ import { DEFAULT_CONNECTION_CONFIG } from '../Defaults/index.ts'
 import { makeNativeCryptoProvider } from '../Utils/native-crypto-provider.ts'
 import { wrapLegacyStore } from '../Utils/wrap-legacy-store.ts'
 import { setReadableRuntime } from './stream.ts'
+import { createNodeCallRelayProvider } from './node-call-relay.ts'
 import { nodeMedia } from './node-media.ts'
 import { createNodeWebSocket } from './node-websocket.ts'
 import { getAudioDuration, loadImageProcessingLibrary } from './node-media-processors.ts'
@@ -72,6 +73,7 @@ export const nodeLoggerSink = (line: string, delivered: () => void): void => {
 export const nodeRuntime: BaileysRuntime = {
 	bridge,
 	createWebSocket: createNodeWebSocket,
+	createCallRelayProvider: createNodeCallRelayProvider,
 	loadVoip: async transport => (await import('@oxidezap/whatsapp-rust-bridge/voip')).loadVoip(transport).voipBackend,
 	randomBytes: nodeRandomBytes,
 	setTimeout: (callback, ms) => setTimeout(callback, ms),

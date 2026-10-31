@@ -6,9 +6,11 @@
 // Hosts import `../host-surface.ts` (or `@oxidezap/baileyrs/host`) instead.
 export { useMultiFileAuthState } from './Utils/use-multi-file-auth-state.ts'
 export { useBridgeStore } from './Utils/use-bridge-store.ts'
-export { useLegacyMultiFileAuthState } from './Utils/wrap-legacy-store.ts'
+export { useLegacyMultiFileAuthState, prepareLegacyAuthRollback } from './Utils/wrap-legacy-store.ts'
 export * from './Utils/messages-media.ts'
 export { getUrlInfo } from './Utils/link-preview.ts'
 export { makeNativeCryptoProvider } from './Utils/native-crypto-provider.ts'
 export { nodeRuntime } from './Runtime/node.ts'
 export { default, makeNodeWASocket, createWASocketFactory, createWASocketFactoryFor } from './Socket/index.ts'
+
+export { prepareNativeAuthRollback } from './Utils/native-auth-rollback.ts'

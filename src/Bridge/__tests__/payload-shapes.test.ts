@@ -41,10 +41,10 @@ const SECONDS = 1_700_000_000
 describe('bridge payload shapes', () => {
 	describe('a DateTime crosses as an RFC 3339 string', () => {
 		it('presence: last_seen', () => {
-			const iso = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: ISO } })
+			const iso = adapt({ type: 'presence', data: { from: JID, status: 'available', last_seen: ISO } })
 			expect(iso).toMatchObject({ type: 'presence', lastSeen: SECONDS })
 			// And the number form a `ts_seconds` field would send.
-			const seconds = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: SECONDS } })
+			const seconds = adapt({ type: 'presence', data: { from: JID, status: 'available', last_seen: SECONDS } })
 			expect(seconds).toMatchObject({ lastSeen: SECONDS })
 		})
 
@@ -70,13 +70,13 @@ describe('bridge payload shapes', () => {
 		})
 
 		it('an absent timestamp stays absent rather than becoming the epoch', () => {
-			const update = adapt({ type: 'presence', data: { from: JID, unavailable: true } })
+			const update = adapt({ type: 'presence', data: { from: JID, status: 'unavailable' } })
 			expect(update).toMatchObject({ type: 'presence' })
 			expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
 		})
 
 		it('a timestamp that is neither is dropped, not guessed', () => {
-			const update = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: 'not a date' } })
+			const update = adapt({ type: 'presence', data: { from: JID, status: 'available', last_seen: 'not a date' } })
 			expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
 		})
 
@@ -85,7 +85,7 @@ describe('bridge payload shapes', () => {
 			// a numeric-string sentinel would otherwise surface as a plausible,
 			// wrong instant.
 			for (const sentinel of ['0', '1', '2023', 'Jan 1 2023']) {
-				const update = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: sentinel } })
+				const update = adapt({ type: 'presence', data: { from: JID, status: 'available', last_seen: sentinel } })
 				expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
 			}
 		})
@@ -94,7 +94,7 @@ describe('bridge payload shapes', () => {
 			// `Date.parse('2023-02-30T…')` is March 2, not NaN — so a malformed
 			// producer would move an instant by days and still look believable.
 			for (const impossible of ['2023-02-30T12:00:00Z', '2023-11-31T12:00:00Z', '2023-02-29T12:00:00Z']) {
-				const update = adapt({ type: 'presence', data: { from: JID, unavailable: false, last_seen: impossible } })
+				const update = adapt({ type: 'presence', data: { from: JID, status: 'available', last_seen: impossible } })
 				expect((update as { lastSeen?: number }).lastSeen).toBeUndefined()
 			}
 		})
@@ -104,13 +104,13 @@ describe('bridge payload shapes', () => {
 			// is the other component that moves the instant to another day.
 			const rollover = adapt({
 				type: 'presence',
-				data: { from: JID, unavailable: false, last_seen: '2023-11-14T24:00:00Z' }
+				data: { from: JID, status: 'available', last_seen: '2023-11-14T24:00:00Z' }
 			})
 			expect((rollover as { lastSeen?: number }).lastSeen).toBeUndefined()
 			// The last instant the hour does allow still parses.
 			const last = adapt({
 				type: 'presence',
-				data: { from: JID, unavailable: false, last_seen: '2023-11-14T23:59:59Z' }
+				data: { from: JID, status: 'available', last_seen: '2023-11-14T23:59:59Z' }
 			})
 			expect(typeof (last as { lastSeen?: number }).lastSeen).toBe('number')
 		})
@@ -120,17 +120,17 @@ describe('bridge payload shapes', () => {
 			// `year % 4` check gets wrong.
 			const leap = adapt({
 				type: 'presence',
-				data: { from: JID, unavailable: false, last_seen: '2024-02-29T12:00:00Z' }
+				data: { from: JID, status: 'available', last_seen: '2024-02-29T12:00:00Z' }
 			})
 			expect(typeof (leap as { lastSeen?: number }).lastSeen).toBe('number')
 			const century = adapt({
 				type: 'presence',
-				data: { from: JID, unavailable: false, last_seen: '2000-02-29T12:00:00Z' }
+				data: { from: JID, status: 'available', last_seen: '2000-02-29T12:00:00Z' }
 			})
 			expect(typeof (century as { lastSeen?: number }).lastSeen).toBe('number')
 			const notLeap = adapt({
 				type: 'presence',
-				data: { from: JID, unavailable: false, last_seen: '1900-02-29T12:00:00Z' }
+				data: { from: JID, status: 'available', last_seen: '1900-02-29T12:00:00Z' }
 			})
 			expect((notLeap as { lastSeen?: number }).lastSeen).toBeUndefined()
 		})
@@ -138,7 +138,7 @@ describe('bridge payload shapes', () => {
 		it('accepts the offset form chrono writes for a non-UTC zone', () => {
 			const offset = adapt({
 				type: 'presence',
-				data: { from: JID, unavailable: false, last_seen: '2023-11-14T23:13:20+01:00' }
+				data: { from: JID, status: 'available', last_seen: '2023-11-14T23:13:20+01:00' }
 			})
 			expect(offset).toMatchObject({ lastSeen: SECONDS })
 		})

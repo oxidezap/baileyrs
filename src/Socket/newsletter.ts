@@ -100,16 +100,16 @@ export const makeNewsletterMethods = (ctx: SocketContext) => {
 		},
 
 		/**
-		 * The follower-activity mute, which is the one a subscriber toggles. The
-		 * core's other newsletter mute is for admin activity and is a different
-		 * control, so the ambiguous alias is avoided here.
+		 * Channel updates are admin activity. The Web client's
+		 * WAWebNewsletterUpdateUserSettingJob writes MUTE_ADMIN_ACTIVITY to
+		 * the chat mute state; follower activity is a separate admin setting.
 		 */
 		newsletterMute: async (jid: string): Promise<void> => {
-			await ctx.withClient(client => client.newsletterFollowerMute(jid, true))
+			await ctx.withClient(client => client.newsletterAdminMute(jid, true))
 		},
 
 		newsletterUnmute: async (jid: string): Promise<void> => {
-			await ctx.withClient(client => client.newsletterFollowerMute(jid, false))
+			await ctx.withClient(client => client.newsletterAdminMute(jid, false))
 		},
 
 		newsletterSubscribers: async (jid: string): Promise<{ subscribers: number }> => {

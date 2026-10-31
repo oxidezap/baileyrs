@@ -2,13 +2,26 @@ import { createRtcRelayTransportProvider } from '@oxidezap/whatsapp-rust-bridge/
 import type { VoipRelayTransport } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { CallRelayConnectionHandle, CallRelayTransportProvider } from './calls-core.ts'
 
-/** Keep the socket's existing relay-provider API while voip.wasm owns the media engine. */
-export const makeCallRelayTransport = () => {
+export const makeCallRelayTransport = (createProvider?: () => Promise<CallRelayTransportProvider>) => {
 	let selected: CallRelayTransportProvider | undefined
-	let fallback: CallRelayTransportProvider | undefined
-	const provider = () => selected ?? (fallback ??= createRtcRelayTransportProvider())
+	let fallback: Promise<CallRelayTransportProvider> | undefined
+	let disposed = false
+	const connections = new Set<() => Promise<void>>()
+	const provider = async () => {
+		if (selected) return selected
+		if (!fallback) {
+			fallback = (createProvider ? createProvider() : Promise.resolve(createRtcRelayTransportProvider())).catch(
+				error => {
+					fallback = undefined
+					throw error
+				}
+			)
+		}
+		return fallback
+	}
 	const transport: VoipRelayTransport = {
 		async connect(endpoint, events) {
+			if (disposed) throw new Error('call relay transport is closed')
 			let generation = 0
 			let closed = false
 			let connection: CallRelayConnectionHandle | undefined
@@ -21,43 +34,75 @@ export const makeCallRelayTransport = () => {
 				retired.set(handle, closing)
 				return closing
 			}
-			const dial = (nextEndpoint: typeof endpoint, current: number) =>
-				provider().createRelayConnection(nextEndpoint, {
+			const close = async () => {
+				closed = true
+				generation++
+				connections.delete(close)
+				const old = connection
+				connection = undefined
+				await retire(old)
+			}
+			connections.add(close)
+			const dial = async (nextEndpoint: typeof endpoint, current: number) => {
+				const selectedProvider = await provider()
+				if (closed) throw new Error('call relay transport is closed')
+				const next = await selectedProvider.createRelayConnection(nextEndpoint, {
 					onPacket: data => {
-						if (current === generation) events.onPacket(data)
+						if (!closed && current === generation) events.onPacket(data)
 					},
 					onOpen: () => {
-						if (current === generation) events.onOpen()
+						if (!closed && current === generation) events.onOpen()
 					},
 					onClose: reason => {
-						if (current === generation) events.onClose(reason)
+						if (!closed && current === generation) events.onClose(reason)
 					}
 				})
-			connection = await dial(endpoint, generation)
+				if (closed || current !== generation) {
+					await retire(next)
+					throw new Error('call relay connection superseded')
+				}
+				return next
+			}
+			try {
+				connection = await dial(endpoint, generation)
+			} catch (error) {
+				await close()
+				throw error
+			}
 			return {
-				send: data => connection?.send(data),
+				send(data) {
+					if (closed || !connection) return
+					const current = generation
+					const failed = (error: unknown) => {
+						if (closed || current !== generation) return
+						const closing = close()
+						try {
+							events.onClose(error instanceof Error ? error.message : 'relay send failed')
+						} finally {
+							void closing.catch(() => undefined)
+						}
+					}
+					try {
+						const result = connection.send(data)
+						if (result) return Promise.resolve(result).catch(failed)
+					} catch (error) {
+						failed(error)
+					}
+				},
 				async reconnect(nextEndpoint) {
 					if (closed) return
 					const old = connection
 					const current = ++generation
 					try {
-						const next = await dial(nextEndpoint, current)
-						if (closed || current !== generation) {
-							await retire(next)
-							return
-						}
-						connection = next
+						connection = await dial(nextEndpoint, current)
+					} catch (error) {
+						if (!closed && current === generation) throw error
 					} finally {
+						if (connection === old) connection = undefined
 						await retire(old)
 					}
 				},
-				async close() {
-					closed = true
-					generation++
-					const old = connection
-					connection = undefined
-					await retire(old)
-				}
+				close
 			}
 		}
 	}
@@ -65,6 +110,10 @@ export const makeCallRelayTransport = () => {
 		transport,
 		setProvider(next: CallRelayTransportProvider) {
 			selected = next
+		},
+		async closeAll() {
+			disposed = true
+			await Promise.all([...connections].map(close => close()))
 		}
 	}
 }

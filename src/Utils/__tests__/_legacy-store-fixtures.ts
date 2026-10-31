@@ -1,3 +1,4 @@
+import type { LegacyKeysStore } from '../../Compatibility/legacy-store/types.ts'
 /**
  * Shared fixtures for `wrap-legacy-store` unit tests. The 4 sister test
  * files (sender-key / session / lid-mapping / coverage) all need the same
@@ -187,4 +188,48 @@ export function buildBridgeSessionBytes(opts: BuildSessionOpts = {}): Uint8Array
 			previousSessions: []
 		})
 	).finish()
+}
+
+/** Real copy-on-commit backend for tests that exercise transactional sockets.
+ * Every ordinary access and transaction participates in the same queue.
+ */
+export function makeTransactionalMemKeys(onWrite?: (type: string) => void) {
+	let rows = new Map<string, unknown>()
+	let tail = Promise.resolve()
+	const queue = <T>(work: () => Promise<T>): Promise<T> => {
+		const result = tail.then(work)
+		tail = result.then(
+			() => {},
+			() => {}
+		)
+		return result
+	}
+	const keyOf = (type: string, id: string) => JSON.stringify([type, id])
+	const view = (draft: Map<string, unknown>): LegacyKeysStore => ({
+		get: async (type, ids) => Object.fromEntries(ids.map(id => [id, draft.get(keyOf(type, id)) ?? null])),
+		set: async updates => {
+			for (const [type, bucket] of Object.entries(updates))
+				for (const [id, value] of Object.entries(bucket)) {
+					if (value == null) draft.delete(keyOf(type, id))
+					else draft.set(keyOf(type, id), value)
+					onWrite?.(type)
+				}
+		}
+	})
+	const transaction = <T>(work: (keys: LegacyKeysStore) => Promise<T>): Promise<T> =>
+		queue(async () => {
+			const draft = new Map(rows)
+			const result = await work(view(draft))
+			rows = draft
+			return result
+		})
+	return {
+		get: (type: string, ids: string[]) => queue(async () => await view(rows).get(type, ids)),
+		set: (updates: Record<string, Record<string, unknown>>) =>
+			transaction(async keys => {
+				await keys.set(updates)
+			}),
+		bridgeTransaction: transaction,
+		count: () => rows.size
+	}
 }

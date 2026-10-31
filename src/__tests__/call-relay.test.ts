@@ -51,6 +51,10 @@ describe('VoIP relay transport adapter', () => {
 
 	it('closes a reconnect result that arrives after teardown without retaining it', async () => {
 		let resolveReconnect!: (handle: { send(data: Uint8Array): void; close(): void }) => void
+		let started!: () => void
+		const reconnectStarted = new Promise<void>(resolve => {
+			started = resolve
+		})
 		let closes = 0
 		let lateCloses = 0
 		const sent: number[] = []
@@ -66,6 +70,7 @@ describe('VoIP relay transport adapter', () => {
 						}
 					: new Promise(resolve => {
 							resolveReconnect = resolve
+							started()
 						})
 		})
 		const connection = await relay.transport.connect(endpoint(1), {
@@ -74,6 +79,7 @@ describe('VoIP relay transport adapter', () => {
 			onClose: () => undefined
 		})
 		const reconnecting = connection.reconnect(endpoint(2))
+		await reconnectStarted
 		await connection.close()
 		resolveReconnect({
 			send: data => sent.push(data[0]!),
@@ -86,5 +92,75 @@ describe('VoIP relay transport adapter', () => {
 		expect(sent).toEqual([])
 		expect(closes).toBe(1)
 		expect(lateCloses).toBe(1)
+	})
+})
+
+describe('relay teardown and write failures', () => {
+	it('retires an initial connection resolving after socket teardown', async () => {
+		let resolve!: (handle: { send(): void; close(): void }) => void
+		let started!: () => void
+		const starting = new Promise<void>(done => {
+			started = done
+		})
+		let closes = 0
+		let packets = 0
+		const relay = makeCallRelayTransport()
+		relay.setProvider({
+			createRelayConnection: async (_endpoint, events) => {
+				started()
+				const handle = await new Promise<{ send(): void; close(): void }>(done => {
+					resolve = done
+				})
+				events.onPacket(new Uint8Array([1]))
+				return handle
+			}
+		})
+		const connecting = relay.transport.connect(endpoint(1), {
+			onOpen() {},
+			onClose() {},
+			onPacket() {
+				packets++
+			}
+		})
+		await starting
+		await relay.closeAll()
+		resolve({
+			send() {},
+			close() {
+				closes++
+			}
+		})
+		await import('node:assert/strict').then(({ default: assert }) => assert.rejects(connecting, /superseded/))
+		expect(closes).toBe(1)
+		expect(packets).toBe(0)
+	})
+	it('reports async send rejection and releases the failed connection exactly once', async () => {
+		let closes = 0
+		const reasons: Array<string | undefined> = []
+		const relay = makeCallRelayTransport()
+		relay.setProvider({
+			async createRelayConnection() {
+				return {
+					async send() {
+						throw new Error('write rejected')
+					},
+					close() {
+						closes++
+					}
+				}
+			}
+		})
+		const connection = await relay.transport.connect(endpoint(1), {
+			onPacket() {},
+			onOpen() {},
+			onClose(reason) {
+				reasons.push(reason)
+			}
+		})
+		await connection.send(new Uint8Array([1]))
+		await connection.close()
+		await relay.closeAll()
+		expect(reasons).toEqual(['write rejected'])
+		expect(closes).toBe(1)
 	})
 })

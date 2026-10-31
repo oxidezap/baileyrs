@@ -70,6 +70,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 
 			return new Promise<void>((resolve, reject) => {
 				let settled = false
+				let disconnected = false
 
 				// Reject on abort. Without this, when `disconnect()` is called
 				// between WS creation and the `open` event firing (common
@@ -84,16 +85,13 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 					}
 				})
 
-				newWs.addEventListener(
-					'open',
-					() => {
-						if (ws !== newWs) return
-						settled = true
-						handle?.onConnected()
-						resolve()
-					},
-					listenerOpts
-				)
+				const opened = () => {
+					if (ws !== newWs || settled) return
+					settled = true
+					handle?.onConnected()
+					resolve()
+				}
+				newWs.addEventListener('open', opened, listenerOpts)
 
 				newWs.addEventListener(
 					'message',
@@ -105,18 +103,16 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 					listenerOpts
 				)
 
-				newWs.addEventListener(
-					'close',
-					() => {
-						if (ws !== newWs) return
-						handle?.onDisconnected()
-						if (!settled) {
-							settled = true
-							reject(new Error('WebSocket closed before open'))
-						}
-					},
-					listenerOpts
-				)
+				const closed = () => {
+					if (ws !== newWs || disconnected) return
+					disconnected = true
+					handle?.onDisconnected()
+					if (!settled) {
+						settled = true
+						reject(new Error('WebSocket closed before open'))
+					}
+				}
+				newWs.addEventListener('close', closed, listenerOpts)
 
 				newWs.addEventListener(
 					'error',
@@ -130,6 +126,8 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 					},
 					listenerOpts
 				)
+				if (newWs.readyState === WebSocket.OPEN) opened()
+				else if (newWs.readyState === WebSocket.CLOSING || newWs.readyState === WebSocket.CLOSED) closed()
 			})
 		},
 		send(data: Uint8Array) {
