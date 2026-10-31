@@ -394,7 +394,7 @@ const main = async (): Promise<void> => {
 				}
 			}
 		})
-		child?.on('exit', code => {
+		child?.on('close', code => {
 			console.log(`ffmpeg exited (${code}); audio input spent`)
 			// Only the current child clears the slot: a hangup followed by
 			// a new call installs a replacement first, and the old child's
@@ -488,7 +488,7 @@ const main = async (): Promise<void> => {
 			if (child !== videoEncoder || callForChild !== liveCallId || !liveCallId) return
 			for (const unit of splitter.push(new Uint8Array(chunk))) pushVideoUnit(unit)
 		})
-		child.on('exit', code => {
+		child.on('close', code => {
 			console.log(`ffmpeg (video) exited (${code})`)
 			if (videoEncoder === child) {
 				videoEncoder = null

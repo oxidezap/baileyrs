@@ -1550,3 +1550,47 @@ describe('call audio socket methods', () => {
 		expect(forgotten).toBe(0)
 	})
 })
+
+describe('call adapter review regressions', () => {
+	it('defaults an omitted keyframe urgency to coalesced', async () => {
+		const seen: string[] = []
+		const methods = makeCallAudioMethods(
+			stubCtx({
+				requestCallKeyframe: (_id: string, urgency: string) => {
+					seen.push(urgency)
+				}
+			}),
+			nullRouter()
+		)
+		await methods.requestCallKeyframe('CALL-DEFAULT')
+		expect(seen).toEqual(['coalesced'])
+	})
+	it('rejects invalid timing before acquiring a stream iterator', async () => {
+		const stream = new ReadableStream<Uint8Array>()
+		const methods = makeCallAudioMethods(stubCtx({ callPushAudio: () => true }), nullRouter())
+		await expect(
+			methods.startCallAudioPump('CALL-TIMING', stream, { timing: { mode: 'clock', packetDurationMs: 0 } })
+		).rejects.toThrow(/packetDurationMs/)
+		expect(stream.locked).toBe(false)
+	})
+	it('retains an incomplete hangup across repeated public endCall and signaling fallback', async () => {
+		for (const result of [
+			{ outcome: 'local-only', failure: 'offline' },
+			{ outcome: 'partly-notified', notified: 1, unconfirmed: 1 }
+		] as const) {
+			let ends = 0
+			let forgotten = 0
+			const ctx = stubCtx({ endCall: async () => (++ends === 1 ? result : { outcome: 'already-ended' }) })
+			const methods = makeCallAudioMethods(ctx, nullRouter(), {
+				onCallEnded: () => {
+					forgotten++
+				}
+			})
+			expect(await methods.endCall('CALL-RETRY')).toEqual(result)
+			expect(await methods.endCall('CALL-RETRY')).toEqual(result)
+			expect(forgotten).toBe(0)
+			expect(await endMediaCallIfPresent(ctx, 'CALL-RETRY')).toBe(false)
+			expect(ends).toBe(1)
+		}
+	})
+})

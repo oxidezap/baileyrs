@@ -1199,20 +1199,21 @@ export interface CallAudioMethodHooks {
 // weakly so teardown drops them: bounded like the terminal tombstones on
 // top, since IDs are unique per call.
 const INCOMPLETE_END_CALLS = 256
-const incompleteEndCalls = new WeakMap<object, Set<string>>()
-const incompleteSetFor = (ctx: SocketContext): Set<string> => {
+type IncompleteCallEndResult = Extract<CallEndResult, { outcome: 'local-only' } | { outcome: 'partly-notified' }>
+const incompleteEndCalls = new WeakMap<object, Map<string, IncompleteCallEndResult>>()
+const incompleteResultsFor = (ctx: SocketContext): Map<string, IncompleteCallEndResult> => {
 	let set = incompleteEndCalls.get(ctx)
 	if (!set) {
-		set = new Set<string>()
+		set = new Map<string, IncompleteCallEndResult>()
 		incompleteEndCalls.set(ctx, set)
 	}
 	return set
 }
-const markEndIncomplete = (ctx: SocketContext, callId: string): void => {
-	const set = incompleteSetFor(ctx)
-	set.add(callId)
+const markEndIncomplete = (ctx: SocketContext, callId: string, result: IncompleteCallEndResult): void => {
+	const set = incompleteResultsFor(ctx)
+	set.set(callId, { ...result })
 	if (set.size > INCOMPLETE_END_CALLS) {
-		const oldest = set.values().next()
+		const oldest = set.keys().next()
 		if (!oldest.done) set.delete(oldest.value)
 	}
 }
@@ -1224,7 +1225,7 @@ const markEndIncomplete = (ctx: SocketContext, callId: string): void => {
  * for the retry.
  */
 export const clearIncompleteEnd = (ctx: SocketContext, callId: string): void => {
-	incompleteSetFor(ctx).delete(callId)
+	incompleteResultsFor(ctx).delete(callId)
 }
 
 export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
@@ -1232,7 +1233,7 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 		// A previous hangup already ended the local handle without telling
 		// the peer: native re-end would answer `already-ended` and look
 		// notified, so skip it and let the caller signal instead.
-		if (incompleteSetFor(ctx).has(callId)) return false
+		if (incompleteResultsFor(ctx).has(callId)) return false
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {
@@ -1247,10 +1248,10 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 				return false
 			}
 			if (result.outcome === 'local-only' || result.outcome === 'partly-notified') {
-				markEndIncomplete(ctx, callId)
+				markEndIncomplete(ctx, callId, result)
 				return false
 			}
-			incompleteSetFor(ctx).delete(callId)
+			incompleteResultsFor(ctx).delete(callId)
 			return result.outcome === 'peer-notified' || result.outcome === 'already-ended'
 		} catch (err) {
 			const coded = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>
@@ -1432,7 +1433,10 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		/** End a live call. The local side is down whatever comes back. */
 		endCall: (callId: string): Promise<CallEndResult> => {
 			assertCallId('endCall', callId)
-			return withAudioClient('endCall', client => client.endCall(callId).then(normalizeCallEndResult))
+			return withAudioClient('endCall', client => {
+				const previous = incompleteResultsFor(ctx).get(callId)
+				return previous ? Promise.resolve({ ...previous }) : client.endCall(callId).then(normalizeCallEndResult)
+			})
 				.then(raw => {
 					// A shape outside the bridge union — unknown outcome or
 					// a known one with missing/mistyped fields — is not a
@@ -1455,11 +1459,13 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 					// `already-ended` and look notified) and signals
 					// straight away. A rejection keeps the entry for the
 					// same reason: the hangup may still be retried.
+					const previous = incompleteResultsFor(ctx).get(callId)
+					if (result.outcome === 'already-ended' && previous) return { ...previous }
 					if (result.outcome === 'peer-notified' || result.outcome === 'already-ended') {
-						incompleteSetFor(ctx).delete(callId)
+						incompleteResultsFor(ctx).delete(callId)
 						hooks.onCallEnded?.(callId)
 					} else {
-						markEndIncomplete(ctx, callId)
+						markEndIncomplete(ctx, callId, result)
 					}
 					return result
 				})
@@ -1588,7 +1594,12 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 		 */
 		requestCallKeyframe: async (callId: string, urgency?: CallKeyframeUrgency): Promise<void> => {
 			assertCallId('requestCallKeyframe', callId)
-			assertArgumentDomain('requestCallKeyframe', 'urgency', urgency, KEYFRAME_URGENCIES)
+			assertArgumentDomain(
+				'requestCallKeyframe',
+				'urgency',
+				urgency === undefined ? 'coalesced' : urgency,
+				KEYFRAME_URGENCIES
+			)
 			return withAudioClient('requestCallKeyframe', client => {
 				client.requestCallKeyframe(callId, urgency ?? 'coalesced')
 			})
@@ -1669,8 +1680,7 @@ export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter,
 			}
 			// Converted last: acquiring the iterator can hold a file, stream
 			// or reader whose release only runs on a created pump.
-			const packets = asCallAudioPacketSource('startCallAudioPump', source)
-			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), packets, options)
+			const pump = startCallAudioPump(data => client.callPushAudio(callId, data), source, options)
 			media.trackPump(callId, pump.stop, pump.done)
 			// A spent or failed pump only drops its own tracking: sibling
 			// pumps and sinks belong to the call, and only `ended` or teardown
