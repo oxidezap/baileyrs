@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import { expect } from '../../src/__tests__/expect.ts'
 import { auHasKeyframe, orientationFilter, splitVideoAccessUnits, splitPcm16Frames } from '../call-media.ts'
-import { makeCallTerminalTracker, parseArgs } from '../call.ts'
+import { parseArgs } from '../call.ts'
 
 describe('splitPcm16Frames', () => {
 	it('keeps arbitrary byte chunks until 960-sample frames are complete', () => {
@@ -30,24 +30,6 @@ describe('splitPcm16Frames', () => {
 		expect(Array.from(second[0]!)).toEqual([0x0605, 0x0807])
 		expect(Array.from(first[0]!)).toEqual([0x0201, 0x0403])
 		expect(splitter.flush()).toEqual([])
-	})
-})
-
-describe('call terminal updates', () => {
-	it('fences an in-flight accept on signaling-only timeout/reject/terminate, without media ended', async () => {
-		for (const status of ['timeout', 'reject', 'terminate'] as const) {
-			const calls = makeCallTerminalTracker()
-			let resolveAccept!: (callId: string) => void
-			const accepting = new Promise<string>(resolve => {
-				resolveAccept = resolve
-			})
-			const canStartCapture = accepting.then(id => !calls.isDead(id))
-			expect(calls.recordUpdate({ id: 'CALL-1', status: 'offer' })).toBe(false)
-			expect(calls.recordUpdate({ id: 'CALL-1', status })).toBe(true)
-			resolveAccept('CALL-1')
-			expect(await canStartCapture).toBe(false)
-			expect(calls.isDead('CALL-2')).toBe(false)
-		}
 	})
 })
 

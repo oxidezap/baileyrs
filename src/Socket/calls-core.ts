@@ -453,6 +453,7 @@ const MEDIA_EVENT_KINDS: readonly CallMediaEvent['kind'][] = [
 	'audio-codec-source-fixed',
 	'video-upgrade-requested',
 	'video-state-changed',
+	'video-keyframe-needed',
 	'ended'
 ]
 
@@ -1260,12 +1261,21 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 		}
 	})
 
-export const makeCallAudioMethods = (ctx: SocketContext, media: CallMediaRouter, hooks: CallAudioMethodHooks = {}) => {
+export const makeCallAudioMethods = (
+	ctx: SocketContext,
+	media: CallMediaRouter,
+	hooks: CallAudioMethodHooks = {},
+	startSignal?: AbortSignal
+) => {
 	/** Resolve the client once and push directly: per-packet `withClient` hops cost a tick each. */
 	const withAudioClient = async <T>(
 		bridgeMethod: keyof CallAudioBridgeClient,
 		operation: (client: CallAudioBridgeClient) => T | Promise<T>
-	): Promise<T> => ctx.withClient(client => operation(asCallAudioClient(client, bridgeMethod)))
+	): Promise<T> =>
+		ctx.withClient(client => {
+			startSignal?.throwIfAborted()
+			return operation(asCallAudioClient(client, bridgeMethod))
+		})
 
 	const openWriter = async <TWriter>(
 		method: string,

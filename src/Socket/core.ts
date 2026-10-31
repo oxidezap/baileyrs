@@ -62,6 +62,7 @@ import type { proto } from '../WAProto/runtime.ts'
 import { makeBlockingMethods } from './blocking.ts'
 import { makeBusinessMethods } from './business.ts'
 import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
+import { createVoipApi } from './call-sessions.ts'
 import { makeCallRelayTransport } from './call-relay.ts'
 import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent, clearIncompleteEnd } from './calls-core.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
@@ -1324,5 +1325,16 @@ const createWASocketFactoryInner = (
 		configurable: true
 	})
 
-	return sock
+	const voip = createVoipApi(sock, {
+		events: ev,
+		start: (peerOrId, incoming, video, signal) => {
+			const calls = makeCallAudioMethods(ctx, callMedia, {}, signal)
+			return incoming ? calls.acceptCallPcm(peerOrId, video) : calls.dialCallPcm(peerOrId, video)
+		},
+		isClosing: () => owner.isClosing(),
+		isTerminal: id => callMedia.isTerminalCall?.(id) ?? false,
+		onSocketEnd: handler => socketEndHandlers.push(handler),
+		reportError: (error, message) => unexpectedErrors.report(error, message)
+	})
+	return Object.assign(sock, { voip })
 }

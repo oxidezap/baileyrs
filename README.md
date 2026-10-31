@@ -308,18 +308,41 @@ Node sockets load their own VoIP engine and secure relay transport. Applications
 use the call API without creating a relay provider or running a relay server:
 
 ```ts
-const callId = await sock.dialCallPcm(peerJid)
-const stopPlayback = sock.onCallPcm(callId, frame => playPcm16(frame.data))
-await sock.pushCallPcm(callId, samples) // 960 mono Int16 samples at 16 kHz
-await sock.endCall(callId)
-stopPlayback()
+const call = await sock.voip.call(peerJid, {
+  media: () => ({ audio: { input: microphone, output: speaker } })
+})
+await call.setMuted(true)
+console.log(await call.stats())
+await call.end()
+await call.closed
 ```
 
-Accept an offer with `sock.acceptCallPcm(call.id)`. Use `sock.rejectCall(id, from)`
-for a ringing call or `sock.terminateCall(id, from)` for signaling and media teardown.
-`call` events preserve the offer's routing context, platform, video and group attributes.
-`call.media` reports media lifecycle and diagnostics. Encoded audio, synchronous
-writers, mute, statistics and H.264 Annex-B video methods remain available.
+`microphone` is a `ReadableStream<Int16Array>` with 960 mono samples per frame
+at 16 kHz. `speaker` is a `WritableStream<Int16Array>` receiving decoded PCM.
+The session owns their locks, pacing, backpressure and cancellation. Supply a
+factory that creates fresh streams for each call. It runs after native call
+admission, which can precede the peer answering. Its abort signal also covers
+socket shutdown and media errors. `dispose` can release resources outside the
+streams; cleanup has a one-second grace period and reports stalled disposers.
+
+Accept a ringing offer with `sock.voip.accept(offer, options)`. Repeated acceptance
+returns the same managed session. `sock.voip.active` lists active sessions;
+`closed` reports local/remote termination, cancellation, socket closure or a media
+error. An incomplete `end()` can be retried to finish notifying the peer.
+
+An optional `media.video(call, signal)` factory provides H.264 Annex-B input and
+`CallVideoFrame` output streams. It runs for initial video or after an explicit
+`call.video.start()` / `accept()` / `resume()`, and is disposed on stop. Return a
+`requestKeyframe` callback to produce an IDR when the backend asks for one.
+`call.video.requestKeyframe()` asks the remote encoder instead. The ffmpeg
+adapter restarts its encoder to produce fresh SPS/PPS and an IDR, coalescing
+restart requests within 500 ms.
+
+The existing `dialCallPcm`, `acceptCallPcm`, encoded audio, synchronous writers,
+mute, statistics and video methods remain available for applications that own
+their media lifecycle. Use `sock.rejectCall(id, from)` for a ringing call.
+`call` events preserve routing context, platform, video and group attributes;
+`call.media` carries media lifecycle, keyframe feedback and diagnostics.
 
 For microphone/file input and playback, install ffmpeg and ffplay, then run:
 
@@ -351,10 +374,9 @@ the signaling URL or TLS verification never changes the production media transpo
 
 This branch currently pins an immutable bridge #115 preview. That PR is still open;
 replace the preview with a verified registry release before releasing this package.
-The pinned separate backend rejects video until its upstream implementation is
-available. The video API and CLI are retained, but this is an existing backend
-limitation, not validated live video support. No authenticated calls were made for
-this change.
+The pinned backend supports PCM and encoded audio plus H.264 video. Integration
+checks use synthetic media and a local mock. No authenticated calls, hardware
+capture or production NAT traversal were validated for this change.
 
 ## Migrating from Upstream Baileys
 

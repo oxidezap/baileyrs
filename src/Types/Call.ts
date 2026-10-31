@@ -133,6 +133,7 @@ export type CallMediaEventKind =
 	| 'audio-codec-source-fixed'
 	| 'video-upgrade-requested'
 	| 'video-state-changed'
+	| 'video-keyframe-needed'
 	| 'ended'
 
 export type CallMediaEvent = {

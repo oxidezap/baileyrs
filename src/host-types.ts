@@ -1,3 +1,14 @@
+import type { VoipApi } from './Types/CallSession.ts'
+export type {
+	CallSession,
+	CallSessionClose,
+	CallMediaStreams,
+	CallSessionIoStats,
+	CallSessionMedia,
+	CallSessionOptions,
+	CallSessionVideoMedia,
+	VoipApi
+} from './Types/CallSession.ts'
 import type { VoipBackendCallbacks, VoipRelayTransport } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { ILogger } from './Utils/logger.ts'
 import type { WAMessage } from './host-shared.ts'
@@ -303,7 +314,7 @@ export type HostMessageGenerationOptions = {
 	font?: number
 }
 
-type HostCallOperations = {
+export type HostCallOperations = {
 	rejectCall(callId: string, callFrom: string): Promise<void>
 	terminateCall(callId: string, callFrom: string): Promise<void>
 	dialCall(peerJid: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string>
@@ -346,6 +357,7 @@ type HostCallOperations = {
 }
 
 type HostWASocketBase = {
+	voip: VoipApi
 	ev: HostSocketEventEmitter
 	logger: ILogger
 	ws: HostWebSocketClient

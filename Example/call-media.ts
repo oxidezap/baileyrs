@@ -1,3 +1,5 @@
+import type { CallSessionOptions, CallVideoFrame } from '../lib/index.js'
+import { processInput, processSink, restartableProcessInput } from './call-process.ts'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { endianness } from 'node:os'
 
@@ -170,65 +172,6 @@ export const spawnVideoEncoder = (source: string): ChildProcess => {
 	return ffmpeg
 }
 
-export const spawnPcmPlayer = (): { write(bytes: Uint8Array): void; stop(): void } => {
-	// Checked here, not at startup: signaling-only runs never play audio.
-	requireBinary('ffplay')
-	const ffplay = spawn(
-		'ffplay',
-		[
-			'-hide_banner',
-			'-loglevel',
-			'warning',
-			'-nodisp',
-			'-f',
-			's16le',
-			'-ch_layout',
-			'mono',
-			'-sample_rate',
-			'16000',
-			'pipe:0'
-		],
-		{ stdio: ['pipe', 'ignore', 'inherit'] }
-	)
-	ffplay.on('error', err => console.error('ffplay PCM failed to start:', (err as Error).message))
-	// A dead ffplay (headless host, lost audio device, malformed input)
-	// fails the next write with an async EPIPE on the stdin Writable — not
-	// a sync throw the try/catch below could see. Without this listener
-	// that 'error' event is unhandled and takes down the example.
-	ffplay.stdin?.on('error', err => console.error('ffplay PCM pipe broke:', (err as Error).message))
-	// A stalled-but-alive ffplay stops consuming while frames keep
-	// arriving: write() then returns false and Node queues unboundedly,
-	// so shed while the drain is pending instead of buffering the call.
-	let needDrain = false
-	ffplay.stdin?.on('drain', () => {
-		needDrain = false
-	})
-	return {
-		write: bytes => {
-			const stdin = ffplay.stdin
-			if (!stdin || stdin.destroyed) return
-			if (needDrain) return
-			try {
-				if (stdin.write(bytes) === false) {
-					needDrain = true
-					console.log('ffplay PCM stalled: shedding until drain')
-				}
-			} catch {
-				// ignore
-			}
-		},
-		stop: () => {
-			try {
-				ffplay.stdin?.end()
-				ffplay.stdin?.destroy()
-			} catch {
-				// ignore
-			}
-			ffplay.kill('SIGKILL')
-		}
-	}
-}
-
 const MAX_VIDEO_AU_BUFFER = 4 * 1024 * 1024
 
 /** Split a raw Annex-B byte stream into access units on AUD boundaries (NAL type 9). */
@@ -383,78 +326,141 @@ export const auHasKeyframe = (au: Uint8Array): boolean => {
 	return false
 }
 
-/** ffplay renders raw H.264 fed on stdin. One window per call, like audio. */
-export const spawnVideoPlayer = (orientation = 0): { write(unit: Uint8Array): void; stop(): void } => {
+const spawnPlayback = (video: boolean, orientation = 0): ChildProcess => {
 	requireBinary('ffplay')
 	const filter = orientationFilter(orientation)
-	const vfArgs = filter ? ['-vf', filter] : []
-	const ffplay = spawn(
-		'ffplay',
-		[
-			'-hide_banner',
-			'-loglevel',
-			'error',
-			'-window_title',
-			'WhatsApp Video Call',
-			'-avioflags',
-			'direct',
-			'-fflags',
-			'nobuffer',
-			'-flags',
-			'low_delay',
-			'-probesize',
-			'32',
-			'-analyzeduration',
-			'0',
-			'-fpsprobesize',
-			'0',
-			'-max_delay',
-			'0',
-			'-framedrop',
-			'-use_wallclock_as_timestamps',
-			'1',
-			'-f',
-			'h264',
-			'-framerate',
-			'15',
-			...vfArgs,
-			'-i',
-			'pipe:0'
-		],
-		{ stdio: ['pipe', 'ignore', 'inherit'] }
-	)
-	ffplay.on('error', err => console.error('ffplay (video) failed to start:', (err as Error).message))
-	// Same async-EPIPE hazard as the audio player above: a dead viewer
-	// surfaces it on the stdin stream, outside any try/catch.
-	ffplay.stdin?.on('error', err => console.error('ffplay (video) pipe broke:', (err as Error).message))
-	// Same stall hazard: shed while the drain is pending rather than
-	// queueing access units without bound.
-	let needDrain = false
-	ffplay.stdin?.on('drain', () => {
-		needDrain = false
-	})
-	return {
-		write: unit => {
-			const stdin = ffplay.stdin
-			if (!stdin || stdin.destroyed) return
-			if (needDrain) return
-			try {
-				if (stdin.write(unit) === false) {
-					needDrain = true
-					console.log('ffplay (video) stalled: shedding until drain')
+	const input = video
+		? [
+				'-window_title',
+				'WhatsApp Video Call',
+				'-avioflags',
+				'direct',
+				'-fflags',
+				'nobuffer',
+				'-flags',
+				'low_delay',
+				'-probesize',
+				'32',
+				'-analyzeduration',
+				'0',
+				'-fpsprobesize',
+				'0',
+				'-max_delay',
+				'0',
+				'-framedrop',
+				'-use_wallclock_as_timestamps',
+				'1',
+				'-f',
+				'h264',
+				'-framerate',
+				'15',
+				...(filter ? ['-vf', filter] : []),
+				'-i',
+				'pipe:0'
+			]
+		: ['-nodisp', '-f', 's16le', '-ch_layout', 'mono', '-sample_rate', '16000', 'pipe:0']
+	return spawn('ffplay', ['-hide_banner', '-loglevel', 'error', ...input], { stdio: ['pipe', 'ignore', 'inherit'] })
+}
+
+export const makeFfmpegCallMedia =
+	(options: { audioFile?: string; mic?: string; video?: string }): NonNullable<CallSessionOptions['media']> =>
+	(call, signal) => {
+		signal.throwIfAborted()
+		let encoder: ReturnType<typeof processInput<Int16Array>> | undefined
+		let playback: ReturnType<typeof processSink> | undefined
+		try {
+			if (options.audioFile || options.mic !== undefined) {
+				requireBinary('ffmpeg')
+				const child = spawnPcmEncoder(options)
+				if (child) encoder = processInput(child, signal, splitPcm16Frames())
+			}
+			const output = new WritableStream<Int16Array>({
+				start(controller) {
+					playback = processSink(spawnPlayback(false), signal, error => controller.error(error))
+				},
+				write(samples) {
+					return playback!.write(samplesToS16le(samples))
+				},
+				abort() {
+					return playback!.stop()
 				}
-			} catch {
-				// ignore
+			})
+			return {
+				audio: {
+					input: encoder?.input,
+					output,
+					dispose: async () => {
+						await Promise.all([encoder?.dispose(), playback?.stop()])
+					}
+				},
+				video: (session, videoSignal) => {
+					videoSignal.throwIfAborted()
+					let capture: ReturnType<typeof restartableProcessInput<Uint8Array>> | undefined
+					let player: ReturnType<typeof processSink> | undefined
+					let orientation: number | undefined
+					let pendingOrientation: number | undefined
+					let seenKeyframe = false
+					let frames = 0
+					try {
+						if (options.video !== undefined) {
+							requireBinary('ffmpeg')
+							capture = restartableProcessInput(
+								() => processInput(spawnVideoEncoder(options.video!), videoSignal, splitVideoAccessUnits()),
+								videoSignal
+							)
+						}
+						let outputController: WritableStreamDefaultController
+						const videoOutput = new WritableStream<CallVideoFrame>({
+							start(controller) {
+								outputController = controller
+							},
+							async write(frame) {
+								frames++
+								if (orientation !== undefined && orientation !== frame.orientation)
+									pendingOrientation = frame.orientation
+								if (frame.keyframe) {
+									seenKeyframe = true
+									if (pendingOrientation !== undefined) {
+										await player?.stop()
+										player = undefined
+										orientation = pendingOrientation
+										pendingOrientation = undefined
+									}
+								} else if (!seenKeyframe) {
+									if (frames % 15 === 1) await session.video.requestKeyframe('immediate')
+									return
+								}
+								if (!player) {
+									orientation = frame.orientation
+									player = processSink(spawnPlayback(true, orientation), videoSignal, error =>
+										outputController.error(error)
+									)
+								}
+								await player.write(frame.data)
+							},
+							abort() {
+								return player?.stop()
+							}
+						})
+						void call.video.requestKeyframe().catch(() => undefined)
+						return {
+							input: capture?.input,
+							requestKeyframe: capture?.requestKeyframe,
+							output: videoOutput,
+							dispose: async () => {
+								await Promise.all([capture?.dispose(), player?.stop()])
+							}
+						}
+					} catch (error) {
+						void capture?.dispose()
+						void player?.stop()
+						throw error
+					}
+				}
 			}
-		},
-		stop: () => {
-			try {
-				ffplay.stdin?.end()
-				ffplay.stdin?.destroy()
-			} catch {
-				// ignore
-			}
-			ffplay.kill('SIGKILL')
+		} catch (error) {
+			void encoder?.dispose()
+			void playback?.stop()
+			throw error
 		}
 	}
-}
