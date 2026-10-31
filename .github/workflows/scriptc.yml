@@ -1,0 +1,47 @@
+name: scriptc experiment
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  proof-of-concept:
+    name: Reproduce scriptc 0.4.0 blockers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # This experiment pins the bridge bytes in the published PR head.
+        # A synthetic merge can pick up an unrelated bridge upgrade from main.
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.19.0'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Install linker
+        run: sudo apt-get update -qq && sudo apt-get install -y clang
+      - name: Install verified official compiler
+        run: bash experiments/scriptc/install.sh "$RUNNER_TEMP/scriptc-0.4.0"
+      - name: Build and run isolated probes and full example analysis
+        id: experiment
+        env:
+          SCRIPTC: ${{ runner.temp }}/scriptc-0.4.0/bin/scriptc
+          SCRIPTC_CACHE_DIR: ${{ runner.temp }}/scriptc-cache
+        run: node experiments/scriptc/run.mjs
+      - name: Preserve diagnostics and native build evidence
+        if: ${{ always() && steps.experiment.outputs.results != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scriptc-0.4.0-evidence
+          path: ${{ steps.experiment.outputs.results }}
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Report the experiment's meaning
+        if: always()
+        env:
+          SCRIPTC_RUN_RESULTS: ${{ steps.experiment.outputs.results }}
+        run: node experiments/scriptc/report.mjs >> "$GITHUB_STEP_SUMMARY"
