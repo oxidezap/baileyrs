@@ -1,4 +1,4 @@
-import type { CallSessionMedia, CallSessionVideoMedia } from '../Types/CallSession.ts'
+import type { CallSession, CallSessionMedia, CallSessionVideoMedia } from '../Types/CallSession.ts'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { describe, it } from 'node:test'
@@ -462,9 +462,11 @@ describe('managed call cancellation and media replacement', () => {
 			})
 		})
 		const starting = call.video.start()
-		await call.video.stop()
+		await tick()
+		const stopping = call.video.stop()
+		const cancelled = assert.rejects(starting, { name: 'AbortError' })
 		native.resolve()
-		await assert.rejects(starting, { name: 'AbortError' })
+		await Promise.all([stopping, cancelled])
 		assert.equal(created, 0)
 		await call.end()
 	})
@@ -535,5 +537,67 @@ describe('managed encoder feedback', () => {
 		assert.equal((await call.closed).reason, 'media-error')
 		await tick()
 		assert.equal(h.counts.ends, 1)
+	})
+})
+
+describe('video cancellation and native ordering', () => {
+	it('keeps audio alive when an initial video factory is cancelled remotely', async () => {
+		const h = harness(),
+			factory = deferred<CallSessionVideoMedia>(),
+			entered = deferred<CallSession>()
+		const opening = h.api.call('peer', {
+			video: true,
+			media: () => ({
+				video: session => {
+					entered.resolve(session)
+					return factory.promise
+				}
+			})
+		})
+		const pending = await entered.promise
+		h.events.emit('call.media', { kind: 'video-state-changed', state: 0, callId: pending.id })
+		const call = await opening
+		assert.equal(call.lifecycle, 'open')
+		assert.equal(h.counts.ends, 0)
+		assert.equal(h.api.active.length, 1)
+		factory.resolve({})
+		await tick()
+		await call.end()
+	})
+	it('does not let an old stop reach the engine after a new resume', async () => {
+		const h = harness(),
+			disposing = deferred<void>(),
+			entered = deferred<void>()
+		const native: string[] = []
+		h.operations.stopCallVideo = async () => {
+			native.push('stop')
+		}
+		h.operations.resumeCallVideo = async () => {
+			native.push('resume')
+		}
+		let created = 0
+		const call = await h.api.call('peer', {
+			video: true,
+			media: () => ({
+				video: () =>
+					++created === 1
+						? {
+								dispose() {
+									entered.resolve()
+									return disposing.promise
+								}
+							}
+						: {}
+			})
+		})
+		const stopping = call.video.stop()
+		await entered.promise
+		await call.video.resume()
+		disposing.resolve()
+		await stopping
+		assert.deepEqual(native, ['stop', 'resume'])
+		assert.equal(created, 2)
+		assert.equal(call.lifecycle, 'open')
+		await call.end()
 	})
 })

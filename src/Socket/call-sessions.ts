@@ -46,6 +46,12 @@ export interface CallSessionRuntime {
 	reportError(error: unknown, message: string): void
 }
 
+class VideoSetupCancelled extends DOMException {
+	constructor() {
+		super('Video setup cancelled', 'AbortError')
+	}
+}
+
 const abortError = (): Error => new DOMException('Call operation aborted', 'AbortError')
 
 const disposeUnusedMedia = (media: CallSessionMedia, reason: unknown): Promise<unknown>[] => {
@@ -268,6 +274,12 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			}
 			const requireOpen = <T>(operation: () => Promise<T>): Promise<T> =>
 				lifecycle === 'open' ? operation() : Promise.reject(new Error('Call session is closed'))
+			let nativeVideo = Promise.resolve()
+			const videoOperation = (operation: () => Promise<void>): Promise<void> => {
+				const result = nativeVideo.then(() => requireOpen(operation))
+				nativeVideo = result.catch(() => undefined)
+				return result
+			}
 			const handle: CallSession = {
 				id,
 				peer,
@@ -289,14 +301,14 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 						}),
 					stop: () =>
 						requireOpen(async () => {
-							await stopVideoMedia()
-							await operations.stopCallVideo(id)
+							const stopping = videoOperation(() => operations.stopCallVideo(id))
+							await Promise.all([stopVideoMedia(), stopping])
 						}),
 					resume: () =>
 						requireOpen(async () => {
 							await enableVideo(() => operations.resumeCallVideo(id))
 						}),
-					retry: () => requireOpen(() => operations.retryCallVideoUpgrade(id)),
+					retry: () => requireOpen(() => videoOperation(() => operations.retryCallVideoUpgrade(id))),
 					requestKeyframe: urgency => requireOpen(() => operations.requestCallKeyframe(id, urgency)),
 					diagnostics: () => requireOpen(() => operations.getCallVideoDiagnostics(id))
 				},
@@ -358,8 +370,10 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				const scope = createCallMediaScope(
 					controller.signal,
 					error => {
+						if (videoScope !== scope) return
+						const stopping = videoOperation(() => operations.stopCallVideo(id))
 						void stopVideoMedia()
-						void operations.stopCallVideo(id).catch(failure => runtime.reportError(failure, 'stopping failed video'))
+						void stopping.catch(failure => runtime.reportError(failure, 'stopping failed video'))
 						runtime.reportError(error, 'video media failed')
 					},
 					runtime.reportError
@@ -392,18 +406,26 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 						)
 				})().catch(async error => {
 					const cancelled = scope.signal.aborted
-					if (videoScope === scope) await stopVideoMedia()
-					if (!cancelled && lifecycle === 'open')
-						await operations
-							.stopCallVideo(id)
-							.catch(failure => runtime.reportError(failure, 'stopping failed video setup'))
+					if (videoScope === scope) {
+						const stopping =
+							!cancelled && lifecycle === 'open'
+								? videoOperation(() => operations.stopCallVideo(id)).catch(failure =>
+										runtime.reportError(failure, 'stopping failed video setup')
+									)
+								: Promise.resolve()
+						await Promise.all([stopVideoMedia(), stopping])
+					}
+					if (cancelled) throw new VideoSetupCancelled()
 					throw error
 				})
 				return videoSetup
 			}
 			const enableVideo = async (operation: () => Promise<void>): Promise<void> => {
 				const generation = ++videoGeneration
-				await operation()
+				await videoOperation(() => {
+					if (generation !== videoGeneration) throw new VideoSetupCancelled()
+					return operation()
+				})
 				if (lifecycle !== 'open' || generation !== videoGeneration)
 					throw new DOMException('Video operation cancelled', 'AbortError')
 				videoDesired = true
@@ -462,7 +484,10 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 							)
 					}
 					videoFactory = media.video
-					if (videoDesired) await prepareVideo()
+					if (videoDesired)
+						await prepareVideo().catch(error => {
+							if (!(error instanceof VideoSetupCancelled) || lifecycle !== 'open') throw error
+						})
 				} catch (error) {
 					failed(error)
 					throw error
