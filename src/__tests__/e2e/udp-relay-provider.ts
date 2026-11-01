@@ -68,6 +68,7 @@ export const makeUdpRelayProvider = (
 						resolve()
 					})
 				})
+				if (disposed) throw new Error('UDP relay provider is closed')
 			} catch (err) {
 				live.delete(socket)
 				closeSocket()
@@ -76,7 +77,7 @@ export const makeUdpRelayProvider = (
 			let finished = false
 			let opened = false
 			const markOpen = (): void => {
-				if (!opened) {
+				if (!opened && !disposed && !socketClosed) {
 					opened = true
 					events.onOpen()
 				}
@@ -87,6 +88,7 @@ export const makeUdpRelayProvider = (
 				events.onClose(reason)
 			}
 			socket.on('message', (message: Buffer) => {
+				if (disposed || socketClosed) return
 				markOpen()
 				events.onPacket(new Uint8Array(message))
 			})
