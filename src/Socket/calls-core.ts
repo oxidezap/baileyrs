@@ -1010,7 +1010,6 @@ export const startCallAudioPump = (
 		let exhausted = false
 		let pulls = 0
 		let nextDeadline = 0
-		let clockOriginMs = 0
 		// The loop throws on two documented paths: `source.next()` rejects,
 		// and `push()` throws when the call already ended. Both converge on
 		// the same cleanup below: the release runs and the abort listener
@@ -1053,10 +1052,7 @@ export const startCallAudioPump = (
 						}
 						if (stopped) break
 					}
-					// Anchored before the pull, not after: a source with
-					// nontrivial `next()` latency (file/stream readers)
-					// sets the grid origin below instead of stretching
-					// every interval by its read time.
+					// Normal read latency belongs inside the packet period.
 					const pullStarted = clockMs !== undefined ? Date.now() : 0
 					const packet = await Promise.race([source.next(), interruptCurrent])
 					if (stopped) break
@@ -1072,10 +1068,6 @@ export const startCallAudioPump = (
 					// Async pushes race the same interrupt as pulls: a stalled
 					// push settles `done` on stop instead of hanging it, and a
 					// packet whose push loses the race counts neither way.
-					// Cadence stays in the source, never here. The deadline
-					// advances from the absolute schedule in pullStarted,
-					// never from completion times: neither read latency nor
-					// a slow async push may add a period per packet.
 					const pending = push(packet)
 					if (typeof pending === 'boolean') {
 						if (pending) {
@@ -1107,13 +1099,10 @@ export const startCallAudioPump = (
 					}
 					pulls++
 					if (clockMs !== undefined) {
-						// Absolute slot grid from the first pull: an overdue
-						// read skips its wait (the wait below computes <= 0)
-						// instead of sleeping another full period after it,
-						// so slow reads cost their own latency, never an
-						// extra cadence on top — and the phase never drifts.
-						if (pulls === 1) clockOriginMs = pullStarted
-						nextDeadline = clockOriginMs + pulls * clockMs
+						nextDeadline = (pulls === 1 ? pullStarted : nextDeadline) + clockMs
+						// Skip missed slots after a stall instead of replaying them in a burst.
+						const now = Date.now()
+						if (nextDeadline <= now) nextDeadline = now + clockMs
 					}
 				} finally {
 					if (wakeParkedPull === wakeCurrent) wakeParkedPull = undefined
