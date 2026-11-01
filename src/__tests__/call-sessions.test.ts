@@ -114,6 +114,61 @@ const harness = () => {
 	}
 }
 
+describe('factory source cancellation', () => {
+	for (const action of ['stop', 'replace'] as const)
+		it(`${action} during writer acquisition leaves session startup active`, async () => {
+			const h = harness(),
+				pending = deferred<CallPcmWriter>(),
+				entered = deferred<CallSession>()
+			let openings = 0,
+				lateClosed = 0,
+				cancelled = 0
+			const original = h.operations.openCallPcmWriter
+			h.operations.openCallPcmWriter = id => (++openings === 1 ? pending.promise : original(id))
+			const opening = h.api.call('peer@s.whatsapp.net', {
+				media(call) {
+					entered.resolve(call)
+					return {
+						audio: {
+							input: new ReadableStream<Int16Array>({
+								cancel() {
+									cancelled++
+								}
+							})
+						}
+					}
+				}
+			})
+			void opening.catch(() => undefined)
+			const call = await entered.promise
+			await tick()
+			if (action === 'stop') await call.audio.stop()
+			else
+				await call.audio.play(
+					new ReadableStream<Int16Array>({
+						start(controller) {
+							controller.close()
+						}
+					})
+				)
+			assert.equal(await opening, call)
+			assert.equal(call.lifecycle, 'open')
+			assert.equal(h.counts.ends, 0)
+			assert.equal(cancelled, 1)
+			pending.resolve({
+				tryWrite() {
+					return true
+				},
+				close() {
+					lateClosed++
+				}
+			})
+			await tick()
+			assert.equal(lateClosed, 1)
+			await call.end()
+		})
+})
+
 describe('managed call sessions', () => {
 	it('owns PCM streams, call binding and idempotent end', async () => {
 		const h = harness()

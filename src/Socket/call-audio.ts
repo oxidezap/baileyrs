@@ -140,7 +140,9 @@ export const createCallAudio = (config: {
 				await scope.wait(lease.done)
 				if (scope.signal.aborted) throw signal?.aborted ? signal.reason : abortError()
 			} catch (error) {
-				rejectOpened(error)
+				// Detaching a source must not fail the enclosing media factory startup.
+				if (scope.signal.aborted && !config.signal.aborted) resolveOpened()
+				else rejectOpened(error)
 				if (setupComplete && !scope.signal.aborted) failed?.(error)
 				throw signal?.aborted ? signal.reason : error
 			} finally {
