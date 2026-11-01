@@ -1,26 +1,6 @@
 name: CI
 
-# Everything a change has to pass, in one workflow: lint, tests, the build and
-# the end-to-end suite. They used to be four files that differed only in the
-# command at the bottom, which cost more than tidiness.
-#
-# Two things that were wrong and are fixed here:
-#
-#   * Every one of them installed with a plain `npm ci`, and `prepare` builds
-#     this package — so a pull request ran the build four times and used it
-#     once. Only the `build` job needs it, and it is the only job that runs it.
-#     Verified rather than assumed: `npm run lint` and `npm test` both pass with
-#     no `lib/` present at all.
-#
-#   * A release pull request merging to main ran all four again on a diff that
-#     is a version string and a changelog entry, and then `release.yml` ran lint
-#     and the tests a third time on the same commit. The `changes` job below
-#     decides that from the diff, and `release.yml` now calls this workflow
-#     instead of re-implementing a subset of it.
-#
-# `workflow_call` is what makes the second one work: the release runs this exact
-# file, so the bar a tag faces is the bar a pull request faces — including the
-# e2e suite, which the release used to skip entirely.
+# Reusable CI for PRs, main and releases.
 
 on:
   push:
@@ -41,11 +21,7 @@ on:
 permissions:
   contents: read
 
-# `github.workflow` is the *caller's* name inside a called workflow, so a
-# release's run of this file lands in its own group rather than sharing one with
-# pushes to main — which would let a later push cancel the run a publish is
-# waiting on. Cancelling is for pull requests, where a newer commit is already
-# behind the run being dropped.
+# Include the caller workflow so a main push cannot cancel release verification.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -54,10 +30,7 @@ env:
   NODE_VERSION: '24'
 
 jobs:
-  # release-please keeps its release pull request rebased on main, so every
-  # merge re-runs the whole suite on a diff that cannot fail: nothing any job
-  # reads has changed. This decides that from the changed files rather than from
-  # the commit message or its author — a message is a claim anyone can make.
+  # Skip only version/changelog-only diffs. Decide from files, not commit messages.
   changes:
     name: What changed
     runs-on: ubuntu-latest
@@ -65,10 +38,7 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
-      # No checkout: the compare API answers this in one request, and it gives
-      # the same answer for a pull request and for the push that merges it —
-      # which is what stops a change from being skipped on one and taken on the
-      # other.
+      # Use the compare API for both PR and push diffs.
       - id: decide
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,15 +55,12 @@ jobs:
             exit 0
           }
 
-          # The release path asks for everything. The commit it publishes is the
-          # version bump this job exists to skip, so the skip has to be off for
-          # the one run where these checks are the only opinion on that commit.
+          # Releases always run every check.
           if [ "$FULL" = true ]; then
             decide true "called by the release workflow"
           fi
 
-          # A branch's first push has no `before`, and a new branch has nothing
-          # to be compared against.
+          # Run all checks when there is no comparable base.
           case "$BASE" in
             "" | 0000000000000000000000000000000000000000)
               decide true "no base commit to compare against" ;;
@@ -102,9 +69,7 @@ jobs:
           compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
           count=$(jq '.files | length' <<<"$compare")
 
-          # The compare API stops listing files at 300, and an empty list means
-          # this is reading something other than a normal push. Neither is a
-          # basis for skipping anything.
+          # Treat truncated or empty compare results as requiring all checks.
           if [ "$count" -eq 0 ] || [ "$count" -ge 300 ]; then
             decide true "$count files listed by the compare API"
           fi
@@ -112,33 +77,22 @@ jobs:
           jq -r '.files[] | "changes:   \(.status)  \(.filename)"' <<<"$compare"
 
           skippable=$(jq '
-            # Two files nothing here reads. release-please writes both; nothing
-            # else does.
+            # Release notes and the version manifest do not affect checked code.
             def inert:
               .filename == "CHANGELOG.md"
               or .filename == ".release-please-manifest.json";
 
-            # The +/- lines of the patch itself, minus the ---/+++ headers.
+            # Exclude diff headers from changed lines.
             def patch_lines:
               [ (.patch // "") | split("\n")[]
                 | select(test("^[+-]") and (test("^(\\+\\+\\+|---)") | not)) ];
 
-            # `additions` and `deletions` are counted by GitHub over the whole
-            # diff; `patch` is a rendering of it the API may shorten or omit. If
-            # the two disagree, this is looking at part of a change and has no
-            # business classifying it.
+            # Reject incomplete patches by checking GitHub line counts.
             def patch_is_whole:
               ([ patch_lines[] | select(startswith("+")) ] | length) == (.additions // -1)
               and ([ patch_lines[] | select(startswith("-")) ] | length) == (.deletions // -1);
 
-            # These two do feed the jobs below — scripts, dependencies, the
-            # `files` list — so they cannot be waved through by name. A release
-            # bump rewrites the "version" string in them and nothing else, and
-            # that string is read by npm at publish, never by anything CI runs.
-            #
-            # Every changed line must be a whole version property. Anchoring
-            # only the start would read `"version": "0.2.10", "scripts": {…}` as
-            # a version bump, and JSON is free to put both on one line.
+            # Package files may skip checks only when their version fields are the sole changes.
             def version_bump_only:
               (.filename == "package.json" or .filename == "package-lock.json")
               and patch_is_whole
@@ -171,8 +125,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # --ignore-scripts skips `prepare`, so lint builds `lib` itself before
-      # the example typecheck reads it. `tsc && oxlint` still only read `src`.
+      # Lint builds lib for the example typecheck.
       - run: npm ci --ignore-scripts
 
       - run: npm run lint
@@ -195,8 +148,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # `node --test` also discovers `Example/__tests__`, which imports
-      # `../lib/index.js`: build it first, since `lib/` is gitignored.
+      # Example tests import lib, so build before test discovery.
       - run: npm ci --ignore-scripts
 
       - run: npm run build
@@ -236,8 +188,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # The one job that wants a build, so the one job that runs one — rather
-      # than letting `prepare` build during install and then building again.
+      # Build once here.
       - run: npm ci --ignore-scripts
 
       - run: npm run build
@@ -246,15 +197,10 @@ jobs:
 
       - run: npm run check:host-boundaries
 
-      # The publish guard, run on every pull request rather than for the first
-      # time at `prepack` on a release. A tarball that ships sourcemaps or
-      # duplicated files is a defect of the diff that introduced it, and this is
-      # where that diff can still be changed.
+      # Check the package before publishing.
       - run: node scripts/check-pack.ts
 
-      # Exercise the installed tarball, not source aliases: compile as an
-      # upstream consumer, then initialize the host package inside workerd with
-      # nodejs_compat deliberately absent. No Cloudflare credentials are used.
+      # Validate the installed tarball and upstream alias, including host initialization.
       - run: npm run test:packaged
 
       - run: npm run compat:audit:proto
@@ -263,9 +209,7 @@ jobs:
 
       - run: npm run compat:audit:lifecycle
 
-      # Only the release path takes the build away with it: `publish` ships
-      # these exact bytes instead of building its own copy next to the npm
-      # token. Nothing consumes it on a pull request, so nothing is uploaded.
+      # Only releases upload the verified build for publication.
       - name: Record the tree publish must ship
         if: ${{ inputs.full }}
         run: |
@@ -282,14 +226,13 @@ jobs:
             lib
             lib.sha256
           if-no-files-found: error
-          # Long enough to survive an `npm-publish` approval that waits
-          # overnight, short enough that a build nobody published expires.
+          # Allow time for environment approval before publication.
           retention-days: 7
 
   e2e:
     name: E2E tests
     needs: changes
-    # Fork PRs get no secrets, so they can't pull the private mock-server image.
+    # Fork PRs cannot pull the private mock image without secrets.
     if: >-
       needs.changes.outputs.run == 'true' &&
       (github.event_name != 'pull_request' ||
@@ -342,17 +285,11 @@ jobs:
         env:
           SOCKET_URL: "wss://127.0.0.1:8080/ws/chat"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-          # The lane publishes the mock UDP relay above: the media tests
-          # read this marker and fail (instead of skipping) when the
-          # relay-allocated event never arrives.
+          # Require the local UDP relay in media E2E tests.
           BARBACK_RELAY_PORT: "3479"
         run: npm run test:e2e
 
-  # The one check worth requiring on the branch. It has to report on every run,
-  # including the ones where everything above was skipped, or a required check
-  # that never appears would block the release pull request forever — so
-  # `always()` here, and the verdict is read off the results rather than off
-  # `success()`.
+  # Require this aggregate check, including when release-only diffs skip jobs.
   success:
     name: All checks passed
     if: always()
@@ -362,10 +299,7 @@ jobs:
     steps:
       - name: Fail unless every job passed or was deliberately skipped
         env:
-          # `skipped` is a pass: it is the answer `changes` gives for a diff that
-          # reaches nothing, and the answer the e2e job gives on a fork pull
-          # request that has no credentials for the mock server. `cancelled` is
-          # not — that is a run that never finished having an opinion.
+          # Skipped jobs are expected for release-only diffs.
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
           set -euo pipefail

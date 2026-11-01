@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.13](https://github.com/oxidezap/baileyrs/compare/v0.3.12...v0.3.13) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** update published bridge to 0.26.4 ([#180](https://github.com/oxidezap/baileyrs/issues/180)) ([5539172](https://github.com/oxidezap/baileyrs/commit/5539172598c8ec16f66150fbbcbb4739dc2b973b))
+
 ## [0.3.12](https://github.com/oxidezap/baileyrs/compare/v0.3.11...v0.3.12) (2026-10-31)
 
 
