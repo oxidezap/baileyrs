@@ -13,7 +13,7 @@ import { getWasmMemoryBytes } from '@oxidezap/whatsapp-rust-bridge'
 import P, { type Logger } from 'pino'
 import * as process from 'node:process'
 import { runOfflineSmoke } from './offline-smoke.ts'
-import { v8MemoryLines } from './memory-v8.ts'
+import { optionalV8MemoryLines } from './memory-v8.ts'
 
 const offlineSmoke = process.argv.includes('--offline-smoke')
 if (
@@ -346,7 +346,7 @@ const startSock = async () => {
 
 							if (text === 'memory') {
 								const mem = process.memoryUsage()
-								const v8Lines = v8MemoryLines(process.versions.v8, process.getBuiltinModule)
+								const v8Lines = optionalV8MemoryLines(process.versions.v8, process.getBuiltinModule)
 								const wasm = getWasmMemoryBytes()
 								const diag = await sock.waClient!.getMemoryDiagnostics()
 								const diagnosticEntries = Object.entries(diag)

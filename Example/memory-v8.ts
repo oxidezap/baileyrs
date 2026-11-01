@@ -46,3 +46,13 @@ export function v8MemoryLines(version: string | undefined, loadBuiltin: (name: s
 		`  Peak malloced:     ${mib(numericField(heap, 'peak_malloced_memory'))}`
 	]
 }
+
+/** An unavailable V8 provider must not discard the report's portable sections. */
+export function optionalV8MemoryLines(version: string | undefined, loadBuiltin: (name: string) => unknown): string[] {
+	try {
+		return v8MemoryLines(version, loadBuiltin)
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error)
+		return ['── V8 diagnostics ──', `  Unavailable: ${reason}`]
+	}
+}

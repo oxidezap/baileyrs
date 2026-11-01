@@ -17,6 +17,8 @@ test('offline guard rejects UDP, TCP and HTTP listeners as well as outbound conn
 		import net from 'node:net';
 		import dgram from 'node:dgram';
 		import http from 'node:http';
+		import https from 'node:https';
+		import tls from 'node:tls';
 		const blocked = /offline smoke attempted network access/;
 		assert.throws(() => dgram.createSocket('udp4'), blocked);
 		for (const method of ['bind', 'send', 'connect'])
@@ -26,6 +28,12 @@ test('offline guard rejects UDP, TCP and HTTP listeners as well as outbound conn
 			server.close();
 		}
 		assert.throws(() => net.connect(1, '127.0.0.1'), blocked);
+		assert.throws(() => net.createConnection(1, '127.0.0.1'), blocked);
+		assert.throws(() => tls.connect(1, '127.0.0.1'), blocked);
+		for (const [client, scheme] of [[http, 'http'], [https, 'https']]) {
+			assert.throws(() => client.request(scheme + '://127.0.0.1:1'), blocked);
+			assert.throws(() => client.get(scheme + '://127.0.0.1:1'), blocked);
+		}
 		assert.throws(() => fetch('http://127.0.0.1'), blocked);
 		assert.throws(() => new WebSocket('ws://127.0.0.1'), blocked);
 	`

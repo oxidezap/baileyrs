@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { v8MemoryLines } from '../../Example/memory-v8.ts'
+import { optionalV8MemoryLines, v8MemoryLines } from '../../Example/memory-v8.ts'
 
 test('portable memory diagnostics state V8 unavailability without loading it or inventing figures', () => {
 	let loads = 0
@@ -23,5 +23,17 @@ test('an incomplete V8 provider is an explicit error, not zero statistics', () =
 	assert.throws(
 		() => v8MemoryLines('test', () => ({ getHeapStatistics: () => ({}), getHeapSpaceStatistics: () => [] })),
 		/invalid V8 memory field/
+	)
+})
+
+test('a failed optional V8 query reports its cause without discarding portable report sections', () => {
+	const lines = optionalV8MemoryLines('test', () => ({}))
+	assert.match(lines.join('\n'), /Unavailable.*required methods are missing/)
+	assert.doesNotMatch(lines.join('\n'), /Native contexts|Malloced|Global handles/)
+	assert.match(
+		optionalV8MemoryLines('test', () => {
+			throw new Error('provider failed')
+		}).join('\n'),
+		/Unavailable: provider failed/
 	)
 })
