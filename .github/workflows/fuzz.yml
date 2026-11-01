@@ -1,20 +1,10 @@
 name: Nightly Fuzz
 
-# Two modes, on purpose.
-#
-# Every pull request already runs the fuzz suite through `npm test`, with a fixed
-# seed and small per-target budgets. That run is deterministic: it cannot fail
-# because of an unlucky draw, which is the only way a fuzz suite survives contact
-# with a CI system people have to trust.
-#
-# This job is where the searching happens. It varies the seed per run, raises the
-# budgets, and enforces the parts of the known-divergence registry that would be
-# hostile on a pull request — entries past their review date, and entries that no
-# longer excuse anything.
+# PRs run fixed-seed smoke tests through npm test. Nightly runs vary seeds and enforce divergence review dates.
 
 on:
   schedule:
-    # 03:17 UTC, off the hour so it does not queue behind everything else.
+
     - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
@@ -26,19 +16,13 @@ on:
         description: 'smoke or deep'
         required: false
         default: 'deep'
-        # A choice, not free text: the runner rejects anything else outright, and
-        # a rejected dispatch is better than one that silently runs a smoke pass.
+        # Restrict mode to supported choices.
         type: choice
         options:
           - deep
           - smoke
 
-# One fuzz run at a time in the *repository*, not per ref. The tracking issue is
-# repository-wide, so two runs on different refs — a nightly and a manual
-# dispatch on a branch — would each look it up, each find nothing, and each
-# create one. Every later run then comments on and closes only the lowest
-# number, leaving the duplicate open forever holding a stale report. Queued
-# rather than cancelled: the in-flight run's result is the one worth keeping.
+# Serialize repository-wide tracking-issue updates to avoid duplicate issues. Keep in-flight results.
 concurrency:
   group: fuzz
   cancel-in-progress: false
@@ -62,26 +46,20 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
-      # --ignore-scripts skips `prepare`: the fuzz suites run out of `src`, and
-      # the build they were installing is one nothing here opens.
+      # Skip prepare; fuzz tests read source files.
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Run the fuzz suite
         id: fuzz
         env:
-          # A fresh seed per run is the point: the fixed-seed smoke run on every
-          # PR has already searched its own corner exhaustively.
+          # Use a fresh seed here; PR smoke tests keep a fixed seed.
           FUZZ_SEED: ${{ inputs.seed || github.run_id }}
           FUZZ_MODE: ${{ inputs.mode || 'deep' }}
           FUZZ_TIME_BUDGET_MS: '180000'
           FUZZ_REPORT_DIR: fuzz-reports
           FUZZ_STRICT_ALLOWLIST: '1'
-        # --expose-gc turns on the WASM handle-leak probe, which skips without it.
-        # --test-timeout bounds a decoder that stops returning: the runner's own
-        # slowMs is measured after the check completes, so it cannot see an input
-        # that never completes. The parent process owns this timer, so it fires
-        # even when the child's event loop is blocked by a synchronous WASM loop.
+        # --expose-gc enables the WASM handle-leak probe.
         run: node --expose-gc --test --test-timeout=1800000 "./src/__fuzz__/**/*.test.ts"
         continue-on-error: true
 
@@ -105,14 +83,7 @@ jobs:
             fuzz-summary.md
           retention-days: 30
 
-      # The fuzz outcome is part of the condition, not just the report: a run can
-      # fail on something the report has no findings for — a harness crash, a
-      # suite-level assertion — and an issue is exactly what those need too.
-      #
-      # Runs on every outcome, not only failures. A clean run has something to
-      # record too — but only that, and it never closes the issue: a different
-      # seed reaching nothing is not evidence the finding is gone. Closing is a
-      # person's call, made against the reproducer in the report.
+      # Record all outcomes, including harness failures. A clean seed does not close an existing finding.
       - name: Update the tracking issue
         if: always()
         uses: actions/github-script@v9
@@ -281,15 +252,11 @@ jobs:
             }
         env:
           FUZZ_SEED: ${{ inputs.seed || github.run_id }}
-          # Mirrored from the run step, so the reproduction command names the mode
-          # and budget the findings were actually produced under.
+          # Keep the reproduction mode consistent with the run.
           FUZZ_MODE: ${{ inputs.mode || 'deep' }}
           FUZZ_TIME_BUDGET_MS: '180000'
 
-      # The fuzz and summarise steps deliberately do not fail on the spot, so the
-      # artifacts get uploaded and the issue gets filed first. Without a final gate
-      # the job would then finish green holding findings, which is the one outcome
-      # that would make the whole nightly pointless.
+      # Fail only after uploading artifacts and updating the tracking issue.
       - name: Fail the job when the run was not clean
         if: always() && (steps.fuzz.outcome != 'success' || steps.report.outputs.clean != 'true')
         run: |
