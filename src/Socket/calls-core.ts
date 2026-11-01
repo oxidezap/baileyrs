@@ -1213,6 +1213,9 @@ const markEndIncomplete = (ctx: CallAudioContext, callId: string, result: Incomp
 	}
 }
 
+export const hasIncompleteEnd = (ctx: CallAudioContext, callId: string): boolean =>
+	incompleteResultsFor(ctx).has(callId)
+
 /**
  * Drop the incomplete mark once the signaling fallback it exists for has
  * run: a later hangup for the same ID must re-end natively and read the
@@ -1228,7 +1231,7 @@ export const endMediaCallIfPresent = async (ctx: CallAudioContext, callId: strin
 		// A previous hangup already ended the local handle without telling
 		// the peer: native re-end would answer `already-ended` and look
 		// notified, so skip it and let the caller signal instead.
-		if (incompleteResultsFor(ctx).has(callId)) return false
+		if (hasIncompleteEnd(ctx, callId)) return false
 		const endCall = (client as unknown as { endCall?: unknown }).endCall
 		if (typeof endCall !== 'function') return false
 		try {

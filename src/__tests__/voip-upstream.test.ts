@@ -467,6 +467,71 @@ describe('calling on an existing upstream Baileys socket', () => {
 		await call.ready
 		await api.disconnect()
 	})
+	it('reclaims backend-only ended contexts across more than 256 calls', async () => {
+		const h = harness(),
+			api = await h.open()
+		for (let i = 0; i < 258; i++) {
+			const call = await api.call(peer)
+			h.callbacks.onCallEvent({ kind: 'ended', callId: call.id })
+			await call.closed
+		}
+		assert.equal(h.counts().starts, 258)
+		await api.disconnect()
+	})
+	it('does not retain context when the backend ends before dial resolves', async () => {
+		const h = harness(),
+			original = h.control.dialCallPcm
+		h.control.dialCallPcm = async (...args) => {
+			const result = await original(...args)
+			h.callbacks.onCallEvent({ kind: 'ended', callId: typeof result === 'string' ? result : result.callId })
+			return result
+		}
+		const api = await h.open()
+		for (let i = 0; i < 258; i++) await assert.rejects(api.call(peer), /ended/)
+		assert.equal(h.counts().starts, 258)
+		await api.disconnect()
+	})
+	it('retains incoming routing across ended during native hangup and retries failed signaling', async () => {
+		const h = harness(),
+			api = await h.open()
+		h.setAccepted(false)
+		h.event('RETRY-INCOMING', 'offer', peer)
+		const call = await api.accept(offer('RETRY-INCOMING'))
+		let nativeEnds = 0,
+			fallbackEnds = 0
+		h.control.endCall = async () => {
+			nativeEnds++
+			h.callbacks.onCallEvent({ kind: 'ended', callId: call.id })
+			await tick()
+			return { outcome: 'local-only', failure: 'peer unavailable' }
+		}
+		h.control.terminateCall = async (...args) => {
+			h.terminations.push(args)
+			if (++fallbackEnds === 1) throw new Error('fallback unavailable')
+			return { outcome: 'peer-notified' }
+		}
+		await assert.rejects(call.end(), /fallback unavailable/)
+		h.callbacks.onCallEvent({ kind: 'ended', callId: call.id })
+		assert.deepEqual(await call.end(), { outcome: 'peer-notified' })
+		assert.equal(nativeEnds, 1, 'incomplete native hangup must not masquerade as notified on retry')
+		assert.deepEqual(h.terminations, [
+			[call.id, peer, peer],
+			[call.id, peer, peer]
+		])
+		await api.disconnect()
+	})
+	it('returns the shared rejected Promise for invalid accept input', async () => {
+		const h = harness(),
+			api = await h.open()
+		let result!: Promise<unknown>
+		assert.doesNotThrow(() => {
+			result = api.accept(undefined as never)
+		})
+		assert.ok(result instanceof Promise)
+		await assert.rejects(result)
+		assert.equal(h.counts().accepts, 0)
+		await api.disconnect()
+	})
 	it('rejects advanced capabilities before dialing or accepting', async () => {
 		const h = harness(),
 			api = await h.open()

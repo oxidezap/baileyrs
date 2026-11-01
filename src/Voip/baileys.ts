@@ -8,6 +8,7 @@ import {
 	makeCallAudioMethods,
 	makeCallMediaRouter,
 	clearIncompleteEnd,
+	hasIncompleteEnd,
 	parseCallEndResult,
 	type CallAudioContext
 } from '../Socket/calls-core.ts'
@@ -152,6 +153,7 @@ export const createBaileysVoip = async (
 		const adapter = createBaileysCallHost(socket, options)
 		const events = new EventEmitter()
 		const contexts: CallOfferCache = new Map()
+		const endingCalls = new Set<string>()
 		const endHandlers: (() => Promise<void>)[] = []
 		const activeOperations = new Set<Promise<unknown>>()
 		const queue: { node: BinaryNode; bytes: number }[] = []
@@ -203,7 +205,11 @@ export const createBaileysVoip = async (
 				if (!closing) media.routePcmFrame(frame)
 			},
 			onCallEvent(event: CallMediaEvent) {
-				if (!closing) media.routeMediaEvent(event)
+				if (!closing) {
+					if (event.kind === 'ended' && !endingCalls.has(event.callId) && !hasIncompleteEnd(ctx, event.callId))
+						contexts.delete(event.callId)
+					media.routeMediaEvent(event)
+				}
 			}
 		}
 		let rejectClosed!: (error: Error) => void
@@ -274,6 +280,14 @@ export const createBaileysVoip = async (
 		const methods = makeCallAudioMethods(ctx, media, { onCallEnded: confirmedEnd })
 		const operations: CallSessionOperations = {
 			...methods,
+			async endCall(id) {
+				endingCalls.add(id)
+				try {
+					return await methods.endCall(id)
+				} finally {
+					endingCalls.delete(id)
+				}
+			},
 			async terminateCall(id, peer) {
 				const remembered = contexts.get(id)
 				const creator = remembered?.callCreator ?? adapter.host.ownLid()
@@ -324,7 +338,8 @@ export const createBaileysVoip = async (
 				signal.throwIfAborted()
 				const id = await calls.dialCallPcm(resolvedPeer)
 				if (closing) throw new Error('Calling integration closed')
-				if (!contexts.has(id)) contexts.set(id, { peer: resolvedPeer, callCreator: adapter.host.ownLid() })
+				if (!media.isTerminalCall?.(id) && !contexts.has(id))
+					contexts.set(id, { peer: resolvedPeer, callCreator: adapter.host.ownLid() })
 				if (contexts.size > 256) {
 					const error = new Error('Too many retained call contexts')
 					fatal(error, 'admitting standalone call')
@@ -428,7 +443,7 @@ export const createBaileysVoip = async (
 				call: (peer: string, mediaOptions?: Parameters<VoipApi['call']>[1]) =>
 					isJidGroup(peer) ? unsupported() : call(peer, mediaOptions),
 				accept: (offer: WACallEvent, mediaOptions?: Parameters<VoipApi['accept']>[1]) =>
-					offer.isGroup || offer.isVideo ? unsupported() : accept(offer, mediaOptions),
+					offer?.isGroup || offer?.isVideo ? unsupported() : accept(offer, mediaOptions),
 				disconnect,
 				[Symbol.asyncDispose]: disconnect
 			})

@@ -220,7 +220,7 @@ The optional `@oxidezap/baileyrs/voip` entrypoint attaches the same managed
 session API to an already connected upstream socket. It uses that socket's
 connection, Signal repository and authoritative storage. It does not create a
 second WhatsApp client or copy its sessions.
-The adapter is checked against upstream Baileys `7.0.0-rc.14` and uses its
+The adapter is checked against upstream Baileys `7.0.0-rc14` and uses its
 public repository APIs, including `getSessionInfo` to skip unavailable device
 sessions without hiding storage failures. All supported devices remain in the
 ring list.
