@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { describe, it } from 'node:test'
+import { splitPcm16Frames } from '../call-media.ts'
 import { processInput, processSink, restartableProcessInput } from '../call-process.ts'
 
 const bytes = {
@@ -13,6 +14,24 @@ const bytes = {
 }
 
 describe('call media child processes', () => {
+	it('finishes a finite PCM recording with a padded tail instead of a stream failure', async () => {
+		const child = spawn(process.execPath, ['-e', 'process.stdout.write(Buffer.alloc(32000, 1))'], {
+			stdio: ['ignore', 'pipe', 'pipe']
+		})
+		const source = processInput(child, new AbortController().signal, splitPcm16Frames())
+		const reader = source.input.getReader()
+		const frames: Int16Array[] = []
+		for (;;) {
+			const result = await reader.read()
+			if (result.done) break
+			frames.push(result.value)
+		}
+		reader.releaseLock()
+		await source.dispose()
+		assert.equal(frames.length, 17)
+		assert.ok(frames.every(frame => frame.length === 960))
+		assert.deepEqual(Array.from(frames.at(-1)!.subarray(640)), Array(320).fill(0))
+	})
 	it('drains encoder stdout and flushes its tail after process exit', async () => {
 		const child = spawn(process.execPath, ['-e', "process.stdout.write('last frame')"], {
 			stdio: ['ignore', 'pipe', 'pipe']

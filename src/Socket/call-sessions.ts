@@ -56,7 +56,8 @@ const abortError = (): Error => new DOMException('Call operation aborted', 'Abor
 
 const disposeUnusedMedia = (media: CallSessionMedia, reason: unknown): Promise<unknown>[] => {
 	const tasks: Promise<unknown>[] = []
-	if (typeof media?.audio?.dispose === 'function') tasks.push(Promise.resolve().then(media.audio.dispose))
+	const audio = media?.audio
+	if (typeof audio?.dispose === 'function') tasks.push(Promise.resolve().then(() => audio.dispose?.()))
 	for (const stream of [media?.audio?.input]) {
 		if (stream && !stream.locked && typeof stream.cancel === 'function')
 			tasks.push(Promise.resolve().then(() => stream.cancel(reason)))

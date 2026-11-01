@@ -644,3 +644,57 @@ describe('managed acceptance completion', () => {
 		assert.equal(first, second)
 	})
 })
+
+describe('media disposer receivers', () => {
+	it('keeps audio and video disposer receivers during normal teardown', async () => {
+		const h = harness()
+		let released = 0
+		const channel = () => ({
+			device: {
+				close() {
+					released++
+				}
+			},
+			dispose() {
+				this.device.close()
+			}
+		})
+		const audio = channel(),
+			video = channel()
+		const call = await h.api.call('peer', { video: true, media: () => ({ audio, video: () => video }) })
+		await call.end()
+		assert.equal(released, 2)
+		assert.deepEqual(h.errors, [])
+	})
+	it('keeps the audio disposer receiver when a factory resolves after cancellation', async () => {
+		const h = harness(),
+			factory = deferred<CallSessionMedia>(),
+			entered = deferred<void>(),
+			abort = new AbortController()
+		let released = 0
+		const opening = h.api.call('peer', {
+			signal: abort.signal,
+			media: () => {
+				entered.resolve()
+				return factory.promise
+			}
+		})
+		await entered.promise
+		abort.abort()
+		await assert.rejects(opening)
+		const audio = {
+			device: {
+				close() {
+					released++
+				}
+			},
+			dispose() {
+				this.device.close()
+			}
+		}
+		factory.resolve({ audio })
+		await tick()
+		assert.equal(released, 1)
+		assert.deepEqual(h.errors, [])
+	})
+})

@@ -33,11 +33,6 @@ export const createCallMediaScope = (
 	const signal = controller.signal
 	const cleanup: Array<() => unknown> = []
 	let closing: Promise<void> | undefined
-	let rejectClosed!: (reason: unknown) => void
-	const closed = new Promise<never>((_resolve, reject) => {
-		rejectClosed = reject
-	})
-	void closed.catch(() => undefined)
 	const close = (): Promise<void> => {
 		if (closing) return closing
 		let settled!: () => void
@@ -46,7 +41,6 @@ export const createCallMediaScope = (
 		})
 		controller.abort(new DOMException('Media stream closed', 'AbortError'))
 		parent.removeEventListener('abort', onAbort)
-		rejectClosed(signal.reason)
 		const tasks = cleanup.splice(0).map(stop => Promise.resolve().then(stop))
 		void closeCallMedia(tasks, report).then(settled, error => {
 			try {
@@ -63,9 +57,26 @@ export const createCallMediaScope = (
 	}
 	parent.addEventListener('abort', onAbort, { once: true })
 	if (parent.aborted) void close()
-	const wait = async <T>(operation: Promise<T>): Promise<T> => {
-		signal.throwIfAborted()
-		return Promise.race([operation, closed])
+	const wait = <T>(operation: Promise<T>): Promise<T> => {
+		return new Promise<T>((resolve, reject) => {
+			const detach = () => signal.removeEventListener('abort', cancelWait)
+			const cancelWait = () => {
+				detach()
+				reject(signal.reason)
+			}
+			if (signal.aborted) cancelWait()
+			else signal.addEventListener('abort', cancelWait, { once: true })
+			operation.then(
+				value => {
+					detach()
+					resolve(value)
+				},
+				error => {
+					detach()
+					reject(error)
+				}
+			)
+		})
 	}
 	const own = (streams: {
 		input?: { locked: boolean; cancel(reason?: unknown): Promise<void> }
@@ -74,7 +85,7 @@ export const createCallMediaScope = (
 	}) => {
 		const release = () => {
 			const tasks: Promise<unknown>[] = []
-			if (streams.dispose) tasks.push(Promise.resolve().then(streams.dispose))
+			if (streams.dispose) tasks.push(Promise.resolve().then(() => streams.dispose?.()))
 			if (streams.input && !streams.input.locked) tasks.push(streams.input.cancel(signal.reason))
 			if (streams.output && !streams.output.locked) tasks.push(streams.output.abort(signal.reason))
 			return Promise.all(tasks)

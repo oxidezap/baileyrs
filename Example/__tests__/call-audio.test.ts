@@ -4,6 +4,23 @@ import { auHasKeyframe, orientationFilter, splitVideoAccessUnits, splitPcm16Fram
 import { parseArgs } from '../call.ts'
 
 describe('splitPcm16Frames', () => {
+	it('pads a finite one-second recording without losing or repeating its final samples', () => {
+		const splitter = splitPcm16Frames()
+		const bytes = new Uint8Array(32000).fill(1)
+		const frames = splitter.push(bytes)
+		expect(frames).toHaveLength(16)
+		const tail = splitter.flush()
+		expect(tail).toHaveLength(1)
+		expect(tail[0]!.length).toBe(960)
+		expect(Array.from(tail[0]!.subarray(0, 640))).toEqual(Array(640).fill(257))
+		expect(Array.from(tail[0]!.subarray(640))).toEqual(Array(320).fill(0))
+		expect(splitter.flush()).toEqual([])
+	})
+	it('rejects a truncated half-sample at EOF', () => {
+		const splitter = splitPcm16Frames()
+		splitter.push(new Uint8Array([1]))
+		expect(() => splitter.flush()).toThrow()
+	})
 	it('keeps arbitrary byte chunks until 960-sample frames are complete', () => {
 		const splitter = splitPcm16Frames()
 		const bytes = new Uint8Array(1920)

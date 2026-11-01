@@ -356,7 +356,9 @@ node Example/call.ts dial <peer-jid> --mic --video testsrc
 ```
 
 The CLI handles call orchestration; `Example/call-media.ts` handles ffmpeg processes,
-PCM framing and H.264 access units. PCM decoding, codecs, encryption, timing and
+PCM framing and H.264 access units. Finite PCM recordings pad the final
+sample-aligned frame with silence; an incomplete sample is rejected.
+PCM decoding, codecs, encryption, timing and
 relay negotiation stay in the engine. A remote video offer never enables the
 local camera without an explicit video option or keyboard action.
 

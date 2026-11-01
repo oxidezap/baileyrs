@@ -105,8 +105,12 @@ export const splitPcm16Frames = (
 			return frames
 		},
 		flush() {
-			if (pendingLength !== 0) throw new Error('PCM16 input ended with a partial frame')
-			return []
+			if (pendingLength % 2 !== 0) throw new Error('PCM16 input ended with a partial sample')
+			if (pendingLength === 0) return []
+			scratch.fill(0, pendingLength)
+			const frame = s16leToSamples(scratch, 0, frameSamples).slice()
+			pendingLength = 0
+			return [frame]
 		}
 	}
 }
