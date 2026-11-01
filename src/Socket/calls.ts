@@ -153,6 +153,10 @@ export const openFilePacketReader = async (
 		if (closed) {
 			throw new Boom('openFilePacketReader: reader is closed', { statusCode: 400 })
 		}
+		if (signal?.aborted) {
+			await closeHandle()
+			throw signal.reason
+		}
 		if (!(target instanceof Uint8Array) || target.length < packetBytes) {
 			throw new Boom('openFilePacketReader: target must hold a full packet', { statusCode: 400 })
 		}

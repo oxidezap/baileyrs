@@ -116,6 +116,7 @@ describe('E2E: managed call sessions', { timeout: 90000 }, () => {
 			assert.equal(alice.sock.voip.active.length, 0)
 			assert.equal(bob.sock.voip.active.length, 0)
 		} finally {
+			offered.cancel()
 			await caller?.end().catch(() => undefined)
 			await callee?.end().catch(() => undefined)
 		}
@@ -165,6 +166,7 @@ describe('E2E: managed call sessions', { timeout: 90000 }, () => {
 			assert.equal(alice.sock.voip.active.length, 0)
 			assert.equal(bob.sock.voip.active.length, 0)
 		} finally {
+			offered.cancel()
 			await caller?.end().catch(() => undefined)
 			await callee?.end().catch(() => undefined)
 		}

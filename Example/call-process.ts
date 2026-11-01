@@ -99,14 +99,20 @@ export const processInput = <T>(
 
 export const processSink = (child: ChildProcess, signal: AbortSignal, failed: (error: Error) => void) => {
 	const lifetime = watch(child, signal)
+	let reported = false
+	const report = (error: Error) => {
+		if (reported || lifetime.stopping) return
+		reported = true
+		failed(error)
+	}
 	child.on('error', error => {
-		if (!lifetime.stopping) failed(error)
+		report(error)
 	})
 	child.stdin?.on('error', error => {
-		if (!lifetime.stopping) failed(error)
+		report(error)
 	})
 	void lifetime.closed.then(code => {
-		if (!lifetime.stopping) failed(lifetime.failure ?? new Error(`Playback exited with ${code}`))
+		report(lifetime.failure ?? new Error(`Playback exited with ${code}`))
 	})
 	return {
 		write(bytes: Uint8Array): Promise<void> {

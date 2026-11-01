@@ -754,3 +754,60 @@ describe('media callback receivers', () => {
 		await call.end()
 	})
 })
+
+describe('early encoder feedback', () => {
+	it('replays a keyframe request received while the video factory is pending', async () => {
+		const h = harness(),
+			entered = deferred<CallSession>(),
+			factory = deferred<CallSessionVideoMedia>()
+		let requests = 0
+		const opening = h.api.call('peer', {
+			video: true,
+			media: () => ({
+				video: call => {
+					entered.resolve(call)
+					return factory.promise
+				}
+			})
+		})
+		const call = await entered.promise
+		h.events.emit('call.media', { callId: call.id, kind: 'video-keyframe-needed' })
+		factory.resolve({
+			requestKeyframe() {
+				requests++
+			}
+		})
+		await opening
+		await tick()
+		assert.equal(requests, 1)
+		await call.end()
+	})
+})
+
+describe('native video control backpressure', () => {
+	it('waits for a pending native stop before admitting resume', async () => {
+		const h = harness(),
+			entered = deferred<void>(),
+			stopped = deferred<void>()
+		const native: string[] = []
+		h.operations.stopCallVideo = async () => {
+			native.push('stop-start')
+			entered.resolve()
+			await stopped.promise
+			native.push('stop-done')
+		}
+		h.operations.resumeCallVideo = async () => {
+			native.push('resume')
+		}
+		const call = await h.api.call('peer', { video: true })
+		const stopping = call.video.stop()
+		await entered.promise
+		const resuming = call.video.resume()
+		await tick()
+		assert.deepEqual(native, ['stop-start'])
+		stopped.resolve()
+		await Promise.all([stopping, resuming])
+		assert.deepEqual(native, ['stop-start', 'stop-done', 'resume'])
+		await call.end()
+	})
+})

@@ -187,6 +187,7 @@ export const splitVideoAccessUnits = (): {
 	let scanPos = 0
 	let audStarts: number[] = []
 	let seenAud = false
+	let seenSlice = false
 
 	return {
 		push(bytes: Uint8Array): Uint8Array[] {
@@ -216,6 +217,7 @@ export const splitVideoAccessUnits = (): {
 				scanPos = 0
 				audStarts = []
 				seenAud = false
+				seenSlice = false
 				return []
 			}
 
@@ -231,6 +233,7 @@ export const splitVideoAccessUnits = (): {
 					}
 					if (nalPos >= 0 && nalPos < buffered.length) {
 						const nalType = buffered[nalPos]! & 0x1f
+						if (nalType === 1 || nalType === 5) seenSlice = true
 						if (nalType === 9) {
 							seenAud = true
 							audStarts.push(i)
@@ -258,19 +261,6 @@ export const splitVideoAccessUnits = (): {
 				return units
 			}
 
-			// Fallback if no AUD is present: split on start codes
-			const allStarts: number[] = []
-			for (let i = 0; i + 4 <= buffered.length; i++) {
-				if (buffered[i] === 0 && buffered[i + 1] === 0 && buffered[i + 2] === 0 && buffered[i + 3] === 1) {
-					allStarts.push(i)
-				}
-			}
-			if (allStarts.length < 2) return units
-			for (let n = 0; n + 1 < allStarts.length; n++) {
-				units.push(buffered.slice(allStarts[n]!, allStarts[n + 1]!))
-			}
-			buffered = buffered.slice(allStarts[allStarts.length - 1]!)
-			scanPos = 0
 			return units
 		},
 		flush(): Uint8Array[] {
@@ -278,6 +268,7 @@ export const splitVideoAccessUnits = (): {
 			// AUD delimits it, so a finite source must flush it explicitly
 			// on encoder exit or the final frame is always dropped. Nothing
 			// classifiable buffered means nothing complete to return.
+			if (!seenAud && seenSlice) throw new Error('H.264 input requires AUD boundaries; use h264_metadata=aud=insert')
 			if (!seenAud || audStarts.length === 0) return []
 			const lastStart = audStarts[audStarts.length - 1]!
 			if (lastStart >= buffered.length) return []
@@ -286,6 +277,7 @@ export const splitVideoAccessUnits = (): {
 			scanPos = 0
 			audStarts = []
 			seenAud = false
+			seenSlice = false
 			return [unit]
 		}
 	}

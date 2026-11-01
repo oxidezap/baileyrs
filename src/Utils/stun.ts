@@ -42,17 +42,22 @@ export const describeStunAllocate = (message: Uint8Array): StunAllocateShape | u
 	if (message[4] !== 0x21 || message[5] !== 0x12 || message[6] !== 0xa4 || message[7] !== 0x42) return undefined
 	const type = (message[0]! << 8) | message[1]!
 	if (type !== 0x0003) return undefined
+	const bodyLength = (message[2]! << 8) | message[3]!
+	const end = 20 + bodyLength
+	if (bodyLength % 4 !== 0 || end > message.length) return undefined
 	const shape: StunAllocateShape = { hasMessageIntegrity: false, hasFingerprint: false }
 	let offset = 20
-	while (offset + 4 <= message.length) {
+	while (offset + 4 <= end) {
 		const attrType = (message[offset]! << 8) | message[offset + 1]!
 		const attrLength = (message[offset + 2]! << 8) | message[offset + 3]!
+		const next = offset + 4 + attrLength + ((4 - (attrLength % 4)) % 4)
+		if (next > end) return undefined
 		if (attrType === 0x4000) shape.tokenLength = attrLength
 		if (attrType === 0x0008) shape.hasMessageIntegrity = true
 		if (attrType === 0x8028) shape.hasFingerprint = true
 		// The 0x0016 value is `00 01` plus the 6-byte XOR endpoint: port
 		// xored with 0x2112, address xored with the magic cookie.
-		if (attrType === 0x0016 && attrLength === 8 && offset + 12 <= message.length) {
+		if (attrType === 0x0016 && attrLength === 8 && message[offset + 4] === 0 && message[offset + 5] === 1) {
 			const port = ((message[offset + 6]! << 8) | message[offset + 7]!) ^ 0x2112
 			const ip = [8, 9, 10, 11]
 				.map((index, i) => (message[offset + index]! ^ [0x21, 0x12, 0xa4, 0x42][i]!) >>> 0)
@@ -60,7 +65,7 @@ export const describeStunAllocate = (message: Uint8Array): StunAllocateShape | u
 			shape.endpointPort = port
 			shape.endpointIp = ip
 		}
-		offset += 4 + attrLength + ((4 - (attrLength % 4)) % 4)
+		offset = next
 	}
 	return shape
 }

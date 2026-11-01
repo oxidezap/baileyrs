@@ -252,12 +252,4 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 		expect(call.status).toBe('accept')
 		expect(call.isVideo).toBe(undefined)
 	})
-
-	it('call.audio is not treated as proof of peer codec', () => {
-		// All current WhatsApp audio profiles signal <audio enc="opus" rate="16000">.
-		// The signaling audio list does not distinguish MLOW from Opus or dictate peer codec.
-		const offerAudio = ['opus']
-		expect(offerAudio.includes('opus')).toBe(true)
-		// A call with enc="opus" can still receive MLOW frames from a peer.
-	})
 })

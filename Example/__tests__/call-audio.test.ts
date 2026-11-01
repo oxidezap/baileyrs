@@ -155,10 +155,32 @@ describe('auHasKeyframe', () => {
 
 describe('explicit mock relay selection', () => {
 	it('does not enable cleartext relay for a custom socket or TLS opt-out', () => {
-		expect(parseArgs(['listen', '--socket', 'wss://example.com', '--danger-skip-cert-verify']).mockUdp).toBe(false)
+		expect(parseArgs(['listen', '--socket', 'wss://127.0.0.1:8080', '--danger-skip-cert-verify']).mockUdp).toBe(false)
 	})
 	it('permits cleartext only with explicit loopback mock selection', () => {
 		expect(parseArgs(['listen', '--mock-udp', '--socket', 'wss://127.0.0.1:8080']).mockUdp).toBe(true)
 		expect(() => parseArgs(['listen', '--mock-udp', '--socket', 'wss://example.com'])).toThrow()
+	})
+})
+
+describe('example framing and TLS boundaries', () => {
+	it('refuses undelimited video slices instead of emitting NAL fragments as frames', () => {
+		for (const start of [
+			[0, 0, 1],
+			[0, 0, 0, 1]
+		]) {
+			const splitter = splitVideoAccessUnits()
+			expect(splitter.push(new Uint8Array([...start, 0x65, 0x80, ...start, 0x41, 0x80]))).toEqual([])
+			expect(() => splitter.flush()).toThrow(/AUD boundaries/)
+		}
+	})
+	it('does not allow a TLS verification bypass against a remote socket', () => {
+		expect(() =>
+			parseArgs(['listen', '--socket', 'wss://web.whatsapp.com/ws/chat', '--danger-skip-cert-verify'])
+		).toThrow(/loopback/)
+		expect(
+			parseArgs(['listen', '--socket', 'wss://127.0.0.1:8080/ws/chat', '--danger-skip-cert-verify'])
+				.dangerSkipCertVerify
+		).toBe(true)
 	})
 })

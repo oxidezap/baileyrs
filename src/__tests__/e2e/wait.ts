@@ -29,8 +29,9 @@ export function waitForEvent<E extends keyof BaileysEventMap>(
 	name: E,
 	predicate: (data: BaileysEventMap[E]) => boolean = () => true,
 	timeoutMs = 10_000
-): Promise<BaileysEventMap[E]> {
-	return new Promise((resolve, reject) => {
+): Promise<BaileysEventMap[E]> & { cancel(): void } {
+	let cancel!: () => void
+	const promise = new Promise<BaileysEventMap[E]>((resolve, reject) => {
 		const cleanup = () => sock.ev.off(name, listener)
 		const listener = (data: BaileysEventMap[E]) => {
 			if (!predicate(data)) return
@@ -42,8 +43,15 @@ export function waitForEvent<E extends keyof BaileysEventMap>(
 			cleanup()
 			reject(new Error(`Timed out waiting for ${String(name)}`))
 		}, timeoutMs)
+		cancel = () => {
+			cleanup()
+			clearTimeout(tid)
+			reject(new DOMException('Event wait cancelled', 'AbortError'))
+		}
 		sock.ev.on(name, listener)
 	})
+	void promise.catch(() => undefined)
+	return Object.assign(promise, { cancel: () => cancel() })
 }
 
 /**

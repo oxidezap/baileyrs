@@ -71,13 +71,24 @@ describe('call media child processes', () => {
 		await source.dispose()
 	})
 	it('backpressures playback and closes its owned process on abort', async () => {
-		const child = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { stdio: ['pipe', 'ignore', 'pipe'] })
+		const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['pipe', 'ignore', 'pipe'] })
 		const controller = new AbortController(),
 			failures: Error[] = []
 		const sink = processSink(child, controller.signal, error => failures.push(error))
-		await sink.write(new Uint8Array(1920))
+		let settled = false
+		const writing = sink.write(new Uint8Array(4 * 1024 * 1024)).then(
+			() => {
+				settled = true
+			},
+			() => {
+				settled = true
+			}
+		)
+		await new Promise(resolve => setTimeout(resolve, 50))
+		assert.equal(settled, false)
 		controller.abort()
 		await sink.stop()
+		await writing
 		assert.equal(child.signalCode, 'SIGKILL')
 		assert.deepEqual(failures, [])
 	})
@@ -120,5 +131,16 @@ describe('video encoder keyframe restart', () => {
 		await source.dispose()
 		reader.releaseLock()
 		assert.equal(disposed, 2)
+	})
+})
+
+describe('playback failure notification', () => {
+	it('reports a failed spawn once across error and close events', async () => {
+		const child = spawn('__baileyrs_missing_ffplay__', [], { stdio: ['pipe', 'ignore', 'pipe'] })
+		const errors: Error[] = []
+		const sink = processSink(child, new AbortController().signal, error => errors.push(error))
+		await new Promise<void>(resolve => child.once('close', () => resolve()))
+		await sink.stop()
+		assert.equal(errors.length, 1)
 	})
 })

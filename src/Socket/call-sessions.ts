@@ -333,7 +333,12 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				keyframe: () => {
 					const scope = videoScope
 					const request = requestEncoderKeyframe
-					if (request && scope && !scope.signal.aborted)
+					if (!request || !scope) {
+						if (videoDesired || pendingVideoGeneration === videoGeneration) pendingEncoderKeyframe = true
+						return
+					}
+					if (!scope.signal.aborted) {
+						pendingEncoderKeyframe = false
 						void Promise.resolve()
 							.then(() => {
 								if (!scope.signal.aborted) return request()
@@ -341,6 +346,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 							.catch(error => {
 								if (!scope.signal.aborted) runtime.reportError(error, 'requesting encoder keyframe')
 							})
+					}
 				}
 			})
 			adopted = true
@@ -360,6 +366,8 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			const audioScope = createCallMediaScope(controller.signal, failed, runtime.reportError)
 			cleanup.push(audioScope.close)
 			let videoScope: ReturnType<typeof createCallMediaScope> | undefined
+			let pendingEncoderKeyframe = false
+			let pendingVideoGeneration: number | undefined
 			let requestEncoderKeyframe: CallSessionVideoMedia['requestKeyframe']
 			let videoFactory: CallSessionMedia['video']
 			let videoSetup: Promise<void> | undefined
@@ -367,6 +375,8 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			let videoGeneration = 0
 			const stopVideoMedia = (): Promise<void> => {
 				videoDesired = false
+				pendingEncoderKeyframe = false
+				pendingVideoGeneration = undefined
 				requestEncoderKeyframe = undefined
 				videoGeneration++
 				const scope = videoScope
@@ -399,6 +409,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 					if (channels.requestKeyframe !== undefined && typeof channels.requestKeyframe !== 'function')
 						throw new TypeError('video requestKeyframe must be a function')
 					requestEncoderKeyframe = channels.requestKeyframe?.bind(channels)
+					if (pendingEncoderKeyframe) sessions.get(id)?.keyframe()
 					if (channels.output)
 						scope.output(
 							channels.output,
@@ -431,14 +442,18 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			}
 			const enableVideo = async (operation: () => Promise<void>): Promise<void> => {
 				const generation = ++videoGeneration
-				await videoOperation(() => {
-					if (generation !== videoGeneration) throw new VideoSetupCancelled()
-					return operation()
-				})
-				if (lifecycle !== 'open' || generation !== videoGeneration)
-					throw new DOMException('Video operation cancelled', 'AbortError')
-				videoDesired = true
-				await prepareVideo()
+				pendingVideoGeneration = generation
+				try {
+					await videoOperation(() => {
+						if (generation !== videoGeneration) throw new VideoSetupCancelled()
+						return operation()
+					})
+					if (lifecycle !== 'open' || generation !== videoGeneration) throw new VideoSetupCancelled()
+					videoDesired = true
+					await prepareVideo()
+				} finally {
+					if (pendingVideoGeneration === generation) pendingVideoGeneration = undefined
+				}
 			}
 			cleanup.push(stopVideoMedia)
 

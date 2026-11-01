@@ -216,7 +216,7 @@ describe('call audio file reader', () => {
 			const reader = await openFilePacketReader(await fixture(dir, [0, 1]), { packetBytes: 2 })
 			const controller = new AbortController()
 			controller.abort()
-			await expect(reader.readInto(new Uint8Array(2), controller.signal)).rejects.toThrow()
+			await expect(reader.readInto(new Uint8Array(0), controller.signal)).rejects.toThrow()
 			await expect(reader.readInto(new Uint8Array(2))).rejects.toThrow(/closed/)
 		} finally {
 			await rm(dir, { recursive: true, force: true })
@@ -396,7 +396,7 @@ describe('call audio pump', () => {
 		})
 		controller.abort()
 		const stats = await pump.done
-		expect(stats.pushed + stats.shed >= 0).toBe(true)
+		expect(stats.stopReason).toBe('aborted')
 	})
 
 	it('a throwing push rejects done so an ended call surfaces', async () => {
@@ -1059,6 +1059,18 @@ describe('call audio socket methods', () => {
 		// layer's to guess about: the declaration passes through.
 		expect(await methods.pushCallAudio('NEVER-NEGOTIATED', new Uint8Array([0x90]), 'opus')).toBe(true)
 		const writer = await methods.openCallAudioWriter('CALL-9')
+		for (const invalid of ['wrong-codec', '', 1, null, {}, true]) {
+			let rejected = false
+			try {
+				writer.tryWrite(new Uint8Array([0x90]), invalid as never)
+			} catch (error) {
+				rejected = true
+				const failure = error as { output: { statusCode: number }; data: { accepted: unknown[] } }
+				expect(failure.output.statusCode).toBe(400)
+				expect(failure.data.accepted).toEqual(['mlow', 'opus', 'opus-mlow', undefined])
+			}
+			expect(rejected).toBe(true)
+		}
 		expect(writer.tryWrite(new Uint8Array([0x90]), 'mlow')).toBe(true)
 		expect(() => writer.tryWrite(new Uint8Array([0x90]), 'opus')).toThrow(/source is mlow/)
 		writer.close()

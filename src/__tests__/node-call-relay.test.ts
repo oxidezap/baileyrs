@@ -133,3 +133,64 @@ describe('socket relay ownership', () => {
 		}
 	})
 })
+
+describe('relay cleanup failure containment', () => {
+	for (const mode of ['logger-throws', 'close-stalls'] as const) {
+		it(`flushes and frees the socket when ${mode}`, async () => {
+			let flushes = 0,
+				transport!: VoipRelayTransport,
+				releaseClose!: () => void
+			const closing = new Promise<void>(resolve => {
+				releaseClose = resolve
+			})
+			const makeSocket = createWASocketFactory({
+				...nodeRuntime,
+				loadVoip: async pipe => {
+					transport = pipe
+					return nodeRuntime.loadVoip!(pipe)
+				}
+			})
+			const logger = P({ level: 'silent' })
+			const store = Object.assign(useMemoryStore(), {
+				async flush() {
+					flushes++
+				}
+			})
+			const socket = makeSocket({
+				auth: await createAuthenticationState(store),
+				logger,
+				waWebSocketUrl: 'ws://127.0.0.1:1'
+			})
+			let timer: ReturnType<typeof setTimeout> | undefined
+			try {
+				await socket.setRelayTransportProvider({
+					async createRelayConnection() {
+						return {
+							send() {},
+							close() {
+								if (mode === 'close-stalls') return closing
+								throw new Error('relay close refused')
+							}
+						}
+					}
+				})
+				await transport.connect(endpoint, events)
+				if (mode === 'logger-throws')
+					logger.error = () => {
+						throw new Error('consumer logger failed')
+					}
+				await Promise.race([
+					socket.end(undefined),
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(() => reject(new Error('socket teardown stalled')), 3500)
+					})
+				])
+				assert.ok(flushes > 0)
+			} finally {
+				if (timer) clearTimeout(timer)
+				releaseClose()
+				await socket.end(undefined).catch(() => undefined)
+			}
+		})
+	}
+})

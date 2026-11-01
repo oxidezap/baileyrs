@@ -67,6 +67,7 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 		const dispatcher = options!.dispatcher as Record<string | symbol, unknown>
 		const optSymbols = Object.getOwnPropertySymbols(dispatcher)
 		const optionsSym = optSymbols.find(s => s.description === 'options' || String(s).includes('options'))
+		expect(optionsSym).toBeDefined()
 		if (optionsSym) {
 			const agentOpts = dispatcher[optionsSym] as Record<string, unknown>
 			expect(agentOpts.allowH2).toBe(false)
@@ -90,6 +91,7 @@ describe('transport: dispatcher options and H2 opt-out', () => {
 		const dispatcher = options!.dispatcher as Record<string | symbol, unknown>
 		const optSymbols = Object.getOwnPropertySymbols(dispatcher)
 		const optionsSym = optSymbols.find(s => s.description === 'options' || String(s).includes('options'))
+		expect(optionsSym).toBeDefined()
 		if (optionsSym) {
 			const agentOpts = dispatcher[optionsSym] as { connect?: { rejectUnauthorized?: boolean } }
 			expect(agentOpts.connect?.rejectUnauthorized).toBe(false)

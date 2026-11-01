@@ -15,9 +15,7 @@
  * below carries an explicit timeout.
  *
  * Audio only, both promises: mlow silence both ways, then one real opus
- * packet under the opus promise with the escape round-tripped. Video has no
- * test here. Nothing in this repo can place a video offer yet, but the
- * bridge operations it would use are pinned in call-audio-surface.test.ts.
+ * packet under the opus promise with the escape round-tripped. Video offers and duplex H.264 are covered in call-session.test-e2e.ts.
  */
 
 import { after, before, describe, test } from 'node:test'
@@ -95,6 +93,7 @@ const waitForMedia = (
 		}
 		sock.ev.on('call.media', listener)
 	})
+	void promise.catch(() => undefined)
 	return { promise, cancel: () => cleanup() }
 }
 
@@ -139,8 +138,13 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		// events do not queue for late listeners, so attaching after the
 		// trigger would turn a fast relay into a timeout.
 		const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
+		t.after(bobOffer.cancel)
 		const aliceRelay = waitForMedia(alice.sock, 'relay-allocated', 60_000)
 		const bobRelay = waitForMedia(bob.sock, 'relay-allocated', 60_000)
+		t.after(() => {
+			aliceRelay.cancel()
+			bobRelay.cancel()
+		})
 		const mediaSeen: string[] = []
 		const recordMedia = (tag: string) => (event: { callId: string; kind: string }) => {
 			mediaSeen.push(`${tag}:${event.callId.slice(0, 8)}:${event.kind}`)
@@ -150,9 +154,11 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		alice.sock.ev.on('call.media', onAliceMedia)
 		bob.sock.ev.on('call.media', onBobMedia)
 		const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
+		t.after(() => alice.sock.endCall(callId).catch(() => undefined))
 		// Armed after the dial, matched to this call: a delayed `ended` from
 		// the previous test must not resolve the new wait.
 		const bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
+		t.after(bobEnded.cancel)
 		const offer = await bobOffer
 		const offeredId = offer.find(event => event.status === 'offer')?.id
 		expect(offeredId).toBe(callId)
@@ -166,7 +172,9 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		expect(alice.sock.getCallAudioFormat(callId)).toBe('mlow')
 		await expect(alice.sock.pushCallAudio(callId, SID, 'opus')).rejects.toThrow(/source is mlow/)
 		const stopAliceSink = alice.sock.onCallAudio(callId, aliceAudio)
+		t.after(stopAliceSink)
 		const stopBobSink = bob.sock.onCallAudio(bobCallId, bobAudio)
+		t.after(stopBobSink)
 		try {
 			// Both engines must report the relay up before media can flow.
 			// Mocks without a UDP relay path never fire this. The CI lane
@@ -252,21 +260,36 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 
 	test('a silence pump moves real packets through the relay', async () => {
 		const offer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
-		const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
-		const offered = await offer
-		expect(offered.some(event => event.status === 'offer' && event.id === callId)).toBe(true)
-		await bob.sock.acceptCall(callId, 'mlow')
-		const bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
+		const aliceRelay = waitForMedia(alice.sock, 'relay-allocated', 30_000)
+		const bobRelay = waitForMedia(bob.sock, 'relay-allocated', 30_000)
+		let callId: string | undefined, bobEnded: ReturnType<typeof waitForMedia> | undefined
+		let stopSink = () => {}
+		const received: CallAudioFrame[] = []
 		try {
+			callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
+			const offered = await offer
+			expect(offered.some(event => event.status === 'offer' && event.id === callId)).toBe(true)
+			await bob.sock.acceptCall(callId, 'mlow')
+			bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
+			stopSink = bob.sock.onCallAudio(callId, frame => received.push(frame))
+			await Promise.all([aliceRelay.promise, bobRelay.promise])
 			const pump = await alice.sock.startCallAudioPump(
 				callId,
 				makeSilenceCallAudioSource({ packets: 3, intervalMs: 5 })
 			)
 			expect(await pump.done).toEqual({ pushed: 3, shed: 0, stopReason: 'source-ended' })
+			const frames = await waitForFrames(received, 1, 30_000, 'silence pump relay delivery')
+			expect(frames[0]!.data).toEqual(SID)
+			await waitForDeliveredStats(bob.sock, callId)
 			await alice.sock.endCall(callId)
 			await bobEnded.promise
 		} finally {
-			bobEnded.cancel()
+			offer.cancel()
+			aliceRelay.cancel()
+			bobRelay.cancel()
+			bobEnded?.cancel()
+			stopSink()
+			if (callId) await alice.sock.endCall(callId).catch(() => undefined)
 		}
 	})
 
@@ -277,12 +300,18 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 		const opusPacket = new Uint8Array(await readFile(new URL('../fixtures/opus-voice-packet.bin', import.meta.url)))
 		const frames: CallAudioFrame[] = []
 		const stopSink = { current: undefined as (() => void) | undefined }
+		const cancelWaits: Array<() => void> = []
+		let ownedCallId: string | undefined
 		try {
 			const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 30_000)
+			cancelWaits.push(bobOffer.cancel)
 			const aliceRelay = waitForMedia(alice.sock, 'relay-allocated', 60_000)
 			const bobRelay = waitForMedia(bob.sock, 'relay-allocated', 60_000)
+			cancelWaits.push(aliceRelay.cancel, bobRelay.cancel)
 			const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'opus')
+			ownedCallId = callId
 			const bobEnded = waitForMedia(bob.sock, 'ended', 30_000, callId)
+			cancelWaits.push(bobEnded.cancel)
 			expect(alice.sock.getCallAudioFormat(callId)).toBe('opus')
 			await bobOffer
 			let bobCallId: string
@@ -333,7 +362,9 @@ describe('E2E: encoded-audio media loop', { timeout: 300_000 }, () => {
 			bobRelay.cancel()
 			bobEnded.cancel()
 		} finally {
+			for (const cancel of cancelWaits) cancel()
 			stopSink.current?.()
+			if (ownedCallId) await alice.sock.endCall(ownedCallId).catch(() => undefined)
 		}
 	})
 })

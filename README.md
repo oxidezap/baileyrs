@@ -330,7 +330,7 @@ returns the same managed session. `sock.voip.active` lists active sessions;
 `closed` reports local/remote termination, cancellation, socket closure or a media
 error. An incomplete `end()` can be retried to finish notifying the peer.
 
-An optional `media.video(call, signal)` factory provides H.264 Annex-B input and
+The `media` factory may return a `video(call, signal)` factory providing H.264 Annex-B input and
 `CallVideoFrame` output streams. It runs for initial video or after an explicit
 `call.video.start()` / `accept()` / `resume()`, and is disposed on stop. Return a
 `requestKeyframe` callback to produce an IDR when the backend asks for one.
@@ -344,7 +344,9 @@ their media lifecycle. Use `sock.rejectCall(id, from)` for a ringing call.
 `call` events preserve routing context, platform, video and group attributes;
 `call.media` carries media lifecycle, keyframe feedback and diagnostics.
 
-For microphone/file input and playback, install ffmpeg and ffplay, then run:
+For microphone/file input and playback, install ffmpeg and ffplay. The example
+commands below require Node 24+ for direct TypeScript execution; the installed
+library still supports Node 22.3+. Then run:
 
 ```sh
 npm run build
@@ -357,10 +359,14 @@ node Example/call.ts dial <peer-jid> --mic --video testsrc
 
 The CLI handles call orchestration; `Example/call-media.ts` handles ffmpeg processes,
 PCM framing and H.264 access units. Finite PCM recordings pad the final
-sample-aligned frame with silence; an incomplete sample is rejected.
+sample-aligned frame with silence; an incomplete sample is rejected. H.264
+framing requires AUD delimiters, inserted by the ffmpeg adapter. NAL start codes
+alone do not identify complete pictures and are not treated as frame boundaries.
 PCM decoding, codecs, encryption, timing and
-relay negotiation stay in the engine. A remote video offer never enables the
-local camera without an explicit video option or keyboard action.
+relay negotiation stay in the engine. In this CLI, a remote video offer never enables the
+local camera without an explicit video option or keyboard action. In the public API,
+`voip.accept(offer)` inherits `offer.isVideo` and may invoke the supplied video
+factory; pass `video: false` to answer without initial video.
 
 The relay is WhatsApp media infrastructure. The Node provider opens an outbound
 ICE/DTLS/SCTP DataChannel to that endpoint using the bridge's DTLS fingerprint;
@@ -371,6 +377,7 @@ hosts can supply `createCallRelayProvider` and an isolated `loadVoip` engine.
 
 For the local Bartender mock only, add
 `--socket wss://127.0.0.1:8080/ws/chat --mock-udp --danger-skip-cert-verify`.
+The CLI permits a TLS verification bypass only with a loopback mock socket.
 Cleartext UDP requires an explicit `--mock-udp` and a loopback socket URL. Changing
 the signaling URL or TLS verification never changes the production media transport.
 

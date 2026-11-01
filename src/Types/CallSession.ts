@@ -67,6 +67,7 @@ export interface CallSession {
 
 export interface VoipApi {
 	call(peer: string, options?: CallSessionOptions): Promise<CallSession>
+	/** Accepts an offer; other event statuses reject at runtime. */
 	accept(offer: WACallEvent, options?: CallSessionOptions): Promise<CallSession>
 	get(id: string): CallSession | undefined
 	readonly active: readonly CallSession[]

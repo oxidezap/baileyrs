@@ -50,9 +50,18 @@ describe('call media wait lifetime', () => {
 			() => {},
 			() => {}
 		)
-		const waits = Array.from({ length: 4 }, () => scope.wait(new Promise<void>(() => {})))
+		const rejectLate: Array<(error: Error) => void> = []
+		const waits = Array.from({ length: 4 }, () =>
+			scope.wait(
+				new Promise<void>((_, reject) => {
+					rejectLate.push(reject)
+				})
+			)
+		)
 		const results = Promise.allSettled(waits)
 		await scope.close()
+		for (const reject of rejectLate) reject(new Error('late operation failure'))
+		await new Promise<void>(resolve => setImmediate(resolve))
 		for (const result of await results) {
 			assert.equal(result.status, 'rejected')
 			if (result.status === 'rejected') assert.equal(result.reason.name, 'AbortError')

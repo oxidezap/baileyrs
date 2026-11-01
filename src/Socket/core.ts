@@ -1,3 +1,4 @@
+import { closeCallMedia } from './call-media-streams.ts'
 import type {
 	WasmWhatsAppClient,
 	DevicePlatformType,
@@ -273,8 +274,12 @@ const createWASocketFactoryInner = (
 		 */
 		teardown: async (client, error) => {
 			// Call pumps hold the bridge client; drain before disconnect and flush.
-			await callRelay.closeAll().catch(relayError => {
-				logger.error({ err: relayError }, 'error closing call relay transport')
+			await closeCallMedia([callRelay.closeAll()], relayError => {
+				try {
+					logger.error({ err: relayError }, 'error closing call relay transport')
+				} catch {
+					/* diagnostics cannot interrupt auth cleanup */
+				}
 			})
 			await callMedia.drainAll()
 			try {

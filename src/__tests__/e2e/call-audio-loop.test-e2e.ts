@@ -86,43 +86,52 @@ describe('E2E: encoded-audio call loop', { timeout: 120_000 }, () => {
 
 	test('dial, offer wire, push, stats, pump and end', async () => {
 		const bobOffer = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'))
-		const callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
-		expect(typeof callId).toBe('string')
+		let callId: string | undefined
+		try {
+			callId = await alice.sock.dialCall(bob.lid ?? bob.jid, 'mlow')
+			expect(typeof callId).toBe('string')
 
-		// Push first: the mock ends a dormant call on its own schedule, so
-		// every assertion that needs the call alive runs ahead of the waits.
-		expect(await alice.sock.pushCallAudio(callId, new Uint8Array([0x90]))).toBe(true)
+			// Push first: the mock ends a dormant call on its own schedule, so
+			// every assertion that needs the call alive runs ahead of the waits.
+			expect(await alice.sock.pushCallAudio(callId, new Uint8Array([0x90]))).toBe(true)
 
-		const pump = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ packets: 1, intervalMs: 0 }))
-		expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
+			const pump = await alice.sock.startCallAudioPump(
+				callId,
+				makeSilenceCallAudioSource({ packets: 1, intervalMs: 0 })
+			)
+			expect(await pump.done).toEqual({ pushed: 1, shed: 0, stopReason: 'source-ended' })
 
-		const active = await alice.sock.getActiveCalls()
-		expect(active.some(call => call.callId === callId)).toBe(true)
+			const active = await alice.sock.getActiveCalls()
+			expect(active.some(call => call.callId === callId)).toBe(true)
 
-		const offer = await bobOffer
-		expect(offer.some(event => event.status === 'offer' && event.id === callId)).toBe(true)
+			const offer = await bobOffer
+			expect(offer.some(event => event.status === 'offer' && event.id === callId)).toBe(true)
 
-		const stats = (await alice.sock.getCallMediaStats(callId)) as CallMediaStats
-		for (const field of STAT_FIELDS) {
-			expect(typeof stats[field]).toBe('number')
+			const stats = (await alice.sock.getCallMediaStats(callId)) as CallMediaStats
+			for (const field of STAT_FIELDS) {
+				expect(typeof stats[field]).toBe('number')
+			}
+
+			// Hanging up also stops local media: the open-ended pump below would
+			// outlive the test if terminateCall left it pulling. Only the reason
+			// is asserted: whether the pump pushes first is a scheduling race,
+			// but every path out runs through the call-ended stop.
+			const lingering = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ intervalMs: 5 }))
+			await alice.sock.terminateCall(callId, bob.lid ?? bob.jid)
+			const lingeringStats = await lingering.done
+			expect(lingeringStats.stopReason).toBe('call-ended')
+			// The native handle goes with it: terminate ends the bridge record,
+			// not just the JS routing.
+			const afterTerminate = await alice.sock.getActiveCalls()
+			expect(afterTerminate.some(call => call.callId === callId)).toBe(false)
+
+			// terminateCall already ended the native record above, so there
+			// is no second hangup to assert here: the empty record list is the
+			// whole proof. endCall itself is covered by the media test.
+			expect(await alice.sock.getActiveCalls()).toEqual([])
+		} finally {
+			bobOffer.cancel()
+			if (callId) await alice.sock.endCall(callId).catch(() => undefined)
 		}
-
-		// Hanging up also stops local media: the open-ended pump below would
-		// outlive the test if terminateCall left it pulling. Only the reason
-		// is asserted: whether the pump pushes first is a scheduling race,
-		// but every path out runs through the call-ended stop.
-		const lingering = await alice.sock.startCallAudioPump(callId, makeSilenceCallAudioSource({ intervalMs: 5 }))
-		await alice.sock.terminateCall(callId, bob.lid ?? bob.jid)
-		const lingeringStats = await lingering.done
-		expect(lingeringStats.stopReason).toBe('call-ended')
-		// The native handle goes with it: terminate ends the bridge record,
-		// not just the JS routing.
-		const afterTerminate = await alice.sock.getActiveCalls()
-		expect(afterTerminate.some(call => call.callId === callId)).toBe(false)
-
-		// terminateCall already ended the native record above, so there
-		// is no second hangup to assert here: the empty record list is the
-		// whole proof. endCall itself is covered by the media test.
-		expect(await alice.sock.getActiveCalls()).toEqual([])
 	})
 })

@@ -76,6 +76,11 @@ export const parseArgs = (argv: string[]): CallExampleArgs => {
 	}
 
 	const video = getOptional('--video', 'camera')
+	if (argv.includes('--danger-skip-cert-verify')) {
+		const url = get('--socket') ?? process.env.SOCKET_URL
+		if (!url || !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(url).hostname))
+			throw new Error('--danger-skip-cert-verify requires a loopback mock socket')
+	}
 	if (argv.includes('--mock-udp')) {
 		const url = get('--socket') ?? process.env.SOCKET_URL
 		if (!url || !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(url).hostname)) {

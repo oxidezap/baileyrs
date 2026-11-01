@@ -20,30 +20,51 @@ import type {
 	JsRelayProviderCallbacks
 } from '@oxidezap/whatsapp-rust-bridge'
 
-export const makeUdpRelayProvider = (): JsRelayProviderCallbacks & { closeAll(): Promise<void> } => {
+export const makeUdpRelayProvider = (
+	openSocket = () => dgram.createSocket('udp4')
+): JsRelayProviderCallbacks & { closeAll(): Promise<void> } => {
 	const live = new Set<dgram.Socket>()
+	const pending = new Set<() => void>()
+	let disposed = false
 	return {
 		async createRelayConnection(
 			params: JsRelayConnectionParams,
 			events: JsRelayConnectionEvents
 		): Promise<JsRelayConnectionHandle> {
-			const socket = dgram.createSocket('udp4')
+			if (disposed) throw new Error('UDP relay provider is closed')
+			const socket = openSocket()
 			live.add(socket)
 			let socketClosed = false
 			const closeSocket = (): void => {
 				if (socketClosed) return
-				socketClosed = true
 				try {
 					socket.close()
+					socketClosed = true
 				} catch {
 					// Already gone: the close event below still reports it.
 				}
 			}
 			try {
 				await new Promise<void>((resolve, reject) => {
-					socket.once('error', reject)
+					const cancel = () => {
+						pending.delete(cancel)
+						reject(new Error('UDP relay provider is closed'))
+						closeSocket()
+					}
+					const failed = (error: Error) => {
+						pending.delete(cancel)
+						reject(error)
+					}
+					pending.add(cancel)
+					socket.once('error', failed)
 					socket.bind(0, '127.0.0.1', () => {
-						socket.off('error', reject)
+						socket.off('error', failed)
+						pending.delete(cancel)
+						if (disposed) {
+							closeSocket()
+							reject(new Error('UDP relay provider is closed'))
+							return
+						}
 						resolve()
 					})
 				})
@@ -90,6 +111,8 @@ export const makeUdpRelayProvider = (): JsRelayProviderCallbacks & { closeAll():
 		// process open. Call before destroying the clients so no close event
 		// lands in a freed bridge.
 		async closeAll(): Promise<void> {
+			disposed = true
+			for (const cancel of pending) cancel()
 			const closing = [...live].map(
 				socket =>
 					new Promise<void>(resolve => {

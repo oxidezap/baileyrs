@@ -47,6 +47,7 @@ describe('describeStunAllocate', () => {
 	it('reports token length and integrity presence, never values', () => {
 		// allocate request with a 16-byte token and MESSAGE-INTEGRITY.
 		const packet = new Uint8Array(20 + 20 + 24)
+		packet[3] = 44
 		packet[0] = 0x00
 		packet[1] = 0x03
 		packet[4] = 0x21
@@ -83,6 +84,7 @@ describe('describeStunAllocate', () => {
 		// address ^ 0x2112a442.
 		const endpoint = [0x00, 0x01, 0x2c, 0x84, 0x18, 0x82, 0x2d, 0x7b]
 		const packet = new Uint8Array(20 + 12)
+		packet[3] = 12
 		packet[0] = 0x00
 		packet[1] = 0x03
 		packet[4] = 0x21
@@ -109,5 +111,20 @@ describe('describeStunAllocate', () => {
 		binding[7] = 0x42
 		expect(describeStunAllocate(binding)).toBe(undefined)
 		expect(describeStunAllocate(new Uint8Array(10))).toBe(undefined)
+	})
+})
+
+describe('STUN diagnostic framing', () => {
+	it('refuses truncated attribute values and non-IPv4 endpoints', () => {
+		const truncated = new Uint8Array(24)
+		truncated.set(stun(3))
+		truncated[3] = 4
+		truncated.set([0x40, 0, 0, 16], 20)
+		expect(describeStunAllocate(truncated)).toBe(undefined)
+		const endpoint = new Uint8Array(32)
+		endpoint.set(stun(3))
+		endpoint[3] = 12
+		endpoint.set([0, 0x16, 0, 8, 0, 2, 0x2c, 0x84, 1, 2, 3, 4], 20)
+		expect(describeStunAllocate(endpoint)?.endpointIp).toBe(undefined)
 	})
 })

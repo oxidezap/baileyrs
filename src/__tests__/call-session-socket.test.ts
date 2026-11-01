@@ -18,24 +18,25 @@ describe('managed call socket admission', () => {
 		})
 		let calls = 0
 		const original = WasmWhatsAppClient.prototype.dialCallPcm
-		WasmWhatsAppClient.prototype.dialCallPcm = async () => {
-			calls++
-			throw new Error('cancelled call must not reach the bridge')
-		}
-		const makeSocket = createWASocketFactory({
-			...nodeRuntime,
-			loadVoip: async pipe => {
-				initialized()
-				await blocked
-				return nodeRuntime.loadVoip!(pipe)
-			}
-		})
-		const socket = makeSocket({
-			auth: await createAuthenticationState(useMemoryStore()),
-			logger: P({ level: 'silent' }),
-			waWebSocketUrl: 'ws://127.0.0.1:1'
-		})
+		let socket: ReturnType<ReturnType<typeof createWASocketFactory>> | undefined
 		try {
+			WasmWhatsAppClient.prototype.dialCallPcm = async () => {
+				calls++
+				throw new Error('cancelled call must not reach the bridge')
+			}
+			const makeSocket = createWASocketFactory({
+				...nodeRuntime,
+				loadVoip: async pipe => {
+					initialized()
+					await blocked
+					return nodeRuntime.loadVoip!(pipe)
+				}
+			})
+			socket = makeSocket({
+				auth: await createAuthenticationState(useMemoryStore()),
+				logger: P({ level: 'silent' }),
+				waWebSocketUrl: 'ws://127.0.0.1:1'
+			})
 			const controller = new AbortController()
 			const call = socket.voip.call('123@s.whatsapp.net', { signal: controller.signal })
 			await loading
@@ -47,8 +48,11 @@ describe('managed call socket admission', () => {
 			assert.equal(calls, 0)
 		} finally {
 			unblock()
-			await socket.end(undefined)
-			WasmWhatsAppClient.prototype.dialCallPcm = original
+			try {
+				await socket?.end(undefined)
+			} finally {
+				WasmWhatsAppClient.prototype.dialCallPcm = original
+			}
 		}
 	})
 })
