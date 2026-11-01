@@ -33,8 +33,8 @@ fidelity, bridge events and argument validation. Coverage checks reject
 unclassified exports and untested `assertArgumentDomain` call sites.
 
 [harness/divergence.ts](harness/divergence.ts) records `open` and `intended`
-differences with reasons and review dates. Known open findings print on every
-run; nightly CI enforces review dates. Do not broaden an allowlist entry to
+differences with reasons and review dates. Targets print open findings reproduced
+by that run; the nightly summary lists all open entries and enforces review dates. Do not broaden an allowlist entry to
 hide unrelated failures. Field ordering, packed encoding and omitted fields
 are classified separately.
 
@@ -59,7 +59,7 @@ Use [harness/runner.ts](harness/runner.ts) and existing `*.fuzz.test.ts` targets
 references. Consume only the supplied random generator so seeds replay.
 Minimize failures and commit regression inputs to `corpus`.
 
-The `check` function must handle every shrink candidate, including `{}` and
-`undefined`, without throwing. Return differences for mismatches. For finite
-sets, set `exhaustive: true` and iterate instead of sampling. Report exhausted
-time budgets; do not present partial sweeps as complete passes.
+Return differences for mismatches. The shrinker may propose `{}` or `undefined`;
+a thrown check on a shrink candidate counts as a non-match, not a crash. For
+finite sets, set `exhaustive: true` and iterate instead of sampling. Report
+exhausted time budgets; do not present partial sweeps as complete passes.

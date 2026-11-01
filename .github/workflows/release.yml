@@ -189,7 +189,8 @@ jobs:
           diff -u lib.sha256 lib.actual
           echo "publish: $(wc -l < lib.actual) files match the digests CI recorded"
 
-      # Skip lifecycle hooks in the privileged job and preserve the verified build.
+      # Dependency hooks could obtain OIDC credentials and publish as this package.
+      # --ignore-scripts prevents that and preserves the verified build by skipping prepare.
       - run: npm ci --ignore-scripts
 
       # --ignore-scripts skips prepack, so run its package guard explicitly.

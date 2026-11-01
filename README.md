@@ -56,7 +56,10 @@ sock.ev.on('connection.update', ({ connection, qr, lastDisconnect }) => {
         pairingRequested = true
         sock.requestPairingCode(phoneNumber)
             .then(code => console.log('Pairing code:', code))
-            .catch(error => console.error('Pairing failed:', error))
+            .catch(error => {
+                pairingRequested = false
+                console.error('Pairing failed:', error)
+            })
     }
     if (connection === 'open') console.log('Connected')
     if (connection === 'close') console.error('Socket closed:', lastDisconnect?.error)
@@ -112,8 +115,10 @@ URLs for PRs and commits. They are unreleased code with version
 
 ## Migrating from upstream Baileys
 
-Custom upstream `{ creds, keys }` auth states are wrapped automatically. Keep
-persisting `creds.update` with your loader's `saveCreds`.
+Custom upstream `{ creds, keys }` auth states require `keys.bridgeTransaction`
+with backend-wide isolation and durable atomic commits. Adapter-local upstream
+transactions do not meet this contract. Compatible states are wrapped automatically;
+keep persisting `creds.update` with your loader's `saveCreds`.
 
 For an existing upstream JSON directory, use `useLegacyMultiFileAuthState`.
 `useMultiFileAuthState` uses native binary storage and does not import upstream JSON.
