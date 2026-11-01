@@ -5,116 +5,75 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/oxidezap/baileyrs)
 [![pkg.pr.new](https://pkg.pr.new/badge/oxidezap/baileyrs)](https://pkg.pr.new/~/oxidezap/baileyrs)
 
-A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API.
+A WhatsApp Web library for JavaScript with a Baileys-compatible API, backed by
+[whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) through the
+[@oxidezap/whatsapp-rust-bridge](https://www.npmjs.com/package/@oxidezap/whatsapp-rust-bridge) WASM package.
 
-## How it works
+See [ATTRIBUTION.md](ATTRIBUTION.md) for upstream attribution.
 
-baileyrs is a thin JavaScript wrapper over [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust)
-compiled to WebAssembly. The heavy lifting — Signal protocol, Noise handshake, media
-encryption, binary-node (de)serialization, protobuf codec — runs in Rust/WASM via the
-[whatsapp-rust-bridge](https://www.npmjs.com/package/whatsapp-rust-bridge) package.
-
-The public surface intentionally mirrors [Baileys](https://github.com/WhiskeySockets/Baileys)
-so existing integrations can migrate with minimal changes. See
-[ATTRIBUTION.md](ATTRIBUTION.md) for details.
-
-### vs. Baileys
-
-| Area | Original Baileys | baileyrs |
-|---|---|---|
-| Signal Protocol | JS (libsignal) | Rust/WASM |
-| Media encrypt/decrypt | Node.js crypto | Rust AES-256-CBC + HMAC |
-| Media upload/download | JS fetch + temp files | Rust with CDN failover, auth refresh, resumable upload |
-| Key management | JS auth state | Rust `PersistenceManager` |
-| Auto-reconnect | Manual `startSock()` loop | Transient drops retried in Rust (fibonacci backoff); terminal ones still yours |
-
-Compatibility is checked rather than assumed: CI compiles and runs consumer code
-against the locally packed npm tarball under the upstream package name, exercises
-published deep imports and verifies host initialization in workerd with
-`nodejs_compat` disabled. It also runs the proto-runtime, wire-fidelity and
-lifecycle contract audits. The strict declaration audit is available as
-`npm run compat:audit:strict`; it currently reports known declaration gaps and
-is not a green gate yet. Layer ownership is checked by `npm run compat:layers`
-when sibling core and bridge checkouts are available.
-Behavioural suites and a [differential fuzz suite](src/__fuzz__/README.md)
-generate inputs from the proto schema and compare the two libraries directly.
-Differences the fuzzers find are recorded with a reason and a review date, and
-known open ones are listed in `src/__fuzz__/harness/divergence.ts`.
-
-### Protobuf field names
-
-The bridge and upstream Baileys generate their schemas from different sources, so a
-field can keep its number and wire type and still be spelled differently. The `proto`
-facade always uses the Baileys spelling:
-
-| Type                                   | Baileys                  | Bridge                           |
-| -------------------------------------- | ------------------------ | -------------------------------- |
-| `SyncActionValue.AgentAction`          | `deviceID`               | `deviceId`                       |
-| `SyncActionValue.ChatAssignmentAction` | `deviceAgentID`          | `deviceAgentId`                  |
-| `Message.ExtendedTextMessage`          | `faviconMMSMetadata`     | `faviconMmsMetadata`             |
-| `Message.MessageHistoryMetadata`       | `oldestMessageTimestamp` | `oldestMessageTimestampInWindow` |
-
-Without the translation a write in the Baileys spelling is dropped by the codec and a
-read never sets the public property. Both the facade and the send path translate, in
-both directions, for fields nested at any depth. An own public property wins over the
-bridge name, including an explicit `null` or `undefined`, and inputs are never
-mutated. The bridge keeps its own names.
-
-### Bridge 0.25 compatibility
-
-The runtime dependency is pinned to `@oxidezap/whatsapp-rust-bridge@0.25.0`.
-The public API still targets `baileys@7.0.0-rc14`.
-
-- `groupFetchAllParticipating()` and `communityFetchAllParticipating()` fetch full
-  metadata for each slim bridge listing entry. This adds one metadata request per
-  group, preserves participants and settings, and rejects on any failed fetch
-  before emitting `groups.update`.
-- Reachout pushes use the typed bridge event once, ignoring its raw MEX twin.
-  `connection.update.reachoutTimeLock` preserves unknown enforcement names at
-  runtime; a missing `isActive` means unknown, not a lifted restriction. This
-  reports server state and does not prevent device removal or impose send policy.
-- A terminal `device_removed` or unknown conflict reports `loggedOut` rather than
-  `connectionReplaced`, including when run completion arrives before the event.
-- `newsletterMute()` and `newsletterUnmute()` change channel-update notifications.
-  Metadata exposes that setting as `mute_state`, independently of admin-facing
-  follower-activity notifications. Reactions still resolve to `undefined`.
-  History results may omit `messageId`; `serverId` and large counters remain
-  strings. The bridge's packed live-message format does not carry the new
-  newsletter server ID; only object events and history results expose it.
-- A failed community configuration can reject after creation succeeded. Preserve
-  the error's `createdJid`, `step`, `kind` and `cause`, then resume configuration on
-  that JID instead of repeating `communityCreate()`.
-- Synced status privacy reaches `settings.update`; the unarchive setting reaches
-  `creds.update`. Historical calls, favorite chats and sticker-list updates have
-  no corresponding event in the pinned Baileys API and are acknowledged without
-  emitting unrelated live-call or message events.
-
-## Documentation
-
-The full API reference and guides live in the
-**[baileyrs wiki](https://deepwiki.com/oxidezap/baileyrs)** — sending messages and
-media, groups, privacy, newsletters, custom stores, socket configuration,
-error handling, memory monitoring, and more.
+[Guides and API overview](https://deepwiki.com/oxidezap/baileyrs) ·
+[Examples](Example) · [Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
 
 ## Installation
 
-Requires Node.js 22.3 or newer for the Node API. A runtime-neutral `/host` entrypoint is available for Workers, Deno, and browser-like hosts.
-
-### New project
+Requires Node.js 22.3 or newer for the Node API.
 
 ```sh
 npm install @oxidezap/baileyrs
 ```
 
-```ts
-import makeWASocket from '@oxidezap/baileyrs'
+To keep existing Baileys imports, install an alias instead:
+
+```sh
+npm install @whiskeysockets/baileys@npm:@oxidezap/baileyrs
 ```
+
+The API targets [Baileys 7.0.0-rc14](https://github.com/WhiskeySockets/Baileys).
+Compatibility has known gaps; see [migration notes](#migrating-from-upstream-baileys)
+and the [compatibility audits](scripts/compatibility).
+
+## Quick start
+
+This example prints a pairing code for a new session and logs incoming messages.
+Run it as an ESM TypeScript file. Set `PHONE_NUMBER` to your number with country
+code, digits only, and enter the code in WhatsApp's linked-devices screen.
+
+```sh
+PHONE_NUMBER=1234567890 node bot.ts
+```
+
+```ts
+import makeWASocket, { useMultiFileAuthState } from '@oxidezap/baileyrs'
+
+const { state } = await useMultiFileAuthState('auth_info')
+const phoneNumber = process.env.PHONE_NUMBER
+if (!state.creds.registered && !phoneNumber) throw new Error('Set PHONE_NUMBER to pair')
+const sock = makeWASocket({ auth: state })
+let pairingRequested = false
+
+sock.ev.on('connection.update', ({ connection, qr, lastDisconnect }) => {
+    if (qr && phoneNumber && !state.creds.registered && !pairingRequested) {
+        pairingRequested = true
+        sock.requestPairingCode(phoneNumber)
+            .then(code => console.log('Pairing code:', code))
+            .catch(error => console.error('Pairing failed:', error))
+    }
+    if (connection === 'open') console.log('Connected')
+    if (connection === 'close') console.error('Socket closed:', lastDisconnect?.error)
+})
+
+sock.ev.on('messages.upsert', ({ messages }) => {
+    for (const message of messages) console.log('Received:', message.key.id)
+})
+```
+
+Native auth persists automatically. Keep `auth_info` private and reuse it on
+restart. The example stops on terminal closure; [Example/example.ts](Example/example.ts)
+includes QR authentication, sending messages and a reconnect policy.
 
 ### Host-neutral entrypoint
 
-For Workers, Deno, or browser-like runtimes, import `/host` and initialize the bridge
-WASM before creating a socket. Provide a caller-owned `JsStoreCallbacks` auth store;
-this path does not use filesystem auth or Node streams.
+For Workers, Deno and browser-like hosts, initialize WASM before creating a socket:
 
 ```ts
 import makeWASocket, { createAuthenticationState, useMemoryStore } from '@oxidezap/baileyrs/host'
@@ -124,490 +83,114 @@ import { initSync } from '@oxidezap/whatsapp-rust-bridge/host'
 initSync({ module: wasm })
 const store = useMemoryStore()
 const auth = await createAuthenticationState(store)
-const socket = makeWASocket({ auth })
+const sock = makeWASocket({ auth })
 ```
 
-The socket initializes the bridge crypto engine during startup. If you call the
-standalone AES-backed media retry helpers without creating a socket, initialize
-the bridge engine yourself first (`initWasmEngine()`; after `initSync()` on
-hosts).
+Memory storage is temporary. For persistent sessions, supply a byte-preserving
+`JsStoreCallbacks` store and reuse it on restart. Do not reset or truncate an
+existing device record, including its registration ID, after a failed read.
+This entrypoint uses no filesystem auth or Node streams.
 
-For a custom host runtime, bind media helpers to its bridge and random source once:
-`makeMediaCryptoRuntime(runtime)` returns a capability you can pass as the final
-argument to `/host`'s `getMediaKeys`, `encryptMediaRetryRequest`, and
-`decryptMediaRetryData` helpers. This keeps HKDF and AES-GCM on the selected
-bridge instead of the default host singleton.
+Standalone AES-backed media retry helpers require `initWasmEngine()` before use
+if no socket has initialized the engine, after `initSync()` on hosts. With a
+custom runtime, pass `makeMediaCryptoRuntime(runtime)` as the final argument to
+`getMediaKeys`, `encryptMediaRetryRequest` and `decryptMediaRetryData`.
 
-Reuse the same byte-preserving store on restart: `await createAuthenticationState(store)`
-rehydrates the device written by the Rust engine, including its registration ID
-(which may exceed the 14-bit ID used to seed fresh Baileys-style credentials).
-Do not reset or truncate an existing device record to work around a failed read.
-Node consumers should continue using the root entrypoint and
-`useMultiFileAuthState` unchanged.
+### Optional dependencies
 
-### Drop-in replacement for upstream Baileys
+The runtime dependencies are the bridge and `long`. All other peers are optional:
 
-baileyrs is API-compatible with [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys).
-Existing projects switch over by aliasing the package — **the API and imports
-need no source changes**. Two things do:
-
-- Carrying an existing pairing across takes a one-line import swap, see
-  [Migrating from Upstream Baileys](#migrating-from-upstream-baileys).
-- If your `connection.update` handler was written for a version of baileyrs
-  before 0.1, see [Gotchas](#gotchas): a `close` now always means the socket
-  is finished, and you have to recreate it. Code written against upstream
-  Baileys already does the right thing.
-
-
-```sh
-npm install @whiskeysockets/baileys@npm:@oxidezap/baileyrs
-```
-
-That writes the alias to your `package.json` (with the latest version at install time):
-
-```jsonc
-{
-  "dependencies": {
-    "@whiskeysockets/baileys": "npm:@oxidezap/baileyrs@^x.x.x"
-  }
-}
-```
-
-Every `import { makeWASocket } from '@whiskeysockets/baileys'` in your codebase
-now resolves to baileyrs.
-
-### What gets installed
-
-`npm install @oxidezap/baileyrs` always brings two runtime dependencies.
-
-- `@oxidezap/whatsapp-rust-bridge` is the Rust engine doing the protocol
-  work. It is the library, not an add-on, so it stays a hard dependency.
-- `long` stays too. Fields like `messageTimestamp` and `fileLength` are
-  `Long` objects in the types, and the package builds real ones at runtime.
-  A consumer without it fails compilation in four declaration files and
-  fails at import, so there is nothing to save by dropping it. I checked.
-
-Everything else is an optional peer. It is used when present and skipped
-when not.
-
-| Peer | What it does | Without it |
-| --- | --- | --- |
-| `@hapi/boom` (`^9` or `^10`) | Backs the exported `Boom` errors | A built-in implementation with the same shape |
-| `pino` (`^9` or `^10`) | Backs the default logger | JSON lines on stdout, same redaction |
-| `sharp`, `jimp`, `audio-decode`, `link-preview-js`, `music-metadata` | Media work | Same behavior as before this change |
-
-Two setups both work.
-
-- Migrating a Baileys project. Your tree already has `@hapi/boom` and
-  `pino`, and baileyrs reuses those copies. Error identity is shared, so
-  `instanceof` and `isBoom` checks against your own copy keep passing.
-  Install nothing, remove nothing.
-- Fresh project. Install only what you touch. The defaults work with zero
-  extra dependencies. Add `@hapi/boom` if you compare errors against
-  another library's copy, and `pino` if you want transports and
-  pretty-printing instead of stdout JSON.
+- `@hapi/boom` and `pino` replace the built-in compatible error and JSON logger implementations. Install them for shared error identity or Pino transports.
+- `sharp`, `jimp`, `audio-decode`, `link-preview-js` and `music-metadata` support media processing. Without `music-metadata`, audio sends without computed duration.
 
 ### Preview builds
 
-Every commit on `main` and every pull request publishes an installable build
-through [pkg.pr.new](https://github.com/stackblitz-labs/pkg.pr.new). Nothing is
-published to npm — the tarball is served from a URL, so a fix can be tried
-before it reaches a release:
+[Available previews](https://pkg.pr.new/~/oxidezap/baileyrs) include installation
+URLs for PRs and commits. They are unreleased code with version
+`0.0.0-preview-<sha>`; pin them explicitly for testing and use npm releases in production.
 
-```sh
-# the head of a pull request, following it as new commits land
-npm install https://pkg.pr.new/@oxidezap/baileyrs@94
+## Migrating from upstream Baileys
 
-# one specific commit
-npm install https://pkg.pr.new/@oxidezap/baileyrs@f59ae6f
-```
+Custom upstream `{ creds, keys }` auth states are wrapped automatically. Keep
+persisting `creds.update` with your loader's `saveCreds`.
 
-Projects using the Baileys alias point it at the same URL:
+For an existing upstream JSON directory, use `useLegacyMultiFileAuthState`.
+`useMultiFileAuthState` uses native binary storage and does not import upstream JSON.
 
-```jsonc
-{
-  "dependencies": {
-    "@whiskeysockets/baileys": "https://pkg.pr.new/@oxidezap/baileyrs@94"
-  }
-}
-```
-
-Every open pull request comments the URL for its own head, and
-[pkg.pr.new/~/oxidezap/baileyrs](https://pkg.pr.new/~/oxidezap/baileyrs) lists
-what is available.
-
-Preview builds carry the version `0.0.0-preview-<sha>`, which no range written
-for a real release can match — an install is a deliberate pin, and it stays on
-that commit until you change it. They are for trying a change, not for running
-one: they are unreleased code, and the URL is not a substitute for a published
-version in anything that has to keep resolving.
-
-## Quick Start
+Stop every old auth writer and back up the entire directory, including hidden
+files and archives, before the first migration:
 
 ```ts
-import makeWASocket, { Boom, DisconnectReason, useMultiFileAuthState } from '@oxidezap/baileyrs'
+import makeWASocket, { useLegacyMultiFileAuthState } from '@oxidezap/baileyrs'
 
-const { state } = await useMultiFileAuthState('auth_info')
-
-// setTimeout caps at ~2^31-1 ms (~24.8 days) and fires immediately past that,
-// so a long ban has to be waited out in chunks.
-async function waitUntil(deadlineMs: number) {
-    for (let left = deadlineMs - Date.now(); left > 0; left = deadlineMs - Date.now()) {
-        await new Promise(resolve => setTimeout(resolve, Math.min(left, 2_147_483_647)))
-    }
-}
-
-async function connectToWhatsApp() {
-    const sock = makeWASocket({ auth: state })
-
-    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
-        if (connection === 'close') {
-            // `close` means this socket is finished — same as upstream Baileys.
-            // Transient drops never get here; the Rust engine retries those and
-            // reports `connecting`.
-            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
-            // See the reconnect table under Gotchas: a few terminal closes
-            // reject the replacement just as fast, so they are not worth
-            // retrying — or not yet. `Example/example.ts` has the full policy.
-            if (statusCode === DisconnectReason.loggedOut || statusCode === 405) {
-                console.log('Closed for good', statusCode)
-            } else if (statusCode === DisconnectReason.forbidden) {
-                // Temporary ban: `expire` is unix seconds. A missing or past
-                // expiry means the ban is over — reconnect like any other
-                // terminal close rather than staying offline forever.
-                const expire = (lastDisconnect?.error as Boom)?.data?.expire
-                console.log('Temporarily banned until', expire)
-                waitUntil(typeof expire === 'number' ? expire * 1000 : 0).then(connectToWhatsApp)
-            } else {
-                setTimeout(connectToWhatsApp, 5_000)
-            }
-        }
-        if (connection === 'open') {
-            console.log('Connected')
-        }
-    })
-
-    // Register every handler in here. A replacement socket is a new emitter,
-    // so anything attached outside stops firing after the first reconnect.
-    sock.ev.on('messages.upsert', ({ messages }) => {
-        for (const msg of messages) {
-            console.log('received message', msg.key.id)
-        }
-    })
-
-    return sock
-}
-
-const sock = await connectToWhatsApp()
-await sock.sendMessage('1234567890@s.whatsapp.net', { text: 'Hello!' })
-```
-
-## Migrating from Upstream Baileys
-
-baileyrs accepts the upstream `auth: { creds, keys }` shape directly — the
-internal `wrapLegacyStore` adapter runs automatically when it sees that
-shape, so the **`makeWASocket(...)` call site needs zero changes**:
-
-```ts
-// makeWASocket() works as-is once the npm alias is in place.
-// Auto-wrap kicks in when it sees {creds, keys}.
+const { state, saveCreds } = await useLegacyMultiFileAuthState('auth_info', { migrate: true })
 const sock = makeWASocket({ auth: state })
-
-sock.ev.on('creds.update', saveCreds)  // still fires — adapter re-emits
+sock.ev.on('creds.update', saveCreds)
 ```
 
-The one switch you do make is **how you load `state`**. baileyrs's
-`useMultiFileAuthState` is a *new-state-only* helper: it provisions a
-binary `.bin` store for the Rust engine and ignores any pre-existing
-upstream JSON. To carry an existing pairing across the migration, swap
-the import to `useLegacyMultiFileAuthState` (one line):
+The transactional snapshot becomes authoritative; retained per-key files are
+backups. Existing native stores also require `{ migrate: true }` for their first
+transactional-storage upgrade. Subsequent opens can omit it.
 
-```diff
-- import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys'
-+ import makeWASocket, { useLegacyMultiFileAuthState as useMultiFileAuthState } from '@whiskeysockets/baileys'
+Before reverting storage formats, stop all writers, back up the directory and
+successfully run `prepareLegacyAuthRollback(folder, { offline: true })` for JSON
+or `prepareNativeAuthRollback(folder, { offline: true })` for native storage.
+Do not reopen stale files after a rejected export. Sessions imported with pending
+out-of-order gaps can become native-only and need a new Signal handshake after
+rollback. Engines older than 0.2.8 cannot read newer seed-only skipped-key records;
+do not delete native-only session rows to force a downgrade.
 
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info')
-  const sock = makeWASocket({ auth: state })
-  sock.ev.on('creds.update', saveCreds)
-```
+### Connection lifecycle
 
-Same approach works for any custom upstream auth (`useMySQLAuthState`,
-`useRedisAuthState`, mysql-baileys, etc.) — your loader keeps returning
-`{creds, keys, saveCreds}`, baileyrs auto-wraps it on the way in.
+Transient drops are retried by Rust and report `connecting`. A terminal `close`
+is emitted once after resource cleanup; create a replacement socket only then
+and register its handlers again.
 
-Existing sessions migrate without re-pairing: `useLegacyMultiFileAuthState`
-reads the existing `creds.json` + `pre-key-*.json` / `session-*.json` files
-from the same folder upstream Baileys was using and hands them to the Rust
-engine. Pair-ID, identity, signed pre-keys, and Signal sessions are all
-preserved. No QR re-scan, no logged-out events.
+| Terminal status | Action |
+| --- | --- |
+| `DisconnectReason.loggedOut` / 401 | Stop and pair again. |
+| 405 | Stop and update the rejected build. |
+| `DisconnectReason.forbidden` / 403 | Respect `lastDisconnect.error.data.expire`, in Unix seconds. |
+| 500 during startup | Inspect `lastDisconnect.error.cause` for storage or setup errors before retrying. |
+| Other | Reconnect after a delay. |
 
-> **Where the new state goes**: baileyrs continues to write the legacy
-> JSON files (via `saveCreds`) so the folder stays compatible with both
-> sides during a rollback window. The Rust engine treats the JSON as the
-> source of truth as long as you keep using `useLegacyMultiFileAuthState`.
-> One edge case: a Signal session imported while it still had pending
-> out-of-order message gaps becomes native-only on its first write-back —
-> after a rollback, that one session re-establishes itself through a fresh
-> Signal handshake (automatic; no re-pairing, other sessions unaffected).
-> If you later want to drop the JSON layer, switch to
-> `useMultiFileAuthState` — but that path requires a fresh QR.
+`connecting` can last tens of minutes during rate-limit backoff. Do not use it to
+start another socket or restart the process. Alert rather than kill on a liveness
+timeout. Calls made during reconnect wait for the connection; racing a call
+against a deadline does not cancel it. Retrying sends can duplicate messages
+unless you retain the same `messageId`. Application traffic pacing is your responsibility.
 
-### Gotchas
+### Compatibility notes
 
-A few behaviors that differ from upstream — almost always to your advantage:
-
-- **History contacts stay on `messaging-history.set`.** During HistorySync,
-  read the `contacts` array from that event to hydrate a contact store. baileyrs
-  does not re-emit those snapshot entries through `contacts.upsert`, including
-  push-name-only syncs. Semantic updates such as `contacts.update` still emit
-  normally for inbound push names and contact changes.
-
-- **`shouldSyncHistoryMessage` is supported, on a partial notification view.**
-  The policy runs before the engine downloads or parses history content and
-  receives a decoded `HistorySyncNotification` carrying only that pre-download
-  metadata: `syncType`, `chunkOrder`, `progress`, `fileLength` (as `Long`) and
-  `peerDataRequestSessionId`. Media and key fields stay absent rather than
-  synthesized, and sync types outside the upstream processable set are rejected
-  after the callback runs. Returning `false` permanently acknowledges the
-  chunk — no retry — so it is not a transient load-shedding hook. Requesting
-  full history (`syncFullHistory`) stays engine-owned, and unlike upstream the
-  policy is not re-invoked to gate the initial-sync state machine: admission
-  covers received notifications only.
-
-- **An undecryptable message tells you what it was.** The CIPHERTEXT stub
-  emitted on `messages.upsert` for a message that failed to decrypt carries
-  `stanzaType`: the envelope's `type` attribute as the server stamped it on the
-  sending stanza — `"text"`, `"media"`, `"pay"`, `"poll"`, `"reaction"`,
-  `"event"`. It describes the stanza rather than the ciphertext, so it survives
-  the failure, and it is stamped on the sender's own outgoing stanza, so it
-  cannot be pointed at anyone else. Upstream has no equivalent: there the
-  placeholder is unclassifiable. `messageStubParameters` is untouched and still
-  holds only the unavailability reason, when the server named one — the two are
-  independently optional, which is exactly what a positional array cannot
-  express.
-
-- **Auto-reconnect is built in, but `close` still means `close`.** The Rust
-  engine retries transient drops on a fibonacci backoff and reports them as
-  `connection: 'connecting'`, so the canonical upstream handler never fires
-  for those and you never end up with two sockets on one account. A
-  `connection: 'close'` is only emitted once the engine has given up — a
-  replaced session, an outdated build, a temporary ban, an unrecoverable
-  `<failure>` — and by then the socket has already released its resources.
-  Ignoring it leaves the bot permanently offline, so handle it the upstream
-  way and build a replacement — with three exceptions, because some of those
-  failures reject the replacement just as fast:
-
-  | `statusCode` | what to do |
-  | --- | --- |
-  | `DisconnectReason.loggedOut` (401) | stop; needs a fresh pairing |
-  | `405` | stop; the server rejected this build, and the next one too |
-  | `DisconnectReason.forbidden` (403) | wait until `lastDisconnect.error.data.expire` (unix seconds) — it is a temporary ban |
-  | `500` (startup failure) | inspect `lastDisconnect.error.cause` before retrying; persistent storage/setup errors will repeat |
-  | anything else | reconnect, after a short delay |
-
-  `Example/example.ts` implements exactly this.
-- **`connecting` is not a short state here.** The engine's backoff grows with
-  each consecutive failure, so a single `connecting` can stand for minutes of
-  downtime with nothing else emitted in between. See
-  [When `connecting` lasts minutes](#when-connecting-lasts-minutes): a
-  readiness timeout written for upstream's `connecting` misreads this one.
-- **No `getMessage` / `cachedGroupMetadata` polyfill required.** The Rust
-  side caches group metadata and message keys natively, and nothing here calls
-  either hook: a `cachedGroupMetadata` carried over from upstream never runs,
-  and neither does a `getMessage`. Passing them is harmless — the whole
-  `SocketConfig` shape is accepted so a migration needs no edits — but they are
-  not overrides, so delete them rather than maintain them. Every socket warns once
-  at construction naming any option in that group it received; that list is the
-  authority — the type system requires each `SocketConfig` member to be
-  classified, so it cannot fall behind — and it also covers `keepAliveIntervalMs`,
-  `markOnlineOnConnect`, `maxMsgRetryCount`, `msgRetryCounterCache`,
-   `retryRequestDelayMs`, `fireInitQueries`, `syncFullHistory`,
-   `generateHighQualityLinkPreview`,
-  `linkPreviewImageThumbnailWidth`, `enableAutoSessionRecreation`,
-  `enableRecentMessageCache`, `appStateMacVerification`,
-  `patchMessageBeforeSending`, `customUploadHosts`, `countryCode`,
-  `connectTimeoutMs`, `qrTimeout`, `printQRInTerminal`, `ignoreOfflineMessages`,
-  `downloadHistory`, `agent`, `fetchAgent`, `mobile`, `mediaCache`,
-  `userDevicesCache`, `callOfferCache` and `placeholderResendCache`.
-- **A sender's resend reaches you once, not once per delivery.** When a
-  sender's network is bad, their client re-runs its own outbox and sends the
-  same message again — same `key.id`, re-encrypted. Upstream Baileys emits a
-  `messages.upsert` for each of those deliveries, so an auto-reply bot answers
-  the same message two or three times; the engine now recognises the repeat and
-  emits one. It is a short-lived, in-memory window (five minutes), so the one
-  case still open is a sender whose retry spans a restart of your process. If
-  your handler has side effects, keying them on the whole `key` — `remoteJid`,
-  `id`, `fromMe` and `participant` — remains the thing that makes it safe. Not
-  on `id` alone: the id is the sending client's to choose, so two participants
-  of one group can pick the same one, and a handler that keys on it would drop
-  the second person's message rather than a duplicate. That is why the engine's
-  own check carries the sender too.
-- **`Boom` works with or without `@hapi/boom`.** baileyrs exports a
-  `@hapi/boom`-compatible `Boom`, so the existing
-  `(err as Boom).output.statusCode` pattern works unchanged. The package is
-  an optional peer. With it installed your copy backs the export, without
-  it a built-in implementation with the same shape does. See
-  [What gets installed](#what-gets-installed).
-- **Audio duration needs the optional `music-metadata` peer.** Upstream
-  Baileys bundles it as a hard dependency; here it is optional like the
-  other media peers (`sharp`, `jimp`, `audio-decode`, `link-preview-js`).
-  Without it, audio messages still send — they just carry no `seconds`
-  value. Install `music-metadata` if you want durations computed.
-- **Your key store also holds bridge state, so "empty" is not "unpaired".**
-  See [Bridge state in your key store](#bridge-state-in-your-key-store) — this
-  one can break a boot path, so it has its own section.
-
-### When `connecting` lasts minutes
-
-Socket startup emits `connecting` before awaiting credential hydration. If
-hydration, bridge construction, or client setup rejects, it emits one terminal
-`close` after cleanup with `statusCode` 500. `lastDisconnect.error` preserves
-the initialization failure in `cause`; pending socket methods reject with that
-same error. Check the cause before replacing a socket, since a storage error can
-persist across restarts. An explicit `sock.end()` during startup remains a silent shutdown.
-
-Upstream Baileys emits `connecting` once per socket, and it resolves to `open`
-or `close` within seconds, because upstream never retries on its own. On
-baileyrs the same value also covers every drop the engine is retrying, and the
-backoff between those retries climbs with each consecutive failure.
-
-Here is what that costs on a rate-limited account. Four consecutive
-`429 rate-overlimit`, measured against the production reconnect path:
-
-| failure | next attempt in | offline so far |
-| --- | --- | --- |
-| `429` #1 | 8.4s | 8.4s |
-| `429` #2 | 146.2s | 154.6s |
-| `429` #3 | 813.9s | 968.5s |
-| `429` #4 | 903.5s | 1872.0s |
-
-About 16 minutes offline once the third retry delay has run, and about 31 once
-the fourth has. For all of it the consumer sees exactly **one**
-`connection: 'connecting'`: no `lastDisconnect`, no status code, no repeat.
-`isConnected` and `isLoggedIn` are both `false` throughout, exactly as they are
-during a first connection, so neither tells you a retry is scheduled.
-
-**Do not arm a readiness timeout on `connecting`, and above all do not restart
-the process when one expires.** The backoff counter lives in the Rust client
-that your socket owns, so it dies with the process. The next boot starts a new
-attempt immediately, replays the whole startup burst against a server that just
-asked for less traffic, and earns the next `429` sooner. Restarting is the
-single worst answer to a rate limit, and an upstream-shaped readiness timeout
-leads straight to it.
-
-What to do instead:
-
-- Treat `open` and `close` as the only decision points. `connecting` carries no
-  failure to react to, and it is never a reason to build a second socket. Only
-  `close` is.
-- Read `connecting` in context: after an `open` it means the engine is retrying
-  a drop it owns and will keep retrying; with no `open` before it, it is a first
-  connection still being established. Neither one is stuck.
-- If you need a liveness watchdog anyway, budget it well past the ladder above,
-  tens of minutes rather than seconds, and have it alert a human instead of
-  killing the process. A shorter one fires on a backoff that was about to
-  succeed.
-- Know what your own calls do meanwhile. A call issued while the engine is
-  reconnecting no longer fails fast: it parks and goes out when the connection
-  lands, which on the ladder above can be tens of minutes. That is the point,
-  since the alternative was an error indistinguishable from a finished session,
-  but it means a call you issue during `connecting` is a call you are committing
-  to. Racing it against your own deadline bounds your waiting and not the work:
-  the call still goes out when the reconnect lands, so a retry after the
-  deadline sends it twice unless you pinned `messageId`.
-- Fix the cause on your side: send less. The engine restores the connection,
-  but it does not pace your traffic, and the traffic is what earned the `429`.
-  Queueing, throttling and deferral are yours to decide, the same as upstream.
+- History contacts arrive through `messaging-history.set`, not `contacts.upsert`.
+- `shouldSyncHistoryMessage` receives pre-download metadata only: `syncType`, `chunkOrder`, `progress`, `fileLength` as `Long`, and `peerDataRequestSessionId`. Returning `false` permanently acknowledges the chunk. It does not gate the initial-sync state machine.
+- Engine-owned options such as `getMessage` and `cachedGroupMetadata` are accepted but do not override engine behavior. Socket construction warns about ignored options; see the [option catalog](src/Socket/unsupported-config.ts).
+- Undecryptable-message stubs may carry `stanzaType` independently of `messageStubParameters`.
+- Duplicate delivery suppression is temporary and in memory. For durable side effects, deduplicate with the full key: `remoteJid`, `id`, `fromMe` and `participant`.
+- The `proto` facade uses Baileys field names and translates bridge aliases in both directions without mutating inputs. See [compatibility rules](src/Compatibility/README.md).
+- Group and community listings fetch full metadata per entry and reject on failed fetches before emitting `groups.update`.
+- `reachoutTimeLock` reports server state without imposing send policy. Unknown enforcement names are preserved; an absent `isActive` is unknown.
+- Newsletter `mute_state` controls channel-update notifications, independently of follower-activity notifications. History may omit `messageId`; `serverId` and large counters are strings. Packed live events do not carry the newsletter server ID.
+- Community creation can succeed before configuration fails. Preserve `createdJid`, `step`, `kind` and `cause` from the error and resume configuration on that JID.
+- Status privacy emits `settings.update`; unarchive settings emit `creds.update`. Historical calls, favorite chats and sticker-list updates have no matching event in the targeted Baileys API.
 
 ### Bridge state in your key store
 
-Upstream Baileys keeps engine state in `creds` (persisted by `saveCreds`) and
-puts only Signal key material in `keys`. baileyrs uses that same `keys` store
-as the persistence channel for the Rust core's own state as well: its device
-record, and the byte-level records the Signal namespaces are projected from.
-Those live under namespaces reserved with the **`bridge-` prefix**:
+Wrapped upstream stores also contain `bridge-` engine records, including records
+created before pairing. Determine pairing from `creds.registered` and `creds.me?.id`,
+not the number of stored keys.
 
-| namespace | what it holds |
-| --- | --- |
-| `bridge-native-*` | the core's own encoding of a namespace that also has a Baileys projection (`bridge-native-session`, `bridge-native-prekey`, `bridge-native-device`, …) |
-| `bridge-*` | core records with no Baileys equivalent (`bridge-signed-prekey`, `bridge-sent-message`, `bridge-msg-secret`, `bridge-meta`, …) |
+Use `isBridgeInternalKeyType` or `BRIDGE_INTERNAL_KEY_TYPES` for upstream-shaped
+views. Full backups and moves between baileyrs stores must retain every `bridge-`
+row, including native-only sessions and records without a Baileys projection.
+This filtering concern does not apply to `useMultiFileAuthState`, whose `keys`
+is already a projection over native storage.
 
-No upstream Baileys namespace starts with `bridge-`, and none of your data is
-stored under one. Which of them you actually see depends on what the engine
-touches; `bridge-native-device` shows up first, because the core reads its
-device record while the socket is still `connecting` — **before any QR, before
-any pairing**.
+## Development
 
-That last point is the one that bites. A store that counted rows to decide
-whether this was a first run reports a session that does not exist:
-
-```js
-// WRONG on baileyrs: bridge-native-device is already in the table before pairing,
-// so this never reports empty again — the bot skips its pairing flow and hangs.
-const isEmpty = () => !creds.registered && !creds.me?.id && countKeys() === 0
-
-// Right, on baileyrs and upstream alike: creds are the pairing record.
-const isEmpty = () => !creds.registered && !creds.me?.id
-```
-
-**A non-empty key store is not evidence of a session.** `creds.registered` and
-`creds.me?.id` are, and they are the only thing to check.
-
-When you need to present a store the way upstream would — counting rows,
-listing the Signal namespaces, exporting an upstream-shaped dump — filter the
-bridge rows out with the exported classifier rather than matching the prefix
-yourself. It is derived from the internal routing catalog, so a namespace added
-in a later release is covered without you changing anything:
-
-```ts
-// Aliased install? Import from '@whiskeysockets/baileys' instead; it resolves here.
-import { BRIDGE_INTERNAL_KEY_TYPES, isBridgeInternalKeyType } from '@oxidezap/baileyrs'
-
-isBridgeInternalKeyType('bridge-native-device') // true
-isBridgeInternalKeyType('pre-key')              // false
-
-// Every bridge-internal namespace, e.g. for a SQL `NOT IN (...)` clause. The
-// store also holds the Baileys namespaces the engine projects into it.
-BRIDGE_INTERNAL_KEY_TYPES
-```
-
-> **Do not drop these rows from a backup or a store-to-store move.** They are
-> effective state, not metadata. `bridge-signed-prekey`, `bridge-sender-key-devices`,
-> `bridge-base-key`, `bridge-sent-message`, `bridge-msg-secret`,
-> `bridge-mutation-mac` and `bridge-meta` have no Baileys projection at all, and
-> a Signal session that turned native-only lives under `bridge-native-session`
-> alone. Restoring only the non-bridge rows rolls those sessions back or loses
-> the state outright. Filter the bridge rows only where the destination is an
-> upstream-shaped view that cannot represent them; a full backup, or a move
-> between two baileyrs stores, carries every `bridge-` row across.
-
-This applies to stores you own — the upstream `{ creds, keys }` shape that
-baileyrs auto-wraps, including `useLegacyMultiFileAuthState`. It does not apply
-to `useMultiFileAuthState`, whose `keys` is a projection over the engine's own
-store; the `bridge-` namespaces never surface through it.
-
-The move back down is not symmetric either. From 0.2.8 on, the core buffers a
-skipped-message key as its seed alone, where an earlier release wrote the
-derived cipher/mac/iv triple beside it. Forward is fine — a record written
-before this carries both, and the newer engine reads it unchanged. Backward is
-not: an older engine cannot parse a record whose skipped keys carry no triple,
-and it fails on **the whole record**, not on the one key.
-
-Where that bites depends on which bytes the engine is handed, and a wrapped
-store is not automatically on the safe side of it. It holds the Baileys
-projection, which has only ever held seeds — but it also mirrors the core's
-exact bytes under `bridge-native-session`, and a read prefers that mirror for as
-long as its fingerprint still matches the projection. A downgrade can therefore
-be handed the newer record with a perfectly readable projection sitting right
-beside it.
-
-Dropping a mirror row makes the next read rebuild it from the projection, which
-is the format both versions agree on — but only for a session that has one. A
-session that turned native-only lives in that row alone, so dropping *that* one
-loses the session outright, which is the case the warning above is about. A
-session with no skipped keys buffered at the time is unaffected either way: the
-difference only exists while a chain is holding keys for messages that arrived
-out of order.
+See [AGENTS.md](AGENTS.md) for build, test, E2E and contribution instructions, and
+the [fuzzing guide](src/__fuzz__/README.md) for differential testing. The strict
+declaration audit has known gaps and is not currently a green gate.
 
 ## Disclaimer
 
