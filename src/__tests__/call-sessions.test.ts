@@ -698,3 +698,59 @@ describe('media disposer receivers', () => {
 		assert.deepEqual(h.errors, [])
 	})
 })
+
+describe('media callback receivers', () => {
+	it('preserves the video media owner for encoder keyframe feedback', async () => {
+		const h = harness()
+		let requested = 0
+		const channels = {
+			encoder: {
+				forceKeyframe() {
+					requested++
+				}
+			},
+			requestKeyframe() {
+				this.encoder.forceKeyframe()
+			}
+		}
+		const call = await h.api.call('peer', { video: true, media: () => ({ video: () => channels }) })
+		h.events.emit('call.media', { kind: 'video-keyframe-needed', callId: call.id })
+		await tick()
+		assert.equal(requested, 1)
+		assert.deepEqual(h.errors, [])
+		await call.end()
+	})
+	it('preserves the media owner when invoking its video factory', async () => {
+		const h = harness()
+		let opened = 0
+		const media = {
+			camera: {
+				open() {
+					opened++
+				}
+			},
+			video() {
+				this.camera.open()
+				return {}
+			}
+		}
+		const call = await h.api.call('peer', { video: true, media: () => media })
+		assert.equal(opened, 1)
+		await call.end()
+	})
+	it('keeps the original options receiver when accepting an offer', async () => {
+		const h = harness()
+		let opened = 0
+		class Options {
+			media() {
+				assert.equal(this, options)
+				opened++
+				return {}
+			}
+		}
+		const options = new Options()
+		const call = await h.api.accept(offer, options)
+		assert.equal(opened, 1)
+		await call.end()
+	})
+})

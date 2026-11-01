@@ -147,7 +147,8 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 		peerOrId: string,
 		peer: string,
 		incoming: boolean,
-		options: CallSessionOptions
+		options: CallSessionOptions,
+		defaultVideo = false
 	): Promise<CallSession> => {
 		if (disposed || runtime.isClosing()) throw new Error('Connection Closed')
 		if (typeof peerOrId !== 'string' || !peerOrId.length)
@@ -156,6 +157,8 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			throw new TypeError('video must be a boolean')
 		if (options.media !== undefined && typeof options.media !== 'function')
 			throw new TypeError('media must be a factory')
+		const withVideo = options.video ?? defaultVideo
+		if (typeof withVideo !== 'boolean') throw new TypeError('video must be a boolean')
 		options.signal?.throwIfAborted()
 		const controller = new AbortController()
 		const abort = () => controller.abort(options.signal?.reason ?? abortError())
@@ -182,7 +185,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 		}
 		const launch = Promise.resolve().then(() => {
 			controller.signal.throwIfAborted()
-			return runtime.start(peerOrId, incoming, options.video ?? false, controller.signal)
+			return runtime.start(peerOrId, incoming, withVideo, controller.signal)
 		})
 		// Cancellation after native admission still owns the ID returned by that operation.
 		void launch.then(
@@ -360,7 +363,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			let requestEncoderKeyframe: CallSessionVideoMedia['requestKeyframe']
 			let videoFactory: CallSessionMedia['video']
 			let videoSetup: Promise<void> | undefined
-			let videoDesired = options.video ?? false
+			let videoDesired = withVideo
 			let videoGeneration = 0
 			const stopVideoMedia = (): Promise<void> => {
 				videoDesired = false
@@ -395,7 +398,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 					validateChannels(channels)
 					if (channels.requestKeyframe !== undefined && typeof channels.requestKeyframe !== 'function')
 						throw new TypeError('video requestKeyframe must be a function')
-					requestEncoderKeyframe = channels.requestKeyframe
+					requestEncoderKeyframe = channels.requestKeyframe?.bind(channels)
 					if (channels.output)
 						scope.output(
 							channels.output,
@@ -489,7 +492,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 								60
 							)
 					}
-					videoFactory = media.video
+					videoFactory = media.video?.bind(media)
 					if (videoDesired)
 						await prepareVideo().catch(error => {
 							if (!(error instanceof VideoSetupCancelled) || lifecycle !== 'open') throw error
@@ -528,10 +531,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			if (current) return current
 			const existing = sessions.get(offer.id)
 			if (existing) return Promise.resolve(existing.handle)
-			const operation = start(offer.id, offer.chatId, true, {
-				...options,
-				video: options.video ?? offer.isVideo ?? false
-			})
+			const operation = start(offer.id, offer.chatId, true, options, offer.isVideo ?? false)
 			pending.set(offer.id, operation)
 			void operation.finally(() => pending.delete(offer.id)).catch(() => undefined)
 			return operation
