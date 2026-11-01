@@ -102,6 +102,23 @@ const harness = (manualReady = false) => {
 }
 
 describe('Web Streams audio sources', () => {
+	it('cancels an unfinished source after rejecting an oversized chunk', async () => {
+		const h = harness()
+		let cancelled = 0
+		const source = new ReadableStream<Int16Array>({
+			start(controller) {
+				controller.enqueue(new Int16Array(65537))
+			},
+			cancel() {
+				cancelled++
+			}
+		})
+		await assert.rejects(h.audio.api.play(source), /at most/)
+		assert.equal(cancelled, 1)
+		assert.equal(source.locked, false)
+		assert.equal(h.parent.signal.aborted, false)
+		await h.audio.close()
+	})
 	it('does not consume a source until media is ready', async () => {
 		const h = harness(true)
 		let pulls = 0
@@ -276,6 +293,33 @@ describe('bounded PCM receivers', () => {
 })
 
 describe('pending readiness ownership', () => {
+	it('observes readiness rejection while native writer acquisition is pending', () => {
+		const moduleUrl = new URL('../Socket/call-audio.ts', import.meta.url).href
+		const child = spawnSync(
+			process.execPath,
+			[
+				'--input-type=module',
+				'-e',
+				`
+			import { createCallAudio } from ${JSON.stringify(moduleUrl)};
+			let resolveWriter; let cancelled=0; let released=0;
+			const opening=new Promise(resolve=>{resolveWriter=resolve});
+			const audio=createCallAudio({id:'A',signal:new AbortController().signal,ready:new Promise(()=>{}),io:{audioInputAccepted:0,audioInputShed:0,videoInputAccepted:0,videoInputShed:0,audioOutputDropped:0,videoOutputDropped:0},reportError(){},operations:{openCallPcmWriter(){return opening},onCallPcm(){return ()=>{}}}});
+			const playing=audio.api.play(new ReadableStream({cancel(){cancelled++}}));
+			const stopped=playing.catch(()=>{});
+			await new Promise(resolve=>setImmediate(resolve));
+			await audio.api.stop(); await stopped;
+			await new Promise(resolve=>setImmediate(resolve));
+			resolveWriter({tryWrite(){return true},close(){released++}});
+			await new Promise(resolve=>setImmediate(resolve));
+			await audio.close();
+			if(cancelled!==1||released!==1) throw new Error(JSON.stringify({cancelled,released}));
+		`
+			],
+			{ encoding: 'utf8', timeout: 15000 }
+		)
+		assert.equal(child.status, 0, child.stderr)
+	})
 	it('does not retain cancelled source scopes while the peer has not answered', () => {
 		const moduleUrl = new URL('../Socket/call-audio.ts', import.meta.url).href
 		const child = spawnSync(

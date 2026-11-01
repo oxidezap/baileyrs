@@ -124,6 +124,8 @@ export const createCallMediaScope = (
 		start?: Promise<void>,
 		pacing?: { nextAt: number }
 	): Promise<{ done: Promise<void> }> => {
+		// Readiness can reject before the native writer finishes opening.
+		void start?.catch(() => undefined)
 		const acquiring = opening.then(writer => {
 			let released = false
 			const release = () => {
@@ -144,7 +146,8 @@ export const createCallMediaScope = (
 		cleanup.push(lease.release)
 		const reader = stream.getReader()
 		let unlocked = false
-		cleanup.push(() => (unlocked ? undefined : reader.cancel(signal.reason)))
+		let cancelling: Promise<void> | undefined
+		cleanup.push(() => cancelling ?? (unlocked ? undefined : reader.cancel(signal.reason)))
 		const delay = async (ms: number) => {
 			let cancel: (() => void) | undefined
 			try {
@@ -203,6 +206,11 @@ export const createCallMediaScope = (
 						const frame = await reader.read()
 						if (frame.done || signal.aborted || !(await send(frame.value))) break
 					}
+			} catch (error) {
+				// Release capture/process resources even when framing or writing fails.
+				cancelling = reader.cancel(error)
+				void cancelling.catch(() => undefined)
+				throw error
 			} finally {
 				lease.release()
 				reader.releaseLock()
