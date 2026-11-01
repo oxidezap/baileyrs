@@ -99,7 +99,7 @@
   },
   "dependencies": {
     "@oxidezap/rtc-tunnel": "0.1.0",
-    "@oxidezap/whatsapp-rust-bridge": "https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@d24c87c",
+    "@oxidezap/whatsapp-rust-bridge": "https://pkg.pr.new/@oxidezap/whatsapp-rust-bridge@9ce048d",
     "events": "^3.3.0",
     "fs-native-extensions": "1.5.2",
     "long": "^5.3.2",

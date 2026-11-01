@@ -271,7 +271,7 @@ Hosts that load their own WASM supply `runtime` and `createRelayProvider` throug
 the same initializer. Device capture, playback and resampling remain application
 code, using the same Web Streams and lifecycle rules described above.
 
-This branch pins bridge #160 preview `d24c87c`, which includes the #115 calling
+This branch pins bridge #160 preview `9ce048d`, which pins integrated core #1830 at `3357b5f3` and includes the #115 calling
 baseline and shared control from core #1830 (`ffa2d112`). Registry `0.26.4` does
 not contain these VoIP capabilities. Replace the preview with a verified registry
 release containing them before releasing this package.
