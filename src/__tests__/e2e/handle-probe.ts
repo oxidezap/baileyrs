@@ -79,14 +79,16 @@ function instrument(source: string): string {
 			`${unref[0]}globalThis.__handleProbe.freed++,globalThis.__handleProbe.alive.delete(${unref[2]}),`
 	)
 
-	const finalizer = out.match(/new FinalizationRegistry\(\(([\w$]+)\)=>([\w$]+)\.__wbindgen_export5\(\1\.a,\1\.b\)\)/)
+	const finalizer = out.match(
+		/new FinalizationRegistry\(\(([\w$]+)\)=>([\w$]+)\.(__wbindgen_export\d+)\(\1\.a,\1\.b\)\)/
+	)
 	if (!finalizer) throw new Error('handle probe: closure FinalizationRegistry not found in the bridge bundle')
 	out = out.replace(
 		finalizer[0],
 		`new FinalizationRegistry((${finalizer[1]})=>(globalThis.__handleProbe.freed++,` +
 			`globalThis.__handleProbe.finalized++,` +
 			`globalThis.__handleProbe.alive.delete(${finalizer[1]}),` +
-			`${finalizer[2]}.__wbindgen_export5(${finalizer[1]}.a,${finalizer[1]}.b)))`
+			`${finalizer[2]}.${finalizer[3]}(${finalizer[1]}.a,${finalizer[1]}.b)))`
 	)
 
 	return (

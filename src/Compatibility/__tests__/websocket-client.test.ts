@@ -22,7 +22,7 @@ describe('native WebSocket compatibility facade', () => {
 				rawForwardingCalls.push(enabled)
 			},
 			sendRawMessage: async bytes => {
-				sent.push(bytes)
+				sent.push(new Uint8Array(bytes))
 			}
 		}
 		const ws = new WebSocketClient(

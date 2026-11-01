@@ -1,7 +1,7 @@
 {
   "name": "@oxidezap/baileyrs",
   "type": "module",
-  "version": "0.3.11",
+  "version": "0.3.13",
   "description": "A Rust-powered WhatsApp Web library for JavaScript, with a Baileys-compatible API",
   "keywords": [
     "whatsapp",
@@ -94,9 +94,9 @@
     "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json"
   },
   "dependencies": {
-    "@oxidezap/whatsapp-rust-bridge": "0.26.0",
+    "@oxidezap/whatsapp-rust-bridge": "0.26.4",
     "events": "^3.3.0",
-    "fs-native-extensions": "1.5.1",
+    "fs-native-extensions": "1.5.2",
     "long": "^5.3.2"
   },
   "devDependencies": {
@@ -106,9 +106,9 @@
     "baileys": "7.0.0-rc14",
     "jimp": "^1.6.0",
     "link-preview-js": "^5.0.0",
-    "music-metadata": "^11.14.0",
-    "oxfmt": "^0.72.0",
-    "oxlint": "1.87.0",
+    "music-metadata": "^12.2.2",
+    "oxfmt": "^0.74.0",
+    "oxlint": "1.89.0",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
     "pkg-pr-new": "^0.0.91",
@@ -116,14 +116,14 @@
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
     "typescript-compat-auditor": "npm:typescript@6.0.3",
-    "wrangler": "4.149.0"
+    "wrangler": "4.152.0"
   },
   "peerDependencies": {
     "@hapi/boom": "^9.1.0 || ^10.0.0",
     "audio-decode": "^2.1.3",
     "jimp": "^1.6.0",
     "link-preview-js": "^3.0.0",
-    "music-metadata": "^11.14.0",
+    "music-metadata": "^12.2.2",
     "pino": "^9.0.0 || ^10.0.0",
     "sharp": "*"
   },

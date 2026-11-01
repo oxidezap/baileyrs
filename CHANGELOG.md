@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.13](https://github.com/oxidezap/baileyrs/compare/v0.3.12...v0.3.13) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** update published bridge to 0.26.4 ([#180](https://github.com/oxidezap/baileyrs/issues/180)) ([5539172](https://github.com/oxidezap/baileyrs/commit/5539172598c8ec16f66150fbbcbb4739dc2b973b))
+
+## [0.3.12](https://github.com/oxidezap/baileyrs/compare/v0.3.11...v0.3.12) (2026-10-31)
+
+
+### Bug Fixes
+
+* **deps:** bump the npm group with 5 updates ([#177](https://github.com/oxidezap/baileyrs/issues/177)) ([c2084ab](https://github.com/oxidezap/baileyrs/commit/c2084aba27f498eb3bea0e551fcf76bfecff6e61))
+* **deps:** update whatsapp-rust-bridge to 0.26.3 ([#179](https://github.com/oxidezap/baileyrs/issues/179)) ([5536326](https://github.com/oxidezap/baileyrs/commit/5536326d6bd70719f7cfada3bd5c34aa50a03f3c))
+
 ## [0.3.11](https://github.com/oxidezap/baileyrs/compare/v0.3.10...v0.3.11) (2026-10-15)
 
 

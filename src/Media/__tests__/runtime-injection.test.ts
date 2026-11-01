@@ -18,11 +18,11 @@ const makeCustomCryptoRuntime = (calls: string[]) => {
 			return new Uint8Array(32).fill(0x33)
 		},
 		aesGcm256Encrypt: (_key, nonce, aad, plaintext) => {
-			calls.push(`aes-encrypt:${nonce[0]}:${new TextDecoder().decode(aad)}`)
-			return plaintext
+			calls.push(`aes-encrypt:${nonce[0]}:${new TextDecoder().decode(new Uint8Array(aad))}`)
+			return new Uint8Array(plaintext)
 		},
 		aesGcm256Decrypt: (_key, nonce, aad, ciphertext) => {
-			calls.push(`aes-decrypt:${nonce[0]}:${new TextDecoder().decode(aad)}:${ciphertext.length}`)
+			calls.push(`aes-decrypt:${nonce[0]}:${new TextDecoder().decode(new Uint8Array(aad))}:${ciphertext.length}`)
 			return proto.MediaRetryNotification.encode({
 				result: proto.MediaRetryNotification.ResultType.SUCCESS,
 				directPath: '/runtime-specific'
