@@ -467,6 +467,17 @@ describe('calling on an existing upstream Baileys socket', () => {
 		await call.ready
 		await api.disconnect()
 	})
+	it('reports malformed media events without throwing or interrupting the call', async () => {
+		const h = harness(),
+			api = await h.open(),
+			call = await api.call(peer)
+		await call.ready
+		const invalid = [null, undefined, {}, { kind: 'ended' }, { kind: 'ended', callId: 1 }]
+		for (const event of invalid) assert.doesNotThrow(() => h.callbacks.onCallEvent(event as never))
+		assert.equal(h.errors.filter(item => /malformed call media event/.test(String(item.error))).length, invalid.length)
+		await call.end()
+		await api.disconnect()
+	})
 	it('reclaims backend-only ended contexts across more than 256 calls', async () => {
 		const h = harness(),
 			api = await h.open()

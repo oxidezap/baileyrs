@@ -206,7 +206,15 @@ export const createBaileysVoip = async (
 			},
 			onCallEvent(event: CallMediaEvent) {
 				if (!closing) {
-					if (event.kind === 'ended' && !endingCalls.has(event.callId) && !hasIncompleteEnd(ctx, event.callId))
+					if (
+						typeof event === 'object' &&
+						event !== null &&
+						event.kind === 'ended' &&
+						typeof event.callId === 'string' &&
+						event.callId.length > 0 &&
+						!endingCalls.has(event.callId) &&
+						!hasIncompleteEnd(ctx, event.callId)
+					)
 						contexts.delete(event.callId)
 					media.routeMediaEvent(event)
 				}
