@@ -1,3 +1,5 @@
+import { isJidGroup } from '../WABinary/jid-utils.ts'
+import type { WACallEvent } from '../Types/Call.ts'
 import type { CanonicalEvent } from '../Bridge/index.ts'
 
 export interface CallOfferSnapshot {
@@ -78,4 +80,37 @@ const enrichFromSnapshot = (event: IncomingCallEvent, snapshot: CallOfferSnapsho
 	event.action.callerPn ??= snapshot.callerPn
 	event.action.groupJid ??= snapshot.groupJid
 	event.action.callCreator ??= snapshot.callCreator
+}
+
+/** Project the same enriched call event for native and externally supplied sockets. */
+export const toCallEvent = (evt: IncomingCallEvent): WACallEvent => {
+	const isGroup = !!evt.action.groupJid || isJidGroup(evt.from)
+	return {
+		chatId: evt.from,
+		from: evt.action.callCreator ?? evt.from,
+		...(evt.action.callCreator ? { callCreator: evt.action.callCreator } : {}),
+		id: evt.action.callId,
+		// Upstream uses new Date(+attrs.t * 1000), including Invalid Date
+		// when t is absent. Preserve that contract without inventing a time.
+		date: new Date((evt.timestamp ?? Number.NaN) * 1000),
+		status: evt.action.type,
+		offline: evt.offline,
+		isGroup,
+		...(isGroup ? { groupJid: evt.action.groupJid ?? evt.from } : {}),
+		...(evt.action.callerPn ? { callerPn: evt.action.callerPn } : {}),
+		...(evt.action.isVideo !== undefined ? { isVideo: evt.action.isVideo } : {}),
+		// Bridge auxiliary fields (offer-only / terminate-only / always)
+		...(evt.action.callerCountryCode ? { callerCountryCode: evt.action.callerCountryCode } : {}),
+		...(evt.action.deviceClass ? { deviceClass: evt.action.deviceClass } : {}),
+		...(evt.action.joinable !== undefined ? { joinable: evt.action.joinable } : {}),
+		...(evt.action.audio ? { audio: evt.action.audio } : {}),
+		...(evt.action.duration !== undefined ? { duration: evt.action.duration } : {}),
+		...(evt.action.audioDuration !== undefined ? { audioDuration: evt.action.audioDuration } : {}),
+		...(evt.action.reason ? { reason: evt.action.reason } : {}),
+		...(evt.videoOrientation !== undefined ? { videoOrientation: evt.videoOrientation } : {}),
+		...(evt.stanzaId ? { stanzaId: evt.stanzaId } : {}),
+		...(evt.notify ? { notify: evt.notify } : {}),
+		...(evt.platform ? { platform: evt.platform } : {}),
+		...(evt.version ? { version: evt.version } : {})
+	}
 }

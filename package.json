@@ -38,6 +38,10 @@
       "types": "./lib/host.d.ts",
       "default": "./lib/host.js"
     },
+    "./voip": {
+      "types": "./lib/voip.d.ts",
+      "default": "./lib/voip.js"
+    },
     "./wasm": {
       "types": "./lib/wasm.d.ts",
       "default": "./lib/wasm.js"

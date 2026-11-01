@@ -214,6 +214,59 @@ The CLI permits a TLS verification bypass only with a loopback mock socket.
 Cleartext UDP requires an explicit `--mock-udp` and a loopback socket URL. Changing
 the signaling URL or TLS verification never changes the production media transport.
 
+### Calling through upstream Baileys
+
+The optional `@oxidezap/baileyrs/voip` entrypoint attaches the same managed
+session API to an already connected upstream socket. It uses that socket's
+connection, Signal repository and authoritative storage. It does not create a
+second WhatsApp client or copy its sessions.
+
+```ts
+import { encodeSignedDeviceIdentity } from 'baileys'
+import { createBaileysVoip } from '@oxidezap/baileyrs/voip'
+
+const voip = await createBaileysVoip(sock, {
+  encodeDeviceIdentity: encodeSignedDeviceIdentity,
+  reportError: (error, operation) => logger.error({ error }, operation)
+})
+const call = await voip.call(peerJid)
+const playback = call.audio.receive().pipeTo(speaker)
+await call.ready
+await call.audio.play(firstPcmSource)
+await call.audio.play(secondPcmSource)
+await call.end()
+await playback
+await voip.disconnect() // Leaves the upstream socket open.
+```
+
+Incoming offers still arrive through upstream's `sock.ev.on('call', ...)`.
+Pass an offer to `voip.accept(offer)`. The adapter waits for its raw signaling
+processing before accepting it. It does not emit duplicate events into the
+upstream socket. Recreate the integration after reconnecting that socket;
+connection closure disposes this integration and its pending operations.
+
+The initial upstream integration supports 1:1 PCM audio. Video and group control
+reject explicitly. Automatic first-contact PN/LID learning or session migration
+also rejects when it would require overwriting upstream state; already trusted
+mappings are reused. The current upstream mutation API does not provide the
+conflict and ratchet protections needed to implement that migration here.
+Existing privacy tokens are read from upstream storage and checked for expiry
+by the shared Rust control. Automatic token issuance is unavailable through this
+adapter: upstream exposes the IQ sender but keeps issuance deduplication,
+routing and persistence private. The adapter does not maintain a second token
+lifecycle or call that low-level sender without those protections.
+
+Generic stanza ACKs remain owned by upstream. The shared Rust control sends the
+existing native offer receipt. This preserves the native calling baseline;
+complete fidelity to WhatsApp Web's receipt-bearing accept/reject/rekey paths
+and advanced typed ACKs still needs separate qualification and an upstream
+dispatch capability. Synthetic tests do not establish live interoperability.
+
+The default loader uses the packaged engine and outbound relay transport.
+Hosts that load their own WASM supply `runtime` and `createRelayProvider` through
+the same initializer. Device capture, playback and resampling remain application
+code, using the same Web Streams and lifecycle rules described above.
+
 This branch pins bridge #115 preview `6f7ddf4`; registry `0.26.4` does not
 contain these VoIP capabilities. Replace the preview with a verified registry
 release containing them before releasing this package.

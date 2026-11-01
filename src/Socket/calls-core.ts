@@ -53,7 +53,12 @@ import type {
 	CallVideoWriter
 } from '../Types/Call.ts'
 import { DisconnectReason } from '../Types/index.ts'
-import type { SocketContext } from './types.ts'
+import type { ClientOperations } from './client-operations.ts'
+
+export interface CallAudioContext extends ClientOperations<object> {
+	isClosing?: () => boolean
+	reportUnexpectedError(error: unknown, message: string): void
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bridge surface (structural)
@@ -1191,7 +1196,7 @@ export interface CallAudioMethodHooks {
 const INCOMPLETE_END_CALLS = 256
 type IncompleteCallEndResult = Extract<CallEndResult, { outcome: 'local-only' } | { outcome: 'partly-notified' }>
 const incompleteEndCalls = new WeakMap<object, Map<string, IncompleteCallEndResult>>()
-const incompleteResultsFor = (ctx: SocketContext): Map<string, IncompleteCallEndResult> => {
+const incompleteResultsFor = (ctx: CallAudioContext): Map<string, IncompleteCallEndResult> => {
 	let set = incompleteEndCalls.get(ctx)
 	if (!set) {
 		set = new Map<string, IncompleteCallEndResult>()
@@ -1199,7 +1204,7 @@ const incompleteResultsFor = (ctx: SocketContext): Map<string, IncompleteCallEnd
 	}
 	return set
 }
-const markEndIncomplete = (ctx: SocketContext, callId: string, result: IncompleteCallEndResult): void => {
+const markEndIncomplete = (ctx: CallAudioContext, callId: string, result: IncompleteCallEndResult): void => {
 	const set = incompleteResultsFor(ctx)
 	set.set(callId, { ...result })
 	if (set.size > INCOMPLETE_END_CALLS) {
@@ -1214,11 +1219,11 @@ const markEndIncomplete = (ctx: SocketContext, callId: string, result: Incomplet
  * fresh outcome, not skip on a stale mark. Failed fallbacks keep theirs
  * for the retry.
  */
-export const clearIncompleteEnd = (ctx: SocketContext, callId: string): void => {
+export const clearIncompleteEnd = (ctx: CallAudioContext, callId: string): void => {
 	incompleteResultsFor(ctx).delete(callId)
 }
 
-export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string): Promise<boolean> =>
+export const endMediaCallIfPresent = async (ctx: CallAudioContext, callId: string): Promise<boolean> =>
 	ctx.withClient(async client => {
 		// A previous hangup already ended the local handle without telling
 		// the peer: native re-end would answer `already-ended` and look
@@ -1251,7 +1256,7 @@ export const endMediaCallIfPresent = async (ctx: SocketContext, callId: string):
 	})
 
 export const makeCallAudioMethods = (
-	ctx: SocketContext,
+	ctx: CallAudioContext,
 	media: CallMediaRouter,
 	hooks: CallAudioMethodHooks = {},
 	startSignal?: AbortSignal
