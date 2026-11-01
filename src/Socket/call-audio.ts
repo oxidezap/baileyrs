@@ -97,7 +97,8 @@ export const createCallAudio = (config: {
 		const scope = createCallMediaScope(
 			config.signal,
 			() => {},
-			(error, message) => config.reportError(error, message)
+			(error, message) => config.reportError(error, message),
+			config.clock
 		)
 		const previous = active
 		const current = { scope }

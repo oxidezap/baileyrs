@@ -106,11 +106,12 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			stopVideo(): Promise<void>
 			keyframe(): void
 			markReady(field: 'relay' | 'accepted'): void
+			failed(error: unknown): void
 		}
 	>()
 	const pending = new Map<string, Promise<CallSession>>()
 	const starting = new Set<AbortController>()
-	const earlyReadiness = new Map<string, { relay: boolean; accepted: boolean }>()
+	const earlyReadiness = new Map<string, { relay: boolean; accepted: boolean; error?: Error }>()
 	const markReady = (id: string, field: 'relay' | 'accepted') => {
 		const session = sessions.get(id)
 		if (session) {
@@ -127,6 +128,22 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 	let disposed = false
 	let subscribed = false
 	const onMedia = (event: CallMediaEvent) => {
+		if (
+			event.kind === 'relay-allocate-failed' ||
+			event.kind === 'relay-allocate-timed-out' ||
+			event.kind === 'media-setup-failed'
+		) {
+			const error = new Error(`Call media ${event.kind}: ${event.detail ?? event.code ?? 'setup failed'}`)
+			const session = sessions.get(event.callId)
+			if (session) session.failed(error)
+			else if (starting.size) {
+				if (!earlyReadiness.has(event.callId) && earlyReadiness.size === 256)
+					earlyReadiness.delete(earlyReadiness.keys().next().value!)
+				const flags = earlyReadiness.get(event.callId) ?? { relay: false, accepted: false, error: undefined }
+				flags.error = error
+				earlyReadiness.set(event.callId, flags)
+			}
+		}
 		if (event.kind === 'relay-allocated') markReady(event.callId, 'relay')
 		if (event.kind === 'ended') earlyReadiness.delete(event.callId)
 		if (event.kind === 'video-keyframe-needed') sessions.get(event.callId)?.keyframe()
@@ -226,8 +243,9 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			if (runtime.isClosing() || runtime.isTerminal(id)) throw new Error('Call ended during startup')
 			if (sessions.has(id)) throw new Error('Call is already managed')
 			let lifecycle: CallSession['lifecycle'] = 'open'
-			const flags = earlyReadiness.get(id) ?? { relay: false, accepted: false }
+			const flags = earlyReadiness.get(id) ?? { relay: false, accepted: false, error: undefined }
 			earlyReadiness.delete(id)
+			if (flags.error) throw flags.error
 			if (incoming) flags.accepted = true
 			let resolveReady!: () => void, rejectReady!: (error: unknown) => void
 			const ready = new Promise<void>((resolve, reject) => {
@@ -378,6 +396,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			sessions.set(id, {
 				handle,
 				finish,
+				failed,
 				stopVideo: () => stopVideoMedia(),
 				markReady: field => {
 					flags[field] = true

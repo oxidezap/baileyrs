@@ -5,7 +5,7 @@ import { createCallPcmFramer, MAX_CALL_PCM_CHUNK_SAMPLES, validateCallPcmFormat 
 describe('managed PCM framing', () => {
 	for (const size of [1, 128, 959, 960, 961, 1024, 4096, 65536]) {
 		it(`preserves sample order for ${size}-sample chunks and pads EOF once`, () => {
-			const source = Int16Array.from({ length: 16001 }, (_, index) => index % 32768)
+			const source = Int16Array.from({ length: Math.max(16001, size + 1) }, (_, index) => index % 32768)
 			const framer = createCallPcmFramer()
 			const received: number[] = []
 			const drain = () => {

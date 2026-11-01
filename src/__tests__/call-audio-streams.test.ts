@@ -302,11 +302,13 @@ describe('pending readiness ownership', () => {
 				'-e',
 				`
 			import { createCallAudio } from ${JSON.stringify(moduleUrl)};
-			let resolveWriter; let cancelled=0; let released=0;
+			let resolveWriter; let rejectReady; let cancelled=0; let released=0;
 			const opening=new Promise(resolve=>{resolveWriter=resolve});
-			const audio=createCallAudio({id:'A',signal:new AbortController().signal,ready:new Promise(()=>{}),io:{audioInputAccepted:0,audioInputShed:0,videoInputAccepted:0,videoInputShed:0,audioOutputDropped:0,videoOutputDropped:0},reportError(){},operations:{openCallPcmWriter(){return opening},onCallPcm(){return ()=>{}}}});
+			const audio=createCallAudio({id:'A',signal:new AbortController().signal,ready:new Promise((_,reject)=>{rejectReady=reject}),io:{audioInputAccepted:0,audioInputShed:0,videoInputAccepted:0,videoInputShed:0,audioOutputDropped:0,videoOutputDropped:0},reportError(){},operations:{openCallPcmWriter(){return opening},onCallPcm(){return ()=>{}}}});
 			const playing=audio.api.play(new ReadableStream({cancel(){cancelled++}}));
 			const stopped=playing.catch(()=>{});
+			await new Promise(resolve=>setImmediate(resolve));
+			rejectReady(new Error('media admission failed'));
 			await new Promise(resolve=>setImmediate(resolve));
 			await audio.api.stop(); await stopped;
 			await new Promise(resolve=>setImmediate(resolve));

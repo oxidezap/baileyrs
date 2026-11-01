@@ -115,6 +115,23 @@ const harness = () => {
 }
 
 describe('factory source cancellation', () => {
+	it('keeps direct playback source errors separate from factory-owned media failures', async () => {
+		const h = harness()
+		const call = await h.api.call('peer@s.whatsapp.net')
+		await assert.rejects(
+			call.audio.play(
+				new ReadableStream<Int16Array>({
+					pull() {
+						throw new Error('direct source failed')
+					}
+				})
+			),
+			/direct source failed/
+		)
+		assert.equal(call.lifecycle, 'open')
+		assert.equal(h.counts.ends, 0)
+		await call.end()
+	})
 	for (const action of ['stop', 'replace'] as const)
 		it(`${action} during writer acquisition leaves session startup active`, async () => {
 			const h = harness(),
@@ -167,6 +184,34 @@ describe('factory source cancellation', () => {
 			assert.equal(lateClosed, 1)
 			await call.end()
 		})
+})
+
+describe('media readiness failures', () => {
+	for (const kind of ['relay-allocate-failed', 'relay-allocate-timed-out', 'media-setup-failed'] as const) {
+		it(`rejects readiness and playback on ${kind}`, async () => {
+			const h = harness()
+			h.runtime.start = async () => 'FAILED'
+			const call = await h.api.call('peer@s.whatsapp.net')
+			const playing = call.audio.play(new ReadableStream<Int16Array>())
+			const rejectedReady = assert.rejects(call.ready, new RegExp(kind))
+			const rejectedPlay = assert.rejects(playing)
+			h.events.emit('call.media', { callId: call.id, kind })
+			await Promise.all([rejectedReady, rejectedPlay])
+			assert.equal((await call.closed).reason, 'media-error')
+			assert.equal(h.counts.ends, 1)
+		})
+		it(`does not lose ${kind} before session installation`, async () => {
+			const h = harness()
+			h.runtime.start = async () => {
+				h.events.emit('call.media', { callId: 'EARLY-FAILURE', kind })
+				return 'EARLY-FAILURE'
+			}
+			await assert.rejects(h.api.call('peer@s.whatsapp.net'), new RegExp(kind))
+			await tick()
+			assert.equal(h.api.active.length, 0)
+			assert.equal(h.counts.terminates, 1)
+		})
+	}
 })
 
 describe('managed call sessions', () => {

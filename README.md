@@ -311,7 +311,11 @@ use the call API without creating a relay provider or running a relay server:
 const call = await sock.voip.call(peerJid)
 const playback = call.audio.receive().pipeTo(speaker)
 await call.ready
-await call.audio.play(microphone, { signal: captureSignal })
+try {
+  await call.audio.play(microphone, { signal: captureSignal })
+} catch (error) {
+  if (!captureSignal.aborted) throw error
+}
 // EOF or cancellation stops this source; the call can play another source.
 await call.audio.play(recording)
 await call.end()
@@ -326,7 +330,7 @@ format is checked explicitly; other formats require conversion by the caller.
 There is no implicit resampling. Aligned chunks use views where possible; the
 WASM boundary still copies samples.
 
-`play` replaces the previous input and rejects on a source error or cancellation
+Calling `audio.play()` directly replaces the previous input and rejects on a source error or cancellation
 without ending the call. `audio.stop()` cancels the current source. `ready` waits
 for peer acceptance and relay allocation, so a file is not consumed while ringing.
 Each `audio.receive()` has an independent queue limited to 960 samples and at most
