@@ -13,8 +13,15 @@ export type CallMediaStreams<TInput, TOutput> = {
 	dispose?: () => void | Promise<void>
 }
 
+export type CallPcmFormat = { sampleRate: 16000; channels: 1 }
+
+export type CallSessionAudioMedia = CallMediaStreams<Int16Array, Int16Array> & {
+	/** Defaults to 16 kHz mono. Int16 samples are never implicitly resampled. */
+	format?: CallPcmFormat
+}
+
 export type CallSessionMedia = {
-	audio?: CallMediaStreams<Int16Array, Int16Array>
+	audio?: CallSessionAudioMedia
 	video?: (call: CallSession, signal: AbortSignal) => CallSessionVideoMedia | Promise<CallSessionVideoMedia>
 }
 
@@ -44,11 +51,29 @@ export type CallSessionIoStats = {
 	videoOutputDropped: number
 }
 
+export type CallAudioInputOptions = { signal?: AbortSignal; format?: CallPcmFormat }
+export type CallAudioOutputOptions = {
+	signal?: AbortSignal
+	/** Cumulative frames dropped for this receiver, independent of other receivers. */
+	onDrop?: (droppedFrames: number) => void
+}
+
+export interface CallSessionAudio {
+	readonly format: Readonly<CallPcmFormat>
+	/** Replaces the current input. EOF completes playback without ending the call. */
+	play(input: ReadableStream<Int16Array>, options?: CallAudioInputOptions): Promise<void>
+	stop(): Promise<void>
+	/** Each receiver has an independent, bounded queue. Cancelling it leaves the call active. */
+	receive(options?: CallAudioOutputOptions): ReadableStream<Int16Array>
+}
+
 export interface CallSession {
 	readonly id: string
 	readonly peer: string
 	readonly lifecycle: 'open' | 'closing' | 'closed'
 	readonly closed: Promise<CallSessionClose>
+	readonly ready: Promise<void>
+	readonly audio: CallSessionAudio
 	/** Retries signaling after an incomplete hangup; successful termination is idempotent. */
 	end(): Promise<CallEndResult>
 	setMuted(muted: boolean): Promise<void>

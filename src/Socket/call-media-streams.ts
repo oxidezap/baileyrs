@@ -24,10 +24,31 @@ export const closeCallMedia = async (
 	}
 }
 
+export interface MediaInputFramer<T> {
+	write(chunk: T): void
+	read(): T | undefined
+	end(): void
+	readonly done: boolean
+}
+
+export interface CallMediaClock {
+	now(): number
+	alarm(callback: () => void, delayMs: number): () => void
+}
+
+const defaultClock: CallMediaClock = {
+	now: () => performance.now(),
+	alarm(callback, delayMs) {
+		const timer = setTimeout(callback, delayMs)
+		return () => clearTimeout(timer)
+	}
+}
+
 export const createCallMediaScope = (
 	parent: AbortSignal,
 	failed: (error: unknown) => void,
-	report: (error: unknown, message: string) => void
+	report: (error: unknown, message: string) => void,
+	clock: CallMediaClock = defaultClock
 ) => {
 	const controller = new AbortController()
 	const signal = controller.signal
@@ -98,8 +119,11 @@ export const createCallMediaScope = (
 		opening: Promise<MediaInputWriter<T>>,
 		accepted: () => void,
 		shed: () => void,
-		frameMs?: number
-	): Promise<void> => {
+		frameMs?: number,
+		framer?: MediaInputFramer<T>,
+		start?: Promise<void>,
+		pacing?: { nextAt: number }
+	): Promise<{ done: Promise<void> }> => {
 		const acquiring = opening.then(writer => {
 			let released = false
 			const release = () => {
@@ -121,39 +145,77 @@ export const createCallMediaScope = (
 		const reader = stream.getReader()
 		let unlocked = false
 		cleanup.push(() => (unlocked ? undefined : reader.cancel(signal.reason)))
-		const pump = async () => {
-			let nextAt = performance.now()
+		const delay = async (ms: number) => {
+			let cancel: (() => void) | undefined
 			try {
-				for (;;) {
-					const frame = await reader.read()
-					if (frame.done || signal.aborted) break
-					if (frameMs !== undefined && nextAt > performance.now()) {
-						let timer: ReturnType<typeof setTimeout> | undefined
-						try {
-							await wait(
-								new Promise<void>(resolve => {
-									timer = setTimeout(resolve, nextAt - performance.now())
-								})
-							)
-						} finally {
-							if (timer !== undefined) clearTimeout(timer)
+				await wait(
+					new Promise<void>(resolve => {
+						cancel = clock.alarm(resolve, ms)
+					})
+				)
+			} finally {
+				cancel?.()
+			}
+		}
+		const pump = async () => {
+			let nextAt = 0
+			const send = async (packet: T): Promise<boolean> => {
+				if (frameMs !== undefined && nextAt > clock.now()) await delay(nextAt - clock.now())
+				if (signal.aborted) return false
+				if (lease.writer.tryWrite(packet)) accepted()
+				else shed()
+				if (frameMs !== undefined) {
+					nextAt += frameMs
+					const now = clock.now()
+					if (nextAt <= now) nextAt = now + frameMs
+					if (pacing) pacing.nextAt = nextAt
+				}
+				return true
+			}
+			try {
+				if (start) await wait(start)
+				nextAt = Math.max(pacing?.nextAt ?? 0, clock.now())
+				if (framer) {
+					const framing = framer
+					const readChunk = async () => {
+						const result = await reader.read()
+						if (result.done) framing.end()
+						else framing.write(result.value)
+					}
+					let readsWithoutFrame = 0
+					while (!signal.aborted) {
+						let packet = framing.read()
+						if (packet !== undefined) {
+							readsWithoutFrame = 0
+							if (!(await send(packet))) break
+							packet = undefined
+						} else if (framing.done) break
+						else {
+							await readChunk()
+							if (++readsWithoutFrame === 256) {
+								await delay(0)
+								readsWithoutFrame = 0
+							}
 						}
 					}
-					if (signal.aborted) break
-					if (lease.writer.tryWrite(frame.value)) accepted()
-					else shed()
-					if (frameMs !== undefined) nextAt = Math.max(nextAt + frameMs, performance.now())
-				}
+				} else
+					for (;;) {
+						const frame = await reader.read()
+						if (frame.done || signal.aborted || !(await send(frame.value))) break
+					}
 			} finally {
 				lease.release()
 				reader.releaseLock()
 				unlocked = true
 			}
 		}
-		void pump().catch(error => {
+		const done = pump()
+		void done.catch(error => {
 			if (!signal.aborted) failed(error)
 		})
+		return { done }
 	}
+
 	const output = <T, TFrame>(
 		stream: WritableStream<T>,
 		listen: (sink: (frame: TFrame) => void) => () => void,
@@ -170,15 +232,28 @@ export const createCallMediaScope = (
 			writer.releaseLock()
 			return ending
 		})
+		let writing = false
 		const stop = listen(frame => {
 			if (signal.aborted) return
-			if (writer.desiredSize === null || writer.desiredSize <= 0) {
+			if (writing || writer.desiredSize === null || writer.desiredSize <= 0) {
 				dropped()
 				return
 			}
-			void writer.write(snapshot(frame)).catch(error => {
+			writing = true
+			try {
+				void writer.write(snapshot(frame)).then(
+					() => {
+						writing = false
+					},
+					error => {
+						writing = false
+						if (!signal.aborted) failed(error)
+					}
+				)
+			} catch (error) {
+				writing = false
 				if (!signal.aborted) failed(error)
-			})
+			}
 		})
 		cleanup.push(stop)
 	}

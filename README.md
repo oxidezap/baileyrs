@@ -308,21 +308,39 @@ Node sockets load their own VoIP engine and secure relay transport. Applications
 use the call API without creating a relay provider or running a relay server:
 
 ```ts
-const call = await sock.voip.call(peerJid, {
-  media: () => ({ audio: { input: microphone, output: speaker } })
-})
-await call.setMuted(true)
-console.log(await call.stats())
+const call = await sock.voip.call(peerJid)
+const playback = call.audio.receive().pipeTo(speaker)
+await call.ready
+await call.audio.play(microphone, { signal: captureSignal })
+// EOF or cancellation stops this source; the call can play another source.
+await call.audio.play(recording)
 await call.end()
-await call.closed
+await playback
 ```
 
-`microphone` is a `ReadableStream<Int16Array>` with 960 mono samples per frame
-at 16 kHz. `speaker` is a `WritableStream<Int16Array>` receiving decoded PCM.
-The session owns their locks, pacing, backpressure and cancellation. Supply a
-factory that creates fresh streams for each call. It runs after native call
+Inputs are `ReadableStream<Int16Array>` of mono samples at 16 kHz. Chunk sizes
+may vary up to 65,536 samples; framing into 960-sample packets and pacing happen
+inside the library. The final partial frame is padded with silence. Samples must
+remain stable after enqueueing. An optional `{ sampleRate: 16000, channels: 1 }`
+format is checked explicitly; other formats require conversion by the caller.
+There is no implicit resampling. Aligned chunks use views where possible; the
+WASM boundary still copies samples.
+
+`play` replaces the previous input and rejects on a source error or cancellation
+without ending the call. `audio.stop()` cancels the current source. `ready` waits
+for peer acceptance and relay allocation, so a file is not consumed while ringing.
+Each `audio.receive()` has an independent queue limited to 960 samples and at most
+eight receivers can attach. A slow receiver drops new frames; its `onDrop` callback
+reports the cumulative count. Cancellation detaches only that receiver. Closing a
+call lets queued output drain; await the `pipeTo` promise to finish playback or
+recording. Producers must also respect their own stream backpressure.
+
+The existing `media: () => ({ audio: { input: microphone, output: speaker } })`
+option remains useful for call-owned device lifecycles. Supply a factory that
+creates fresh streams for each call. It runs after native call
 admission, which can precede the peer answering. Its abort signal also covers
-socket shutdown and media errors. `dispose` can release resources outside the
+socket shutdown and media errors; these factory-owned stream errors end the call.
+`dispose` can release resources outside the
 streams; cleanup has a one-second grace period and reports stalled disposers.
 
 Accept a ringing offer with `sock.voip.accept(offer, options)`. Repeated acceptance

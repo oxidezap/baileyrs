@@ -81,7 +81,7 @@ describe('E2E: managed call sessions', { timeout: 90000 }, () => {
 				input: new ReadableStream<Int16Array>({
 					pull(controller) {
 						controller.enqueue(
-							Int16Array.from({ length: 960 }, (_, index) => Math.round(6000 * Math.sin((index * Math.PI) / 20)))
+							Int16Array.from({ length: 1024 }, (_, index) => Math.round(6000 * Math.sin((index * Math.PI) / 20)))
 						)
 					},
 					cancel() {
@@ -119,6 +119,56 @@ describe('E2E: managed call sessions', { timeout: 90000 }, () => {
 			offered.cancel()
 			await caller?.end().catch(() => undefined)
 			await callee?.end().catch(() => undefined)
+		}
+	})
+	it('plays successive variable-sized sources without ending the session at EOF', async () => {
+		const offered = waitForEvent(bob.sock, 'call', events => events.some(event => event.status === 'offer'), 15000)
+		let caller: CallSession | undefined, callee: CallSession | undefined
+		const pipelines: Promise<void>[] = []
+		let callerSamples = 0,
+			calleeSamples = 0
+		const tone = () =>
+			new ReadableStream<Int16Array>({
+				start(controller) {
+					controller.enqueue(
+						Int16Array.from({ length: 16000 }, (_, index) => Math.round(6000 * Math.sin((index * Math.PI) / 20)))
+					)
+					controller.close()
+				}
+			})
+		try {
+			caller = await alice.sock.voip.call(bob.lid ?? bob.jid)
+			callee = await bob.sock.voip.accept((await offered).find(event => event.status === 'offer')!)
+			for (const [call, received] of [
+				[caller, () => callerSamples++],
+				[callee, () => calleeSamples++]
+			] as const) {
+				const pipeline = call.audio.receive().pipeTo(
+					new WritableStream<Int16Array>({
+						write(samples) {
+							if (samples.some(sample => sample !== 0)) received()
+						}
+					})
+				)
+				void pipeline.catch(() => undefined)
+				pipelines.push(pipeline)
+			}
+			await Promise.all([caller.ready, callee.ready])
+			await Promise.all([caller.audio.play(tone()), callee.audio.play(tone())])
+			await waitUntil(() => callerSamples > 0 && calleeSamples > 0, 'non-silent PCM from variable chunks')
+			assert.equal(caller.lifecycle, 'open')
+			assert.equal(callee.lifecycle, 'open')
+			const previous = calleeSamples
+			await caller.audio.play(tone())
+			await waitUntil(() => calleeSamples > previous, 'the next source on the same session')
+			await caller.end()
+			await callee.closed
+			await Promise.all(pipelines)
+		} finally {
+			offered.cancel()
+			await caller?.end().catch(() => undefined)
+			await callee?.end().catch(() => undefined)
+			await Promise.allSettled(pipelines)
 		}
 	})
 	it('carries a generated H.264 IDR through both managed video endpoints', async () => {

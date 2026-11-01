@@ -358,6 +358,10 @@ const EXEMPT: Record<string, string> = {
 		'the bridge-contract interface restatement, not a parameter; requestCallKeyframe validates it',
 	'calls-core.ts:checkVideoDiagnosticField:field':
 		'a module-internal helper, called with a literal for each of the three diagnostic fields',
+	'call-sessions.ts:createVoipApi:field':
+		'the internal readiness callback interface; relay and acceptance event handlers supply literal fields',
+	'call-sessions.ts:markReady:field':
+		'a module-internal readiness helper, called only by relay and acceptance handlers with literal fields',
 	'internals.ts:upsertMessage:type': 'published on the event bus, so the value comes back to the caller unchanged'
 }
 

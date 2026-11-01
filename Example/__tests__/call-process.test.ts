@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 import { describe, it } from 'node:test'
 import { splitPcm16Frames } from '../call-media.ts'
 import { processInput, processSink, restartableProcessInput } from '../call-process.ts'
@@ -142,5 +144,35 @@ describe('playback failure notification', () => {
 		await new Promise<void>(resolve => child.once('close', () => resolve()))
 		await sink.stop()
 		assert.equal(errors.length, 1)
+	})
+})
+
+describe('encoder byte backpressure', () => {
+	it('does not drain an entire Node byte source into an object-counted Web queue', async () => {
+		let produced = 0
+		const stdout = new Readable({
+			highWaterMark: 16384,
+			read() {
+				if (produced < 32) {
+					produced++
+					this.push(Buffer.alloc(8192))
+				} else this.push(null)
+			}
+		})
+		const child = Object.assign(new EventEmitter(), {
+			stdout,
+			kill() {
+				stdout.destroy()
+				child.emit('close', null)
+				return true
+			}
+		}) as unknown as ChildProcess
+		const source = processInput(child, new AbortController().signal, bytes)
+		for (let index = 0; index < 3; index++) await new Promise<void>(resolve => setImmediate(resolve))
+		assert.ok(produced <= 12, `drained ${produced} chunks without a consumer`)
+		const reader = source.input.getReader()
+		await reader.cancel()
+		reader.releaseLock()
+		await source.dispose()
 	})
 })

@@ -81,7 +81,10 @@ const harness = () => {
 		async start(id, incoming, _video, signal) {
 			signal.throwIfAborted()
 			counts.starts++
-			return incoming ? id : `OUT-${counts.starts}`
+			const callId = incoming ? id : `OUT-${counts.starts}`
+			events.emit('call.media', { kind: 'relay-allocated', callId })
+			if (!incoming) events.emit('call', [{ id: callId, status: 'accept' }])
+			return callId
 		},
 		isClosing: () => closing,
 		isTerminal: id => terminal.has(id),
@@ -809,5 +812,63 @@ describe('native video control backpressure', () => {
 		await Promise.all([stopping, resuming])
 		assert.deepEqual(native, ['stop-start', 'stop-done', 'resume'])
 		await call.end()
+	})
+})
+
+describe('managed call readiness', () => {
+	it('waits for both relay allocation and peer acceptance before consuming outgoing audio', async () => {
+		const h = harness()
+		h.runtime.start = async () => 'WAITING'
+		const call = await h.api.call('peer')
+		let pulled = 0,
+			ready = false
+		void call.ready.then(() => {
+			ready = true
+		})
+		const playing = call.audio.play(
+			new ReadableStream<Int16Array>(
+				{
+					pull(output) {
+						pulled++
+						output.enqueue(new Int16Array(960))
+						output.close()
+					}
+				},
+				{ highWaterMark: 0 }
+			)
+		)
+		h.events.emit('call.media', { kind: 'relay-allocated', callId: call.id })
+		await tick()
+		assert.equal(pulled, 0)
+		assert.equal(ready, false)
+		h.events.emit('call', [{ ...offer, id: call.id, status: 'accept' }])
+		await playing
+		await call.ready
+		assert.equal(pulled, 1)
+		assert.equal(ready, true)
+		await call.end()
+	})
+	it('rejects readiness and playback when the pending call ends elsewhere', async () => {
+		const h = harness()
+		h.runtime.start = async () => 'ELSEWHERE'
+		const call = await h.api.call('peer')
+		const readiness = assert.rejects(call.ready)
+		const playing = assert.rejects(
+			call.audio.play(
+				new ReadableStream<Int16Array>(
+					{
+						pull() {
+							throw new Error('must not consume before readiness')
+						}
+					},
+					{ highWaterMark: 0 }
+				)
+			)
+		)
+		h.terminal.add(call.id)
+		h.events.emit('call', [{ ...offer, id: call.id, status: 'accept' }])
+		await Promise.all([readiness, playing])
+		assert.equal((await call.closed).reason, 'remote')
+		assert.equal(h.counts.ends, 0)
 	})
 })

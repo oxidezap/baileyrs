@@ -1,5 +1,10 @@
 import type { VoipApi } from './Types/CallSession.ts'
 export type {
+	CallAudioInputOptions,
+	CallAudioOutputOptions,
+	CallSessionAudio,
+	CallPcmFormat,
+	CallSessionAudioMedia,
 	CallSession,
 	CallSessionClose,
 	CallMediaStreams,

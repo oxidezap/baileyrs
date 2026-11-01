@@ -1,3 +1,5 @@
+import { createCallAudio } from './call-audio.ts'
+import { validateCallPcmFormat } from './call-pcm.ts'
 import { createCallMediaScope, closeCallMedia } from './call-media-streams.ts'
 import type {
 	CallSession,
@@ -87,7 +89,10 @@ const validateChannels = (channels: CallSessionMedia['audio'] | CallSessionVideo
 
 const validateMedia = (media: CallSessionMedia): void => {
 	if (!media || typeof media !== 'object') throw new TypeError('media factory must return a media object')
-	if (media.audio !== undefined) validateChannels(media.audio)
+	if (media.audio !== undefined) {
+		validateChannels(media.audio)
+		validateCallPcmFormat(media.audio.format)
+	}
 	if (media.video !== undefined && typeof media.video !== 'function')
 		throw new TypeError('video media must be a factory')
 }
@@ -100,13 +105,30 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			finish(reason: CallSessionClose): Promise<void>
 			stopVideo(): Promise<void>
 			keyframe(): void
+			markReady(field: 'relay' | 'accepted'): void
 		}
 	>()
 	const pending = new Map<string, Promise<CallSession>>()
 	const starting = new Set<AbortController>()
+	const earlyReadiness = new Map<string, { relay: boolean; accepted: boolean }>()
+	const markReady = (id: string, field: 'relay' | 'accepted') => {
+		const session = sessions.get(id)
+		if (session) {
+			session.markReady(field)
+			return
+		}
+		if (!starting.size) return
+		if (!earlyReadiness.has(id) && earlyReadiness.size === 256)
+			earlyReadiness.delete(earlyReadiness.keys().next().value!)
+		const flags = earlyReadiness.get(id) ?? { relay: false, accepted: false }
+		flags[field] = true
+		earlyReadiness.set(id, flags)
+	}
 	let disposed = false
 	let subscribed = false
 	const onMedia = (event: CallMediaEvent) => {
+		if (event.kind === 'relay-allocated') markReady(event.callId, 'relay')
+		if (event.kind === 'ended') earlyReadiness.delete(event.callId)
 		if (event.kind === 'video-keyframe-needed') sessions.get(event.callId)?.keyframe()
 		if (event.kind === 'ended') void sessions.get(event.callId)?.finish({ reason: 'remote' })
 		if (event.kind === 'video-state-changed' && event.state === 0) void sessions.get(event.callId)?.stopVideo()
@@ -119,8 +141,9 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				event.status === 'reject' ||
 				event.status === 'timeout'
 			) {
+				earlyReadiness.delete(event.id)
 				void sessions.get(event.id)?.finish({ reason: 'remote' })
-			}
+			} else if (event.status === 'accept') markReady(event.id, 'accepted')
 		}
 	}
 	const unsubscribeIdle = () => {
@@ -128,6 +151,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 		runtime.events.off('call.media', onMedia)
 		runtime.events.off('call', onCalls)
 		subscribed = false
+		earlyReadiness.clear()
 	}
 	const subscribe = () => {
 		if (subscribed) return
@@ -202,6 +226,19 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 			if (runtime.isClosing() || runtime.isTerminal(id)) throw new Error('Call ended during startup')
 			if (sessions.has(id)) throw new Error('Call is already managed')
 			let lifecycle: CallSession['lifecycle'] = 'open'
+			const flags = earlyReadiness.get(id) ?? { relay: false, accepted: false }
+			earlyReadiness.delete(id)
+			if (incoming) flags.accepted = true
+			let resolveReady!: () => void, rejectReady!: (error: unknown) => void
+			const ready = new Promise<void>((resolve, reject) => {
+				resolveReady = resolve
+				rejectReady = reject
+			})
+			void ready.catch(() => undefined)
+			const checkReady = () => {
+				if (lifecycle === 'open' && flags.relay && flags.accepted) resolveReady()
+			}
+			checkReady()
 			let resolveClosed!: (reason: CallSessionClose) => void
 			const closed = new Promise<CallSessionClose>(resolve => {
 				resolveClosed = resolve
@@ -218,6 +255,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				})
 				closedBy = reason.reason
 				lifecycle = 'closing'
+				rejectReady(reason.error ?? new Error(`Call ended before media became ready: ${reason.reason}`))
 				detachAbort()
 				controller.abort(reason.error ?? new Error(`Call ended: ${reason.reason}`))
 				const tasks = cleanup.splice(0).map(stop => Promise.resolve().then(stop))
@@ -289,6 +327,15 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				nativeVideo = result.catch(() => undefined)
 				return result
 			}
+			const audio = createCallAudio({
+				id,
+				signal: controller.signal,
+				ready,
+				operations,
+				io,
+				reportError: (error, message) => runtime.reportError(error, message)
+			})
+			cleanup.push(audio.close)
 			const handle: CallSession = {
 				id,
 				peer,
@@ -296,6 +343,8 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 					return lifecycle
 				},
 				closed,
+				ready,
+				audio: audio.api,
 				end,
 				setMuted: muted => requireOpen(() => operations.setCallMuted(id, muted)),
 				stats: async () => ({ ...(await operations.getCallMediaStats(id)), io: { ...io } }),
@@ -330,6 +379,10 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 				handle,
 				finish,
 				stopVideo: () => stopVideoMedia(),
+				markReady: field => {
+					flags[field] = true
+					checkReady()
+				},
 				keyframe: () => {
 					const scope = videoScope
 					const request = requestEncoderKeyframe
@@ -498,14 +551,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 								(frame: CallPcmFrame) => frame.data.slice(),
 								() => io.audioOutputDropped++
 							)
-						if (media.audio.input)
-							await audioScope.input(
-								media.audio.input,
-								operations.openCallPcmWriter(id),
-								() => io.audioInputAccepted++,
-								() => io.audioInputShed++,
-								60
-							)
+						if (media.audio.input) await audio.start(media.audio.input, { format: media.audio.format }, failed).opened
 					}
 					videoFactory = media.video?.bind(media)
 					if (videoDesired)
