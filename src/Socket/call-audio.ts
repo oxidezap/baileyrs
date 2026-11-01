@@ -4,9 +4,9 @@ import type {
 	CallAudioInputOptions,
 	CallAudioOutputOptions,
 	CallSessionAudio,
-	CallSessionIoStats
+	CallSessionIoStats,
+	CallSessionOperations
 } from '../Types/CallSession.ts'
-import type { HostCallOperations } from '../host-types.ts'
 
 const MAX_RECEIVERS = 8
 const OUTPUT_SAMPLE_BUDGET = 960
@@ -16,7 +16,7 @@ export const createCallAudio = (config: {
 	id: string
 	signal: AbortSignal
 	ready: Promise<void>
-	operations: Pick<HostCallOperations, 'openCallPcmWriter' | 'onCallPcm'>
+	operations: Pick<CallSessionOperations, 'openCallPcmWriter' | 'onCallPcm'>
 	io: CallSessionIoStats
 	reportError(error: unknown, message: string): void
 	clock?: CallMediaClock

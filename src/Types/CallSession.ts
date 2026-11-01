@@ -2,10 +2,33 @@ import type {
 	CallEndResult,
 	CallKeyframeUrgency,
 	CallMediaStats,
+	CallPcmSink,
+	CallPcmWriter,
+	CallVideoSink,
+	CallVideoWriter,
 	CallVideoDiagnostics,
 	CallVideoFrame,
 	WACallEvent
 } from './Call.ts'
+
+/** Operations consumed by managed sessions, independent of a messaging socket. */
+export interface CallSessionOperations {
+	endCall(callId: string): Promise<CallEndResult>
+	terminateCall(callId: string, peer: string): Promise<void>
+	setCallMuted(callId: string, muted: boolean): Promise<void>
+	getCallMediaStats(callId: string): Promise<CallMediaStats>
+	openCallPcmWriter(callId: string): Promise<CallPcmWriter>
+	openCallVideoWriter(callId: string): Promise<CallVideoWriter>
+	onCallPcm(callId: string, sink: CallPcmSink): () => void
+	onCallVideo(callId: string, sink: CallVideoSink): () => void
+	startCallVideo(callId: string): Promise<void>
+	acceptCallVideo(callId: string): Promise<void>
+	stopCallVideo(callId: string): Promise<void>
+	resumeCallVideo(callId: string): Promise<void>
+	retryCallVideoUpgrade(callId: string): Promise<void>
+	requestCallKeyframe(callId: string, urgency?: CallKeyframeUrgency): Promise<void>
+	getCallVideoDiagnostics(callId: string): Promise<CallVideoDiagnostics>
+}
 
 export type CallMediaStreams<TInput, TOutput> = {
 	input?: ReadableStream<TInput>

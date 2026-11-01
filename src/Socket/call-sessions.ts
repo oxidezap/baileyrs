@@ -6,31 +6,12 @@ import type {
 	CallSessionClose,
 	CallSessionMedia,
 	CallSessionOptions,
+	CallSessionOperations,
 	CallSessionVideoMedia,
 	VoipApi
 } from '../Types/CallSession.ts'
 import type { CallEndResult, CallMediaEvent, CallPcmFrame, CallVideoFrame, WACallEvent } from '../Types/Call.ts'
-import type { HostCallOperations } from '../host-types.ts'
-
-// This port is checked against the socket at construction and keeps the controller host-neutral.
-export type CallSessionOperations = Pick<
-	HostCallOperations,
-	| 'endCall'
-	| 'terminateCall'
-	| 'setCallMuted'
-	| 'getCallMediaStats'
-	| 'openCallPcmWriter'
-	| 'openCallVideoWriter'
-	| 'onCallPcm'
-	| 'onCallVideo'
-	| 'startCallVideo'
-	| 'acceptCallVideo'
-	| 'stopCallVideo'
-	| 'resumeCallVideo'
-	| 'retryCallVideoUpgrade'
-	| 'requestCallKeyframe'
-	| 'getCallVideoDiagnostics'
->
+export type { CallSessionOperations } from '../Types/CallSession.ts'
 
 interface SessionEvents {
 	on(event: 'call.media', listener: (event: CallMediaEvent) => void): unknown

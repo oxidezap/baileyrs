@@ -1,4 +1,4 @@
-import type { VoipApi } from './Types/CallSession.ts'
+import type { CallSessionOperations, VoipApi } from './Types/CallSession.ts'
 export type {
 	CallAudioInputOptions,
 	CallAudioOutputOptions,
@@ -27,16 +27,8 @@ import type {
 	CallAudioStopReason,
 	CallAudioTiming,
 	CallAudioWriter,
-	CallEndResult,
-	CallKeyframeUrgency,
 	CallMediaEvent,
-	CallMediaStats,
-	CallPcmSink,
-	CallPcmWriter,
 	CallRelayTransportProvider,
-	CallVideoDiagnostics,
-	CallVideoSink,
-	CallVideoWriter,
 	WACallEvent
 } from './Types/Call.ts'
 import type { HostSocketOperationName } from './host-socket-operations.ts'
@@ -319,9 +311,8 @@ export type HostMessageGenerationOptions = {
 	font?: number
 }
 
-export type HostCallOperations = {
+export type HostCallOperations = CallSessionOperations & {
 	rejectCall(callId: string, callFrom: string): Promise<void>
-	terminateCall(callId: string, callFrom: string): Promise<void>
 	dialCall(peerJid: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string>
 	dialCallPcm(peerJid: string, withVideo?: boolean): Promise<string>
 	acceptCall(callId: string, audioFormat?: CallAudioFormat, withVideo?: boolean): Promise<string>
@@ -329,26 +320,12 @@ export type HostCallOperations = {
 	pushCallAudio(callId: string, data: Uint8Array, audioFormat?: CallAudioFormat): Promise<boolean>
 	pushCallPcm(callId: string, samples: Int16Array): Promise<boolean>
 	pushCallVideo(callId: string, data: Uint8Array): Promise<boolean>
-	endCall(callId: string): Promise<CallEndResult>
 	openCallAudioWriter(callId: string): Promise<CallAudioWriter>
-	openCallPcmWriter(callId: string): Promise<CallPcmWriter>
-	openCallVideoWriter(callId: string): Promise<CallVideoWriter>
-	setCallMuted(callId: string, muted: boolean): Promise<void>
-	getCallMediaStats(callId: string): Promise<CallMediaStats>
 	getCallAudioBuffer(callId: string): Promise<CallAudioBuffer>
 	getCallAudioFormat(callId: string): CallAudioFormat | undefined
 	getActiveCalls(): Promise<ActiveCall[]>
-	startCallVideo(callId: string): Promise<void>
-	stopCallVideo(callId: string): Promise<void>
-	acceptCallVideo(callId: string): Promise<void>
-	resumeCallVideo(callId: string): Promise<void>
-	retryCallVideoUpgrade(callId: string): Promise<void>
-	getCallVideoDiagnostics(callId: string): Promise<CallVideoDiagnostics>
-	requestCallKeyframe(callId: string, urgency?: CallKeyframeUrgency): Promise<void>
 	setRelayTransportProvider(provider: CallRelayTransportProvider): Promise<void>
 	onCallAudio(callId: string, sink: CallAudioSink): () => void
-	onCallPcm(callId: string, sink: CallPcmSink): () => void
-	onCallVideo(callId: string, sink: CallVideoSink): () => void
 	startCallAudioPump(
 		callId: string,
 		source: CallAudioSourceInput,
