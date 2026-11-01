@@ -9,8 +9,8 @@ This directory translates neutral bridge operations into the public Baileys API.
 - `public-api/` contains standalone helpers that must work before a socket exists.
 - `internal/` contains dependency-light implementation details for those helpers.
 
-Rust owns protocol parsing, Signal/session state, retries, media encryption and
-streaming, and cache policy. The bridge exposes neutral operations without
+Rust owns protocol parsing, Signal/session state, operational retry state,
+media encryption/streaming and cache policy. The bridge exposes neutral operations without
 Baileys names. Socket code orchestrates them without duplicating the engine or
 silently dropping writes. Historical `src/Utils/` imports remain re-exports.
 

@@ -98,7 +98,8 @@ custom runtime, pass `makeMediaCryptoRuntime(runtime)` as the final argument to
 
 ### Optional dependencies
 
-The runtime dependencies are the bridge and `long`. All other peers are optional:
+Runtime dependencies are the bridge, `long`, `events` and `fs-native-extensions`.
+All peer dependencies are optional:
 
 - `@hapi/boom` and `pino` replace the built-in compatible error and JSON logger implementations. Install them for shared error identity or Pino transports.
 - `sharp`, `jimp`, `audio-decode`, `link-preview-js` and `music-metadata` support media processing. Without `music-metadata`, audio sends without computed duration.

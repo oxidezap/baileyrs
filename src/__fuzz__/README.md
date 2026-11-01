@@ -11,7 +11,8 @@ npm run fuzz        # fuzz suite only
 npm run fuzz:deep   # larger budgets and WASM leak probe
 ```
 
-Failures print a seed, minimized input, both results and a replay command.
+Unexcused divergences report a seed, input, both results and a replay command.
+Crash reports may lack results or an input; shrinking is not always possible.
 
 | Variable                | Meaning                                                                                                                                          |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -40,12 +41,17 @@ are classified separately.
 Minimized reproducers in [corpus](corpus) replay before generated inputs.
 Use the registry for current findings rather than a count in this document.
 
+## What this does not cover
+
 Known coverage gaps are recorded per export in `targets.ts`:
 
 - `createBufferedFunction` needs characterization of consolidation differences,
-  including group updates without IDs and blank-field retention.
-- Async message generation needs paired media-upload stubs.
-- Keyed crypto needs valid key fixtures; random invalid input only tests rejection.
+  including group updates without IDs and blank-field retention. It is used in
+  `Socket/groups.ts` and `Socket/internals.ts`.
+- `generateWAMessage` and `generateWAMessageContent` need paired media-upload stubs.
+  Only the synchronous `generateWAMessageFromContent` is covered.
+- `decryptPollVote`, `decryptEventResponse` and `decryptMediaRetryData` need valid
+  key fixtures; random invalid input only tests rejection.
 
 ## Adding a target
 

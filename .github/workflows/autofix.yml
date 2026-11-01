@@ -1,6 +1,7 @@
 name: autofix.ci
 
 # Requires the autofix.ci GitHub App. It commits oxlint/oxfmt fixes using its own token.
+# Keep the workflow name autofix.ci so the App recognizes fix commits.
 
 on:
   pull_request:

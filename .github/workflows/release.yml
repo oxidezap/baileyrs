@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   # Recovery: dispatch with the release tag as the selected ref so npm provenance names the correct commit.
+  # Dispatch uses the workflow stored in that tag; tags predating this recovery path cannot use it.
   workflow_dispatch:
 
 permissions:
@@ -79,7 +80,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          # Also verify release-please ownership; a manually created GitHub release is insufficient.
+          # Require the release commit to be on main; a GitHub release alone is insufficient.
           status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
           case "$status" in
             identical | behind) ;;
@@ -134,6 +135,7 @@ jobs:
           fi
 
   # Run complete reusable CI, including E2E, on the verified release commit.
+  # full disables the version-bump skip and enables the build artifact required by publish.
   ci:
     name: Verify the release commit
     needs: [release-please, verify-tag]
