@@ -13,6 +13,7 @@ import { getWasmMemoryBytes } from '@oxidezap/whatsapp-rust-bridge'
 import P, { type Logger } from 'pino'
 import * as process from 'node:process'
 import { runOfflineSmoke } from './offline-smoke.ts'
+import { v8MemoryLines } from './memory-v8.ts'
 
 const offlineSmoke = process.argv.includes('--offline-smoke')
 if (
@@ -53,7 +54,7 @@ const rl = offlineSmoke ? undefined : createInterface({ input: process.stdin, ou
 const question = (text: string) => new Promise<string>(resolve => rl!.question(text, resolve))
 
 const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MiB'
-const numFmt = (v: number) => new Intl.NumberFormat('en').format(v)
+const numFmt = (v: number) => new Intl.NumberFormat('en-US').format(v)
 const byteFmt = (bytes: number) => {
 	const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 	let value = bytes
@@ -344,14 +345,8 @@ const startSock = async () => {
 							}
 
 							if (text === 'memory') {
-								const v8 = await import('v8')
-
 								const mem = process.memoryUsage()
-								const heap = v8.getHeapStatistics()
-								const spaces = v8
-									.getHeapSpaceStatistics()
-									.filter(s => s.space_used_size > 0)
-									.toSorted((a, b) => b.space_used_size - a.space_used_size)
+								const v8Lines = v8MemoryLines(process.versions.v8, process.getBuiltinModule)
 								const wasm = getWasmMemoryBytes()
 								const diag = await sock.waClient!.getMemoryDiagnostics()
 								const diagnosticEntries = Object.entries(diag)
@@ -369,16 +364,7 @@ const startSock = async () => {
 									`  External:      ${mib(mem.external)}`,
 									`  Array Buffers: ${mib(mem.arrayBuffers)} (included in External)`,
 									'',
-									`── V8 Heap Spaces ──`,
-									...spaces.map(
-										s => `  ${s.space_name.replace('_space', '').padEnd(20)} ${mib(s.space_used_size).padStart(10)}`
-									),
-									'',
-									`── V8 Stats ──`,
-									`  Native contexts:   ${heap.number_of_native_contexts}`,
-									`  Global handles:    ${numFmt(heap.used_global_handles_size)} / ${numFmt(heap.total_global_handles_size)}`,
-									`  Malloced:          ${mib(heap.malloced_memory)}`,
-									`  Peak malloced:     ${mib(heap.peak_malloced_memory)}`,
+									...v8Lines,
 									'',
 									`── WASM Linear Capacity: ${mib(wasm)} ──`,
 									'  Included in RSS when resident; not additive.',

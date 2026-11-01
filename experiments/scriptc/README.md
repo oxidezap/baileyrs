@@ -17,6 +17,8 @@ The runner saves each attempt in a fresh `.scriptc/results/run-*` directory. `.s
 
 The investigation environment had GCC but no clang or sudo. For local reproduction only, `SCRIPTC_POC_GCC=1` consumes the compiler's official `native-link-info` recipe with GCC, removing its clang-specific `-target x86_64-unknown-linux-gnu` pair. It asserts the recipe's compiler version and Linux x64 target. CI uses clang and the unchanged recipe. This is linking the emitted native objects, not running JavaScript through Node.
 
+The experiment tests require Node.js 24.19.0 or newer in the Node 24 line (CI pins 24.19.0). The native-lock negative test uses `module.registerHooks()`. This requirement applies to the experiment, not the published library's consumer Node range.
+
 To run only the safe Node integration:
 
 ```sh
@@ -25,7 +27,7 @@ node --test experiments/scriptc/offline-check.mjs
 node --import ./experiments/scriptc/network-guard.mjs Example/example.ts --offline-smoke
 ```
 
-`--offline-smoke` keeps the example's static imports and full bot implementation. It selects an offline entry branch before opening readline, creating Pino transports, fetching a version or constructing a socket. It compares bridge SHA-256 with Node crypto, checks two-party key agreement, round-trips the public protobuf facade, and writes/flushes/reopens/deletes synthetic bytes in both the ordinary `session` namespace and the atomic `meta` namespace through the real file auth store. It reopens once more to verify deletion. The `meta` operations execute snapshot transactions and the real native kernel lock. It creates a unique temporary directory and removes it in `finally`. It rejects pairing and migration flags. It never reads the usual auth directory, prints keys, pairs a device or connects an account. The regression test uses a sentinel at the normal auth path, checks cleanup, verifies failure when native-lock module loading is denied, and intercepts fetch, WebSocket, TCP, TLS and HTTP connection entrypoints. This JavaScript guard is a regression detector, not an OS security boundary.
+`--offline-smoke` keeps the example's static imports and full bot implementation. It selects an offline entry branch before opening readline, creating Pino transports, fetching a version or constructing a socket. It compares bridge SHA-256 with Node crypto, checks two-party key agreement, round-trips the public protobuf facade, and writes/flushes/reopens/deletes synthetic bytes in both the ordinary `session` namespace and the atomic `meta` namespace through the real file auth store. It reopens once more to verify deletion. The `meta` operations execute snapshot transactions and the real native kernel lock. It creates a unique temporary directory and removes it in `finally`. It rejects pairing and migration flags. It never reads the usual auth directory, prints keys, pairs a device or connects an account. The regression test uses a sentinel at the normal auth path, checks cleanup, verifies failure when native-lock module loading is denied, and intercepts fetch, WebSocket, UDP creation/bind/send/connect, TCP/TLS connections and TCP/HTTP listening entrypoints. This JavaScript guard is a regression detector, not an OS security boundary.
 
 ## Observed results
 
@@ -66,9 +68,13 @@ Next steps are therefore compiler/frontend reproductions, a supported bridge WAS
 - [WASM support and runtime differences](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/docs/content/limitations/webassembly-modules.mdx), [WASM decoder](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/packages/compiler/src/wasm/binary.ts), and [module discovery](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/packages/compiler/src/wasm/discover.ts).
 - [CLI options](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/docs/content/docs/cli.mdx), [npm compilation](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/docs/content/docs/dependencies.mdx), [dynamic imports](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/docs/content/limitations/language-features/dynamic-imports.mdx), [native addons](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/docs/content/limitations/native-addons.mdx), and [external native linking](https://github.com/vercel-labs/scriptc/blob/4bc8a4711c358ca09edaa758f5efd296bc6d2730/docs/content/docs/native-objects.mdx).
 
-## Upstream investigation
+## Current-head follow-up
 
-The [upstream follow-up](upstream/README.md) contains independent clean-project reproductions, duplicate checks, source analysis and a local filesystem prototype with a regression test. The issue publication attempts were denied by the GitHub integration with HTTP 403; these are reviewed drafts, not published issues. The CI runner also builds and executes the independent 29-byte SIMD reproduction.
+[The integration checkpoint](https://github.com/oxidezap/baileyrs/pull/176#issuecomment-6562285500) records results using Scriptc PR #2149 and the updated Baileyrs branch. It distinguishes the actual full-example build, native probes and guarded Node execution. The historical v0.4.0 table above is not the current compiler's status.
+
+The memory command retains real V8 diagnostics under Node. On a runtime without `process.versions.v8`, it explicitly reports that V8 diagnostics are unavailable, while retaining the process, WASM and Rust diagnostics. It never labels allocator estimates as V8 heap statistics. Tests cover the unavailable, real Node and malformed-provider paths.
+
+The [historical upstream notes](upstream/README.md) retain the earlier reproductions. Current Scriptc supports the isolated promise-rm and typed file-URL reads; the obsolete filesystem prototype was removed rather than treated as a pending fix. Recheck current results before filing any historical draft as a new issue.
 
 ## Harness review checks
 

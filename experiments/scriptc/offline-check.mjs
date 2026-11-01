@@ -10,6 +10,7 @@ test('full example initializes real bridge and persists synthetic bytes without 
 	const cwd = mkdtempSync(join(tmpdir(), 'baileyrs-scriptc-test-'))
 	try {
 		writeFileSync(join(cwd, 'baileys_auth_info'), 'must never be opened')
+		const env = { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TMPDIR: cwd, TMP: cwd, TEMP: cwd }
 		const run = spawnSync(
 			process.execPath,
 			[
@@ -22,7 +23,7 @@ test('full example initializes real bridge and persists synthetic bytes without 
 				cwd,
 				encoding: 'utf8',
 				timeout: 30000,
-				env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TMPDIR: cwd, TMP: cwd, TEMP: cwd }
+				env
 			}
 		)
 		assert.equal(run.status, 0, run.stderr.slice(-3000))
@@ -30,14 +31,27 @@ test('full example initializes real bridge and persists synthetic bytes without 
 		assert.deepEqual(readdirSync(cwd), ['baileys_auth_info'])
 		assert.equal(readFileSync(join(cwd, 'baileys_auth_info'), 'utf8'), 'must never be opened')
 		for (const option of ['--use-pairing-code', '--use-legacy-store', '--offline-migrate-auth']) {
-			const invalid = spawnSync(process.execPath, [join(root, 'Example/example.ts'), '--offline-smoke', option], {
-				cwd,
-				encoding: 'utf8',
-				timeout: 30000
-			})
+			const invalid = spawnSync(
+				process.execPath,
+				[
+					'--import',
+					join(root, 'experiments/scriptc/network-guard.mjs'),
+					join(root, 'Example/example.ts'),
+					'--offline-smoke',
+					option
+				],
+				{
+					cwd,
+					encoding: 'utf8',
+					timeout: 30000,
+					env
+				}
+			)
 			assert.notEqual(invalid.status, 0)
 			assert.match(invalid.stderr, /cannot be combined/)
 		}
+		assert.deepEqual(readdirSync(cwd), ['baileys_auth_info'])
+		assert.equal(readFileSync(join(cwd, 'baileys_auth_info'), 'utf8'), 'must never be opened')
 	} finally {
 		rmSync(cwd, { recursive: true, force: true })
 	}
@@ -47,10 +61,11 @@ test('offline smoke fails when the native snapshot lock cannot load', () => {
 	const cwd = mkdtempSync(join(tmpdir(), 'baileyrs-scriptc-lock-'))
 	try {
 		const guard = join(root, 'experiments/scriptc/fixtures/deny-native-lock.mjs')
+		const env = { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TMPDIR: cwd, TMP: cwd, TEMP: cwd }
 		const control = spawnSync(
 			process.execPath,
 			['--import', guard, '--input-type=module', '-e', "await import('fs-native-extensions')"],
-			{ cwd: root, encoding: 'utf8', timeout: 30000 }
+			{ cwd: root, encoding: 'utf8', timeout: 30000, env }
 		)
 		assert.notEqual(control.status, 0)
 		assert.match(control.stderr, /TEST_NATIVE_LOCK_LOAD_DENIED/)
@@ -68,7 +83,7 @@ test('offline smoke fails when the native snapshot lock cannot load', () => {
 				cwd,
 				encoding: 'utf8',
 				timeout: 30000,
-				env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TMPDIR: cwd, TMP: cwd, TEMP: cwd }
+				env
 			}
 		)
 		assert.notEqual(run.status, 0)

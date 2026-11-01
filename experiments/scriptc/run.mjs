@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { startResults } from './results.mjs'
+import { runCommand } from './command.mjs'
 
 const root = resolve(import.meta.dirname, '../..')
 process.chdir(root)
@@ -12,15 +12,7 @@ const out = results.directory
 console.log(`results: ${out}`)
 const summary = []
 function command(name, file, args) {
-	const run = spawnSync(file, args, { encoding: 'utf8', timeout: 600000, maxBuffer: 32 * 1024 * 1024 })
-	writeFileSync(resolve(out, `${name}.stdout`), run.stdout ?? '')
-	writeFileSync(resolve(out, `${name}.stderr`), run.stderr ?? '')
-	assert.ifError(run.error)
-	assert.equal(run.signal, null, `${name} terminated by ${run.signal}`)
-	summary.push({ name, exit: run.status })
-	writeFileSync(resolve(out, 'summary.json'), JSON.stringify(summary, null, 2))
-	console.log(`${name}: exit ${run.status}`)
-	return run
+	return runCommand(out, summary, name, file, args)
 }
 function coverage(name, entry, extra = []) {
 	const run = command(name, compiler, ['coverage', entry, '--print', 'diagnostics', ...extra])
@@ -67,7 +59,10 @@ function runExperiment() {
 		command('node-offline', process.execPath, [
 			'--test',
 			'experiments/scriptc/offline-check.mjs',
-			'experiments/scriptc/harness-check.mjs'
+			'experiments/scriptc/harness-check.mjs',
+			'experiments/scriptc/network-check.mjs',
+			'experiments/scriptc/memory-check.mjs',
+			'experiments/scriptc/command-check.mjs'
 		]).status,
 		0
 	)

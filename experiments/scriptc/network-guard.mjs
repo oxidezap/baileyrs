@@ -1,4 +1,5 @@
 import net from 'node:net'
+import dgram from 'node:dgram'
 import tls from 'node:tls'
 import http from 'node:http'
 import https from 'node:https'
@@ -16,5 +17,8 @@ globalThis.WebSocket = class {
 }
 net.connect = net.createConnection = tls.connect = forbidden
 net.Socket.prototype.connect = forbidden
+net.Server.prototype.listen = forbidden
+dgram.createSocket = forbidden
+dgram.Socket.prototype.bind = dgram.Socket.prototype.connect = dgram.Socket.prototype.send = forbidden
 http.request = http.get = https.request = https.get = forbidden
 syncBuiltinESMExports()
