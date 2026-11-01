@@ -117,6 +117,26 @@ describe('calls domain on the bridge preview (PR 115)', () => {
 			expect(cache.size).toBe(0)
 		}
 	})
+	it('per-device busy and enc rejects stay public while preserving the offer for another device acceptance', () => {
+		const cache: CallOfferCache = new Map()
+		const emitted = driveCalls(cache, [
+			offer('DEVICE-REJECT'),
+			update('DEVICE-REJECT', 'reject', { reason: 'busy' }),
+			update('DEVICE-REJECT', 'reject', { reason: 'enc' })
+		])
+		expect(emitted.map(batch => batch[0]?.status)).toEqual(['offer', 'reject', 'reject'])
+		expect(emitted[1]?.[0]?.reason).toBe('busy')
+		expect(emitted[2]?.[0]?.reason).toBe('enc')
+		expect(cache.has('DEVICE-REJECT')).toBe(true)
+		const accepted = driveCalls(cache, [update('DEVICE-REJECT', 'accept')])
+		expect(accepted[0]?.[0]).toMatchObject({ status: 'accept', isVideo: true, callerPn: '5522@s.whatsapp.net' })
+		expect(cache.get('DEVICE-REJECT')).toMatchObject({
+			peer: '5511@s.whatsapp.net',
+			callCreator: '5511@s.whatsapp.net'
+		})
+		driveCalls(cache, [update('DEVICE-REJECT', 'terminate')])
+		expect(cache.size).toBe(0)
+	})
 
 	it('terminal updates report back so the socket stops the media', () => {
 		// trackIncomingCall returns whether the update ended the call on

@@ -22,6 +22,7 @@ export interface BaileysCallSocket {
 	}
 	signalRepository: {
 		lidMapping: { getLIDForPN(peer: string): Promise<string | null> }
+		getSessionInfo(jid: string): Promise<{ baseKey: Uint8Array; registrationId: number } | null>
 		encryptMessage(options: { jid: string; data: Uint8Array }): Promise<{ type: EncType; ciphertext: Uint8Array }>
 		decryptMessage(options: { jid: string; type: EncType; ciphertext: Uint8Array }): Promise<Uint8Array>
 	}
@@ -118,11 +119,16 @@ export const createBaileysCallHost = (socket: BaileysCallSocket, options: Bailey
 			const deviceKeys: { deviceJid: string; ciphertext: Uint8Array; encType: EncType }[] = []
 			for (const deviceJid of ringDevices) {
 				assertConnected()
+				// Discovery may retain an unkeyable primary device. Only an explicit miss is skippable;
+				// getSessionInfo propagates store failures, unlike validateSession.
+				if ((await socket.signalRepository.getSessionInfo(deviceJid)) === null) continue
+				assertConnected()
 				// The repository awaits its own transaction commit, including storage errors.
 				const encrypted = await socket.signalRepository.encryptMessage({ jid: deviceJid, data: plaintext })
 				deviceKeys.push({ deviceJid, ciphertext: encrypted.ciphertext, encType: encrypted.type })
 			}
 			assertConnected()
+			if (!deviceKeys.length) throw new Error('Call peer has no established Signal sessions')
 			return {
 				deviceKeys,
 				ringDevices,

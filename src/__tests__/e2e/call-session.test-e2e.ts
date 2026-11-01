@@ -6,9 +6,9 @@ import { createTestClient, destroyTestClient, type TestClient } from './test-cli
 import { makeUdpRelayProvider } from './udp-relay-provider.ts'
 import { waitForEvent } from './wait.ts'
 
-const waitUntil = async (condition: () => boolean, label: string) => {
+const waitUntil = async (condition: () => boolean | Promise<boolean>, label: string) => {
 	const deadline = Date.now() + 15000
-	while (!condition()) {
+	while (!(await condition())) {
 		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`)
 		await new Promise(resolve => setTimeout(resolve, 20))
 	}
@@ -91,7 +91,8 @@ describe('E2E: managed call sessions', { timeout: 90000 }, () => {
 				output: new WritableStream<Int16Array>({
 					write(samples) {
 						assert.ok(samples.length > 0)
-						sink()
+						// Startup concealment can produce PCM before either source reaches the encoder.
+						if (samples.some(sample => sample !== 0)) sink()
 					}
 				})
 			}
@@ -104,11 +105,15 @@ describe('E2E: managed call sessions', { timeout: 90000 }, () => {
 			callee = await bob.sock.voip.accept(offer, { media: media(() => bobPcm++) })
 			assert.equal(caller.id, callee.id)
 			try {
-				await waitUntil(() => alicePcm > 0 && bobPcm > 0, 'duplex decoded PCM')
+				await waitUntil(() => alicePcm > 0 && bobPcm > 0, 'duplex non-silent PCM')
 			} catch (error) {
 				console.log('PCM trace', trace, 'caller', await caller.stats(), 'callee', await callee.stats())
 				throw error
 			}
+			await waitUntil(async () => {
+				const stats = await Promise.all([caller!.stats(), callee!.stats()])
+				return stats.every(value => value.io.audioInputAccepted > 0)
+			}, 'published input counters for both sources')
 			assert.ok((await caller.stats()).io.audioInputAccepted > 0)
 			await caller.end()
 			assert.equal((await callee.closed).reason, 'remote')

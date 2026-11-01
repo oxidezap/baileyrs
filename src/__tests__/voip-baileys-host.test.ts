@@ -30,6 +30,7 @@ const harness = (ackTimeoutMs = 1000) => {
 		},
 		signalRepository: {
 			lidMapping: { getLIDForPN: async () => peer },
+			getSessionInfo: async () => ({ baseKey: new Uint8Array([1]), registrationId: 7 }),
 			encryptMessage: async options => {
 				calls.push(['encrypt', options])
 				return { type: 'pkmsg', ciphertext: new Uint8Array([4, 5]) }
@@ -181,6 +182,60 @@ describe('upstream Baileys direct-call host', () => {
 		assert.equal(result.deviceKeys.length, 1)
 		assert.equal(result.deviceIdentity, undefined)
 		h.dispose()
+	})
+	it('skips a missing primary session without removing that device from the full ring set', async () => {
+		const h = harness(),
+			metadataReads: string[] = []
+		h.socket.signalRepository.getSessionInfo = async jid => {
+			metadataReads.push(jid)
+			return jid === peer ? null : { baseKey: new Uint8Array([1]), registrationId: 7 }
+		}
+		const result = await h.host.prepareKeys(peer, new Uint8Array([2]))
+		assert.deepEqual(metadataReads, [peer, device])
+		assert.deepEqual(result.ringDevices, [peer, device])
+		assert.deepEqual(
+			result.deviceKeys.map(key => key.deviceJid),
+			[device]
+		)
+		assert.deepEqual(
+			h.calls
+				.filter(call => (call as unknown[])[0] === 'encrypt')
+				.map(call => (call as [string, { jid: string }])[1].jid),
+			[device]
+		)
+		h.dispose()
+	})
+	it('refuses an all-missing session set without encrypting or sending an offer', async () => {
+		const h = harness()
+		h.socket.signalRepository.getSessionInfo = async () => null
+		await assert.rejects(h.host.prepareKeys(peer, new Uint8Array([2])), /no established Signal sessions/)
+		assert.ok(h.calls.every(call => !['encrypt', 'send'].includes((call as string[])[0]!)))
+		h.dispose()
+	})
+	it('propagates session metadata storage errors before crypto instead of treating them as misses', async () => {
+		const h = harness(),
+			failure = new Error('synthetic session storage failure')
+		h.socket.signalRepository.getSessionInfo = async () => {
+			throw failure
+		}
+		await assert.rejects(h.host.prepareKeys(peer, new Uint8Array([2])), error => error === failure)
+		assert.ok(h.calls.every(call => !['encrypt', 'send'].includes((call as string[])[0]!)))
+		h.dispose()
+	})
+	it('rechecks connection ownership after a pending metadata read and before encryption', async () => {
+		const h = harness(),
+			metadata = deferred<{ baseKey: Uint8Array; registrationId: number }>(),
+			entered = deferred<void>()
+		h.socket.signalRepository.getSessionInfo = async () => {
+			entered.resolve()
+			return metadata.promise
+		}
+		const preparing = h.host.prepareKeys(peer, new Uint8Array([2]))
+		await entered.promise
+		h.dispose()
+		metadata.resolve({ baseKey: new Uint8Array([1]), registrationId: 7 })
+		await assert.rejects(preparing, /connection closed/)
+		assert.ok(h.calls.every(call => !['encrypt', 'send'].includes((call as string[])[0]!)))
 	})
 	it('propagates repository and token-store failure rather than sending partial signaling', async () => {
 		const h = harness(),

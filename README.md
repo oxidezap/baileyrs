@@ -220,6 +220,10 @@ The optional `@oxidezap/baileyrs/voip` entrypoint attaches the same managed
 session API to an already connected upstream socket. It uses that socket's
 connection, Signal repository and authoritative storage. It does not create a
 second WhatsApp client or copy its sessions.
+The adapter is checked against upstream Baileys `7.0.0-rc.14` and uses its
+public repository APIs, including `getSessionInfo` to skip unavailable device
+sessions without hiding storage failures. All supported devices remain in the
+ring list.
 
 ```ts
 import { encodeSignedDeviceIdentity } from 'baileys'
@@ -268,8 +272,11 @@ the same initializer. Device capture, playback and resampling remain application
 code, using the same Web Streams and lifecycle rules described above.
 
 This branch pins bridge #115 preview `6f7ddf4`; registry `0.26.4` does not
-contain these VoIP capabilities. Replace the preview with a verified registry
-release containing them before releasing this package.
+contain these VoIP capabilities. The optional upstream initializer additionally
+requires the companion standalone-control bridge changes; the older preview
+does not expose that constructor. Its matching preview must be pinned before
+publishing this integration. Replace the preview with a verified registry
+release containing these capabilities before releasing this package.
 The pinned backend supports PCM and encoded audio plus H.264 video. Integration
 checks use synthetic media and a local mock. No authenticated calls, hardware
 capture or production NAT traversal were validated for this change.

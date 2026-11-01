@@ -916,6 +916,67 @@ describe('native video control backpressure', () => {
 })
 
 describe('managed call readiness', () => {
+	it('keeps readiness and its PCM writer after per-device busy and enc rejects until another device accepts', async () => {
+		const h = harness()
+		h.runtime.start = async () => 'DEVICE-REJECT'
+		const call = await h.api.call('peer')
+		const readiness = call.ready.then(
+			() => 'ready',
+			() => 'rejected'
+		)
+		let pulled = 0
+		const playing = call.audio.play(
+			new ReadableStream<Int16Array>(
+				{
+					pull(controller) {
+						pulled++
+						controller.enqueue(new Int16Array(960))
+						controller.close()
+					}
+				},
+				{ highWaterMark: 0 }
+			)
+		)
+		void playing.catch(() => undefined)
+		try {
+			h.events.emit('call.media', { kind: 'relay-allocated', callId: call.id })
+			for (const reason of ['busy', 'enc']) {
+				h.events.emit('call', [{ ...offer, id: call.id, status: 'reject', reason }])
+				await tick()
+				assert.equal(call.lifecycle, 'open')
+				assert.equal(h.api.get(call.id), call)
+				assert.equal(h.counts.writersClosed, 0)
+				assert.equal(pulled, 0)
+			}
+			h.events.emit('call', [{ ...offer, id: call.id, status: 'accept' }])
+			assert.equal(await readiness, 'ready')
+			await playing
+			assert.equal(h.sent.length, 1)
+			assert.equal(call.lifecycle, 'open')
+			assert.deepEqual(await call.end(), { outcome: 'peer-notified' })
+			assert.equal((await call.closed).reason, 'local')
+			assert.equal(h.counts.ends, 1)
+		} finally {
+			await h.close()
+		}
+	})
+	for (const reason of [undefined, 'decline']) {
+		it(`closes readiness and its PCM writer for a call-wide reject ${reason ?? 'without a reason'}`, async () => {
+			const h = harness()
+			h.runtime.start = async () => 'DECLINED'
+			const call = await h.api.call('peer')
+			const readiness = assert.rejects(call.ready)
+			const playing = assert.rejects(call.audio.play(new ReadableStream<Int16Array>({}, { highWaterMark: 0 })))
+			h.events.emit('call.media', { kind: 'relay-allocated', callId: call.id })
+			await tick()
+			h.events.emit('call', [{ ...offer, id: call.id, status: 'reject', reason }])
+			await Promise.all([readiness, playing])
+			assert.equal((await call.closed).reason, 'remote')
+			assert.equal(h.counts.writersClosed, 1)
+			assert.equal(h.counts.ends, 0)
+			await h.close()
+		})
+	}
 	it('waits for both relay allocation and peer acceptance before consuming outgoing audio', async () => {
 		const h = harness()
 		h.runtime.start = async () => 'WAITING'

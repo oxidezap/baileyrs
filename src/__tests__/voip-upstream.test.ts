@@ -190,6 +190,7 @@ const harness = () => {
 		},
 		signalRepository: {
 			lidMapping: { getLIDForPN: async () => peer },
+			getSessionInfo: async () => ({ baseKey: new Uint8Array([1]), registrationId: 7 }),
 			async encryptMessage({ data }) {
 				encrypted.push(data)
 				return { type: 'msg', ciphertext: new Uint8Array([3]) }

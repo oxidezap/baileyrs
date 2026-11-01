@@ -1,3 +1,4 @@
+import { isTerminalCallUpdate } from './call-offers.ts'
 import { createCallAudio } from './call-audio.ts'
 import { validateCallPcmFormat } from './call-pcm.ts'
 import { createCallMediaScope, closeCallMedia } from './call-media-streams.ts'
@@ -133,12 +134,7 @@ export const createVoipApi = (operations: CallSessionOperations, runtime: CallSe
 	}
 	const onCalls = (events: WACallEvent[]) => {
 		for (const event of events) {
-			if (
-				runtime.isTerminal(event.id) ||
-				event.status === 'terminate' ||
-				event.status === 'reject' ||
-				event.status === 'timeout'
-			) {
+			if (runtime.isTerminal(event.id) || isTerminalCallUpdate(event.status, event.reason)) {
 				earlyReadiness.delete(event.id)
 				void sessions.get(event.id)?.finish({ reason: 'remote' })
 			} else if (event.status === 'accept') markReady(event.id, 'accepted')

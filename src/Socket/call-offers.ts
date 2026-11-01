@@ -14,10 +14,9 @@ export type CallOfferCache = Map<string, CallOfferSnapshot>
 
 type IncomingCallEvent = Extract<CanonicalEvent, { type: 'incomingCall' }>
 
-// Updates after which no live call can remain: the entry is enriched, then
-// dropped. `accept` is deliberately absent: the call is live from here, and
-// `terminateCall` still needs the peer and call creator to route the hangup.
-const FORGET_CALL_TYPES: ReadonlySet<string> = new Set(['reject', 'timeout', 'terminate'])
+// A busy or undecryptable device can reject while another rung device accepts.
+export const isTerminalCallUpdate = (type: string, reason?: string): boolean =>
+	type === 'terminate' || type === 'timeout' || (type === 'reject' && reason !== 'busy' && reason !== 'enc')
 
 /**
  * Track a call offer and enrich later updates from it, mirroring upstream
@@ -45,7 +44,7 @@ const FORGET_CALL_TYPES: ReadonlySet<string> = new Set(['reject', 'timeout', 'te
  */
 export const trackIncomingCall = (cache: CallOfferCache, event: IncomingCallEvent): boolean => {
 	const { callId, callCreator, type } = event.action
-	if (event.endedElsewhere === true || FORGET_CALL_TYPES.has(type)) {
+	if (event.endedElsewhere === true || isTerminalCallUpdate(type, event.action.reason)) {
 		const snapshot = cache.get(callId)
 		if (snapshot) enrichFromSnapshot(event, snapshot)
 		cache.delete(callId)
