@@ -76,7 +76,7 @@ function runExperiment() {
 	assert.match(scalar.stdout, /SCALAR_WASM_OK/)
 	const wasm = coverage('wasm-coverage', 'experiments/scriptc/fixtures/wasm.ts')
 	assert.equal(wasm.wasmModules.length, 1)
-	assert.equal(wasm.wasmModules[0].sha256, '7f563e4853e056a3063d3d82d7e3ee94004efa6ad267185040eca32fef1897b4')
+	assert.equal(wasm.wasmModules[0].sha256, 'a4f69b5af2834fbb4f57a40970785ab7b144363cb96ce0b746b58292ee3ff1cc')
 	assert.deepEqual(wasm.wasmModules[0].unsupported, ['simd'])
 	const wasmRun = native('wasm', 'experiments/scriptc/fixtures/wasm.ts')
 	assert.notEqual(wasmRun.status, 0)

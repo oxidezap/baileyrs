@@ -4,7 +4,7 @@ This experiment is **blocked**, not a supported distribution target. It builds t
 
 ## Reproduce on Linux x64 glibc
 
-The compiler is fixed to the official v0.4.0 archive and SHA-256. Node dependencies come from the committed lockfile, including bridge 0.26.0. CI uses Node 24.19.0 and Ubuntu 24.04. The experiment checks out the exact PR head so an unrelated dependency update in the moving base branch cannot change the pinned WASM bytes. The normal repository CI still tests its integration context. Install clang using your operating system's package manager, then run:
+The compiler is fixed to the official v0.4.0 archive and SHA-256. Node dependencies come from the committed lockfile, now including bridge 0.26.4 after merging main. The historical results below used bridge 0.26.0; the runner pins the current bridge WASM SHA-256 to `a4f69b5af2834fbb4f57a40970785ab7b144363cb96ce0b746b58292ee3ff1cc` (6,413,779 bytes). CI uses Node 24.19.0 and Ubuntu 24.04. The experiment checks out the exact PR head so an unrelated dependency update in the moving base branch cannot change the pinned WASM bytes. The normal repository CI still tests its integration context. Install clang using your operating system's package manager, then run:
 
 ```sh
 npm ci --ignore-scripts
