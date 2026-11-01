@@ -35,14 +35,14 @@ and the [compatibility audits](scripts/compatibility).
 ## Quick start
 
 This example prints a pairing code for a new session and logs incoming messages.
-Run it as an ESM TypeScript file. Set `PHONE_NUMBER` to your number with country
+Save it as `bot.mjs`. Set `PHONE_NUMBER` to your number with country
 code, digits only, and enter the code in WhatsApp's linked-devices screen.
 
 ```sh
-PHONE_NUMBER=1234567890 node bot.ts
+PHONE_NUMBER=1234567890 node bot.mjs
 ```
 
-```ts
+```js
 import makeWASocket, { useMultiFileAuthState } from '@oxidezap/baileyrs'
 
 const { state } = await useMultiFileAuthState('auth_info')
