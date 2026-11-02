@@ -113,6 +113,177 @@ All peer dependencies are optional:
 URLs for PRs and commits. They are unreleased code with version
 `0.0.0-preview-<sha>`; pin them explicitly for testing and use npm releases in production.
 
+## Calls
+
+Node sockets load their own VoIP engine and secure relay transport. Applications
+use the call API without creating a relay provider or running a relay server:
+
+```ts
+const call = await sock.voip.call(peerJid)
+const playback = call.audio.receive().pipeTo(speaker)
+await call.ready
+try {
+  await call.audio.play(microphone, { signal: captureSignal })
+} catch (error) {
+  if (!captureSignal.aborted) throw error
+}
+// EOF or cancellation stops this source; the call can play another source.
+await call.audio.play(recording)
+await call.end()
+await playback
+```
+
+Inputs are `ReadableStream<Int16Array>` of mono samples at 16 kHz. Chunk sizes
+may vary up to 65,536 samples; framing into 960-sample packets and pacing happen
+inside the library. The final partial frame is padded with silence. Samples must
+remain stable after enqueueing. An optional `{ sampleRate: 16000, channels: 1 }`
+format is checked explicitly; other formats require conversion by the caller.
+There is no implicit resampling. Aligned chunks use views where possible; the
+WASM boundary still copies samples.
+
+Calling `audio.play()` directly replaces the previous input and rejects on a source error or cancellation
+without ending the call. `audio.stop()` cancels the current source. `ready` waits
+for peer acceptance and relay allocation, so a file is not consumed while ringing.
+Each `audio.receive()` has an independent queue limited to 960 samples and at most
+eight receivers can attach. A slow receiver drops new frames; its `onDrop` callback
+reports the cumulative count. Cancellation detaches only that receiver. Closing a
+call lets queued output drain; await the `pipeTo` promise to finish playback or
+recording. Producers must also respect their own stream backpressure.
+
+The existing `media: () => ({ audio: { input: microphone, output: speaker } })`
+option remains useful for call-owned device lifecycles. Supply a factory that
+creates fresh streams for each call. It runs after native call
+admission, which can precede the peer answering. Its abort signal also covers
+socket shutdown and media errors; these factory-owned stream errors end the call.
+`dispose` can release resources outside the
+streams; cleanup has a one-second grace period and reports stalled disposers.
+
+Accept a ringing offer with `sock.voip.accept(offer, options)`. Repeated acceptance
+returns the same managed session. `sock.voip.active` lists active sessions;
+`closed` reports local/remote termination, cancellation, socket closure or a media
+error. An incomplete `end()` can be retried to finish notifying the peer.
+
+The `media` factory may return a `video(call, signal)` factory providing H.264 Annex-B input and
+`CallVideoFrame` output streams. It runs for initial video or after an explicit
+`call.video.start()` / `accept()` / `resume()`, and is disposed on stop. Return a
+`requestKeyframe` callback to produce an IDR when the backend asks for one.
+`call.video.requestKeyframe()` asks the remote encoder instead. The ffmpeg
+adapter restarts its encoder to produce fresh SPS/PPS and an IDR, coalescing
+restart requests within 500 ms.
+
+The existing `dialCallPcm`, `acceptCallPcm`, encoded audio, synchronous writers,
+mute, statistics and video methods remain available for applications that own
+their media lifecycle. Use `sock.rejectCall(id, from)` for a ringing call.
+`call` events preserve routing context, platform, video and group attributes;
+`call.media` carries media lifecycle, keyframe feedback and diagnostics.
+
+For microphone/file input and playback, install ffmpeg and ffplay. The example
+commands below require Node 24+ for direct TypeScript execution; the installed
+library still supports Node 22.3+. Then run:
+
+```sh
+npm run build
+node Example/call.ts dial <peer-jid> --mic
+node Example/call.ts listen --accept --mic
+node Example/call.ts dial <peer-jid> --audio-file audio.wav
+# Optional video source: camera, testsrc, file, or URL
+node Example/call.ts dial <peer-jid> --mic --video testsrc
+```
+
+The CLI handles call orchestration; `Example/call-media.ts` handles ffmpeg processes,
+PCM framing and H.264 access units. Finite PCM recordings pad the final
+sample-aligned frame with silence; an incomplete sample is rejected. H.264
+framing requires AUD delimiters, inserted by the ffmpeg adapter. NAL start codes
+alone do not identify complete pictures and are not treated as frame boundaries.
+PCM decoding, codecs, encryption, timing and
+relay negotiation stay in the engine. In this CLI, a remote video offer never enables the
+local camera without an explicit video option or keyboard action. In the public API,
+`voip.accept(offer)` inherits `offer.isVideo` and may invoke the supplied video
+factory; pass `video: false` to answer without initial video.
+
+The relay is WhatsApp media infrastructure. The Node provider opens an outbound
+ICE/DTLS/SCTP DataChannel to that endpoint using the bridge's DTLS fingerprint;
+it does not host another server. The secure provider is loaded on the first media
+connection. `sock.setRelayTransportProvider(provider)` remains available for custom
+hosts and tests. Browser hosts use the bridge's RTCPeerConnection provider; custom
+hosts can supply `createCallRelayProvider` and an isolated `loadVoip` engine.
+
+For the local Bartender mock only, add
+`--socket wss://127.0.0.1:8080/ws/chat --mock-udp --danger-skip-cert-verify`.
+The CLI permits a TLS verification bypass only with a loopback mock socket.
+Cleartext UDP requires an explicit `--mock-udp` and a loopback socket URL. Changing
+the signaling URL or TLS verification never changes the production media transport.
+
+### Calling through upstream Baileys
+
+The optional `@oxidezap/baileyrs/voip` entrypoint attaches the same managed
+session API to an already connected upstream socket. It uses that socket's
+connection, Signal repository and authoritative storage. It does not create a
+second WhatsApp client or copy its sessions.
+The adapter is checked against upstream Baileys `7.0.0-rc14` and uses its
+public repository APIs, including `getSessionInfo` to skip unavailable device
+sessions without hiding storage failures. All supported devices remain in the
+ring list.
+
+```ts
+import { encodeSignedDeviceIdentity } from 'baileys'
+import { createBaileysVoip } from '@oxidezap/baileyrs/voip'
+
+const voip = await createBaileysVoip(sock, {
+  encodeDeviceIdentity: encodeSignedDeviceIdentity,
+  reportError: (error, operation) => logger.error({ error }, operation)
+})
+const call = await voip.call(peerJid)
+const playback = call.audio.receive().pipeTo(speaker)
+await call.ready
+await call.audio.play(firstPcmSource)
+await call.audio.play(secondPcmSource)
+await call.end()
+await playback
+await voip.disconnect() // Leaves the upstream socket open.
+```
+
+Incoming offers still arrive through upstream's `sock.ev.on('call', ...)`.
+Pass an offer to `voip.accept(offer)`. The adapter waits for its raw signaling
+processing before accepting it. It does not emit duplicate events into the
+upstream socket. Recreate the integration after reconnecting that socket;
+connection closure disposes this integration and its pending operations.
+
+The initial upstream integration supports 1:1 PCM audio. Video and group control
+reject explicitly. Automatic first-contact PN/LID learning or session migration
+also rejects when it would require overwriting upstream state; already trusted
+mappings are reused. The current upstream mutation API does not provide the
+conflict and ratchet protections needed to implement that migration here.
+Existing privacy tokens are read from upstream storage and checked for expiry
+by the shared Rust control. Automatic token issuance is unavailable through this
+adapter: upstream exposes the IQ sender but keeps issuance deduplication,
+routing and persistence private. The adapter does not maintain a second token
+lifecycle or call that low-level sender without those protections.
+
+Generic stanza ACKs remain owned by upstream. The shared Rust control sends the
+existing native offer receipt. This preserves the native calling baseline;
+complete fidelity to WhatsApp Web's receipt-bearing accept/reject/rekey paths
+and advanced typed ACKs still needs separate qualification and an upstream
+dispatch capability. Synthetic tests do not establish live interoperability.
+
+The default loader uses the packaged engine and outbound relay transport.
+Hosts that load their own WASM supply `runtime` and `createRelayProvider` through
+the same initializer. Device capture, playback and resampling remain application
+code, using the same Web Streams and lifecycle rules described above.
+
+The bridge currently reports peer video rejection (`WasmCallHandle.rejectVideo`)
+as unsupported until the core exposes a token-safe operation; it does not stop
+local video as a substitute. This does not expand the upstream adapter beyond
+its documented 1:1 PCM scope.
+
+This branch pins consolidated bridge #115 preview `c55a546`, built from integrated
+core #1830 at `3357b5f3` with native media and shared host control. Registry `0.26.4` does
+not contain these VoIP capabilities. Replace the preview with a verified registry
+release containing them before releasing this package.
+The pinned backend supports PCM and encoded audio plus H.264 video. Integration
+checks use synthetic media and a local mock. No authenticated calls, hardware
+capture or production NAT traversal were validated for this change.
+
 ## Migrating from upstream Baileys
 
 Custom upstream `{ creds, keys }` auth states require `keys.bridgeTransaction`

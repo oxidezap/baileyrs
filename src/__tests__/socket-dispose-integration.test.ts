@@ -98,6 +98,20 @@ describe('makeWASocket: disposing stops the bridge run loop', { timeout: 120_000
 		}
 	})
 
+	it('rejects new call sinks once the real socket starts closing', async () => {
+		const counter = await startConnectionCounter()
+		try {
+			const { state } = await useMultiFileAuthState(authFolder)
+			const sock = makeWASocket({ auth: state, logger: silentLogger, waWebSocketUrl: counter.url })
+			const ending = sock.end(undefined)
+			expect(() => sock.onCallAudio('call-1', () => undefined)).toThrow(/Connection Closed/)
+			await ending
+			expect(() => sock.onCallAudio('call-1', () => undefined)).toThrow(/Connection Closed/)
+		} finally {
+			await counter.close()
+		}
+	})
+
 	it('a mid-init end() still closes the transport and drains the auth store', async () => {
 		// Both used to sit inside `if (client)`, so an `end()` landing before
 		// `createWhatsAppClient()` resolved skipped them: `ws.readyState` stayed

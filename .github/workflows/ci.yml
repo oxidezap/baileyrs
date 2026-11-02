@@ -125,7 +125,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # Skip prepare; lint reads source files.
+      # Lint builds lib for the example typecheck.
       - run: npm ci --ignore-scripts
 
       - run: npm run lint
@@ -148,8 +148,10 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # Skip prepare; tests read source files.
+      # Example tests import lib, so build before test discovery.
       - run: npm ci --ignore-scripts
+
+      - run: npm run build
 
       - run: npm test
 
@@ -245,9 +247,14 @@ jobs:
           password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
         ports:
           - 8080:8080
+          # UDP loopback relay for VoIP media tests: the offer's relay
+          # candidates name 127.0.0.1, so the mapped host port is what the
+          # runner dials. Must match BARBACK_RELAY_PORT below.
+          - 3479:3479/udp
         env:
           CHATSTATE_TTL_SECS: "3"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          BARBACK_RELAY_PORT: "3479"
         options: --log-driver none
 
     steps:
@@ -278,6 +285,8 @@ jobs:
         env:
           SOCKET_URL: "wss://127.0.0.1:8080/ws/chat"
           ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          # Require the local UDP relay in media E2E tests.
+          BARBACK_RELAY_PORT: "3479"
         run: npm run test:e2e
 
   # Require this aggregate check, including when release-only diffs skip jobs.

@@ -8,6 +8,7 @@
  */
 
 import DefaultLong from 'long'
+import { toCallEvent } from './call-offers.ts'
 import {
 	BinaryReader as DefaultBinaryReader,
 	decodeMessageWireBatch as defaultDecodeMessageWireBatch,
@@ -30,21 +31,13 @@ import { adaptBridgeEvent, adaptBridgeMessageWire } from '../Bridge/index.ts'
 import { decodeHistorySyncWireBatch } from '../Bridge/history-sync-wire.ts'
 import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
 import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX, HISTORY_SYNC_PAUSED_TIMEOUT_MS } from '../Defaults/index.ts'
-import type {
-	BaileysEventMap,
-	BinaryNode,
-	ConnectionState,
-	WACallEvent,
-	WACallUpdateType,
-	WAMessage,
-	WAPresence
-} from '../Types/index.ts'
+import type { BaileysEventMap, BinaryNode, ConnectionState, WAMessage, WAPresence } from '../Types/index.ts'
 import { DisconnectReason, WAMessageStatus, WAProto } from '../Types/index.ts'
 import { LabelAssociationType } from '../Types/LabelAssociation.ts'
 import { Boom } from '../Utils/boom.ts'
 import { toNumber, unrefTimer } from '../Runtime/bytes.ts'
 import { CONVERSATION_HISTORY_SYNC_TYPES } from '../Utils/process-history-message-core.ts'
-import { isJidBroadcast, isJidGroup } from '../WABinary/jid-utils.ts'
+import { isJidBroadcast } from '../WABinary/jid-utils.ts'
 import {
 	buildGroupCreateStubMessage,
 	buildGroupJoinRequestEvents,
@@ -850,40 +843,7 @@ const DISPATCHERS: DispatcherMap = {
 	// ── Calls ──
 	incomingCall: (evt, { ctx, callbacks }) => {
 		callbacks?.onIncomingCall?.(evt)
-		const isGroup = isJidGroup(evt.from)
-		// Canonical call actions use the exact public Baileys status spelling;
-		// missed-call notifications are normalized to `timeout` by the adapter.
-		const status: WACallUpdateType = evt.action.type
-		const callEvt: WACallEvent = {
-			chatId: evt.from,
-			from: evt.action.callCreator ?? evt.from,
-			...(evt.action.callCreator ? { callCreator: evt.action.callCreator } : {}),
-			id: evt.action.callId,
-			// Upstream uses new Date(+attrs.t * 1000), including Invalid Date
-			// when t is absent. Preserve that contract without inventing a time.
-			date: new Date((evt.timestamp ?? Number.NaN) * 1000),
-			status,
-			offline: evt.offline,
-			isGroup,
-			// Group JID = `evt.from` only when the stanza came from a group
-			// JID itself. The bridge offer payload doesn't carry a separate
-			// `group_jid` field today, so the group's JID IS the `from` for
-			// `<call>` stanzas in groups.
-			...(isGroup ? { groupJid: evt.from } : {}),
-			...(evt.action.callerPn ? { callerPn: evt.action.callerPn } : {}),
-			...(evt.action.type === 'offer' ? { isVideo: !!evt.action.isVideo } : {}),
-			// Bridge auxiliary fields (offer-only / terminate-only / always)
-			...(evt.action.callerCountryCode ? { callerCountryCode: evt.action.callerCountryCode } : {}),
-			...(evt.action.deviceClass ? { deviceClass: evt.action.deviceClass } : {}),
-			...(evt.action.joinable !== undefined ? { joinable: evt.action.joinable } : {}),
-			...(evt.action.audio ? { audio: evt.action.audio } : {}),
-			...(evt.action.duration !== undefined ? { duration: evt.action.duration } : {}),
-			...(evt.action.audioDuration !== undefined ? { audioDuration: evt.action.audioDuration } : {}),
-			...(evt.stanzaId ? { stanzaId: evt.stanzaId } : {}),
-			...(evt.notify ? { notify: evt.notify } : {}),
-			...(evt.platform ? { platform: evt.platform } : {}),
-			...(evt.version ? { version: evt.version } : {})
-		}
+		const callEvt = toCallEvent(evt)
 		ctx.ev.emit('call', [callEvt])
 	},
 

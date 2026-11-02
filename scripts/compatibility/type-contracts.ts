@@ -1,3 +1,4 @@
+import type { WhatsAppEventCallbacks } from '@oxidezap/whatsapp-rust-bridge/host'
 import {
 	type makeEventBuffer as upstreamMakeEventBuffer,
 	type makeWASocket as upstreamMakeWASocket,
@@ -138,7 +139,7 @@ type JoinRequestEventExact = Assert<Exact<LocalEventMap['group.join-request'], U
 //
 // Upstream's map is not copied verbatim: `app-state-sync.failed` (bridge 0.10.0, #55)
 // and the stub fields pinned below are deliberate, so a new addition still fails.
-const INTENDED_EVENT_ADDITIONS = ['app-state-sync.failed', 'labels.sublist'] as const
+const INTENDED_EVENT_ADDITIONS = ['app-state-sync.failed', 'labels.sublist', 'call.media'] as const
 // Bridge main adds a distinct sublist event; keep its extension contract exact.
 type LabelSublistEventExact = Assert<Exact<LocalEventMap['labels.sublist'], {
 	predefinedId: number
@@ -148,6 +149,15 @@ type LabelSublistEventExact = Assert<Exact<LocalEventMap['labels.sublist'], {
 	actionTimestamp?: string
 	fromFullSync: boolean
 }>>
+type CallMediaEventExact = Assert<
+ Exact<LocalEventMap['call.media'], Parameters<NonNullable<WhatsAppEventCallbacks['onCallEvent']>>[0]>
+>
+type CallOfferExtensionsExact = Assert<
+ Exact<Pick<LocalEventMap['call'][number], 'reason' | 'videoOrientation'>, {
+  reason?: string
+  videoOrientation?: number
+ }>
+>
 type IntendedEventAdditions = (typeof INTENDED_EVENT_ADDITIONS)[number]
 type EventNamesExact = Assert<
 	Exact<Exclude<keyof LocalEventMap, IntendedEventAdditions>, keyof UpstreamEventMap>
@@ -159,7 +169,7 @@ type EventMapLocalToUpstream = Assert<Assignable<LocalEventMap, UpstreamEventMap
 type CallPayloadAdditions = Assert<
 	Exact<
 		Exclude<keyof LocalEventMap['call'][number], keyof UpstreamEventMap['call'][number]>,
-		'audio' | 'audioDuration' | 'callCreator' | 'callerCountryCode' | 'deviceClass' | 'duration' | 'joinable' | 'notify' | 'platform' | 'stanzaId' | 'version'
+		'audio' | 'audioDuration' | 'callCreator' | 'callerCountryCode' | 'deviceClass' | 'duration' | 'joinable' | 'notify' | 'platform' | 'stanzaId' | 'version' | 'reason' | 'videoOrientation'
 	>
 >
 type UpsertMessageAdditions = Assert<
@@ -348,6 +358,8 @@ export type CompatibilityTypeAssertions = [
 	JoinRequestEventExact,
 	EventNamesExact,
 	LabelSublistEventExact,
+	CallMediaEventExact,
+	CallOfferExtensionsExact,
 	EventMapLocalToUpstream,
 	CallPayloadAdditions,
 	UpsertMessageAdditions,

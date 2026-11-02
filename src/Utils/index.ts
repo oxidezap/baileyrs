@@ -20,5 +20,6 @@ export * from './companion-reg-client-utils.ts'
 export * from './use-bridge-store.ts'
 export * from './use-memory-store.ts'
 export * from './wrap-legacy-store.ts'
+export * from './stun.ts'
 
 export { prepareNativeAuthRollback } from './native-auth-rollback.ts'

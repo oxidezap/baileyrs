@@ -11,4 +11,15 @@ export * from './WAUSync/index.ts'
 
 export type WASocket = ReturnType<typeof makeWASocket>
 export { makeWASocket }
+// Named, not starred: the call-audio helpers consumers reach for by name,
+// without pulling the socket internals the module also holds.
+export {
+	depacketizeOpusFromMlow,
+	makeFileCallAudioSource,
+	makeSilenceCallAudioSource,
+	MLOW_SILENCE_PACKET,
+	openFilePacketReader,
+	packetizeOpusForMlow,
+	startCallAudioPump
+} from './Socket/calls.ts'
 export default makeWASocket

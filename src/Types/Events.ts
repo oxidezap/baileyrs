@@ -2,7 +2,7 @@ import type { CanonicalLabelSublist } from '../Bridge/types.ts'
 import type { proto } from '../WAProto/runtime.ts'
 import type { Boom } from '../Utils/boom.ts'
 import type { AuthenticationCreds, LIDMapping } from './Auth.ts'
-import type { WACallEvent } from './Call.ts'
+import type { CallMediaEvent, WACallEvent } from './Call.ts'
 import type { Chat, ChatUpdate, PresenceData } from './Chat.ts'
 import type { Contact } from './Contact.ts'
 import type {
@@ -123,6 +123,13 @@ export type BaileysEventMap = {
 
 	/** Receive an update on a call, including when the call was received, rejected, accepted */
 	call: WACallEvent[]
+	/**
+	 * Lifecycle and media diagnostics for one live encoded-audio call, as the
+	 * bridge reports them (`relay-allocated`, …, `ended`). baileyrs-only:
+	 * upstream has no call media surface, so this event and its payload keep
+	 * the bridge names rather than an upstream shape.
+	 */
+	'call.media': CallMediaEvent
 	'labels.sublist': Omit<CanonicalLabelSublist, 'type'>
 	'labels.edit': Label & { actionTimestamp?: string }
 	'labels.association': { association: LabelAssociation; type: 'add' | 'remove'; actionTimestamp?: string }

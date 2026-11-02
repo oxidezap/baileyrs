@@ -7,6 +7,9 @@ interface TransportConfig {
 	logger: ILogger
 	/** RequestInit options passed to fetch() — use `dispatcher` for proxy/TLS config */
 	options?: RequestInit
+	/** Node runtime TLS test override; ignored by host-neutral transports. */
+	dangerSkipCertChainVerify?: boolean
+	createWebSocket?: (url: string, config: TransportConfig) => Promise<WebSocket>
 	setTimeout?: (callback: () => void, ms: number) => unknown
 	clearTimeout?: (handle: unknown) => void
 }
@@ -42,16 +45,22 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 	let ws: WebSocket | undefined
 	let handle: JsTransportHandle | undefined
 	let disconnectTarget: WebSocket | undefined
+	let connectionGeneration = 0
 	const abortControllers = new WeakMap<WebSocket, AbortController>()
 
 	return {
-		connect(h: JsTransportHandle) {
+		async connect(h: JsTransportHandle) {
+			const generation = ++connectionGeneration
 			handle = h
 			const url = typeof waWebSocketUrl === 'string' ? waWebSocketUrl : waWebSocketUrl.toString()
 
 			disconnectTarget = ws
 
-			const newWs = new WebSocket(url)
+			const newWs = config.createWebSocket ? await config.createWebSocket(url, config) : new WebSocket(url)
+			if (generation !== connectionGeneration) {
+				newWs.close()
+				throw new Error('WebSocket connection superseded')
+			}
 			newWs.binaryType = 'arraybuffer'
 			ws = newWs
 
@@ -61,6 +70,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 
 			return new Promise<void>((resolve, reject) => {
 				let settled = false
+				let disconnected = false
 
 				// Reject on abort. Without this, when `disconnect()` is called
 				// between WS creation and the `open` event firing (common
@@ -75,16 +85,13 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 					}
 				})
 
-				newWs.addEventListener(
-					'open',
-					() => {
-						if (ws !== newWs) return
-						settled = true
-						handle?.onConnected()
-						resolve()
-					},
-					listenerOpts
-				)
+				const opened = () => {
+					if (ws !== newWs || settled) return
+					settled = true
+					handle?.onConnected()
+					resolve()
+				}
+				newWs.addEventListener('open', opened, listenerOpts)
 
 				newWs.addEventListener(
 					'message',
@@ -96,18 +103,16 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 					listenerOpts
 				)
 
-				newWs.addEventListener(
-					'close',
-					() => {
-						if (ws !== newWs) return
-						handle?.onDisconnected()
-						if (!settled) {
-							settled = true
-							reject(new Error('WebSocket closed before open'))
-						}
-					},
-					listenerOpts
-				)
+				const closed = () => {
+					if (ws !== newWs || disconnected) return
+					disconnected = true
+					handle?.onDisconnected()
+					if (!settled) {
+						settled = true
+						reject(new Error('WebSocket closed before open'))
+					}
+				}
+				newWs.addEventListener('close', closed, listenerOpts)
 
 				newWs.addEventListener(
 					'error',
@@ -121,6 +126,8 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 					},
 					listenerOpts
 				)
+				if (newWs.readyState === WebSocket.OPEN) opened()
+				else if (newWs.readyState === WebSocket.CLOSING || newWs.readyState === WebSocket.CLOSED) closed()
 			})
 		},
 		send(data: Uint8Array) {
@@ -138,6 +145,7 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 			}
 		},
 		async disconnect() {
+			connectionGeneration++
 			const toClose = disconnectTarget ?? ws
 			if (toClose === ws) ws = undefined
 			disconnectTarget = undefined
