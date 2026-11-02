@@ -65,7 +65,12 @@ import { makeBusinessMethods } from './business.ts'
 import { type CallOfferCache, trackIncomingCall } from './call-offers.ts'
 import { createVoipApi } from './call-sessions.ts'
 import { makeCallRelayTransport } from './call-relay.ts'
-import { makeCallAudioMethods, makeCallMediaRouter, endMediaCallIfPresent, clearIncompleteEnd } from './calls-core.ts'
+import {
+	makeCallAudioMethods,
+	makeCallMediaRouter,
+	endMediaCallIfPresent,
+	makeCallContextTracker
+} from './calls-core.ts'
 import { makeChatActionMethods } from './chat-actions.ts'
 import { makeContactMethods } from './contacts.ts'
 import { makeCommunityMethods } from './communities.ts'
@@ -536,6 +541,7 @@ const createWASocketFactoryInner = (
 	const appStatePatchMutex = makeMutex()
 	const notificationMutex = makeMutex()
 	const activeCallContexts: CallOfferCache = new Map()
+	const contextTracker = makeCallContextTracker(ctx, activeCallContexts)
 	socketEndHandlers.push(() => activeCallContexts.clear())
 	const callRelay = makeCallRelayTransport(runtime.createCallRelayProvider)
 	const callMedia = makeCallMediaRouter({
@@ -615,7 +621,10 @@ const createWASocketFactoryInner = (
 		onCallAudio: (frame: CallAudioFrame) => callMedia.routeAudioFrame(frame),
 		onCallPcm: (frame: CallPcmFrame) => callMedia.routePcmFrame(frame),
 		onCallVideo: (frame: CallVideoFrame) => callMedia.routeVideoFrame(frame),
-		onCallEvent: (event: CallMediaEvent) => callMedia.routeMediaEvent(event)
+		onCallEvent: (event: CallMediaEvent) => {
+			contextTracker.onMediaEvent(event)
+			callMedia.routeMediaEvent(event)
+		}
 	})
 
 	const init = async () => {
@@ -1051,6 +1060,11 @@ const createWASocketFactoryInner = (
 		queryUsync: async typedQuery => ctx.withClient(client => client.queryUsync(typedQuery))
 	})
 
+	const nativeCallMethods = makeCallAudioMethods(ctx, callMedia, {
+		onCallEnded: contextTracker.confirmed,
+		setRelayProvider: callRelay.setProvider
+	})
+
 	const sock = {
 		ev,
 		logger,
@@ -1228,26 +1242,26 @@ const createWASocketFactoryInner = (
 			callMedia.stopCall(callId)
 		},
 		/** Hang up a live call, or send a signaling termination for an unopened call. */
-		terminateCall: async (callId: string, callFrom: string) => {
-			try {
-				if (await endMediaCallIfPresent(ctx, callId)) {
-					activeCallContexts.delete(callId)
-					return
-				}
-				const context = activeCallContexts.get(callId)
+		terminateCall: (callId: string, callFrom: string) =>
+			contextTracker.duringEnd(callId, async () => {
 				try {
-					await ctx.withClient(client =>
-						client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
-					)
-					activeCallContexts.delete(callId)
-					clearIncompleteEnd(ctx, callId)
+					if (await endMediaCallIfPresent(ctx, callId)) {
+						contextTracker.confirmed(callId)
+						return
+					}
+					const context = activeCallContexts.get(callId)
+					try {
+						await ctx.withClient(client =>
+							client.terminateCall(callId, context?.peer ?? callFrom, context?.callCreator ?? callFrom)
+						)
+						contextTracker.confirmed(callId)
+					} finally {
+						callMedia.stopCall(callId)
+					}
 				} finally {
 					callMedia.stopCall(callId)
 				}
-			} finally {
-				callMedia.stopCall(callId)
-			}
-		},
+			}),
 		/**
 		 * Fetch the account's current reachout-timelock state from the server.
 		 *
@@ -1295,10 +1309,8 @@ const createWASocketFactoryInner = (
 		...makeBlockingMethods(ctx),
 		...makeNewsletterMethods(ctx),
 		...makeBusinessMethods(ctx),
-		...makeCallAudioMethods(ctx, callMedia, {
-			onCallEnded: callId => activeCallContexts.delete(callId),
-			setRelayProvider: callRelay.setProvider
-		}),
+		...nativeCallMethods,
+		endCall: (id: string) => contextTracker.duringEnd(id, () => nativeCallMethods.endCall(id)),
 		...makeServerQueryMethods(ctx),
 		downloadMedia: async <T extends MediaDownloadType>(
 			message: WAMessage,
@@ -1332,9 +1344,19 @@ const createWASocketFactoryInner = (
 
 	const voip = createVoipApi(sock, {
 		events: ev,
-		start: (peerOrId, incoming, video, signal) => {
+		start: async (peerOrId, incoming, video, signal) => {
 			const calls = makeCallAudioMethods(ctx, callMedia, {}, signal)
-			return incoming ? calls.acceptCallPcm(peerOrId, video) : calls.dialCallPcm(peerOrId, video)
+			if (incoming) return calls.acceptCallPcm(peerOrId, video)
+			const callCreator = await ctx.withClient(() => {
+				signal.throwIfAborted()
+				return user?.lid ?? auth.creds.me?.lid
+			})
+			if (!callCreator) throw new Error('Local LID is unavailable for outgoing call signaling')
+			const id = await calls.dialCallPcm(peerOrId, video)
+			if (!owner.isClosing() && !callMedia.isTerminalCall?.(id) && !activeCallContexts.has(id)) {
+				activeCallContexts.set(id, { peer: peerOrId, callCreator })
+			}
+			return id
 		},
 		isClosing: () => owner.isClosing(),
 		isTerminal: id => callMedia.isTerminalCall?.(id) ?? false,

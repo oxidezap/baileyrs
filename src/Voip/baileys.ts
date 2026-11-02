@@ -7,8 +7,7 @@ import { trackIncomingCall, toCallEvent, type CallOfferCache } from '../Socket/c
 import {
 	makeCallAudioMethods,
 	makeCallMediaRouter,
-	clearIncompleteEnd,
-	hasIncompleteEnd,
+	makeCallContextTracker,
 	parseCallEndResult,
 	type CallAudioContext
 } from '../Socket/calls-core.ts'
@@ -153,7 +152,6 @@ export const createBaileysVoip = async (
 		const adapter = createBaileysCallHost(socket, options)
 		const events = new EventEmitter()
 		const contexts: CallOfferCache = new Map()
-		const endingCalls = new Set<string>()
 		const endHandlers: (() => Promise<void>)[] = []
 		const activeOperations = new Set<Promise<unknown>>()
 		const queue: { node: BinaryNode; bytes: number }[] = []
@@ -206,16 +204,7 @@ export const createBaileysVoip = async (
 			},
 			onCallEvent(event: CallMediaEvent) {
 				if (!closing) {
-					if (
-						typeof event === 'object' &&
-						event !== null &&
-						event.kind === 'ended' &&
-						typeof event.callId === 'string' &&
-						event.callId.length > 0 &&
-						!endingCalls.has(event.callId) &&
-						!hasIncompleteEnd(ctx, event.callId)
-					)
-						contexts.delete(event.callId)
+					contextTracker.onMediaEvent(event)
 					media.routeMediaEvent(event)
 				}
 			}
@@ -281,21 +270,11 @@ export const createBaileysVoip = async (
 			isClosing: () => closing,
 			reportUnexpectedError: report
 		}
-		const confirmedEnd = (id: string) => {
-			contexts.delete(id)
-			clearIncompleteEnd(ctx, id)
-		}
-		const methods = makeCallAudioMethods(ctx, media, { onCallEnded: confirmedEnd })
+		const contextTracker = makeCallContextTracker(ctx, contexts)
+		const methods = makeCallAudioMethods(ctx, media, { onCallEnded: contextTracker.confirmed })
 		const operations: CallSessionOperations = {
 			...methods,
-			async endCall(id) {
-				endingCalls.add(id)
-				try {
-					return await methods.endCall(id)
-				} finally {
-					endingCalls.delete(id)
-				}
-			},
+			endCall: id => contextTracker.duringEnd(id, () => methods.endCall(id)),
 			async terminateCall(id, peer) {
 				const remembered = contexts.get(id)
 				const creator = remembered?.callCreator ?? adapter.host.ownLid()
@@ -308,7 +287,7 @@ export const createBaileysVoip = async (
 					)
 					if (!result || (result.outcome !== 'peer-notified' && result.outcome !== 'already-ended'))
 						throw new Error('Call termination was not confirmed')
-					confirmedEnd(id)
+					contextTracker.confirmed(id)
 				} finally {
 					media.stopCall(id)
 				}

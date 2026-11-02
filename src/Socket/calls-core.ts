@@ -1226,6 +1226,39 @@ export const clearIncompleteEnd = (ctx: CallAudioContext, callId: string): void 
 	incompleteResultsFor(ctx).delete(callId)
 }
 
+/** Retain signaling authority until a local hangup's peer notification is known. */
+export const makeCallContextTracker = (ctx: CallAudioContext, cache: Pick<Map<string, unknown>, 'delete'>) => {
+	const ending = new Map<string, number>()
+	return {
+		async duringEnd<T>(id: string, operation: () => Promise<T>): Promise<T> {
+			ending.set(id, (ending.get(id) ?? 0) + 1)
+			try {
+				return await operation()
+			} finally {
+				const remaining = ending.get(id)! - 1
+				if (remaining) ending.set(id, remaining)
+				else ending.delete(id)
+			}
+		},
+		onMediaEvent(event: CallMediaEvent) {
+			if (
+				typeof event === 'object' &&
+				event !== null &&
+				event.kind === 'ended' &&
+				typeof event.callId === 'string' &&
+				event.callId.length > 0 &&
+				!ending.has(event.callId) &&
+				!hasIncompleteEnd(ctx, event.callId)
+			)
+				cache.delete(event.callId)
+		},
+		confirmed(id: string) {
+			cache.delete(id)
+			clearIncompleteEnd(ctx, id)
+		}
+	}
+}
+
 export const endMediaCallIfPresent = async (ctx: CallAudioContext, callId: string): Promise<boolean> =>
 	ctx.withClient(async client => {
 		// A previous hangup already ended the local handle without telling
