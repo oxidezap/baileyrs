@@ -48,6 +48,16 @@ describe('managed call socket admission', () => {
 		await second
 		tracker.onMediaEvent({ kind: 'ended', callId: 'ENDING' })
 		assert.equal(contexts.size, 0)
+		contexts.set('FAILED', {})
+		await assert.rejects(
+			tracker.duringEnd('FAILED', async () => {
+				throw new Error('native hangup failed')
+			})
+		)
+		tracker.onMediaEvent({ kind: 'ended', callId: 'FAILED' })
+		assert.ok(contexts.has('FAILED'), 'late local termination does not confirm a failed peer notification')
+		tracker.confirmed('FAILED')
+		assert.equal(contexts.size, 0)
 	})
 	it('does not dial after cancellation while socket initialization is pending', async () => {
 		let initialized!: () => void, unblock!: () => void

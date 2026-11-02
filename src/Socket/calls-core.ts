@@ -1195,18 +1195,20 @@ export interface CallAudioMethodHooks {
 // top, since IDs are unique per call.
 const INCOMPLETE_END_CALLS = 256
 type IncompleteCallEndResult = Extract<CallEndResult, { outcome: 'local-only' } | { outcome: 'partly-notified' }>
-const incompleteEndCalls = new WeakMap<object, Map<string, IncompleteCallEndResult>>()
-const incompleteResultsFor = (ctx: CallAudioContext): Map<string, IncompleteCallEndResult> => {
+// An undefined entry retains routing after an unconfirmed failure, while still
+// allowing native retry. Only a known incomplete result skips native re-ending.
+const incompleteEndCalls = new WeakMap<object, Map<string, IncompleteCallEndResult | undefined>>()
+const incompleteResultsFor = (ctx: CallAudioContext): Map<string, IncompleteCallEndResult | undefined> => {
 	let set = incompleteEndCalls.get(ctx)
 	if (!set) {
-		set = new Map<string, IncompleteCallEndResult>()
+		set = new Map<string, IncompleteCallEndResult | undefined>()
 		incompleteEndCalls.set(ctx, set)
 	}
 	return set
 }
-const markEndIncomplete = (ctx: CallAudioContext, callId: string, result: IncompleteCallEndResult): void => {
+const markEndIncomplete = (ctx: CallAudioContext, callId: string, result?: IncompleteCallEndResult): void => {
 	const set = incompleteResultsFor(ctx)
-	set.set(callId, { ...result })
+	set.set(callId, result ? { ...result } : undefined)
 	if (set.size > INCOMPLETE_END_CALLS) {
 		const oldest = set.keys().next()
 		if (!oldest.done) set.delete(oldest.value)
@@ -1214,7 +1216,7 @@ const markEndIncomplete = (ctx: CallAudioContext, callId: string, result: Incomp
 }
 
 export const hasIncompleteEnd = (ctx: CallAudioContext, callId: string): boolean =>
-	incompleteResultsFor(ctx).has(callId)
+	incompleteResultsFor(ctx).get(callId) !== undefined
 
 /**
  * Drop the incomplete mark once the signaling fallback it exists for has
@@ -1227,13 +1229,16 @@ export const clearIncompleteEnd = (ctx: CallAudioContext, callId: string): void 
 }
 
 /** Retain signaling authority until a local hangup's peer notification is known. */
-export const makeCallContextTracker = (ctx: CallAudioContext, cache: Pick<Map<string, unknown>, 'delete'>) => {
+export const makeCallContextTracker = (ctx: CallAudioContext, cache: Pick<Map<string, unknown>, 'delete' | 'has'>) => {
 	const ending = new Map<string, number>()
 	return {
 		async duringEnd<T>(id: string, operation: () => Promise<T>): Promise<T> {
 			ending.set(id, (ending.get(id) ?? 0) + 1)
 			try {
 				return await operation()
+			} catch (error) {
+				if (cache.has(id) && !hasIncompleteEnd(ctx, id)) markEndIncomplete(ctx, id)
+				throw error
 			} finally {
 				const remaining = ending.get(id)! - 1
 				if (remaining) ending.set(id, remaining)
@@ -1248,7 +1253,7 @@ export const makeCallContextTracker = (ctx: CallAudioContext, cache: Pick<Map<st
 				typeof event.callId === 'string' &&
 				event.callId.length > 0 &&
 				!ending.has(event.callId) &&
-				!hasIncompleteEnd(ctx, event.callId)
+				!incompleteResultsFor(ctx).has(event.callId)
 			)
 				cache.delete(event.callId)
 		},
