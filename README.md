@@ -271,8 +271,13 @@ Hosts that load their own WASM supply `runtime` and `createRelayProvider` throug
 the same initializer. Device capture, playback and resampling remain application
 code, using the same Web Streams and lifecycle rules described above.
 
-This branch pins bridge #160 preview `9ce048d`, which pins integrated core #1830 at `3357b5f3` and includes the #115 calling
-baseline and shared control from core #1830 (`ffa2d112`). Registry `0.26.4` does
+The bridge currently reports peer video rejection (`WasmCallHandle.rejectVideo`)
+as unsupported until the core exposes a token-safe operation; it does not stop
+local video as a substitute. This does not expand the upstream adapter beyond
+its documented 1:1 PCM scope.
+
+This branch pins consolidated bridge #115 preview `c55a546`, built from integrated
+core #1830 at `3357b5f3` with native media and shared host control. Registry `0.26.4` does
 not contain these VoIP capabilities. Replace the preview with a verified registry
 release containing them before releasing this package.
 The pinned backend supports PCM and encoded audio plus H.264 video. Integration

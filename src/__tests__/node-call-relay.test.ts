@@ -40,7 +40,7 @@ describe('default Node call transport', () => {
 		assert.equal(closes, 1)
 	})
 
-	it('loads the socket default only on media connect, once across reconnects', async () => {
+	it('loads the socket default only on media connect, once across factory-created migrations', async () => {
 		let loads = 0
 		const provider: CallRelayTransportProvider = {
 			async createRelayConnection() {
@@ -53,8 +53,9 @@ describe('default Node call transport', () => {
 		})
 		assert.equal(loads, 0)
 		const connection = await relay.transport.connect(endpoint, events)
-		await connection.reconnect(endpoint)
+		const replacement = await relay.transport.connect(endpoint, events)
 		await connection.close()
+		await replacement.close()
 		assert.equal(loads, 1)
 	})
 
