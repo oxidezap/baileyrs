@@ -130,7 +130,7 @@ runtime and shared WASM overhead; it is not a per-session byte count.
 those metrics with process-wide RSS, heap, external and ArrayBuffer snapshots
 after explicit GC, before and after idle. The files describe two sessions after activity and one quiet session, respectively,
 and include the shared WASM instance. They are diagnostic retention observations, not a leak
-assertion or subtraction of a reliable per-session cost. The two matrix jobs upload separate artifacts, each recording its own final measured window.
+assertion or subtraction of a reliable per-session cost. Each file/instrument job uploads its own artifact for the last measured window.
 
 References: [Vitest integration](https://codspeed.io/docs/benchmarks/nodejs/vitest),
 [memory instrument](https://codspeed.io/docs/instruments/memory), and
