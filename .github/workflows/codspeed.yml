@@ -32,6 +32,8 @@ jobs:
         mode: [simulation, memory]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -41,7 +43,6 @@ jobs:
       # Skip prepare; the benchmarks import the TypeScript sources directly.
       - run: npm ci --ignore-scripts
       - run: npm run typecheck:bench
-
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
@@ -80,13 +81,12 @@ jobs:
     env:
       SOCKET_URL: wss://127.0.0.1:8080/ws/chat
       ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      # Only this isolated mock job accepts Bartender's self-signed HTTPS cert.
-      NODE_TLS_REJECT_UNAUTHORIZED: '0'
       LOG_LEVEL: silent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
@@ -104,7 +104,8 @@ jobs:
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: ${{ matrix.mode }}
-          run: npm run bench:e2e -- benchmarks/e2e/${{ matrix.suite }}.bench.ts
+          # Keep the test-only TLS bypass in the benchmark process tree.
+          run: env NODE_TLS_REJECT_UNAUTHORIZED=0 npm run bench:e2e -- benchmarks/e2e/${{ matrix.suite }}.bench.ts
           disable-memory-capture-stack: 'false'
           disable-memory-track-physical: 'false'
       - name: Preserve idle snapshots

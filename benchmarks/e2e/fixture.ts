@@ -11,6 +11,7 @@ import {
 } from '../../src/__tests__/e2e/test-client.ts'
 import type { WAMessage } from '../../src/index.ts'
 
+/** Create a loopback mock client, removing its auth directory if setup fails. */
 export async function createTestClient(options: CreateTestClientOptions): Promise<TestClient> {
 	requireMock()
 	const authFolder = options.authFolder ?? (await mkdtemp(join(tmpdir(), 'baileyrs-bench-')))
@@ -22,8 +23,10 @@ export async function createTestClient(options: CreateTestClientOptions): Promis
 	}
 }
 
-// Benchmarks must fail on shutdown/durability errors instead of silently
-// accepting a leaked client or an auth store that did not flush.
+/**
+ * Disable reconnect, await socket shutdown, then remove the auth directory.
+ * Propagate shutdown or persistence failures so a broken teardown fails the benchmark.
+ */
 export async function destroyTestClient(client: TestClient): Promise<void> {
 	client.sock.setAutoReconnect(false)
 	try {
@@ -36,6 +39,7 @@ export type { TestClient }
 let sequence = 0
 export const idleMs = 1000
 
+/** Reject non-loopback endpoints and configurations without the synthetic mock secret. */
 export function requireMock(): void {
 	const url = new URL(process.env.SOCKET_URL ?? '')
 	if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
@@ -46,6 +50,11 @@ export function requireMock(): void {
 	}
 }
 
+/**
+ * Send a unique fixed-width text and return its matching receiver event.
+ * The deadline covers send and delivery; expiry closes both clients, and every
+ * exit removes the receiver listener. An optional destination selects a group.
+ */
 export async function roundtrip(
 	sender: TestClient,
 	receiver: TestClient,
@@ -81,12 +90,17 @@ export async function roundtrip(
 	}
 }
 
+/** Attempt every client teardown and aggregate failures after all attempts settle. */
 export async function destroyClients(clients: TestClient[]): Promise<void> {
 	const results = await Promise.allSettled(clients.map(client => destroyTestClient(client)))
 	const errors = results.filter(result => result.status === 'rejected').map(result => result.reason)
 	if (errors.length) throw new AggregateError(errors, 'Benchmark teardown failed')
 }
 
+/**
+ * Pair two fresh clients and deliver eight DMs in each direction before measurement.
+ * If setup fails, tear down both clients before propagating the failure.
+ */
 export async function warmedPair(): Promise<[TestClient, TestClient]> {
 	const a = await createTestClient({ label: 'bench-a' })
 	try {
@@ -107,6 +121,7 @@ export async function warmedPair(): Promise<[TestClient, TestClient]> {
 	}
 }
 
+/** Observe one fixed idle window, rejecting a close and always removing its listener. */
 export async function idle(client: TestClient): Promise<void> {
 	assert.ok(client.sock.user?.id)
 	let closed = false
