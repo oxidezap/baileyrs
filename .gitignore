@@ -20,3 +20,5 @@ wa-logs*
 coverage
 .claude/
 auth
+# Local scriptc experiment outputs
+.scriptc

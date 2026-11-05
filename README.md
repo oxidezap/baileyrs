@@ -198,6 +198,10 @@ See [AGENTS.md](AGENTS.md) for build, test, E2E and contribution instructions, a
 the [fuzzing guide](src/__fuzz__/README.md) for differential testing. The strict
 declaration audit has known gaps and is not currently a green gate.
 
+## Experimental native compilation
+
+The [scriptc 0.4.0 proof of concept](experiments/scriptc/README.md) records native build and initialization blockers and provides reproducible CI probes. It is not a supported runtime target. To exercise the real example offline after `npm run build`, run `node Example/example.ts --offline-smoke`. This checks bridge crypto, protobuf and temporary file persistence without creating a socket.
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or in any way officially connected to

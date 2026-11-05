@@ -86,6 +86,7 @@
     "fuzz:deep": "FUZZ_MODE=deep node --expose-gc --test --test-timeout=1800000 ./src/__fuzz__/**/*.test.ts",
     "fuzz:record": "FUZZ_RECORD=1 node --test --test-timeout=600000 ./src/__fuzz__/**/*.test.ts",
     "fuzz:report": "node scripts/fuzz/report.ts",
+    "test:scriptc": "node experiments/scriptc/run.mjs",
     "test:compat-auditor": "node --test scripts/compatibility/__tests__/audit.test.ts",
     "test:packaged": "node scripts/packaged-upstream-alias.mjs",
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && npm run typecheck:compat-declarations --silent",

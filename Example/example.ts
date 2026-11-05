@@ -1,4 +1,4 @@
-import readline from 'node:readline'
+import { createInterface } from 'node:readline'
 import {
 	type Boom,
 	DEFAULT_CONNECTION_CONFIG,
@@ -10,27 +10,39 @@ import {
 	useMultiFileAuthState
 } from '../lib/index.js'
 import { getWasmMemoryBytes } from '@oxidezap/whatsapp-rust-bridge'
-import P from 'pino'
-import process from 'node:process'
+import P, { type Logger } from 'pino'
+import * as process from 'node:process'
+import { runOfflineSmoke } from './offline-smoke.ts'
+import { optionalV8MemoryLines } from './memory-v8.ts'
+
+const offlineSmoke = process.argv.includes('--offline-smoke')
+if (
+	offlineSmoke &&
+	process.argv.some(arg => ['--use-pairing-code', '--use-legacy-store', '--offline-migrate-auth'].includes(arg))
+) {
+	throw new Error('--offline-smoke cannot be combined with account or migration options')
+}
 
 const logLevel = process.env.LOG_LEVEL ?? 'trace'
-const logger = P({
-	level: logLevel,
-	transport: {
-		targets: [
-			{
-				target: 'pino-pretty', // pretty-print for console
-				options: { colorize: true },
-				level: 'trace'
-			},
-			{
-				target: 'pino/file', // raw file output
-				options: { destination: './wa-logs.txt' },
-				level: 'trace'
+const logger: Logger = offlineSmoke
+	? P({ level: 'silent' })
+	: P({
+			level: logLevel,
+			transport: {
+				targets: [
+					{
+						target: 'pino-pretty', // pretty-print for console
+						options: { colorize: true },
+						level: 'trace'
+					},
+					{
+						target: 'pino/file', // raw file output
+						options: { destination: './wa-logs.txt' },
+						level: 'trace'
+					}
+				]
 			}
-		]
-	}
-})
+		})
 
 const usePairingCode = process.argv.includes('--use-pairing-code')
 const useLegacyStore = process.argv.includes('--use-legacy-store')
@@ -38,11 +50,11 @@ const useLegacyStore = process.argv.includes('--use-legacy-store')
 const offlineMigrateAuth = process.argv.includes('--offline-migrate-auth')
 
 // Read line interface
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-const question = (text: string) => new Promise<string>(resolve => rl.question(text, resolve))
+const rl = offlineSmoke ? undefined : createInterface({ input: process.stdin, output: process.stdout })
+const question = (text: string) => new Promise<string>(resolve => rl!.question(text, resolve))
 
 const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(1) + ' MiB'
-const numFmt = (v: number) => new Intl.NumberFormat('en').format(v)
+const numFmt = (v: number) => new Intl.NumberFormat('en-US').format(v)
 const byteFmt = (bytes: number) => {
 	const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 	let value = bytes
@@ -146,7 +158,7 @@ const startSock = async () => {
 
 	// fetch latest version of WA Web
 	const latest = await fetchLatestWaWebVersion()
-	const { version } = latest
+	const version = latest.version
 	logger.debug({ version: version.join('.'), isLatest: latest.isLatest }, `using latest WA version`)
 
 	const sock = makeWASocket({
@@ -333,14 +345,8 @@ const startSock = async () => {
 							}
 
 							if (text === 'memory') {
-								const v8 = await import('v8')
-
 								const mem = process.memoryUsage()
-								const heap = v8.getHeapStatistics()
-								const spaces = v8
-									.getHeapSpaceStatistics()
-									.filter(s => s.space_used_size > 0)
-									.toSorted((a, b) => b.space_used_size - a.space_used_size)
+								const v8Lines = optionalV8MemoryLines(process.versions.v8, process.getBuiltinModule)
 								const wasm = getWasmMemoryBytes()
 								const diag = await sock.waClient!.getMemoryDiagnostics()
 								const diagnosticEntries = Object.entries(diag)
@@ -358,16 +364,7 @@ const startSock = async () => {
 									`  External:      ${mib(mem.external)}`,
 									`  Array Buffers: ${mib(mem.arrayBuffers)} (included in External)`,
 									'',
-									`── V8 Heap Spaces ──`,
-									...spaces.map(
-										s => `  ${s.space_name.replace('_space', '').padEnd(20)} ${mib(s.space_used_size).padStart(10)}`
-									),
-									'',
-									`── V8 Stats ──`,
-									`  Native contexts:   ${heap.number_of_native_contexts}`,
-									`  Global handles:    ${numFmt(heap.used_global_handles_size)} / ${numFmt(heap.total_global_handles_size)}`,
-									`  Malloced:          ${mib(heap.malloced_memory)}`,
-									`  Peak malloced:     ${mib(heap.peak_malloced_memory)}`,
+									...v8Lines,
 									'',
 									`── WASM Linear Capacity: ${mib(wasm)} ──`,
 									'  Included in RSS when resident; not additive.',
@@ -445,4 +442,8 @@ const startSock = async () => {
 	return sock
 }
 
-startSock()
+if (offlineSmoke) {
+	await runOfflineSmoke()
+} else {
+	void startSock()
+}
