@@ -1,0 +1,50 @@
+name: CodSpeed
+
+# Continuous performance tracking of the vitest benchmarks in bench/.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # Lets CodSpeed trigger backtest runs to build initial history.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OpenID Connect authentication with CodSpeed
+
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  benchmarks:
+    name: Run benchmarks (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [simulation, memory]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # Skip prepare; the benchmarks import the TypeScript sources directly.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run typecheck:bench
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
+        with:
+          mode: ${{ matrix.mode }}
+          run: npm run bench

@@ -61,6 +61,7 @@
   ],
   "scripts": {
     "build": "node scripts/compatibility/waproto-facade.ts --check && node scripts/clean-build.ts && tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js && node scripts/compatibility/waproto-facade.ts --copy-build",
+    "bench": "vitest bench --run",
     "benchmark": "node ./Example/benchmark.ts",
     "compat:audit": "npm run build --silent && node scripts/compatibility/audit.ts --details",
     "compat:audit:json": "npm run build --silent && node scripts/compatibility/audit.ts --format=json",
@@ -90,7 +91,8 @@
     "test:packaged": "node scripts/packaged-upstream-alias.mjs",
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && npm run typecheck:compat-declarations --silent",
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts",
-    "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json"
+    "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json",
+    "typecheck:bench": "tsc -p bench/tsconfig.json"
   },
   "dependencies": {
     "@oxidezap/whatsapp-rust-bridge": "0.26.4",
@@ -100,6 +102,7 @@
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
+    "@codspeed/vitest-plugin": "^6.1.0",
     "@hapi/boom": "^10.0.1",
     "@types/node": "^26.1.1",
     "baileys": "7.0.0-rc14",
@@ -115,6 +118,7 @@
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
     "typescript-compat-auditor": "npm:typescript@6.0.3",
+    "vitest": "^4.1.12",
     "wrangler": "4.156.0"
   },
   "peerDependencies": {

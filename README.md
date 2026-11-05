@@ -4,6 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@oxidezap/baileyrs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@oxidezap/baileyrs)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/oxidezap/baileyrs)
 [![pkg.pr.new](https://pkg.pr.new/badge/oxidezap/baileyrs)](https://pkg.pr.new/~/oxidezap/baileyrs)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/oxidezap/baileyrs?utm_source=badge)
 
 A WhatsApp Web library for JavaScript with a Baileys-compatible API, backed by
 [whatsapp-rust](https://github.com/oxidezap/whatsapp-rust) through the
@@ -197,6 +198,10 @@ is already a projection over native storage.
 See [AGENTS.md](AGENTS.md) for build, test, E2E and contribution instructions, and
 the [fuzzing guide](src/__fuzz__/README.md) for differential testing. The strict
 declaration audit has known gaps and is not currently a green gate.
+
+Micro-benchmarks for hot paths (JID helpers, proto codec, message content helpers,
+bridge event adaptation, BufferJSON) live in [bench](bench) and run with
+`npm run bench`. CI tracks them with [CodSpeed](https://app.codspeed.io/oxidezap/baileyrs).
 
 ## Disclaimer
 
