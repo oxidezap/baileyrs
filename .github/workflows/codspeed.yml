@@ -94,8 +94,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Wait for Bartender
         run: |
+          # Bartender returns 404 at /; probe HTTPS reachability as in ci.yml.
           for i in $(seq 1 30); do
-            if curl -fsk https://127.0.0.1:8080/ >/dev/null; then exit 0; fi
+            if curl -skS --connect-timeout 1 --max-time 2 --output /dev/null https://127.0.0.1:8080/; then
+              echo 'Bartender HTTPS listener is ready'
+              exit 0
+            fi
             sleep 1
           done
           echo 'Bartender failed to become ready' >&2
