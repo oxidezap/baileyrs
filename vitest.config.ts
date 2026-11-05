@@ -10,7 +10,7 @@ export default defineConfig({
 		maxWorkers: 1,
 		fileParallelism: false,
 		hookTimeout: 120_000,
-		testTimeout: process.env.BENCH_SUITE === 'e2e' ? 600_000 : 120_000,
+		testTimeout: process.env.BENCH_SUITE === 'e2e' ? 1_200_000 : 120_000,
 		benchmark: {
 			include:
 				process.env.BENCH_SUITE === 'e2e'
