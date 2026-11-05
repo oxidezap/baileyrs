@@ -42,7 +42,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run typecheck:bench
 
-      - run: npm run typecheck:bench
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
