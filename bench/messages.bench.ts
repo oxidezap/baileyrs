@@ -1,5 +1,6 @@
+import { options as benchmarkOptions } from '../benchmarks/options.ts'
 import { createHash } from 'node:crypto'
-import { bench, describe } from 'vitest'
+import { test, describe } from 'vitest'
 import type { WAMessage, WAMessageContent } from '../src/Types/index.ts'
 import {
 	extractMessageContent,
@@ -33,29 +34,39 @@ const pollMessage: Pick<WAMessage, 'pollUpdates' | 'message'> = {
 }
 
 describe('message content helpers (1000 messages)', () => {
-	bench('getContentType', () => {
-		for (const content of batch) getContentType(content)
+	test('getContentType', async ({ bench }) => {
+		await bench('getContentType', () => {
+			for (const content of batch) getContentType(content)
+		}).run(benchmarkOptions)
 	})
 
-	bench('normalizeMessageContent', () => {
-		for (const content of batch) normalizeMessageContent(content)
+	test('normalizeMessageContent', async ({ bench }) => {
+		await bench('normalizeMessageContent', () => {
+			for (const content of batch) normalizeMessageContent(content)
+		}).run(benchmarkOptions)
 	})
 
-	bench('extractMessageContent', () => {
-		for (const content of batch) extractMessageContent(content)
+	test('extractMessageContent', async ({ bench }) => {
+		await bench('extractMessageContent', () => {
+			for (const content of batch) extractMessageContent(content)
+		}).run(benchmarkOptions)
 	})
 })
 
 describe('message generation', () => {
-	bench('generateWAMessageFromContent', () => {
-		generateWAMessageFromContent(
-			'5511999990000@s.whatsapp.net',
-			{ extendedTextMessage: { text: 'hello world', contextInfo: { stanzaId: 'ABC' } } },
-			{ userJid: '5511888880000@s.whatsapp.net', timestamp: new Date(1_734_000_000_000) }
-		)
+	test('generateWAMessageFromContent', async ({ bench }) => {
+		await bench('generateWAMessageFromContent', () => {
+			generateWAMessageFromContent(
+				'5511999990000@s.whatsapp.net',
+				{ extendedTextMessage: { text: 'hello world', contextInfo: { stanzaId: 'ABC' } } },
+				{ userJid: '5511888880000@s.whatsapp.net', timestamp: new Date(1_734_000_000_000) }
+			)
+		}).run(benchmarkOptions)
 	})
 
-	bench('getAggregateVotesInPollMessage (12 options, 200 votes)', () => {
-		getAggregateVotesInPollMessage(pollMessage, '5511888880000@s.whatsapp.net')
+	test('getAggregateVotesInPollMessage (12 options, 200 votes)', async ({ bench }) => {
+		await bench('getAggregateVotesInPollMessage (12 options, 200 votes)', () => {
+			getAggregateVotesInPollMessage(pollMessage, '5511888880000@s.whatsapp.net')
+		}).run(benchmarkOptions)
 	})
 })
