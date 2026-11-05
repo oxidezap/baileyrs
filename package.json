@@ -61,6 +61,7 @@
   ],
   "scripts": {
     "build": "node scripts/compatibility/waproto-facade.ts --check && node scripts/clean-build.ts && tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js && node scripts/compatibility/waproto-facade.ts --copy-build",
+    "bench": "vitest bench --run",
     "benchmark": "node ./Example/benchmark.ts",
     "compat:audit": "npm run build --silent && node scripts/compatibility/audit.ts --details",
     "compat:audit:json": "npm run build --silent && node scripts/compatibility/audit.ts --format=json",
@@ -100,6 +101,7 @@
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
+    "@codspeed/vitest-plugin": "^6.1.0",
     "@hapi/boom": "^10.0.1",
     "@types/node": "^26.1.1",
     "baileys": "7.0.0-rc14",
@@ -115,6 +117,7 @@
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
     "typescript-compat-auditor": "npm:typescript@6.0.3",
+    "vitest": "^4.1.12",
     "wrangler": "4.156.0"
   },
   "peerDependencies": {
