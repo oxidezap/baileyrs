@@ -3,6 +3,12 @@
 The suite uses Vitest 5 and `@codspeed/vitest-plugin` 6.1.0. The `test`/`bench` fixture API is supported by this pair. These development dependencies do not
 change the published API or runtime dependencies.
 
+Benchmark development requires Node.js `^22.12.0 || ^24.0.0 || >=26.0.0`, the
+range supported by the pinned Vitest version and compatible with Vite. Use Node 24
+to match CI. This applies to `npm ci --ignore-scripts`, `npm run bench` and
+`npm run bench:e2e`; Node 23 and 25 are unsupported by this toolchain. The
+published library's runtime requirement remains Node.js >=22.3.0.
+
 Run through the [CodSpeed CLI](https://codspeed.io/docs/cli) after authentication:
 
 ```sh

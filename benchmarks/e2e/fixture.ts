@@ -13,10 +13,11 @@ import type { WAMessage } from '../../src/index.ts'
 
 /** Create a loopback mock client, removing its auth directory if setup fails. */
 export async function createTestClient(options: CreateTestClientOptions): Promise<TestClient> {
-	requireMock()
+	const socketUrl = options.socketUrl ?? process.env.SOCKET_URL ?? ''
+	requireMock(socketUrl)
 	const authFolder = options.authFolder ?? (await mkdtemp(join(tmpdir(), 'baileyrs-bench-')))
 	try {
-		return await createSharedClient({ ...options, authFolder, connectTimeoutMs: 120_000 })
+		return await createSharedClient({ ...options, socketUrl, authFolder, connectTimeoutMs: 120_000 })
 	} catch (error) {
 		await rm(authFolder, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 		throw error
@@ -40,8 +41,8 @@ let sequence = 0
 export const idleMs = 1000
 
 /** Reject non-loopback endpoints and configurations without the synthetic mock secret. */
-export function requireMock(): void {
-	const url = new URL(process.env.SOCKET_URL ?? '')
+export function requireMock(socketUrl = process.env.SOCKET_URL ?? ''): void {
+	const url = new URL(socketUrl)
 	if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) {
 		throw new Error('Benchmarks require a local Bartender, never a live WhatsApp endpoint')
 	}
@@ -121,17 +122,31 @@ export async function warmedPair(): Promise<[TestClient, TestClient]> {
 	}
 }
 
-/** Observe one fixed idle window, rejecting a close and always removing its listener. */
-export async function idle(client: TestClient): Promise<void> {
-	assert.ok(client.sock.user?.id)
-	let closed = false
+/** Minimal transport and event surface observed by the idle assertion. */
+interface IdleClient {
+	sock: {
+		user?: { id: string }
+		ws: { readonly isOpen: boolean }
+		ev: {
+			on(event: 'connection.update', listener: (update: { connection?: string }) => void): unknown
+			off(event: 'connection.update', listener: (update: { connection?: string }) => void): unknown
+		}
+	}
+}
+
+/** Observe a continuously open idle window, rejecting closes and reconnects. */
+export async function idle(client: IdleClient): Promise<void> {
+	let interrupted = false
 	const listener = (update: { connection?: string }) => {
-		if (update.connection === 'close') closed = true
+		if (update.connection === 'close' || update.connection === 'connecting') interrupted = true
 	}
 	client.sock.ev.on('connection.update', listener)
 	try {
+		assert.ok(client.sock.user?.id)
+		assert.equal(client.sock.ws.isOpen, true, 'session is not open at start of idle')
 		await delay(idleMs)
-		assert.equal(closed, false, 'session closed during idle')
+		assert.equal(interrupted, false, 'session closed or reconnected during idle')
+		assert.equal(client.sock.ws.isOpen, true, 'session is not open at end of idle')
 	} finally {
 		client.sock.ev.off('connection.update', listener)
 	}
