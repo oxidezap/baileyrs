@@ -91,7 +91,8 @@
     "test:packaged": "node scripts/packaged-upstream-alias.mjs",
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && npm run typecheck:compat-declarations --silent",
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts",
-    "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json"
+    "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json",
+    "typecheck:bench": "tsc -p bench/tsconfig.json"
   },
   "dependencies": {
     "@oxidezap/whatsapp-rust-bridge": "0.26.4",
