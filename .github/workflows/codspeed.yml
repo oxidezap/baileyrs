@@ -50,7 +50,7 @@ jobs:
           run: npm run bench
 
   e2e:
-    name: Bartender (${{ matrix.mode }})
+    name: Bartender (${{ matrix.suite }}, ${{ matrix.mode }})
     # Untrusted fork code never receives the private image credential.
     if: >-
       github.event_name != 'pull_request' ||
@@ -61,6 +61,7 @@ jobs:
       fail-fast: false
       matrix:
         mode: [simulation, memory]
+        suite: [lifecycle, messaging, group, idle, single-idle]
     permissions:
       contents: read
       id-token: write
@@ -103,13 +104,13 @@ jobs:
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: ${{ matrix.mode }}
-          run: npm run bench:e2e
+          run: npm run bench:e2e -- benchmarks/e2e/${{ matrix.suite }}.bench.ts
           disable-memory-capture-stack: 'false'
           disable-memory-track-physical: 'false'
       - name: Preserve idle snapshots
-        if: always()
+        if: always() && (matrix.suite == 'idle' || matrix.suite == 'single-idle')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: benchmark-idle-${{ matrix.mode }}
+          name: benchmark-${{ matrix.suite }}-${{ matrix.mode }}
           path: benchmark-results/
           if-no-files-found: warn

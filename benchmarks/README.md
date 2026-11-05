@@ -67,6 +67,10 @@ A roundtrip includes sender and receiver work in the same Node process, along
 with ACK/receipt background work. It does not isolate receive-only CPU. The mock
 server is a separate process and is outside client instrumentation.
 
+Each E2E file runs in its own CI job with a fresh Bartender instance. Server-side
+accounts, devices and Signal state cannot carry over from another file or worker.
+For local E2E validation, select one file and start a fresh mock before the next file.
+
 ## Warmup and isolation
 
 Local walltime rows request 32 warmup iterations and at least 100 ms. Bartender
@@ -100,7 +104,7 @@ Fork PRs run the local suite but skip the private mock job. Never use
 SOCKET_URL=wss://127.0.0.1:8080/ws/chat \
 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
 NODE_TLS_REJECT_UNAUTHORIZED=0 LOG_LEVEL=silent \
-codspeed run -m simulation -- npm run bench:e2e
+codspeed run -m simulation -- npm run bench:e2e -- benchmarks/e2e/messaging.bench.ts
 ```
 
 Repeat with `-m memory` for memory profiling. `SOCKET_URL` must point at a loopback
@@ -122,7 +126,7 @@ object counts or Rust allocations within WASM linear memory. Pre-existing sessio
 memory lies outside the operation's allocation window. Peak process memory includes
 runtime and shared WASM overhead; it is not a per-session byte count.
 
-`benchmark-results/idle.json` and `single-idle.json`, uploaded as `benchmark-idle-simulation` and `benchmark-idle-memory`, supplement
+`benchmark-results/idle.json` and `single-idle.json`, uploaded as `benchmark-idle-{simulation,memory}` and `benchmark-single-idle-{simulation,memory}`, supplement
 those metrics with process-wide RSS, heap, external and ArrayBuffer snapshots
 after explicit GC, before and after idle. The files describe two sessions after activity and one quiet session, respectively,
 and include the shared WASM instance. They are diagnostic retention observations, not a leak
