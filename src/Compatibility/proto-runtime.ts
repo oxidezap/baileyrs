@@ -74,7 +74,7 @@ const EMPTY_OBJECT = Object.freeze({}) as Readonly<Record<string, never>>
 const JSON_OPTIONS = Object.freeze({ longs: String, enums: String, bytes: String, json: true })
 const WORD_BASE = 1n << 32n
 
-const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key)
+const hasOwn: (value: object, key: PropertyKey) => boolean = Object.hasOwn
 
 const isObject = (value: unknown): value is DynamicObject => typeof value === 'object' && value !== null
 
@@ -615,6 +615,50 @@ const fieldValue = (
 		? data[alias[1]]
 		: data[field[0]]
 
+/**
+ * Schema positions of the fields `value` holds as own properties, ascending.
+ *
+ * `toObject` and `projectForEncode` only act on own fields (prototype defaults
+ * are empty collections or are excluded by `hasOwn`), so visiting these
+ * positions instead of every field in the schema gives the same result in the
+ * same order. `Message` has 95 fields and a typical one sets one or two, so the
+ * walk follows the message rather than its schema. Returns `undefined` when the
+ * object's own keys are not fewer than the candidate fields, or its prototype
+ * could carry a field value, so the caller keeps the full walk. Instances of
+ * this runtime's constructors qualify only when `allowInstances` is set: their
+ * prototype defaults are skipped by `toObject` and `projectForEncode`, but
+ * `fromObject` would convert them.
+ */
+const ownFieldPositions = (
+	value: DynamicObject,
+	positions: ReadonlyMap<string, number>,
+	candidates: number,
+	allowInstances = true
+): number[] | undefined => {
+	const prototype: unknown = Object.getPrototypeOf(value)
+	if (
+		prototype !== null &&
+		prototype !== Object.prototype &&
+		!(allowInstances && hasOwn(prototype as object, INSTANCE_SCHEMA))
+	) {
+		return undefined
+	}
+	const keys = Object.getOwnPropertyNames(value)
+	if (keys.length >= candidates) return undefined
+	const found: number[] = []
+	for (let k = 0; k < keys.length; k++) {
+		const position = positions.get(keys[k]!)
+		if (position === undefined) continue
+		// Insertion sort: own keys are few and usually already in schema order.
+		let at = found.length
+		while (at > 0 && found[at - 1]! > position) at--
+		// Both spellings of an aliased field map to one position.
+		if (at > 0 && found[at - 1] === position) continue
+		found.splice(at, 0, position)
+	}
+	return found
+}
+
 /** True when either spelling is an own property, which is what keeps prototype defaults out of `toObject`. */
 const hasOwnField = (
 	data: DynamicObject,
@@ -625,6 +669,10 @@ const hasOwnField = (
 class ProtoCompatibilityRuntime {
 	/** Sparse: filled by `constructorFor`, never by the constructor. */
 	readonly constructors: Array<ProtoConstructor | undefined>
+	/** Schema position by field name (either spelling), built per schema on first use. */
+	private readonly fieldPositions: Array<ReadonlyMap<string, number> | undefined> = []
+	/** Position in `messageFields` by field name, built per schema on first use. */
+	private readonly messageFieldPositions: Array<ReadonlyMap<string, number> | undefined> = []
 	readonly enums: EnumRuntime[]
 	readonly int64FieldsByName: readonly Readonly<Record<string, number>>[]
 	readonly messageFields: readonly (readonly ProtoFieldSchema[])[]
@@ -698,6 +746,30 @@ class ProtoCompatibilityRuntime {
 		})
 	}
 
+	private fieldPositionsOf(schemaId: number): ReadonlyMap<string, number> {
+		const existing = this.fieldPositions[schemaId]
+		if (existing) return existing
+		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
+		const alias = aliasFor(schemaId)
+		const positions = new Map<string, number>()
+		for (let i = 0; i < fields.length; i++) {
+			positions.set(fields[i]![0], i)
+			if (alias !== undefined && alias[0] === fields[i]![0]) positions.set(alias[1], i)
+		}
+		this.fieldPositions[schemaId] = positions
+		return positions
+	}
+
+	private messageFieldPositionsOf(schemaId: number): ReadonlyMap<string, number> {
+		const existing = this.messageFieldPositions[schemaId]
+		if (existing) return existing
+		const fields = this.messageFields[schemaId]!
+		const positions = new Map<string, number>()
+		for (let i = 0; i < fields.length; i++) positions.set(fields[i]![0], i)
+		this.messageFieldPositions[schemaId] = positions
+		return positions
+	}
+
 	private constructorFor(schemaId: number): ProtoConstructor {
 		return (this.constructors[schemaId] ??= this.makeConstructor(
 			schemaId,
@@ -728,14 +800,18 @@ class ProtoCompatibilityRuntime {
 	): ProtoConstructor {
 		const convertToObject = (message: DynamicObject): DynamicObject => this.toObject(schemaId, message, JSON_OPTIONS)
 		const path = PROTO_MESSAGE_SCHEMAS[schemaId]![0]
+		// Only repeated and map fields get an own value per instance, so the
+		// constructor walks just those, in schema order, instead of every field:
+		// `Message` has 95 fields and none of them is a collection.
+		const collections = fields.filter(field => field[3] & (PROTO_FIELD_FLAG.repeated | PROTO_FIELD_FLAG.map))
 		// Indexed loops: these run for every constructed instance and stay on
 		// the megamorphic path at runtime, where V8 does not elide for..of
 		// iterator allocations.
 		const constructor = function (this: DynamicObject, properties?: DynamicObject | null): void {
-			for (let i = 0; i < fields.length; i++) {
-				const field = fields[i]!
+			for (let i = 0; i < collections.length; i++) {
+				const field = collections[i]!
 				if (field[3] & PROTO_FIELD_FLAG.repeated) this[field[0]] = []
-				else if (field[3] & PROTO_FIELD_FLAG.map) this[field[0]] = {}
+				else this[field[0]] = {}
 			}
 			if (properties) {
 				const keys = Object.keys(properties)
@@ -878,8 +954,14 @@ class ProtoCompatibilityRuntime {
 		// allocations (~90 iterator results per WebMessageInfo envelope).
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
 		const alias = aliasFor(schemaId)
-		for (let i = 0; i < fields.length; i++) {
-			const field = fields[i]!
+		// A plain object reads `undefined` for every field it does not own, so
+		// only the positions it holds are visited, in schema order.
+		const positions = isObject(data)
+			? ownFieldPositions(data, this.fieldPositionsOf(schemaId), fields.length, false)
+			: undefined
+		const count = positions === undefined ? fields.length : positions.length
+		for (let n = 0; n < count; n++) {
+			const field = fields[positions === undefined ? n : positions[n]!]!
 			const value = fieldValue(data, field, alias)
 			if (value === null || value === undefined) continue
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
@@ -949,9 +1031,13 @@ class ProtoCompatibilityRuntime {
 			}
 		}
 
+		// Only own fields can produce output, so a message with few of them visits
+		// just those positions, in schema order, and the output is unchanged.
+		const positions = ownFieldPositions(data, this.fieldPositionsOf(schemaId), fields.length)
+		const count = positions === undefined ? fields.length : positions.length
 		// Indexed for the same reason as `fromObject`: no iterator result per field.
-		for (let i = 0; i < fields.length; i++) {
-			const field = fields[i]!
+		for (let n = 0; n < count; n++) {
+			const field = fields[positions === undefined ? n : positions[n]!]!
 			const value = fieldValue(data, field, alias)
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (
@@ -973,8 +1059,12 @@ class ProtoCompatibilityRuntime {
 			}
 			if (value === null || value === undefined || !hasOwnField(data, field, alias)) continue
 			output[field[0]] = this.toObjectField(field, value, options)
-			const group = oneofName(field)
-			if (group && options.oneofs) output[group] = field[0]
+			// `oneofName` builds a string for every proto3-optional field, which is
+			// most of them, so it only runs when the option asks for the group.
+			if (options.oneofs) {
+				const group = oneofName(field)
+				if (group) output[group] = field[0]
+			}
 		}
 		return output
 	}
@@ -1100,7 +1190,14 @@ class ProtoCompatibilityRuntime {
 			;(output ??= { ...value })[alias[1]] = value[alias[0]]
 			delete output[alias[0]]
 		}
-		for (const field of this.messageFields[schemaId]!) {
+		const messageFields = this.messageFields[schemaId]!
+		// Only own fields are projected, so visiting the positions the message
+		// actually holds keeps schema order (and which missing codec is reported
+		// first) while skipping the rest of the schema.
+		const positions = ownFieldPositions(value, this.messageFieldPositionsOf(schemaId), messageFields.length)
+		const count = positions === undefined ? messageFields.length : positions.length
+		for (let n = 0; n < count; n++) {
+			const field = messageFields[positions === undefined ? n : positions[n]!]!
 			if (!hasOwn(value, field[0])) continue
 			const nested = value[field[0]]
 			if (nested === null || nested === undefined) continue

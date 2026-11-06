@@ -375,7 +375,9 @@ async function usePerKeyBridgeStore(
 			throw e
 		}
 		uncertain.delete(cacheKey)
-		rememberDurable(cacheKey, copyBytes(value))
+		// `value` is already a private copy (taken at admission in `doSet`) that
+		// nothing mutates and every read copies, so it is remembered as is.
+		rememberDurable(cacheKey, value)
 	}
 
 	// Flush one pending key. Runs under the key lock (not tracked in
@@ -571,9 +573,14 @@ async function usePerKeyBridgeStore(
 			if (isEnoent(e)) return null
 			throw e
 		}
-		const arr = copyBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
-		if (!keyUncertain) rememberDurable(cacheKey, copyBytes(arr))
-		return arr
+		// `readFile` returns a fresh buffer this read owns, so the cache keeps a
+		// view of it and only the caller's array is copied. A buffer carved from
+		// a shared pool (sizes unknown up front) is copied instead, so the cache
+		// never pins a larger slab.
+		const read = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+		const owned = data.byteOffset === 0 && data.buffer.byteLength === data.byteLength
+		if (!keyUncertain) rememberDurable(cacheKey, owned ? read : copyBytes(read))
+		return copyBytes(read)
 	}
 
 	const doGet = (store: string, key: string): Promise<Uint8Array | null> => {

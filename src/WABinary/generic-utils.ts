@@ -76,12 +76,21 @@ export const assertNodeErrorFree = (node: BinaryNode): void => {
 	}
 }
 
-export const reduceBinaryNodeToDictionary = (node: BinaryNode, tag: string): Record<string, string> =>
-	getBinaryNodeChildren(node, tag).reduce<Record<string, string>>((dictionary, { attrs }) => {
+export const reduceBinaryNodeToDictionary = (node: BinaryNode, tag: string): Record<string, string> => {
+	const dictionary: Record<string, string> = {}
+	const content = node?.content
+	if (!Array.isArray(content)) return dictionary
+	// One pass, without the intermediate child list.
+	for (let index = 0; index < content.length; index++) {
+		const item = content[index] as BinaryNode
+		if (item === undefined && !(index in content)) continue
+		if (item.tag !== tag) continue
+		const { attrs } = item
 		if (typeof attrs.name === 'string') dictionary[attrs.name] = attrs.value || attrs.config_value!
 		else dictionary[attrs.config_code!] = attrs.value || attrs.config_value!
-		return dictionary
-	}, {})
+	}
+	return dictionary
+}
 
 export const getBinaryNodeMessages = ({ content }: BinaryNode): proto.WebMessageInfo[] => {
 	const messages: proto.WebMessageInfo[] = []
