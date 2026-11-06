@@ -97,6 +97,23 @@ once inside that call, rather than per operation, moves the result.
   20 s). It runs before every Bartender measurement, after warmup and after
   pairing, so late receipts, pre-key uploads and server notifications from
   setup do not land in the measured call.
+- **No background WebAssembly compilation.** By default V8 first compiles each
+  bridge function with its baseline compiler (Liftoff) and later recompiles hot
+  ones with the optimizing compiler (TurboFan) on a background thread. Each
+  recompilation allocates 0.1-1.3 MB of compiler memory, and it happens when
+  the function crosses a call-count budget, which can be long after warmup: in
+  a local loop of `createAuthenticationState`, recompilations still happened
+  in rounds 23, 30 and 34 of 60. When one landed inside a measured call, the
+  memory instrument counted it with no JS stack. This matches the DM 64B and
+  pairing peaks that moved 2-3x between runs of the same commit while the
+  code-attributed allocations stayed the same. A diagnostic CI run showed the
+  same socket frame count in every call of a row and no GC inside the measured
+  DM calls, which rules out traffic and GC timing as the source.
+  The benchmark worker runs with `--no-liftoff` (set in `vitest.config.ts`
+  and checked by `bench/setup.ts`), so each function is compiled once with
+  TurboFan on its first call, during setup or warmup, and never again.
+  Production code also ends up on TurboFan for hot functions, so steady-state
+  results stay representative.
 - **Empty resume backlog.** The resume row resumes the account once, unmeasured,
   before the measured resume, so whatever the server still queued after pairing
   is delivered and acknowledged first.
