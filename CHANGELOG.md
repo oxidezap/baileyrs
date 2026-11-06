@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.14](https://github.com/oxidezap/baileyrs/compare/v0.3.13...v0.3.14) (2026-11-06)
+
+
+### Bug Fixes
+
+* **deps:** bump the npm group with 7 updates ([#183](https://github.com/oxidezap/baileyrs/issues/183)) ([534b081](https://github.com/oxidezap/baileyrs/commit/534b0810be01a702286be72334eabe1412bdcd05))
+
+
+### Performance
+
+* faster proto conversion, memory-store transactions and send-path helpers ([#188](https://github.com/oxidezap/baileyrs/issues/188)) ([78404f2](https://github.com/oxidezap/baileyrs/commit/78404f26531cb0f21e91d0eff68e284d94e37f17))
+* remove hot-path overhead in event buffer, JID, hex, stanza and proto helpers ([#187](https://github.com/oxidezap/baileyrs/issues/187)) ([c7bdaa5](https://github.com/oxidezap/baileyrs/commit/c7bdaa5375f8676804f8f175c107b6aaece5baa0))
+
 ## [0.3.13](https://github.com/oxidezap/baileyrs/compare/v0.3.12...v0.3.13) (2026-11-01)
 
 
