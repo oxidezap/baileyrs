@@ -1,4 +1,5 @@
-import { bench, describe } from 'vitest'
+import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { test, describe } from 'vitest'
 import {
 	binaryNodeToString,
 	getBinaryNodeChild,
@@ -12,15 +13,21 @@ const group = getBinaryNodeChild(node, 'group')!
 const props = getBinaryNodeChild(node, 'props')!
 
 describe('binary node helpers (512 participants)', () => {
-	bench('getBinaryNodeChildren', () => {
-		getBinaryNodeChildren(group, 'participant')
+	test('getBinaryNodeChildren', async ({ bench }) => {
+		await bench('getBinaryNodeChildren', () => {
+			getBinaryNodeChildren(group, 'participant')
+		}).run(benchmarkOptions)
 	})
 
-	bench('reduceBinaryNodeToDictionary', () => {
-		reduceBinaryNodeToDictionary(props, 'prop')
+	test('reduceBinaryNodeToDictionary', async ({ bench }) => {
+		await bench('reduceBinaryNodeToDictionary', () => {
+			reduceBinaryNodeToDictionary(props, 'prop')
+		}).run(benchmarkOptions)
 	})
 
-	bench('binaryNodeToString', () => {
-		binaryNodeToString(node)
+	test('binaryNodeToString', async ({ bench }) => {
+		await bench('binaryNodeToString', () => {
+			binaryNodeToString(node)
+		}).run(benchmarkOptions)
 	})
 })

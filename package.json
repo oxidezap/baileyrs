@@ -61,7 +61,6 @@
   ],
   "scripts": {
     "build": "node scripts/compatibility/waproto-facade.ts --check && node scripts/clean-build.ts && tsc -P tsconfig.build.json && tsc-esm-fix --tsconfig=tsconfig.build.json --ext=.js && node scripts/compatibility/waproto-facade.ts --copy-build",
-    "bench": "vitest bench --run",
     "benchmark": "node ./Example/benchmark.ts",
     "compat:audit": "npm run build --silent && node scripts/compatibility/audit.ts --details",
     "compat:audit:json": "npm run build --silent && node scripts/compatibility/audit.ts --format=json",
@@ -75,10 +74,10 @@
     "compat:layers": "node scripts/compatibility/check-layer-boundaries.ts",
     "check:host-boundaries": "node scripts/check-host-boundaries.ts",
     "example": "node ./Example/example.ts",
-    "format": "oxfmt src Example",
-    "format:check": "oxfmt --check src Example",
+    "format": "oxfmt src Example bench benchmarks vitest.config.ts",
+    "format:check": "oxfmt --check src Example && oxfmt --check bench benchmarks vitest.config.ts",
     "lint": "tsc && oxlint",
-    "lint:fix": "oxlint --fix && oxfmt src Example",
+    "lint:fix": "oxlint --fix && oxfmt src Example bench benchmarks vitest.config.ts",
     "prepack": "npm run build && node scripts/check-pack.ts",
     "prepublishOnly": "node scripts/check-registry-deps.mjs",
     "prepare": "npm run build",
@@ -92,6 +91,8 @@
     "typecheck:compat-auditor": "npm run build --silent && npm run compat:check-waproto --silent && npm run compat:layers --silent && npm run typecheck:compat-declarations --silent",
     "test:e2e": "NODE_TLS_REJECT_UNAUTHORIZED=0 ADV_SECRET_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= node --expose-gc --test --test-concurrency=1 ./src/__tests__/e2e/*.test-e2e.ts ./scripts/compatibility/__tests__/*.test-e2e.ts",
     "typecheck:compat-declarations": "node node_modules/typescript-compat-auditor/bin/tsc -p scripts/compatibility/tsconfig.json",
+    "bench": "vitest bench --run",
+    "bench:e2e": "BENCH_SUITE=e2e vitest bench --run",
     "typecheck:bench": "tsc -p bench/tsconfig.json"
   },
   "dependencies": {
@@ -102,7 +103,7 @@
   },
   "devDependencies": {
     "@bufbuild/protobuf": "^2.13.0",
-    "@codspeed/vitest-plugin": "^6.1.0",
+    "@codspeed/vitest-plugin": "6.1.0",
     "@hapi/boom": "^10.0.1",
     "@types/node": "^26.1.1",
     "baileys": "7.0.0-rc14",
@@ -118,7 +119,8 @@
     "tsc-esm-fix": "^3.1.2",
     "typescript": "^7.0.2",
     "typescript-compat-auditor": "npm:typescript@6.0.3",
-    "vitest": "^4.1.12",
+    "vite": "8.3.6",
+    "vitest": "5.1.0",
     "wrangler": "4.156.0"
   },
   "peerDependencies": {

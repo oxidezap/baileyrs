@@ -1,4 +1,5 @@
-import { bench, describe } from 'vitest'
+import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { test, describe } from 'vitest'
 import { BufferJSON, initAuthCreds } from '../src/Utils/index.ts'
 
 const creds = initAuthCreds()
@@ -13,19 +14,27 @@ const serializedCreds = JSON.stringify(creds, BufferJSON.replacer)
 const serializedKeys = JSON.stringify(keys, BufferJSON.replacer)
 
 describe('BufferJSON', () => {
-	bench('stringify auth creds', () => {
-		JSON.stringify(creds, BufferJSON.replacer)
+	test('stringify auth creds', async ({ bench }) => {
+		await bench('stringify auth creds', () => {
+			JSON.stringify(creds, BufferJSON.replacer)
+		}).run(benchmarkOptions)
 	})
 
-	bench('parse auth creds', () => {
-		JSON.parse(serializedCreds, BufferJSON.reviver)
+	test('parse auth creds', async ({ bench }) => {
+		await bench('parse auth creds', () => {
+			JSON.parse(serializedCreds, BufferJSON.reviver)
+		}).run(benchmarkOptions)
 	})
 
-	bench('stringify 200 pre-keys', () => {
-		JSON.stringify(keys, BufferJSON.replacer)
+	test('stringify 200 pre-keys', async ({ bench }) => {
+		await bench('stringify 200 pre-keys', () => {
+			JSON.stringify(keys, BufferJSON.replacer)
+		}).run(benchmarkOptions)
 	})
 
-	bench('parse 200 pre-keys', () => {
-		JSON.parse(serializedKeys, BufferJSON.reviver)
+	test('parse 200 pre-keys', async ({ bench }) => {
+		await bench('parse 200 pre-keys', () => {
+			JSON.parse(serializedKeys, BufferJSON.reviver)
+		}).run(benchmarkOptions)
 	})
 })

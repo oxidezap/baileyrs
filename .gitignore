@@ -20,3 +20,7 @@ wa-logs*
 coverage
 .claude/
 auth
+benchmark-results/
+
+# Node profiler artifacts from local CodSpeed runs.
+jit-*.dump

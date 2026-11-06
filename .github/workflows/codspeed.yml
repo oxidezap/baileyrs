@@ -24,7 +24,7 @@ env:
 jobs:
   benchmarks:
     name: Run benchmarks (${{ matrix.mode }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -32,6 +32,8 @@ jobs:
         mode: [simulation, memory]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -40,7 +42,6 @@ jobs:
 
       # Skip prepare; the benchmarks import the TypeScript sources directly.
       - run: npm ci --ignore-scripts
-
       - run: npm run typecheck:bench
 
       - name: Run benchmarks
@@ -48,3 +49,73 @@ jobs:
         with:
           mode: ${{ matrix.mode }}
           run: npm run bench
+
+  e2e:
+    name: Bartender (${{ matrix.suite }}, ${{ matrix.mode }})
+    # Untrusted fork code never receives the private image credential.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [simulation, memory]
+        suite: [lifecycle, messaging, group, idle, single-idle]
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:9f9df686b1a70d27d4f2dbb70e28988529be4cda062a5013ab90d8a00e9d78c6
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports:
+          - 8080:8080
+        env:
+          CHATSTATE_TTL_SECS: '3'
+          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        options: --log-driver none
+    env:
+      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
+      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      LOG_LEVEL: silent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Wait for Bartender
+        run: |
+          # Bartender returns 404 at /; probe HTTPS reachability as in ci.yml.
+          for i in $(seq 1 30); do
+            if curl -skS --connect-timeout 1 --max-time 2 --output /dev/null https://127.0.0.1:8080/; then
+              echo 'Bartender HTTPS listener is ready'
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Bartender failed to become ready' >&2
+          exit 1
+      - name: Measure real socket workloads
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
+        with:
+          mode: ${{ matrix.mode }}
+          # Keep the test-only TLS bypass in the benchmark process tree.
+          run: env NODE_TLS_REJECT_UNAUTHORIZED=0 npm run bench:e2e -- benchmarks/e2e/${{ matrix.suite }}.bench.ts
+          disable-memory-capture-stack: 'false'
+          disable-memory-track-physical: 'false'
+      - name: Preserve idle snapshots
+        if: always() && (matrix.suite == 'idle' || matrix.suite == 'single-idle')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-${{ matrix.suite }}-${{ matrix.mode }}
+          path: benchmark-results/
+          if-no-files-found: warn

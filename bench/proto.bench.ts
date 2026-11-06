@@ -1,4 +1,5 @@
-import { bench, describe } from 'vitest'
+import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { test, describe } from 'vitest'
 import { encodeWAMessage } from '../src/Utils/index.ts'
 import { proto } from '../src/WAProto/runtime.ts'
 
@@ -44,27 +45,39 @@ const encodedImage = proto.Message.encode(imageMessage).finish()
 const encodedInfo = proto.WebMessageInfo.encode(webMessageInfo).finish()
 
 describe('proto codec', () => {
-	bench('Message.encode (extended text)', () => {
-		proto.Message.encode(textMessage).finish()
+	test('Message.encode (extended text)', async ({ bench }) => {
+		await bench('Message.encode (extended text)', () => {
+			proto.Message.encode(textMessage).finish()
+		}).run(benchmarkOptions)
 	})
 
-	bench('Message.decode (extended text)', () => {
-		proto.Message.decode(encodedText)
+	test('Message.decode (extended text)', async ({ bench }) => {
+		await bench('Message.decode (extended text)', () => {
+			proto.Message.decode(encodedText)
+		}).run(benchmarkOptions)
 	})
 
-	bench('Message.decode (image)', () => {
-		proto.Message.decode(encodedImage)
+	test('Message.decode (image)', async ({ bench }) => {
+		await bench('Message.decode (image)', () => {
+			proto.Message.decode(encodedImage)
+		}).run(benchmarkOptions)
 	})
 
-	bench('WebMessageInfo.decode + toJSON', () => {
-		proto.WebMessageInfo.decode(encodedInfo).toJSON()
+	test('WebMessageInfo.decode + toJSON', async ({ bench }) => {
+		await bench('WebMessageInfo.decode + toJSON', () => {
+			proto.WebMessageInfo.decode(encodedInfo).toJSON()
+		}).run(benchmarkOptions)
 	})
 
-	bench('Message.encode (image)', () => {
-		proto.Message.encode(imageMessage).finish()
+	test('Message.encode (image)', async ({ bench }) => {
+		await bench('Message.encode (image)', () => {
+			proto.Message.encode(imageMessage).finish()
+		}).run(benchmarkOptions)
 	})
 
-	bench('encodeWAMessage (padded)', () => {
-		encodeWAMessage(textMessage)
+	test('encodeWAMessage (padded)', async ({ bench }) => {
+		await bench('encodeWAMessage (padded)', () => {
+			encodeWAMessage(textMessage)
+		}).run(benchmarkOptions)
 	})
 })

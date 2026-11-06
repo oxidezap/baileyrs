@@ -216,3 +216,10 @@ violations of WhatsApp's Terms of Service that may result from the use of this s
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Performance benchmarks
+
+CodSpeed tracks CPU simulation and memory using Vitest, with local codec/store
+benchmarks and real socket workloads against the private Bartender mock. See the
+[benchmark guide](benchmarks/README.md) for scenarios, warmup, commands and memory
+interpretation.

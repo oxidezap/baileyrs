@@ -1,4 +1,5 @@
-import { bench, describe } from 'vitest'
+import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { test, describe } from 'vitest'
 import { adaptBridgeEvent } from '../src/Bridge/adapt.ts'
 import type { WAMessage } from '../src/Types/index.ts'
 import { makeEventBuffer } from '../src/Utils/index.ts'
@@ -36,20 +37,26 @@ const upserts: WAMessage[] = Array.from({ length: 500 }, (_, i) => ({
 const updates = upserts.map(({ key }) => ({ key, update: { status: 3 } }))
 
 describe('event pipeline (500 messages)', () => {
-	bench('adaptBridgeEvent (message)', () => {
-		for (const event of bridgeMessages) adaptBridgeEvent(event as never, silentLogger)
+	test('adaptBridgeEvent (message)', async ({ bench }) => {
+		await bench('adaptBridgeEvent (message)', () => {
+			for (const event of bridgeMessages) {
+				if (adaptBridgeEvent(event as never, silentLogger)?.type !== 'message') throw new Error('message was dropped')
+			}
+		}).run(benchmarkOptions)
 	})
 
-	bench('event buffer: buffer + flush upserts and updates', () => {
-		const ev = makeEventBuffer(silentLogger)
-		let delivered = 0
-		ev.process(events => {
-			delivered += events['messages.upsert']?.messages.length ?? 0
-		})
-		ev.buffer()
-		for (const message of upserts) ev.emit('messages.upsert', { messages: [message], type: 'notify' })
-		ev.emit('messages.update', updates)
-		ev.flush()
-		if (delivered === 0) throw new Error('no messages flushed')
+	test('event buffer: buffer + flush upserts and updates', async ({ bench }) => {
+		await bench('event buffer: buffer + flush upserts and updates', () => {
+			const ev = makeEventBuffer(silentLogger)
+			let delivered = 0
+			ev.process(events => {
+				delivered += events['messages.upsert']?.messages.length ?? 0
+			})
+			ev.buffer()
+			for (const message of upserts) ev.emit('messages.upsert', { messages: [message], type: 'notify' })
+			ev.emit('messages.update', updates)
+			ev.flush()
+			if (delivered !== upserts.length) throw new Error('incomplete event buffer delivery')
+		}).run(benchmarkOptions)
 	})
 })
