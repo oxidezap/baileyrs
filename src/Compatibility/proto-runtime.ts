@@ -609,7 +609,9 @@ const fieldValue = (
 	field: ProtoFieldSchema,
 	alias: readonly [string, string] | undefined
 ): unknown =>
-	!hasOwn(data, field[0]) && alias !== undefined && alias[0] === field[0] && hasOwn(data, alias[1])
+	// The alias test first: only one field of a handful of schemas has a second
+	// spelling, and every other field is read without an own-property lookup.
+	alias !== undefined && alias[0] === field[0] && !hasOwn(data, field[0]) && hasOwn(data, alias[1])
 		? data[alias[1]]
 		: data[field[0]]
 
@@ -934,17 +936,22 @@ class ProtoCompatibilityRuntime {
 		const output: DynamicObject = {}
 		const fields = PROTO_MESSAGE_SCHEMAS[schemaId]![1]
 		const alias = aliasFor(schemaId)
-		for (const field of fields) {
-			if (field[3] & PROTO_FIELD_FLAG.repeated) {
-				if (options.arrays || options.defaults) output[field[0]] = []
-			} else if (field[3] & PROTO_FIELD_FLAG.map) {
-				if (options.objects || options.defaults) output[field[0]] = {}
-			} else if (options.defaults && !oneofName(field)) {
-				output[field[0]] = this.toObjectDefault(field, options)
+		// Without these options the pass below writes nothing; `toJSON` sets none of them.
+		if (options.arrays || options.defaults || options.objects) {
+			for (const field of fields) {
+				if (field[3] & PROTO_FIELD_FLAG.repeated) {
+					if (options.arrays || options.defaults) output[field[0]] = []
+				} else if (field[3] & PROTO_FIELD_FLAG.map) {
+					if (options.objects || options.defaults) output[field[0]] = {}
+				} else if (options.defaults && !oneofName(field)) {
+					output[field[0]] = this.toObjectDefault(field, options)
+				}
 			}
 		}
 
-		for (const field of fields) {
+		// Indexed for the same reason as `fromObject`: no iterator result per field.
+		for (let i = 0; i < fields.length; i++) {
+			const field = fields[i]!
 			const value = fieldValue(data, field, alias)
 			if (field[3] & PROTO_FIELD_FLAG.repeated) {
 				if (

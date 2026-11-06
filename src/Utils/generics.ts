@@ -215,11 +215,17 @@ interface BufferLike {
  */
 export const BufferJSON = {
 	replacer: (_: string, value: unknown) => {
+		// Most calls see a primitive (every string, number and boolean in the
+		// tree), which none of the checks below can match.
+		if (value === null || typeof value !== 'object') return value
+
 		// Buffer.toJSON() fires before replacer sees the value, so by the time we
 		// get here the replacer mostly sees `{ type: 'Buffer', data: [..] }`. Cover
 		// both that case and the rare raw-Buffer case (e.g. inside a Map serializer).
-		if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-			return { type: 'Buffer', data: Buffer.from(value).toString('base64') }
+		// A Buffer is a Uint8Array, so one check covers both.
+		if (value instanceof Uint8Array) {
+			// A view over the same bytes: encoding needs no copy of them.
+			return { type: 'Buffer', data: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64') }
 		}
 
 		if (value !== null && typeof value === 'object' && (value as BufferLike).type === 'Buffer') {

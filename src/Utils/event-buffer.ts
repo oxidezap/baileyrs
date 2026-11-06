@@ -439,6 +439,10 @@ export const makeEventBuffer = (
 	let bufferCount = 0
 	let bufferTimeout: unknown
 	let flushPendingTimeout: unknown
+	// Whether a `messages.upsert` was buffered since the last release, and its
+	// type. Lets `emit` skip scanning the pending upserts on every message.
+	let hasPendingUpserts = false
+	let pendingUpsertType: BaileysEventMap['messages.upsert']['type'] | undefined
 
 	ev.on('event', (events: BaileysEventData) => {
 		for (const event of Object.keys(events) as BaileysEvent[]) {
@@ -497,6 +501,7 @@ export const makeEventBuffer = (
 		const consolidated = consolidateEvents(data)
 		if (Object.keys(consolidated).length) ev.emit('event', consolidated)
 		data = next
+		hasPendingUpserts = false
 		logger.trace({ conditionalChatUpdatesLeft: conditionalUpdates }, 'released buffered events')
 		return true
 	}
@@ -527,18 +532,29 @@ export const makeEventBuffer = (
 			return () => ev.off('event', listener)
 		},
 		emit(event, eventData) {
-			if (event === 'messages.upsert') {
-				const type = (eventData as BaileysEventMap['messages.upsert']).type
+			const isUpsert = event === 'messages.upsert'
+			const upsertType = isUpsert ? (eventData as BaileysEventMap['messages.upsert']).type : undefined
+			// Only a type change can release the pending upserts, so the pending map
+			// is materialized only then. Doing it on every upsert made a buffered
+			// burst quadratic: each message copied every message buffered before it.
+			if (isUpsert && hasPendingUpserts && pendingUpsertType !== upsertType) {
 				const pending = Object.values(data.messageUpserts)
-				if (pending.length && pending[0]!.type !== type) {
+				if (pending.length && pending[0]!.type !== upsertType) {
 					ev.emit('event', {
 						'messages.upsert': { messages: pending.map(item => item.message), type: pending[0]!.type }
 					})
 					data.messageUpserts = {}
 				}
+				hasPendingUpserts = false
 			}
 			if (buffering && BUFFERABLE_EVENT_SET.has(event)) {
 				append(data, historyCache, event as BufferableEvent, eventData as never, logger)
+				// Every upsert buffered since the last release shares this type: a
+				// different one releases the batch above before it is appended.
+				if (isUpsert) {
+					hasPendingUpserts = true
+					pendingUpsertType = upsertType
+				}
 				return true
 			}
 			return ev.emit('event', { [event]: eventData })
@@ -574,6 +590,7 @@ export const makeEventBuffer = (
 			if (flushPendingTimeout !== undefined) timers.clearTimeout(flushPendingTimeout)
 			historyCache.clear()
 			data = makeBufferData()
+			hasPendingUpserts = false
 			buffering = false
 			bufferCount = 0
 			ev.removeAllListeners()

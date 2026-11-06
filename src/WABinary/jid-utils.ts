@@ -57,17 +57,40 @@ export const jidEncode = (user: string | number | null, server: JidServer, devic
 	return `${user || ''}${agent ? `_${agent}` : ''}${device ? `:${device}` : ''}@${server}`
 }
 
+/** Index of `char` in `text[from, limit)`, or -1. */
+const indexBefore = (text: string, char: string, from: number, limit: number): number => {
+	const index = text.indexOf(char, from)
+	return index < limit ? index : -1
+}
+
+/** Where a part that starts at `from` ends: the next `char` before `limit`, else `limit`. */
+const endBefore = (text: string, char: string, from: number, limit: number): number => {
+	const index = indexBefore(text, char, from, limit)
+	return index < 0 ? limit : index
+}
+
 export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 	const sepIdx = typeof jid === 'string' ? jid.indexOf('@') : -1
 	if (sepIdx < 0) {
 		return undefined
 	}
 
-	const server = jid!.slice(sepIdx + 1)
-	const userCombined = jid!.slice(0, sepIdx)
+	const value = jid!
+	const server = value.slice(sepIdx + 1)
 
-	const [userAgent, device] = userCombined.split(':')
-	const [user, agent] = userAgent!.split('_')
+	// Same pieces as splitting the pre-`@` half on ':' and then on '_' and
+	// keeping the first two parts of each, located by index instead: this runs
+	// for every JID on the message pipeline, and the splits allocated two
+	// arrays plus a string per part only to read two of them.
+	const colonIdx = indexBefore(value, ':', 0, sepIdx)
+	const userAgentEnd = colonIdx < 0 ? sepIdx : colonIdx
+	const device = colonIdx < 0 ? undefined : value.slice(colonIdx + 1, endBefore(value, ':', colonIdx + 1, sepIdx))
+	const underscoreIdx = indexBefore(value, '_', 0, userAgentEnd)
+	const user = value.slice(0, underscoreIdx < 0 ? userAgentEnd : underscoreIdx)
+	const agent =
+		underscoreIdx < 0
+			? undefined
+			: value.slice(underscoreIdx + 1, endBefore(value, '_', underscoreIdx + 1, userAgentEnd))
 
 	let domainType: number = WAJIDDomains.WHATSAPP
 	if (server === 'lid') {
@@ -88,9 +111,6 @@ export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 	}
 }
 
-const CHAR_DEVICE_SEP = 58 // ':'
-const CHAR_AGENT_SEP = 95 // '_'
-
 /**
  * Index at which the user component ends, given the index of the '@'.
  *
@@ -98,16 +118,13 @@ const CHAR_AGENT_SEP = 95 // '_'
  * '_', so the user always runs to whichever of ':' or '_' comes first, and to
  * the '@' when neither is there. Locating that boundary answers both callers
  * below without the intermediate arrays and result object `jidDecode` allocates.
+ * Two native searches rather than a per-character loop.
  */
 const userEndBefore = (jid: string, sepIdx: number): number => {
-	for (let i = 0; i < sepIdx; i++) {
-		const code = jid.charCodeAt(i)
-		if (code === CHAR_DEVICE_SEP || code === CHAR_AGENT_SEP) {
-			return i
-		}
-	}
-
-	return sepIdx
+	const colonIdx = indexBefore(jid, ':', 0, sepIdx)
+	const end = colonIdx < 0 ? sepIdx : colonIdx
+	const underscoreIdx = indexBefore(jid, '_', 0, end)
+	return underscoreIdx < 0 ? end : underscoreIdx
 }
 
 /** As above, or -1 when the JID has no server part: the case `jidDecode` reports as `undefined`. */
@@ -131,15 +148,10 @@ export const areJidsSameUser = (jid1: string | undefined, jid2: string | undefin
 		return true
 	}
 
-	const left = jid1 as string
+	// Both users span `[0, end)`, so they match exactly when one JID starts with
+	// the other's user.
 	const right = jid2 as string
-	for (let i = 0; i < end; i++) {
-		if (left.charCodeAt(i) !== right.charCodeAt(i)) {
-			return false
-		}
-	}
-
-	return true
+	return (jid1 as string).startsWith(right.slice(0, end))
 }
 
 export const isJidMetaAI = (jid: string | undefined) => jid?.endsWith('@bot')

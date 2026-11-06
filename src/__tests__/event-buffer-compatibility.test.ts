@@ -314,4 +314,38 @@ describe('event buffer — upstream process() contract', () => {
 		expect(upstream.length).toEqual(11)
 		expect(orderOf(makeEventBuffer)).toEqual(upstream)
 	})
+
+	it('releases buffered upserts on a type change exactly as upstream does', () => {
+		const key = (id: string) => ({ remoteJid: '1@s.whatsapp.net', id, fromMe: false })
+		const upsert = (id: string) => ({ key: key(id), message: { conversation: id } }) as never
+		const releasesOf = (make: typeof makeEventBuffer) => {
+			const ev = make(logger)
+			const released: string[] = []
+			ev.process(events => {
+				const batch = events['messages.upsert']
+				if (batch) released.push(`${batch.type}:${batch.messages.map(m => m.key.id).join(',')}`)
+			})
+			ev.buffer()
+			ev.emit('messages.upsert', { messages: [upsert('A'), upsert('B')], type: 'notify' })
+			ev.emit('messages.upsert', { messages: [upsert('C')], type: 'notify' })
+			ev.emit('messages.upsert', { messages: [upsert('D')], type: 'append' })
+			ev.emit('messages.upsert', { messages: [upsert('E')], type: 'append' })
+			// Deleting every pending upsert leaves nothing for a type change to release.
+			ev.emit('messages.delete', { keys: [key('D'), key('E')] })
+			ev.emit('messages.upsert', { messages: [upsert('F')], type: 'notify' })
+			ev.emit('messages.upsert', { messages: [upsert('F')], type: 'append' })
+			ev.flush()
+			ev.buffer()
+			ev.emit('messages.upsert', { messages: [upsert('G')], type: 'append' })
+			ev.flush()
+			// Outside a buffer, upserts go straight through.
+			ev.emit('messages.upsert', { messages: [upsert('H')], type: 'notify' })
+			ev.emit('messages.upsert', { messages: [upsert('I')], type: 'append' })
+			return released
+		}
+
+		const upstream = releasesOf(makeUpstreamEventBuffer as unknown as typeof makeEventBuffer)
+		expect(upstream.length).toBeGreaterThan(3)
+		expect(releasesOf(makeEventBuffer)).toEqual(upstream)
+	})
 })

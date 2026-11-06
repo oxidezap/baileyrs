@@ -74,12 +74,29 @@ export const utf8Encode = (text: string): Uint8Array => new TextEncoder().encode
 
 export const utf8Decode = (bytes: Uint8Array): string => new TextDecoder('utf-8', { fatal: false }).decode(bytes)
 
+/**
+ * Two-digit lowercase hex for every byte value, so encoding does one append per
+ * byte. Built on first use: hosts with `Buffer` never need it.
+ */
+let hexPairs: string[] | undefined
+
+type HexBufferCtor = {
+	from(buffer: ArrayBufferLike, byteOffset: number, length: number): { toString(encoding: 'hex'): string }
+}
+
 export const hexEncode = (bytes: Uint8Array): string => {
-	let out = ''
-	for (let i = 0; i < bytes.length; i++) {
-		const byte = bytes[i]!
-		out += HEX_DIGITS[byte >> 4]! + HEX_DIGITS[byte & 0x0f]!
+	// Node's native encoder when the optional global exists: a view over the
+	// same memory, no copy. Other hosts take the portable loop below.
+	const BufferCtor = (globalThis as typeof globalThis & { Buffer?: HexBufferCtor }).Buffer
+	if (BufferCtor && bytes instanceof Uint8Array) {
+		return BufferCtor.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('hex')
 	}
+	const pairs = (hexPairs ??= Array.from(
+		{ length: 256 },
+		(_, byte) => HEX_DIGITS[byte >> 4]! + HEX_DIGITS[byte & 0x0f]!
+	))
+	let out = ''
+	for (let i = 0; i < bytes.length; i++) out += pairs[bytes[i]!]!
 	return out
 }
 
