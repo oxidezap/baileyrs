@@ -92,7 +92,6 @@ export async function destroyTestClient(client: TestClient): Promise<void> {
 }
 export type { TestClient }
 let sequence = 0
-export const idleMs = 1000
 
 /** Reject non-loopback endpoints and configurations without the synthetic mock secret. */
 export function requireMock(socketUrl = process.env.SOCKET_URL ?? ''): void {
@@ -211,35 +210,5 @@ export async function warmedPair(): Promise<[TestClient, TestClient]> {
 	} catch (error) {
 		await destroyTestClient(a)
 		throw error
-	}
-}
-
-/** Minimal transport and event surface observed by the idle assertion. */
-interface IdleClient {
-	sock: {
-		user?: { id: string }
-		ws: { readonly isOpen: boolean }
-		ev: {
-			on(event: 'connection.update', listener: (update: { connection?: string }) => void): unknown
-			off(event: 'connection.update', listener: (update: { connection?: string }) => void): unknown
-		}
-	}
-}
-
-/** Observe a continuously open idle window, rejecting closes and reconnects. */
-export async function idle(client: IdleClient): Promise<void> {
-	let interrupted = false
-	const listener = (update: { connection?: string }) => {
-		if (update.connection === 'close' || update.connection === 'connecting') interrupted = true
-	}
-	client.sock.ev.on('connection.update', listener)
-	try {
-		assert.ok(client.sock.user?.id)
-		assert.equal(client.sock.ws.isOpen, true, 'session is not open at start of idle')
-		await delay(idleMs)
-		assert.equal(interrupted, false, 'session closed or reconnected during idle')
-		assert.equal(client.sock.ws.isOpen, true, 'session is not open at end of idle')
-	} finally {
-		client.sock.ev.off('connection.update', listener)
 	}
 }

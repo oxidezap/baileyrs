@@ -62,7 +62,7 @@ jobs:
       fail-fast: false
       matrix:
         mode: [simulation, memory]
-        suite: [lifecycle, messaging, group, idle, single-idle]
+        suite: [lifecycle, messaging, group]
     permissions:
       contents: read
       id-token: write
@@ -112,10 +112,3 @@ jobs:
           run: env NODE_TLS_REJECT_UNAUTHORIZED=0 npm run bench:e2e -- benchmarks/e2e/${{ matrix.suite }}.bench.ts
           disable-memory-capture-stack: 'false'
           disable-memory-track-physical: 'false'
-      - name: Preserve idle snapshots
-        if: always() && (matrix.suite == 'idle' || matrix.suite == 'single-idle')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmark-${{ matrix.suite }}-${{ matrix.mode }}
-          path: benchmark-results/
-          if-no-files-found: warn

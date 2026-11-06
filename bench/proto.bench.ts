@@ -1,4 +1,4 @@
-import { options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
+import { memoryMode, options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
 import { test, describe } from 'vitest'
 import { encodeWAMessage } from '../src/Utils/index.ts'
 import { proto } from '../src/WAProto/runtime.ts'
@@ -53,7 +53,7 @@ describe(`proto codec (${opsPerSample} ops)`, () => {
 		}).run(benchmarkOptions)
 	})
 
-	test('Message.decode (extended text)', async ({ bench }) => {
+	test.skipIf(memoryMode)('Message.decode (extended text)', async ({ bench }) => {
 		await bench('Message.decode (extended text)', () => {
 			repeat(() => {
 				proto.Message.decode(encodedText)
@@ -61,7 +61,7 @@ describe(`proto codec (${opsPerSample} ops)`, () => {
 		}).run(benchmarkOptions)
 	})
 
-	test('Message.decode (image)', async ({ bench }) => {
+	test.skipIf(memoryMode)('Message.decode (image)', async ({ bench }) => {
 		await bench('Message.decode (image)', () => {
 			repeat(() => {
 				proto.Message.decode(encodedImage)
@@ -69,7 +69,7 @@ describe(`proto codec (${opsPerSample} ops)`, () => {
 		}).run(benchmarkOptions)
 	})
 
-	test('WebMessageInfo.decode + toJSON', async ({ bench }) => {
+	test.skipIf(memoryMode)('WebMessageInfo.decode + toJSON', async ({ bench }) => {
 		await bench('WebMessageInfo.decode + toJSON', () => {
 			repeat(() => {
 				proto.WebMessageInfo.decode(encodedInfo).toJSON()

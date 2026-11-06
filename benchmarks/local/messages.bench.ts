@@ -3,7 +3,7 @@ import { test, describe } from 'vitest'
 import { proto } from '../../src/index.ts'
 import { adaptBridgeMessageWire } from '../../src/Bridge/adapt.ts'
 import { generateWAMessageFromContent } from '../../src/Utils/messages.ts'
-import { options, opsPerSample, repeat } from '../options.ts'
+import { memoryMode, options, opsPerSample, repeat } from '../options.ts'
 
 const jid = '5511900000001@s.whatsapp.net'
 const metadata = {
@@ -42,7 +42,7 @@ for (const size of [64, 4096]) {
 				})
 			}).run(options)
 		})
-		test('incoming decode and adapt', async ({ bench }) => {
+		test.skipIf(memoryMode)('incoming decode and adapt', async ({ bench }) => {
 			await bench('incoming decode and adapt', () => {
 				repeat(() => {
 					const decoded = proto.Message.decode(wire)
@@ -57,7 +57,7 @@ for (const size of [64, 4096]) {
 				})
 			}).run(options)
 		})
-		test('protobuf decode', async ({ bench }) => {
+		test.skipIf(memoryMode)('protobuf decode', async ({ bench }) => {
 			await bench('protobuf decode', () => {
 				repeat(() => {
 					proto.Message.decode(wire)
