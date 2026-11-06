@@ -224,8 +224,15 @@ export const BufferJSON = {
 		// both that case and the rare raw-Buffer case (e.g. inside a Map serializer).
 		// A Buffer is a Uint8Array, so one check covers both.
 		if (value instanceof Uint8Array) {
-			// A view over the same bytes: encoding needs no copy of them.
-			return { type: 'Buffer', data: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64') }
+			// A Buffer encodes itself. A large plain array is off-heap, so a view
+			// over it avoids a copy; reading `.buffer` on a small (<= 64 byte,
+			// on-heap) one would instead move its bytes to a new native allocation.
+			const data = Buffer.isBuffer(value)
+				? value.toString('base64')
+				: value.byteLength > 64
+					? Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')
+					: Buffer.from(value).toString('base64')
+			return { type: 'Buffer', data }
 		}
 
 		if (value !== null && typeof value === 'object' && (value as BufferLike).type === 'Buffer') {

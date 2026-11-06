@@ -80,17 +80,16 @@ export const utf8Decode = (bytes: Uint8Array): string => new TextDecoder('utf-8'
  */
 let hexPairs: string[] | undefined
 
-type HexBufferCtor = {
-	from(buffer: ArrayBufferLike, byteOffset: number, length: number): { toString(encoding: 'hex'): string }
-}
+type HexSlice = (this: Uint8Array, start: number, end: number) => string
 
 export const hexEncode = (bytes: Uint8Array): string => {
-	// Node's native encoder when the optional global exists: a view over the
-	// same memory, no copy. Other hosts take the portable loop below.
-	const BufferCtor = (globalThis as typeof globalThis & { Buffer?: HexBufferCtor }).Buffer
-	if (BufferCtor && bytes instanceof Uint8Array) {
-		return BufferCtor.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('hex')
-	}
+	// Node's native encoder when the optional global exists. `hexSlice` reads any
+	// Uint8Array in place. A `Buffer.from(bytes.buffer, ...)` view is avoided on
+	// purpose: V8 keeps typed arrays of up to 64 bytes (hashes, IDs, keys) inside
+	// the JS heap, and reading `.buffer` moves their bytes to a new native allocation.
+	const hexSlice = (globalThis as typeof globalThis & { Buffer?: { prototype?: { hexSlice?: HexSlice } } }).Buffer
+		?.prototype?.hexSlice
+	if (typeof hexSlice === 'function') return hexSlice.call(bytes, 0, bytes.length)
 	const pairs = (hexPairs ??= Array.from(
 		{ length: 256 },
 		(_, byte) => HEX_DIGITS[byte >> 4]! + HEX_DIGITS[byte & 0x0f]!
