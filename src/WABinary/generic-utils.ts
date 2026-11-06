@@ -101,13 +101,31 @@ export function binaryNodeToString(node: BinaryNode | BinaryNode['content'], i =
 	if (!node) return node!
 	if (typeof node === 'string') return tabs(i) + node
 	if (node instanceof Uint8Array) return tabs(i) + hexEncode(node)
-	if (Array.isArray(node)) return node.map(child => tabs(i + 1) + binaryNodeToString(child, i + 1)).join('\n')
+	if (Array.isArray(node)) {
+		// Same text as `node.map(...).join('\n')`, a hole included (it renders
+		// empty), built in one pass without the intermediate array.
+		const indent = tabs(i + 1)
+		let out = ''
+		for (let index = 0; index < node.length; index++) {
+			if (index > 0) out += '\n'
+			if (index in node) out += indent + binaryNodeToString(node[index], i + 1)
+		}
+		return out
+	}
 
 	const children = binaryNodeToString(node.content, i + 1)
-	const tag = `<${node.tag} ${Object.entries(node.attrs || {})
-		.filter(([, value]) => value !== undefined)
-		.map(([key, value]) => `${key}='${value}'`)
-		.join(' ')}`
+	// Same text as filtering `Object.entries(attrs)` and joining, without the
+	// entry tuples and the two arrays: this formats every stanza a debug log
+	// prints, and large group stanzas carry an attrs object per participant.
+	const attrs = node.attrs || {}
+	let tag = `<${node.tag} `
+	let separator = ''
+	for (const key of Object.keys(attrs)) {
+		const value = attrs[key]
+		if (value === undefined) continue
+		tag += `${separator}${key}='${value}'`
+		separator = ' '
+	}
 	const content = children ? `>\n${children}\n${tabs(i)}</${node.tag}>` : '/>'
 	return tag + content
 }

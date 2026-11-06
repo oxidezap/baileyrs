@@ -74,12 +74,28 @@ export const utf8Encode = (text: string): Uint8Array => new TextEncoder().encode
 
 export const utf8Decode = (bytes: Uint8Array): string => new TextDecoder('utf-8', { fatal: false }).decode(bytes)
 
+/**
+ * Two-digit lowercase hex for every byte value, so encoding does one append per
+ * byte. Built on first use: hosts with `Buffer` never need it.
+ */
+let hexPairs: string[] | undefined
+
+type HexSlice = (this: Uint8Array, start: number, end: number) => string
+
 export const hexEncode = (bytes: Uint8Array): string => {
+	// Node's native encoder when the optional global exists. `hexSlice` reads any
+	// Uint8Array in place. A `Buffer.from(bytes.buffer, ...)` view is avoided on
+	// purpose: V8 keeps typed arrays of up to 64 bytes (hashes, IDs, keys) inside
+	// the JS heap, and reading `.buffer` moves their bytes to a new native allocation.
+	const hexSlice = (globalThis as typeof globalThis & { Buffer?: { prototype?: { hexSlice?: HexSlice } } }).Buffer
+		?.prototype?.hexSlice
+	if (typeof hexSlice === 'function') return hexSlice.call(bytes, 0, bytes.length)
+	const pairs = (hexPairs ??= Array.from(
+		{ length: 256 },
+		(_, byte) => HEX_DIGITS[byte >> 4]! + HEX_DIGITS[byte & 0x0f]!
+	))
 	let out = ''
-	for (let i = 0; i < bytes.length; i++) {
-		const byte = bytes[i]!
-		out += HEX_DIGITS[byte >> 4]! + HEX_DIGITS[byte & 0x0f]!
-	}
+	for (let i = 0; i < bytes.length; i++) out += pairs[bytes[i]!]!
 	return out
 }
 

@@ -1,5 +1,5 @@
 import { test } from 'vitest'
-import { createTestClient, destroyClients, roundtrip, type TestClient } from './fixture.ts'
+import { createTestClient, destroyClients, roundtrip, settle, type TestClient } from './fixture.ts'
 import { integrationOptions } from '../options.ts'
 
 test('bartender/group with three members', async ({ bench }) => {
@@ -13,9 +13,11 @@ test('bartender/group with three members', async ({ bench }) => {
 		if (!group.id.endsWith('@g.us')) throw new Error('group creation failed')
 		// Match the group E2E fixture: warm group traffic directly, independently
 		// of the DM fixture and its Signal ratchets.
-		for (let i = 0; i < 8; i++) await roundtrip(sender!, receiver!, 64, group.id)
-		await bench('warmed sender-key send through delivery', async () => {
-			await roundtrip(sender!, receiver!, 64, group.id)
+		// Each roundtrip waits for both members' delivery and receipts, so the
+		// observer's decryption and receipt are always inside the measured call.
+		for (let i = 0; i < 8; i++) await roundtrip(sender!, [receiver!, observer!], 64, group.id)
+		await bench('warmed sender-key send through delivery', { beforeEach: () => settle() }, async () => {
+			await roundtrip(sender!, [receiver!, observer!], 64, group.id)
 		}).run(integrationOptions)
 	} finally {
 		await destroyClients(clients)
