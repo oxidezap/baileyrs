@@ -48,24 +48,16 @@ instrumented execution. Fixed warmup options also apply to these rows.
 
 ## What each row measures
 
-| Rows                         | Measured operation                                                  | Setup outside measurement                                                           |
-| ---------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Local outgoing, 64 B / 4 KiB | Public message envelope generation and protobuf serialization       | Fixed IDs, timestamps and payloads                                                  |
-| Local incoming, 64 B / 4 KiB | Protobuf decode and bridge metadata adaptation                      | Encoded bytes and metadata                                                          |
-| Local encode / decode        | Protobuf facade alone                                               | Payload or encoded bytes                                                            |
-| Auth                         | Fresh credential mirror and host store hydration                    | Module/WASM import                                                                  |
-| Host store, 256 B / 4 KiB    | One row ×100 or 32-row batch ×10, write then defensive-copy read    | Store and fixed keys/bytes                                                          |
-| Fresh session                | QR pairing, connect and pending-notification sync                   | Module import; cleanup after each invocation                                        |
-| Resume session               | Connect and sync from persisted file auth                           | Paired session warmed with bidirectional DMs, graceful close, preserved auth folder |
-| First DM                     | First send through delivery, including Signal session establishment | Two newly paired clients, no DM warmup                                              |
-| Steady DM, 64 B / 4 KiB      | Send through receiver event and sender's delivery receipt           | Two connected clients, eight roundtrips in both directions                          |
-| Burst                        | 16 sequential sends through delivery receipt                        | Same warmup as steady DM                                                            |
-| Idle                         | One second connected after 32 delivered 4 KiB messages              | Connected warmed pair, activity and one initial idle window                         |
-
-`single-idle.bench.ts` also records a single connected session without peer traffic,
-including a runtime baseline before connection and snapshots around the last idle window.
-The one-second windows do not guarantee a 30-second periodic keepalive fires; they
-measure short quiet periods, not a full keepalive cycle.
+| Rows                         | Measured operation                                                  | Setup outside measurement                                  |
+| ---------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Local outgoing, 64 B / 4 KiB | Public message envelope generation and protobuf serialization       | Fixed IDs, timestamps and payloads                         |
+| Local incoming, 64 B / 4 KiB | Protobuf decode and bridge metadata adaptation                      | Encoded bytes and metadata                                 |
+| Local encode / decode        | Protobuf facade alone                                               | Payload or encoded bytes                                   |
+| Auth                         | Fresh credential mirror and host store hydration                    | Module/WASM import                                         |
+| Host store, 256 B / 4 KiB    | One row ×100 or 32-row batch ×10, write then defensive-copy read    | Store and fixed keys/bytes                                 |
+| First DM                     | First send through delivery, including Signal session establishment | Two newly paired clients, no DM warmup                     |
+| Steady DM, 64 B              | Send through receiver event and sender's delivery receipt           | Two connected clients, eight roundtrips in both directions |
+| Burst                        | 16 sequential sends through delivery receipt                        | Same warmup as steady DM                                   |
 
 Local adapter/serialization rows do not measure Signal, Noise, transport or a full
 `sendMessage`. Bartender rows exercise those real library paths through the mock.
@@ -114,9 +106,19 @@ once inside that call, rather than per operation, moves the result.
   TurboFan on its first call, during setup or warmup, and never again.
   Production code also ends up on TurboFan for hot functions, so steady-state
   results stay representative.
-- **Empty resume backlog.** The resume row resumes the account once, unmeasured,
-  before the measured resume, so whatever the server still queued after pairing
-  is delivered and acknowledged first.
+- **Rows removed for noise.** Some rows still moved far more than any code
+  change on identical commits, and were removed rather than left to raise
+  false regressions:
+  - _Idle after activity_ and _single idle session_ measured a one-second
+    `setTimeout` window. Whether a server notification, timer or allocator
+    trim landed inside it decided the result: simulation moved 1.2-1.9x and
+    peak memory 9-46x (3 KB vs 148 KB) between runs of the same code.
+  - _Resume session_ simulation alternated between ~60 ms and ~293 ms, and
+    _fresh session_ pairing between 1.1 s and 1.4 s (memory 1.5-1.9 MB). Both
+    include server-driven startup work (offline sync, pre-key and app-state
+    traffic) that the client cannot hold constant from one run to the next.
+  - The single 4 KiB DM peak memory moved between ~96 KB and ~167 KB. The
+    16-message 4 KiB row covers the same path and stays within a few percent.
 
 ## Warmup and isolation
 
@@ -124,8 +126,8 @@ Local walltime rows request 32 warmup iterations and at least 100 ms. Bartender
 walltime rows use fixed counts, with no duration-driven growth of message queues.
 The CodSpeed simulation/memory runner independently executes seven optimization
 warmups, then one measured invocation. Per-benchmark `beforeEach`/`afterEach` hooks run around every warmup and measured
-invocation in both modes, keeping lifecycle setup and teardown outside measurement. Every fresh/resume/
-first-DM warmup has fresh clients; it warms code, not the session under test.
+invocation in both modes, keeping lifecycle setup and teardown outside measurement. Every first-DM
+warmup has fresh clients; it warms code, not the session under test.
 
 The runner uses one fork at a time, no file parallelism, and exposed GC. Fixed
 payload widths avoid payload-size drift. Every E2E message body has a monotonically
@@ -159,25 +161,15 @@ host, and the mock secret must match. The test-only TLS bypass is scoped to this
 mock process. Never set it in an application or against a real account. No live
 WhatsApp version fetch or production credentials are required.
 
-## Reading memory and idle results
+## Reading memory results
 
 CodSpeed reports CPU simulation and allocator memory as separate instruments.
-Simulation measures executed client work during the fixed idle window, not one
-second of CPU time or latency. The idle liveness check runs after measurement.
-Walltime includes the intentional one-second wait and should not be used as a
-throughput regression threshold.
 
 The memory instrument tracks the Node allocator and process physical memory. V8
 and WASM manage their own arenas, so malloc allocation counts are not JavaScript
 object counts or Rust allocations within WASM linear memory. Pre-existing session
 memory lies outside the operation's allocation window. Peak process memory includes
 runtime and shared WASM overhead; it is not a per-session byte count.
-
-`benchmark-results/idle.json` and `single-idle.json`, uploaded as `benchmark-idle-{simulation,memory}` and `benchmark-single-idle-{simulation,memory}`, supplement
-those metrics with process-wide RSS, heap, external and ArrayBuffer snapshots
-after explicit GC, before and after idle. The files describe two sessions after activity and one quiet session, respectively,
-and include the shared WASM instance. They are diagnostic retention observations, not a leak
-assertion or subtraction of a reliable per-session cost. Each file/instrument job uploads its own artifact for the last measured window.
 
 References: [Vitest integration](https://codspeed.io/docs/benchmarks/nodejs/vitest),
 [memory instrument](https://codspeed.io/docs/instruments/memory), and
