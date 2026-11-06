@@ -1,14 +1,6 @@
 import assert from 'node:assert/strict'
 import { test, describe } from 'vitest'
-import {
-	createTestClient,
-	destroyTestClient,
-	probe,
-	roundtrip,
-	settle,
-	warmedPair,
-	type TestClient
-} from './fixture.ts'
+import { createTestClient, destroyTestClient, roundtrip, settle, warmedPair, type TestClient } from './fixture.ts'
 import { integrationOptions } from '../options.ts'
 
 describe('bartender/lifecycle', () => {
@@ -27,9 +19,9 @@ describe('bartender/lifecycle', () => {
 						}
 					}
 				},
-				probe('pairing', async () => {
+				async () => {
 					client = await createTestClient({ label: 'bench-fresh' })
-				})
+				}
 			).run(integrationOptions)
 		} finally {
 			if (client) await destroyTestClient(client)
@@ -64,10 +56,7 @@ describe('bartender/lifecycle', () => {
 						// queued for this account (late receipts, history sync, offline
 						// notifications) is delivered and acknowledged here, so the
 						// measured resume always starts from an empty offline queue.
-						previous = await createTestClient({
-							label: 'bench-resume-drain',
-							authFolder: pair[0].authFolder
-						})
+						previous = await createTestClient({ label: 'bench-resume-drain', authFolder: pair[0].authFolder })
 						await settle()
 						previous.sock.setAutoReconnect(false)
 						await previous.sock.end(undefined)
@@ -112,17 +101,15 @@ describe('bartender/lifecycle', () => {
 				{
 					beforeEach: async () => {
 						sender = await createTestClient({ label: 'bench-first-sender' })
-						receiver = await createTestClient({
-							label: 'bench-first-receiver'
-						})
+						receiver = await createTestClient({ label: 'bench-first-receiver' })
 						// Post-pairing uploads and notifications are not part of the first DM.
 						await settle()
 					},
 					afterEach: cleanup
 				},
-				probe('firstDM', async () => {
+				async () => {
 					await roundtrip(sender!, receiver!)
-				})
+				}
 			).run(integrationOptions)
 		} finally {
 			await cleanup()

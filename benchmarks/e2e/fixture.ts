@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
-import v8 from 'node:v8'
 import {
 	createTestClient as createSharedClient,
 	type CreateTestClientOptions,
@@ -16,9 +15,6 @@ import type { WAMessage } from '../../src/index.ts'
 /** Last time any benchmark socket sent or received a frame. */
 let lastSocketActivity = performance.now()
 let trackingInstalled = false
-/** TEMPORARY diagnostics: frame counters. */
-const frames = { in: 0, out: 0, inBytes: 0, outBytes: 0 }
-let extensionsLogged = false
 
 /**
  * Record socket traffic so {@link settle} can tell when the clients are quiet.
@@ -33,27 +29,12 @@ function trackSocketActivity(): void {
 	class TrackedWebSocket extends NativeWebSocket {
 		constructor(...args: ConstructorParameters<typeof WebSocket>) {
 			super(...args)
-			this.addEventListener('message', event => {
+			this.addEventListener('message', () => {
 				lastSocketActivity = performance.now()
-				frames.in++
-				const data = (event as MessageEvent).data as {
-					byteLength?: number
-					size?: number
-				}
-				frames.inBytes += data?.byteLength ?? data?.size ?? 0
-			})
-			this.addEventListener('open', () => {
-				if (extensionsLogged) return
-				extensionsLogged = true
-				console.log(
-					`[diag] websocket extensions=${JSON.stringify(this.extensions)} protocol=${JSON.stringify(this.protocol)}`
-				)
 			})
 		}
 		override send(data: Parameters<WebSocket['send']>[0]): void {
 			lastSocketActivity = performance.now()
-			frames.out++
-			frames.outBytes += (data as { byteLength?: number }).byteLength ?? 0
 			super.send(data)
 		}
 	}
@@ -90,19 +71,9 @@ export async function createTestClient(options: CreateTestClientOptions): Promis
 	trackSocketActivity()
 	const authFolder = options.authFolder ?? (await mkdtemp(join(tmpdir(), 'baileyrs-bench-')))
 	try {
-		return await createSharedClient({
-			...options,
-			socketUrl,
-			authFolder,
-			connectTimeoutMs: 120_000
-		})
+		return await createSharedClient({ ...options, socketUrl, authFolder, connectTimeoutMs: 120_000 })
 	} catch (error) {
-		await rm(authFolder, {
-			recursive: true,
-			force: true,
-			maxRetries: 3,
-			retryDelay: 50
-		})
+		await rm(authFolder, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 		throw error
 	}
 }
@@ -116,12 +87,7 @@ export async function destroyTestClient(client: TestClient): Promise<void> {
 	try {
 		await client.sock.end(undefined)
 	} finally {
-		await rm(client.authFolder, {
-			recursive: true,
-			force: true,
-			maxRetries: 3,
-			retryDelay: 50
-		})
+		await rm(client.authFolder, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 	}
 }
 export type { TestClient }
@@ -184,10 +150,7 @@ export async function roundtrip(
 		if (sentId && (receipts.get(sentId)?.size ?? 0) >= targets.length) receiptsDone!()
 	}
 	const onReceipt = (
-		updates: {
-			key: { id?: string | null; participant?: string | null }
-			receipt: { receiptTimestamp?: unknown }
-		}[]
+		updates: { key: { id?: string | null; participant?: string | null }; receipt: { receiptTimestamp?: unknown } }[]
 	) => {
 		for (const { key, receipt } of updates) {
 			if (!key.id || receipt.receiptTimestamp == null) continue
@@ -278,46 +241,5 @@ export async function idle(client: IdleClient): Promise<void> {
 		assert.equal(client.sock.ws.isOpen, true, 'session is not open at end of idle')
 	} finally {
 		client.sock.ev.off('connection.update', listener)
-	}
-}
-
-/**
- * TEMPORARY diagnostics: wrap a benchmark body and log, for every call, the GCs
- * that ran inside it, V8's own malloc accounting and the socket frames.
- * The last logged call of each row is the measured one. Output is deferred
- * with setImmediate so it lands after the instrument stops.
- */
-export function probe(label: string, fn: () => Promise<void>): () => Promise<void> {
-	let call = 0
-	return async function probed() {
-		const n = ++call
-		const startFrames = { ...frames }
-		const h0 = v8.getHeapStatistics()
-		const profiler = new v8.GCProfiler()
-		profiler.start()
-		try {
-			await fn()
-		} finally {
-			const gc = profiler.stop() as {
-				statistics: {
-					gcType: string
-					cost: number
-					beforeGC: { heapStatistics: { usedHeapSize: number } }
-				}[]
-			}
-			const h1 = v8.getHeapStatistics()
-			setImmediate(() => {
-				const kinds: Record<string, number> = {}
-				for (const g of gc?.statistics ?? []) kinds[g.gcType] = (kinds[g.gcType] ?? 0) + 1
-				const mu = process.memoryUsage()
-				console.log(
-					`[diag] ${label} call=${n} gcs=${JSON.stringify(kinds)} ` +
-						`v8malloc=${h0.malloced_memory}->${h1.malloced_memory} v8peakMalloc=${h0.peak_malloced_memory}->${h1.peak_malloced_memory} ` +
-						`external=${h0.external_memory}->${h1.external_memory} usedHeap=${h0.used_heap_size}->${h1.used_heap_size} totalHeap=${h0.total_heap_size}->${h1.total_heap_size} ` +
-						`framesIn=${frames.in - startFrames.in}/${frames.inBytes - startFrames.inBytes}B framesOut=${frames.out - startFrames.out}/${frames.outBytes - startFrames.outBytes}B ` +
-						`arrayBuffers=${mu.arrayBuffers} rss=${mu.rss}`
-				)
-			})
-		}
 	}
 }
