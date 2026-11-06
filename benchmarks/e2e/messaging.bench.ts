@@ -1,5 +1,5 @@
 import { test, describe } from 'vitest'
-import { destroyClients, roundtrip, warmedPair } from './fixture.ts'
+import { destroyClients, roundtrip, settle, warmedPair } from './fixture.ts'
 import { integrationOptions } from '../options.ts'
 
 for (const size of [64, 4096]) {
@@ -8,7 +8,7 @@ for (const size of [64, 4096]) {
 			test(`${count} messages`, async ({ bench }) => {
 				const pair = await warmedPair()
 				try {
-					await bench('send through delivery', async () => {
+					await bench('send through delivery', { beforeEach: () => settle() }, async () => {
 						for (let i = 0; i < count; i++) await roundtrip(pair[0], pair[1], size)
 					}).run(integrationOptions)
 				} finally {

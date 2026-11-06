@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { test } from 'vitest'
-import { destroyClients, idle, requireMock, roundtrip, warmedPair, type TestClient } from './fixture.ts'
+import { destroyClients, idle, requireMock, roundtrip, settle, warmedPair, type TestClient } from './fixture.ts'
 import { integrationOptions } from '../options.ts'
 
 requireMock()
@@ -51,7 +51,10 @@ test('bartender/idle after activity', async ({ bench }) => {
 		await bench(
 			'connected 1s after 32 messages',
 			{
-				beforeEach: () => {
+				beforeEach: async () => {
+					// Start each window from a quiet session, not mid-way through a
+					// receipt or server notification left over from the last one.
+					await settle()
 					global.gc!()
 					before = process.memoryUsage()
 				},

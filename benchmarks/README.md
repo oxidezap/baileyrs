@@ -54,12 +54,12 @@ instrumented execution. Fixed warmup options also apply to these rows.
 | Local incoming, 64 B / 4 KiB | Protobuf decode and bridge metadata adaptation                      | Encoded bytes and metadata                                                          |
 | Local encode / decode        | Protobuf facade alone                                               | Payload or encoded bytes                                                            |
 | Auth                         | Fresh credential mirror and host store hydration                    | Module/WASM import                                                                  |
-| Host store, 256 B / 4 KiB    | One row or 32-row batch, write then defensive-copy read             | Store and fixed keys/bytes                                                          |
+| Host store, 256 B / 4 KiB    | One row ×100 or 32-row batch ×10, write then defensive-copy read    | Store and fixed keys/bytes                                                          |
 | Fresh session                | QR pairing, connect and pending-notification sync                   | Module import; cleanup after each invocation                                        |
 | Resume session               | Connect and sync from persisted file auth                           | Paired session warmed with bidirectional DMs, graceful close, preserved auth folder |
 | First DM                     | First send through delivery, including Signal session establishment | Two newly paired clients, no DM warmup                                              |
-| Steady DM, 64 B / 4 KiB      | Send through receiver event publication                             | Two connected clients, eight roundtrips in both directions                          |
-| Burst                        | 16 sequential sends through delivery                                | Same warmup as steady DM                                                            |
+| Steady DM, 64 B / 4 KiB      | Send through receiver event and sender's delivery receipt           | Two connected clients, eight roundtrips in both directions                          |
+| Burst                        | 16 sequential sends through delivery receipt                        | Same warmup as steady DM                                                            |
 | Idle                         | One second connected after 32 delivered 4 KiB messages              | Connected warmed pair, activity and one initial idle window                         |
 
 `single-idle.bench.ts` also records a single connected session without peer traffic,
@@ -76,6 +76,30 @@ server is a separate process and is outside client instrumentation.
 Each E2E file runs in its own CI job with a fresh Bartender instance. Server-side
 accounts, devices and Signal state cannot carry over from another file or worker.
 For local E2E validation, select one file and start a fresh mock before the next file.
+
+## Keeping results stable
+
+CodSpeed simulation and memory measure a single call, so anything that happens
+once inside that call, rather than per operation, moves the result.
+
+- **Micro rows.** A single protobuf decode, store write or credential parse is
+  sub-millisecond; one scavenge, page commit or cold cache line inside it moved
+  these rows by 40-150% between runs of unchanged code. Those rows now repeat
+  the operation (`opsPerSample` in `options.ts`, 100 by default; 10 for the
+  32-row store batch). The row names carry the count (`(100 ops)`, `x100`), and
+  the value is the cost of the whole batch.
+- **Complete exchanges.** `roundtrip` returns only after every receiver has
+  published the message and the sender has processed a delivery receipt from
+  each of them. Group rows wait for both members. The receipt work is always
+  inside the call instead of sometimes spilling into the next one.
+- **Quiet start.** `settle()` waits, outside measurement, until no socket has
+  sent or received a frame for 750 ms and the event loop is mostly idle (at most
+  20 s). It runs before every Bartender measurement, after warmup and after
+  pairing, so late receipts, pre-key uploads and server notifications from
+  setup do not land in the measured call.
+- **Empty resume backlog.** The resume row resumes the account once, unmeasured,
+  before the measured resume, so whatever the server still queued after pairing
+  is delivered and acknowledged first.
 
 ## Warmup and isolation
 

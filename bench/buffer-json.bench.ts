@@ -1,4 +1,4 @@
-import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
 import { test, describe } from 'vitest'
 import { BufferJSON, initAuthCreds } from '../src/Utils/index.ts'
 
@@ -14,15 +14,21 @@ const serializedCreds = JSON.stringify(creds, BufferJSON.replacer)
 const serializedKeys = JSON.stringify(keys, BufferJSON.replacer)
 
 describe('BufferJSON', () => {
-	test('stringify auth creds', async ({ bench }) => {
-		await bench('stringify auth creds', () => {
-			JSON.stringify(creds, BufferJSON.replacer)
+	// One credential object is sub-millisecond; repeat it so one-off GC work
+	// does not dominate the measured call.
+	test(`stringify auth creds x${opsPerSample}`, async ({ bench }) => {
+		await bench(`stringify auth creds x${opsPerSample}`, () => {
+			repeat(() => {
+				JSON.stringify(creds, BufferJSON.replacer)
+			})
 		}).run(benchmarkOptions)
 	})
 
-	test('parse auth creds', async ({ bench }) => {
-		await bench('parse auth creds', () => {
-			JSON.parse(serializedCreds, BufferJSON.reviver)
+	test(`parse auth creds x${opsPerSample}`, async ({ bench }) => {
+		await bench(`parse auth creds x${opsPerSample}`, () => {
+			repeat(() => {
+				JSON.parse(serializedCreds, BufferJSON.reviver)
+			})
 		}).run(benchmarkOptions)
 	})
 

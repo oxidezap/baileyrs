@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test, describe } from 'vitest'
-import { createTestClient, destroyTestClient, roundtrip, warmedPair, type TestClient } from './fixture.ts'
+import { createTestClient, destroyTestClient, roundtrip, settle, warmedPair, type TestClient } from './fixture.ts'
 import { integrationOptions } from '../options.ts'
 
 describe('bartender/lifecycle', () => {
@@ -10,6 +10,8 @@ describe('bartender/lifecycle', () => {
 			await bench(
 				'pairing through startup sync',
 				{
+					// Let the previous client's teardown traffic finish first.
+					beforeEach: () => settle(),
 					afterEach: async () => {
 						if (client) {
 							await destroyTestClient(client)
@@ -46,10 +48,19 @@ describe('bartender/lifecycle', () => {
 						// Finish real traffic before shutdown so pairing's initial history
 						// notifications do not become a variable offline backlog on resume.
 						const pair = await warmedPair()
-						previous = pair[0]
 						await destroyTestClient(pair[1])
+						await settle()
+						pair[0].sock.setAutoReconnect(false)
+						await pair[0].sock.end(undefined)
+						// Resume once without measuring it. Anything the server still
+						// queued for this account (late receipts, history sync, offline
+						// notifications) is delivered and acknowledged here, so the
+						// measured resume always starts from an empty offline queue.
+						previous = await createTestClient({ label: 'bench-resume-drain', authFolder: pair[0].authFolder })
+						await settle()
 						previous.sock.setAutoReconnect(false)
 						await previous.sock.end(undefined)
+						await settle()
 					},
 					afterEach: cleanup
 				},
@@ -91,6 +102,8 @@ describe('bartender/lifecycle', () => {
 					beforeEach: async () => {
 						sender = await createTestClient({ label: 'bench-first-sender' })
 						receiver = await createTestClient({ label: 'bench-first-receiver' })
+						// Post-pairing uploads and notifications are not part of the first DM.
+						await settle()
 					},
 					afterEach: cleanup
 				},

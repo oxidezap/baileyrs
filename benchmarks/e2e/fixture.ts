@@ -3,6 +3,7 @@ import { withDeadline } from '../deadline.ts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { setTimeout as delay } from 'node:timers/promises'
 import {
 	createTestClient as createSharedClient,
@@ -11,10 +12,63 @@ import {
 } from '../../src/__tests__/e2e/test-client.ts'
 import type { WAMessage } from '../../src/index.ts'
 
+/** Last time any benchmark socket sent or received a frame. */
+let lastSocketActivity = performance.now()
+let trackingInstalled = false
+
+/**
+ * Record socket traffic so {@link settle} can tell when the clients are quiet.
+ * The transport looks up the global `WebSocket` on every connect, so a subclass
+ * installed before the first client sees every frame of every client. The
+ * per-frame cost is one timestamp, the same for base and head.
+ */
+function trackSocketActivity(): void {
+	if (trackingInstalled) return
+	trackingInstalled = true
+	const NativeWebSocket = globalThis.WebSocket
+	class TrackedWebSocket extends NativeWebSocket {
+		constructor(...args: ConstructorParameters<typeof WebSocket>) {
+			super(...args)
+			this.addEventListener('message', () => {
+				lastSocketActivity = performance.now()
+			})
+		}
+		override send(data: Parameters<WebSocket['send']>[0]): void {
+			lastSocketActivity = performance.now()
+			super.send(data)
+		}
+	}
+	globalThis.WebSocket = TrackedWebSocket
+}
+
+export const settleQuietMs = 750
+export const settleMaxMs = 20_000
+
+/**
+ * Wait until no socket has sent or received a frame for {@link settleQuietMs}
+ * and the event loop was mostly idle over that window.
+ *
+ * Receipts, acks, pre-key uploads and server notifications keep arriving after
+ * an operation's own promise resolves. Without this, a variable part of that
+ * tail lands inside the next measured call. Call it outside measurement only.
+ * It gives up after {@link settleMaxMs} instead of failing: a busy session
+ * makes the row noisier, not wrong.
+ */
+export async function settle(quietMs = settleQuietMs, maxMs = settleMaxMs): Promise<void> {
+	const deadline = performance.now() + maxMs
+	while (performance.now() < deadline) {
+		const loop = performance.eventLoopUtilization()
+		await delay(quietMs)
+		const busy = performance.eventLoopUtilization(loop).utilization
+		if (performance.now() - lastSocketActivity >= quietMs && busy < 0.5) return
+	}
+}
+
 /** Create a loopback mock client, removing its auth directory if setup fails. */
 export async function createTestClient(options: CreateTestClientOptions): Promise<TestClient> {
 	const socketUrl = options.socketUrl ?? process.env.SOCKET_URL ?? ''
 	requireMock(socketUrl)
+	trackSocketActivity()
 	const authFolder = options.authFolder ?? (await mkdtemp(join(tmpdir(), 'baileyrs-bench-')))
 	try {
 		return await createSharedClient({ ...options, socketUrl, authFolder, connectTimeoutMs: 120_000 })
@@ -52,42 +106,79 @@ export function requireMock(socketUrl = process.env.SOCKET_URL ?? ''): void {
 }
 
 /**
- * Send a unique fixed-width text and return its matching receiver event.
- * The deadline covers send and delivery; expiry closes both clients, and every
- * exit removes the receiver listener. An optional destination selects a group.
+ * Send a unique fixed-width text and return the first receiver's matching event.
+ *
+ * The call completes only when every receiver has published the message and
+ * the sender has processed a delivery receipt from each of them, so the whole
+ * exchange is inside the call and none of it spills into the next one.
+ * The deadline covers send, delivery and receipts; expiry closes every client,
+ * and every exit removes the listeners. An optional destination selects a group.
  */
 export async function roundtrip(
 	sender: TestClient,
-	receiver: TestClient,
+	receivers: TestClient | TestClient[],
 	size = 64,
-	destination = receiver.jid
+	destination?: string
 ): Promise<WAMessage> {
+	const targets = Array.isArray(receivers) ? receivers : [receivers]
+	const to = destination ?? targets[0]!.jid
 	const prefix = `bench-${++sequence}-`
 	const text = prefix.padEnd(size, 'x')
-	let listener: ((data: { messages: WAMessage[] }) => void) | undefined
-	const received = new Promise<WAMessage>(resolve => {
-		listener = data => {
-			const message = data.messages.find(
-				m => !m.key.fromMe && (m.message?.conversation ?? m.message?.extendedTextMessage?.text) === text
-			)
-			if (message) resolve(message)
-		}
-		receiver.sock.ev.on('messages.upsert', listener)
+	const cleanups: (() => void)[] = []
+	const deliveries = targets.map(
+		receiver =>
+			new Promise<WAMessage>(resolve => {
+				const listener = (data: { messages: WAMessage[] }) => {
+					const message = data.messages.find(
+						m => !m.key.fromMe && (m.message?.conversation ?? m.message?.extendedTextMessage?.text) === text
+					)
+					if (message) resolve(message)
+				}
+				receiver.sock.ev.on('messages.upsert', listener)
+				cleanups.push(() => receiver.sock.ev.off('messages.upsert', listener))
+			})
+	)
+	// Receipts can arrive before sendMessage resolves, so record them by ID
+	// from the start and match the sent ID afterwards.
+	const receipts = new Map<string, Set<string>>()
+	let sentId: string | undefined
+	let receiptsDone: (() => void) | undefined
+	const allReceipts = new Promise<void>(resolve => {
+		receiptsDone = resolve
 	})
+	const checkReceipts = () => {
+		if (sentId && (receipts.get(sentId)?.size ?? 0) >= targets.length) receiptsDone!()
+	}
+	const onReceipt = (
+		updates: { key: { id?: string | null; participant?: string | null }; receipt: { receiptTimestamp?: unknown } }[]
+	) => {
+		for (const { key, receipt } of updates) {
+			if (!key.id || receipt.receiptTimestamp == null) continue
+			let from = receipts.get(key.id)
+			if (!from) receipts.set(key.id, (from = new Set()))
+			from.add(key.participant ?? '')
+		}
+		checkReceipts()
+	}
+	sender.sock.ev.on('message-receipt.update', onReceipt)
+	cleanups.push(() => sender.sock.ev.off('message-receipt.update', onReceipt))
 	try {
 		return await withDeadline(
 			async () => {
-				const sent = await sender.sock.sendMessage(destination, { text })
-				const message = await received
+				const sent = await sender.sock.sendMessage(to, { text })
 				assert.ok(sent?.key.id)
-				assert.equal(message.key.id, sent.key.id)
-				return message
+				sentId = sent.key.id
+				checkReceipts()
+				const messages = await Promise.all(deliveries)
+				for (const message of messages) assert.equal(message.key.id, sent.key.id)
+				await allReceipts
+				return messages[0]!
 			},
 			60_000,
-			() => destroyClients([sender, receiver])
+			() => destroyClients([sender, ...targets])
 		)
 	} finally {
-		if (listener) receiver.sock.ev.off('messages.upsert', listener)
+		for (const cleanup of cleanups) cleanup()
 	}
 }
 
@@ -111,6 +202,7 @@ export async function warmedPair(): Promise<[TestClient, TestClient]> {
 				await roundtrip(a, b)
 				await roundtrip(b, a)
 			}
+			await settle()
 			return [a, b]
 		} catch (error) {
 			await destroyTestClient(b)

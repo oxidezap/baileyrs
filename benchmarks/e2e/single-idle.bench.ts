@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { test } from 'vitest'
-import { createTestClient, destroyTestClient, idle } from './fixture.ts'
+import { createTestClient, destroyTestClient, idle, settle } from './fixture.ts'
 import { integrationOptions } from '../options.ts'
 
 test('bartender/one connected idle session', async ({ bench }) => {
@@ -20,7 +20,8 @@ test('bartender/one connected idle session', async ({ bench }) => {
 		await bench(
 			'connected 1s without traffic',
 			{
-				beforeEach: () => {
+				beforeEach: async () => {
+					await settle()
 					before = snapshot()
 				},
 				afterEach: () => {

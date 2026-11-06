@@ -1,4 +1,4 @@
-import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
 import { createHash } from 'node:crypto'
 import { test, describe } from 'vitest'
 import type { WAMessage, WAMessageContent } from '../src/Types/index.ts'
@@ -54,13 +54,15 @@ describe('message content helpers (1000 messages)', () => {
 })
 
 describe('message generation', () => {
-	test('generateWAMessageFromContent', async ({ bench }) => {
-		await bench('generateWAMessageFromContent', () => {
-			generateWAMessageFromContent(
-				'5511999990000@s.whatsapp.net',
-				{ extendedTextMessage: { text: 'hello world', contextInfo: { stanzaId: 'ABC' } } },
-				{ userJid: '5511888880000@s.whatsapp.net', timestamp: new Date(1_734_000_000_000) }
-			)
+	test(`generateWAMessageFromContent x${opsPerSample}`, async ({ bench }) => {
+		await bench(`generateWAMessageFromContent x${opsPerSample}`, () => {
+			repeat(() => {
+				generateWAMessageFromContent(
+					'5511999990000@s.whatsapp.net',
+					{ extendedTextMessage: { text: 'hello world', contextInfo: { stanzaId: 'ABC' } } },
+					{ userJid: '5511888880000@s.whatsapp.net', timestamp: new Date(1_734_000_000_000) }
+				)
+			})
 		}).run(benchmarkOptions)
 	})
 
