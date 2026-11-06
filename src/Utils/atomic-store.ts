@@ -7,6 +7,17 @@ export type AtomicStoreCallbacks = Pick<
 export type OrdinaryStoreCallbacks = Omit<JsStoreCallbacks, keyof AtomicStoreCallbacks> & { flush?(): Promise<void> }
 
 export type AtomicRows = Map<string, Uint8Array>
+/**
+ * What an atomic change reads and writes. A full `AtomicRows` map satisfies it,
+ * and a store can instead pass a view that reads through to its own rows and
+ * stages the writes, so a change costs the rows it touches.
+ */
+export interface AtomicRowView {
+	get(key: string): Uint8Array | undefined
+	has(key: string): boolean
+	set(key: string, value: Uint8Array): unknown
+	delete(key: string): boolean
+}
 export const rowKey = (store: string, key: string): string => JSON.stringify([store, key])
 const encode = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
 const decode = (value: Uint8Array): unknown => JSON.parse(new TextDecoder().decode(value))
@@ -58,7 +69,7 @@ export const encodeTokenRow = (row: TokenRow): Uint8Array =>
 		`{"token":${JSON.stringify(row.token)},"token_timestamp":${row.token_timestamp},"sender_timestamp":${row.sender_timestamp ?? 'null'}}`
 	)
 
-const readIndex = (rows: AtomicRows, key: string): Set<string> => {
+const readIndex = (rows: AtomicRowView, key: string): Set<string> => {
 	const bytes = rows.get(rowKey('meta', key))
 	const value = bytes ? decode(bytes) : []
 	if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new TypeError(`invalid ${key} index`)
@@ -67,7 +78,7 @@ const readIndex = (rows: AtomicRows, key: string): Set<string> => {
 
 /** The caller supplies a real transaction covering all reads and writes. */
 export const atomicCallbacks = (
-	transaction: (change: (rows: AtomicRows) => void) => Promise<void>
+	transaction: (change: (rows: AtomicRowView) => void) => Promise<void>
 ): AtomicStoreCallbacks => ({
 	commitPatch(name, state, removed, added, maintainIndex) {
 		const snapshot = Uint8Array.from(state)

@@ -42,3 +42,23 @@ for (const size of [256, 4096]) {
 		})
 	})
 }
+
+// Atomic callbacks (tc-token updates, app-state patches) run per message on a
+// store that already holds the whole session: pre-keys, sessions and sender keys.
+describe('host store/atomic', () => {
+	const store = useMemoryStore()
+	const storedRows = 2048
+	test(`tc-token update with ${storedRows} stored rows x${rowRepeats}`, async ({ bench }) => {
+		const row = new Uint8Array(256).fill(7)
+		await store.setMany!(
+			'session',
+			Array.from({ length: storedRows }, (_, i): [string, Uint8Array] => [`${100_000 + i}.0`, row])
+		)
+		let timestamp = 1_700_000_000
+		await bench(`tc-token update with ${storedRows} stored rows x${rowRepeats}`, async () => {
+			await repeatAsync(async () => {
+				await store.touchTcTokenSenderTimestamp('5511900000001@s.whatsapp.net', String(timestamp++))
+			}, rowRepeats)
+		}).run(options)
+	})
+})
