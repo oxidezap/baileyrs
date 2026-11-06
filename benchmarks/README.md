@@ -119,6 +119,19 @@ once inside that call, rather than per operation, moves the result.
     traffic) that the client cannot hold constant from one run to the next.
   - The single 4 KiB DM peak memory moved between ~96 KB and ~167 KB. The
     16-message 4 KiB row covers the same path and stays within a few percent.
+- **No memory row for JS-heap-only work.** The memory instrument sees native
+  allocations, not objects on the V8 heap. Rows that only build JS objects
+  report a fixed 0.6-4 KB of V8 runtime bookkeeping: `protobuf decode` and
+  `incoming decode and adapt` report the same ~12 allocations for 64 B and
+  4 KiB payloads. One 128-656 B allocation came and went between runs of
+  identical code, which CodSpeed reported as 10-100% changes (for example
+  `protobuf decode` 1.9 KB → 1.5 KB on PR #189, which does not touch it).
+  These rows skip memory mode with `test.skipIf(memoryMode)` and keep their
+  simulation row: local `protobuf decode` and `incoming decode and adapt`,
+  `Message.decode` (both), `WebMessageInfo.decode + toJSON`,
+  `generateWAMessageFromContent`, `reduceBinaryNodeToDictionary`,
+  `parse auth creds` and `event buffer`. Memory rows that allocate natively
+  (encode buffers, store rows, Bartender rows) are unchanged.
 
 ## Warmup and isolation
 

@@ -1,4 +1,4 @@
-import { options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
+import { memoryMode, options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
 import { createHash } from 'node:crypto'
 import { test, describe } from 'vitest'
 import type { WAMessage, WAMessageContent } from '../src/Types/index.ts'
@@ -54,7 +54,7 @@ describe('message content helpers (1000 messages)', () => {
 })
 
 describe('message generation', () => {
-	test(`generateWAMessageFromContent x${opsPerSample}`, async ({ bench }) => {
+	test.skipIf(memoryMode)(`generateWAMessageFromContent x${opsPerSample}`, async ({ bench }) => {
 		await bench(`generateWAMessageFromContent x${opsPerSample}`, () => {
 			repeat(() => {
 				generateWAMessageFromContent(

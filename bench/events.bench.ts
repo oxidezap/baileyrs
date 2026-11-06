@@ -1,4 +1,4 @@
-import { options as benchmarkOptions } from '../benchmarks/options.ts'
+import { memoryMode, options as benchmarkOptions } from '../benchmarks/options.ts'
 import { test, describe } from 'vitest'
 import { adaptBridgeEvent } from '../src/Bridge/adapt.ts'
 import type { WAMessage } from '../src/Types/index.ts'
@@ -45,7 +45,7 @@ describe('event pipeline (500 messages)', () => {
 		}).run(benchmarkOptions)
 	})
 
-	test('event buffer: buffer + flush upserts and updates', async ({ bench }) => {
+	test.skipIf(memoryMode)('event buffer: buffer + flush upserts and updates', async ({ bench }) => {
 		await bench('event buffer: buffer + flush upserts and updates', () => {
 			const ev = makeEventBuffer(silentLogger)
 			let delivered = 0

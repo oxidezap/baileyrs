@@ -1,4 +1,4 @@
-import { options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
+import { memoryMode, options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
 import { test, describe } from 'vitest'
 import { BufferJSON, initAuthCreds } from '../src/Utils/index.ts'
 
@@ -24,7 +24,7 @@ describe('BufferJSON', () => {
 		}).run(benchmarkOptions)
 	})
 
-	test(`parse auth creds x${opsPerSample}`, async ({ bench }) => {
+	test.skipIf(memoryMode)(`parse auth creds x${opsPerSample}`, async ({ bench }) => {
 		await bench(`parse auth creds x${opsPerSample}`, () => {
 			repeat(() => {
 				JSON.parse(serializedCreds, BufferJSON.reviver)

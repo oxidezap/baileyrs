@@ -1,4 +1,4 @@
-import { options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
+import { memoryMode, options as benchmarkOptions, opsPerSample, repeat } from '../benchmarks/options.ts'
 import { test, describe } from 'vitest'
 import {
 	binaryNodeToString,
@@ -21,7 +21,7 @@ describe('binary node helpers (512 participants)', () => {
 		}).run(benchmarkOptions)
 	})
 
-	test(`reduceBinaryNodeToDictionary x${opsPerSample}`, async ({ bench }) => {
+	test.skipIf(memoryMode)(`reduceBinaryNodeToDictionary x${opsPerSample}`, async ({ bench }) => {
 		await bench(`reduceBinaryNodeToDictionary x${opsPerSample}`, () => {
 			repeat(() => {
 				reduceBinaryNodeToDictionary(props, 'prop')
