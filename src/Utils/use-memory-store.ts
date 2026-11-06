@@ -1,4 +1,4 @@
-import { atomicCallbacks, rowKey, type AtomicRows } from './atomic-store.ts'
+import { atomicCallbacks, type AtomicRowView } from './atomic-store.ts'
 import type { AuthenticationState } from '../Types/index.ts'
 import { markNativeMemoryStore } from '../Compatibility/internal/native-memory-store.ts'
 
@@ -30,14 +30,44 @@ export function useMemoryStore(options: { native?: boolean } = {}): NonNullable<
 
 	const memoryStore: NonNullable<AuthenticationState['store']> = {
 		...atomicCallbacks(async change => {
-			const rows: AtomicRows = new Map()
-			for (const [namespace, bucket] of stores)
-				for (const [key, value] of bucket) rows.set(rowKey(namespace, key), value)
-			change(rows)
-			stores.clear()
-			for (const [rawKey, value] of rows) {
+			// Reads go through to the buckets and writes are staged, so a change
+			// costs the rows it touches instead of a copy of every stored row (each
+			// key re-parsed) per transaction. Nothing is applied when `change`
+			// throws, and replaying the writes in order onto the buckets leaves the
+			// same rows in the same order as rebuilding them from a full copy.
+			const staged = new Map<string, Uint8Array | undefined>()
+			const writes: [rawKey: string, value: Uint8Array | undefined][] = []
+			const read = (rawKey: string): Uint8Array | undefined => {
+				if (staged.has(rawKey)) return staged.get(rawKey)
 				const [namespace, key]: [string, string] = JSON.parse(rawKey)
-				bucketForWrite(namespace).set(key, value)
+				return stores.get(namespace)?.get(key)
+			}
+			const rows: AtomicRowView = {
+				get: read,
+				has: rawKey => read(rawKey) !== undefined,
+				set(rawKey, value) {
+					staged.set(rawKey, value)
+					writes.push([rawKey, value])
+					return rows
+				},
+				delete(rawKey) {
+					const existed = read(rawKey) !== undefined
+					staged.set(rawKey, undefined)
+					writes.push([rawKey, undefined])
+					return existed
+				}
+			}
+			change(rows)
+			for (const [rawKey, value] of writes) {
+				const [namespace, key]: [string, string] = JSON.parse(rawKey)
+				if (value !== undefined) {
+					bucketForWrite(namespace).set(key, value)
+					continue
+				}
+				const bucket = stores.get(namespace)
+				if (!bucket) continue
+				bucket.delete(key)
+				deleteEmptyBucket(namespace, bucket)
 			}
 		}),
 		async get(store: string, key: string): Promise<Uint8Array | null> {

@@ -28,7 +28,12 @@ export const isStringNullOrEmpty = (value: string | null | undefined): value is 
 
 export const writeRandomPadMax16 = (msg: Uint8Array): Buffer<ArrayBuffer> => {
 	const padLength = (randomBytes(1)[0]! & 0x0f) + 1
-	return Buffer.concat([msg, Buffer.alloc(padLength, padLength)]) as Buffer<ArrayBuffer>
+	// One allocation, the same one `Buffer.concat` makes, without the zeroed
+	// pad buffer and the list it would be concatenated from.
+	const padded = Buffer.allocUnsafe(msg.length + padLength)
+	padded.set(msg, 0)
+	padded.fill(padLength, msg.length)
+	return padded as Buffer<ArrayBuffer>
 }
 
 export const unpadRandomMax16 = (e: Uint8Array | Buffer): Uint8Array<ArrayBuffer> => {
