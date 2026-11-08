@@ -1,0 +1,184 @@
+name: Bridge lifetime diagnostic
+on:
+  pull_request:
+    paths: ['.github/workflows/bridge-lifetime-diagnostic.yml', 'scripts/diagnostics/legacy-transition.mjs', 'scripts/diagnostics/memory-lifetimes.mjs', 'scripts/diagnostics/prepare-memory-workloads.mjs']
+permissions:
+  contents: read
+concurrency:
+  group: bridge-lifetime-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  legacy:
+    name: Legacy transition control
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports: ['8080:8080']
+        env:
+          CHATSTATE_TTL_SECS: '3'
+          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        options: --log-driver none
+    env:
+      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
+      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: { node-version: '24', cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: Unobserved before
+        run: node --expose-gc --test --test-concurrency=1 --test-name-pattern='restores legacy auth' src/__tests__/e2e/process-restart.test-e2e.ts
+      - name: Observed first
+        if: ${{ !cancelled() }}
+        env: { NODE_OPTIONS: '--import=./scripts/diagnostics/legacy-transition.mjs' }
+        run: node --expose-gc --test --test-concurrency=1 --test-name-pattern='restores legacy auth' src/__tests__/e2e/process-restart.test-e2e.ts
+      - name: Observed second
+        if: ${{ !cancelled() }}
+        env: { NODE_OPTIONS: '--import=./scripts/diagnostics/legacy-transition.mjs' }
+        run: node --expose-gc --test --test-concurrency=1 --test-name-pattern='restores legacy auth' src/__tests__/e2e/process-restart.test-e2e.ts
+      - name: Unobserved after
+        if: ${{ !cancelled() }}
+        run: node --expose-gc --test --test-concurrency=1 --test-name-pattern='restores legacy auth' src/__tests__/e2e/process-restart.test-e2e.ts
+      - name: Read synthetic transition records
+        if: ${{ !cancelled() }}
+        run: |
+          for trace in .diagnostic-legacy/*.json; do
+            if [ -f "$trace" ]; then cat "$trace"; printf '\n'; fi
+          done
+  allocation:
+    name: Published and diagnostic allocation lifetimes
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports: ['8080:8080']
+        env:
+          CHATSTATE_TTL_SECS: '3'
+          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        options: --log-driver none
+    env:
+      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
+      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      LOG_LEVEL: silent
+      BENCH_SUITE: e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: oxidezap/whatsapp-rust-bridge
+          ref: 04f014aefbf248f2ecbf7551cc73e67b949c9e73
+          path: bridge-source
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: { node-version: '24', cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: Build exact diagnostic and matched uninstrumented core
+        id: build
+        run: |
+          rustup toolchain install nightly-2026-06-16 --profile minimal --target wasm32-unknown-unknown
+          cargo +nightly-2026-06-16 install wasm-bindgen-cli --version 0.2.130 --locked
+          mkdir -p .diagnostic-build/profiled .diagnostic-build/rebuilt
+          cd bridge-source
+          git rev-parse HEAD
+          cargo +nightly-2026-06-16 build --locked --profile profiling --target wasm32-unknown-unknown --features memory-profiling
+          wasm-bindgen --target web --out-dir ../.diagnostic-build/profiled target/wasm32-unknown-unknown/profiling/whatsapp_rust_bridge.wasm
+          cargo +nightly-2026-06-16 build --locked --profile profiling --target wasm32-unknown-unknown
+          wasm-bindgen --target web --out-dir ../.diagnostic-build/rebuilt target/wasm32-unknown-unknown/profiling/whatsapp_rust_bridge.wasm
+          git diff --exit-code
+          cd ..
+          sha256sum .diagnostic-build/*/*.wasm node_modules/@oxidezap/whatsapp-rust-bridge/dist/*.wasm
+          node scripts/diagnostics/prepare-memory-workloads.mjs
+      - name: Memory npm-plain-before
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: npm
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-npm-plain-before.bench.ts
+      - name: Memory npm-observed
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: npm
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-npm-observed.bench.ts
+      - name: Memory rebuilt-observed
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: rebuilt
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-rebuilt-observed.bench.ts
+      - name: Memory profiled-observed
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: profiled
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-profiled-observed.bench.ts
+      - name: Memory profiled-plain
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: profiled
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-profiled-plain.bench.ts
+      - name: Memory rebuilt-plain
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: rebuilt
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-rebuilt-plain.bench.ts
+      - name: Memory npm-plain-after
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_VARIANT: npm
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-npm-plain-after.bench.ts
+      - name: Read allocation snapshots
+        if: ${{ !cancelled() }}
+        run: |
+          for trace in .diagnostic-memory/*.json; do
+            if [ -f "$trace" ]; then cat "$trace"; printf '\n'; fi
+          done
