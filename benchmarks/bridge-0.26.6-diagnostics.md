@@ -144,8 +144,10 @@ deadline and cleanup. The only additions are out-of-window before/after snapshot
 and an observed-mode callback journal of method, namespace, byte length and WASM
 capacity. It records no auth keys or message content. CodSpeed Memory is the sole
 performance instrument; snapshots are diagnostic attribution, not a replacement
-benchmark metric. The observer is also tested against npm and matched rebuilds,
-and each rebuilt variant runs without it to expose observer/profile effects.
+benchmark metric. The earlier seven-point study includes plain runs of both rebuilt variants.
+The corrected post-GC native job has three observed windows only; it does not
+independently measure its observer overhead. The separate published-version job
+contains the repeated plain/observed controls. These cohorts must remain distinct.
 
 Snapshot allocation and lifetime overhead is a limitation: diagnostic structures
 are retained outside the measured call and may affect later GC. Allocator totals
@@ -194,3 +196,168 @@ The follow-up has two independent jobs: published 0.26.4/0.26.6 checkouts with
 observer/plain controls on one runner; and three npm/rebuilt/profiled native
 attribution windows on another runner. Only comparisons within each runner are
 controlled. Observations from the diagnostic build remain separate from npm.
+
+### Corrected post-GC controls
+
+At `547848080e7a049cfb8b5cc66dcce24862f88975`,
+[workflow 42452482141](https://github.com/oxidezap/baileyrs/actions/runs/42452482141)
+completed both jobs and verified one post-GC record per observed window. The
+published pair uses separate dependency directories, the same consumer source,
+one physical runner and mock service. The native attribution job uses a second
+runner; its measurements cannot be paired numerically with the published job.
+[CodSpeed 6af00e995f0d6951f2214652](https://app.codspeed.io/oxidezap/baileyrs/runs/6af00e995f0d6951f2214652)
+contains the eleven executed points:
+
+| Published package |      Plain peaks |   Observed peaks |
+| ----------------- | ---------------: | ---------------: |
+| 0.26.4            | 101.1 / 102.3 KB | 101.0 / 102.6 KB |
+| 0.26.6            | 170.9 / 166.0 KB | 102.9 / 165.4 KB |
+
+The unobserved version difference reproduces while consumer implementation,
+hardware, instrument and mock are held constant. Observation changes one new
+sample materially, but not the other. A favorable observed sample is not evidence
+that the published regression is fixed.
+
+For the four published observed windows, WASM capacity, V8 heap capacity and every
+reported V8 space capacity/physical-size endpoint remain unchanged. Worker JS
+heap usage increases by roughly 0.93 MB on 0.26.4 and 1.29 MB on 0.26.6. Worker
+ArrayBuffer endpoint increases are:
+
+| Window                  | ArrayBuffer increase during operation |
+| ----------------------- | ------------------------------------: |
+| Old first               |                          15,841 bytes |
+| Old second              |                          15,876 bytes |
+| New first, lower peak   |                          28,899 bytes |
+| New second, higher peak |                          94,430 bytes |
+
+The new-version spread is 65,531 bytes, approximately one 64-KiB block minus five
+bytes of other variation. These are endpoint snapshots, not allocation timelines
+or official CodSpeed peak metrics. They identify retained host ArrayBuffers as a
+major correlate of the observed spread, without identifying the allocator owner.
+Snapshots alone cannot exclude transient RSS changes. Worker RSS is not the same
+scope as the benchmark process-tree physical peak.
+
+The journal records ten outbound frames on old versus eleven/twelve on new. New
+also performs an extra session enumeration, two extra identity reads, three
+32-byte identity writes, and a second 40-byte message-secret batch. Total recorded
+write inputs are 3,978 bytes on old and 4,073 bytes on new; these are row inputs,
+not all bytes rewritten by full-snapshot persistence. Core trust work and callbacks
+must not be dropped to reduce these counts. Delivery/receipt assertions pass.
+
+The corrected native windows report CodSpeed peaks of npm 160.6 KB, matched
+rebuild 165.8 KB and profiled rebuild 166.3 KB. All three retain roughly 94.5 KB
+of extra worker ArrayBuffers at the endpoint and have zero WASM capacity growth.
+In the enabled profiler window:
+
+- Largest requested Rust allocation after reset: 5,224 bytes.
+- No WASM memory-grow event; no dropped grow/span/large-allocation records.
+- Requested Rust heap churn: 177,742 bytes allocated and 4,874,659 bytes freed.
+- Live heap: 6,765,557 before, 2,068,640 after, 1,653,292 after cleanup.
+- Peak requested live heap: 6,776,031 bytes; this is not the CodSpeed malloc peak.
+- The large-allocation recorder threshold is **1 MiB**, not 64 KiB. Its empty
+  event list alone cannot exclude a 64-KiB allocation; the largest-allocation
+  counter provides that bound in this instrumented window.
+- Leading native spans include `wa.send.impl` (11,790 bytes),
+  `wa.session.fetch_establish` (11,718), `wa.recv.message_enqueue` (11,445),
+  `wa.usync.process_device_list` (8,689), and `wa.iq` (8,355).
+
+The bulk native freeing demonstrates carryover lifetimes across the measurement
+boundary; it must not be subtracted from host peak memory to claim an improvement.
+Counters include diagnostic work, with a separately reported diagnostics bucket.
+These data bound behavior in the instrumented build. They do not prove identical
+allocation sequences inside the optimized npm artifact. They do show that the
+observed host 64-KiB spread is not a matching 64-KiB Rust allocator request or a
+WASM capacity increase in that controlled diagnostic window.
+
+### Timeline and retention evidence from an identical-code pair
+
+The public CodSpeed Stats timeline for the earlier same-bridge pair was inspected
+read-only after the MCP queries. The larger sample rises from 70.55 KB at 77.15 ms
+to 136.03 KB at 79.35 ms and retains the raised level through measurement end.
+The smaller sample has no comparable late step. These are observed plot samples,
+not proof that a particular allocation request was exactly that difference.
+
+Exact MCP totals corroborate the endpoint lifetime difference:
+
+| Identical consumer source | Peak bytes | Allocated bytes | Freed bytes | Net bytes | Allocation calls |
+| ------------------------- | ---------: | --------------: | ----------: | --------: | ---------------: |
+| Higher sample             |    167,395 |       1,195,937 |   1,049,910 |   146,027 |            3,269 |
+| Lower sample              |    104,787 |       1,149,590 |   1,067,007 |    82,583 |            3,283 |
+
+The higher sample has fewer allocation calls yet 63,444 more net bytes at the
+boundary. Combined with the `persist` stack difference, this supports a large
+host-allocation/lifetime contribution; it does not identify a faulty serializer
+or an unavoidable protocol cost. The collector/GC control and the native profiler
+must remain separate from the unobserved published result.
+
+[CodSpeed's Memory documentation](https://codspeed.io/docs/instruments/memory)
+distinguishes allocator-requested peak from resident physical peak and describes
+tracking allocator calls with eBPF. Rust allocations within existing WASM memory,
+worker ArrayBuffers, V8 heap usage and process-tree RSS are different measures;
+none should be substituted for the others.
+
+### Final Buffer/GC discriminator: incomplete attribution
+
+[Workflow 42453570102](https://github.com/oxidezap/baileyrs/actions/runs/42453570102/job/128647717677),
+commit `d97330d9ca3e3f0fa50acd6261277d33ad0f3ada`, executes one unchanged
+published-0.26.6 first DM with additional attribution only. It observes exported
+Buffer.from/alloc/allocUnsafe/allocUnsafeSlow results at least 32 KiB, stores only
+sizes and process-local backing-store labels, and preserves the original returned
+values. It never stores the buffers themselves. The observer can affect allocation
+shape and is not a proposed optimization or production replacement.
+
+After the original cleanup completes and the measurement has stopped, two full
+GC calls separated by event-loop turns test release. They are not added inside
+the measured operation, change no guard and are not used to improve its score.
+The original message/receipt assertions pass and the required record is present.
+
+- No observed exported Buffer call returns a view of at least 32 KiB. This is not
+  exhaustive native allocation coverage: Node internals and captured function
+  aliases can bypass these exported methods, and small views can share a larger
+  backing store.
+- ArrayBuffers: 1,315,793 bytes before, 1,344,756 after the operation, 1,398,755
+  after cleanup, 1,031,716 after the additional GC. The GC frees ordinary/carryover
+  buffers; the endpoint 64-KiB extra block is absent in this particular sample.
+- WASM capacity remains 9,764,864 bytes throughout.
+- Crucially, [CodSpeed 6af0126237973273e44510f7](https://app.codspeed.io/oxidezap/baileyrs/runs/6af0126237973273e44510f7)
+  still reports a high **168.7 KB** peak (172,722 bytes), despite that low endpoint.
+  It records 1,550,074 allocated bytes and 1,468,250 freed, leaving 81,824 net bytes.
+  Its flamegraph is unavailable; an MCP flamegraph request confirms no data.
+
+This is a negative discriminator. It refutes a complete explanation based on
+retained endpoint ArrayBuffers: a high peak also occurs with a low endpoint.
+A transient host-allocation contribution remains unlocalized. Earlier late-retained
+and persist-associated samples remain evidence for those samples, but cannot be
+used as the sole causal explanation for every published first-DM peak. No TLS,
+mock, serializer or Rust defect is presumed from these observations.
+
+## Outcome and smallest next steps
+
+No new production optimization or legacy restoration fix is demonstrated. The
+consumer retains the existing 0.26.6 adaptations, durability, isolation, checks,
+workloads and gates. Temporary observers/workflows are removed from the final
+tree; the diagnostic commits and this report preserve reproduction evidence.
+
+- Legacy: the not-connected error is downstream of the delivery guard and explicit
+  teardown in the reproduced cases. Coordinate the still-pending send and the
+  hundreds of fresh transactional reads with the existing core investigation.
+  A fix must preserve complete state observation and trust; no callback cache or
+  deadline increase was introduced. The latency observer itself is not proof of
+  storage as the only pre-deadline bottleneck.
+- Memory: the published version difference reproduces under controlled conditions.
+  Instrumentation changes some peaks. A 64-KiB endpoint ArrayBuffer difference
+  explains part of the observed variability, while the final high-peak/low-endpoint
+  sample proves that endpoint correlation is insufficient for full attribution.
+  The enabled native build has no matching large Rust request or linear growth,
+  but is not numerically interchangeable with npm. No consumer optimization is
+  supported as both causal and beneficial.
+- Next memory discriminator: an unobserved published high sample with a symbolized
+  native allocation/free event stack at its transient peak. Available MCP results
+  expose aggregate allocation stacks/totals, and the dashboard exposes the timeline;
+  the final sample has no flamegraph or per-allocation native owner data. Further
+  JS allocation observers already demonstrably perturb the allocator state and
+  are not a substitute for that missing correlation.
+- The mock-source 404 remains respected. No alternate source route, upstream
+  implementation, publication, merge, deploy or CodSpeed acceptance/reclassification
+  was attempted in this round. A new bridge release alone is not established as
+  sufficient for either remaining qualification problem.
