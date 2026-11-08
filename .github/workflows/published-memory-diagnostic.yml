@@ -1,0 +1,280 @@
+name: Published bridge memory diagnostic
+on:
+  pull_request:
+    paths: ['.github/workflows/published-memory-diagnostic.yml', 'scripts/diagnostics/published-lifetimes.mjs']
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: published-memory-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  paired:
+    name: Published first-DM post-GC pair
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports: ['8080:8080']
+        env:
+          CHATSTATE_TTL_SECS: '3'
+          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        options: --log-driver none
+    env:
+      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
+      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      LOG_LEVEL: silent
+      BENCH_SUITE: e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', path: comparison-old, persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: { node-version: '24', cache: npm }
+      - run: npm ci --ignore-scripts
+      - run: npm ci --ignore-scripts
+        working-directory: comparison-old
+      - run: npm install --ignore-scripts --save-exact @oxidezap/whatsapp-rust-bridge@0.26.4
+        working-directory: comparison-old
+      - name: Prepare identical published workloads
+        id: prepare
+        run: |
+          npm ls @oxidezap/whatsapp-rust-bridge
+          npm ls --prefix comparison-old @oxidezap/whatsapp-rust-bridge
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          const source = readFileSync('benchmarks/e2e/lifecycle.bench.ts', 'utf8')
+          for (const [root, labels] of [['.', ['new-plain-first', 'new-observed-first', 'new-observed-second', 'new-plain-after']], ['comparison-old', ['old-plain-before', 'old-observed-first', 'old-observed-second', 'old-plain-after']]]) {
+            for (const label of labels) {
+              let copy = 'import "../../scripts/diagnostics/published-lifetimes.mjs"\n' + source.replace("'bartender/lifecycle'", `'diagnostic/published/${label}'`)
+              copy = copy.replace('await settle()', 'await settle(); (globalThis as any).__memoryLifetimes.begin()')
+              copy = copy.replace('afterEach: cleanup', 'afterEach: async () => { (globalThis as any).__memoryLifetimes.end(); await cleanup(); (globalThis as any).__memoryLifetimes.cleaned() }')
+              writeFileSync(`${root}/benchmarks/e2e/diagnostic-${label}.bench.ts`, copy)
+            }
+          }
+          NODE
+      - name: Memory old-plain-before
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: old-plain-before
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: comparison-old
+          run: npm run bench -- benchmarks/e2e/diagnostic-old-plain-before.bench.ts
+      - name: Memory new-plain-first
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: new-plain-first
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: .
+          run: npm run bench -- benchmarks/e2e/diagnostic-new-plain-first.bench.ts
+      - name: Memory new-observed-first
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: new-observed-first
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: .
+          run: npm run bench -- benchmarks/e2e/diagnostic-new-observed-first.bench.ts
+      - name: Memory old-observed-first
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: old-observed-first
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: comparison-old
+          run: npm run bench -- benchmarks/e2e/diagnostic-old-observed-first.bench.ts
+      - name: Memory old-observed-second
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: old-observed-second
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: comparison-old
+          run: npm run bench -- benchmarks/e2e/diagnostic-old-observed-second.bench.ts
+      - name: Memory new-observed-second
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: new-observed-second
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: .
+          run: npm run bench -- benchmarks/e2e/diagnostic-new-observed-second.bench.ts
+      - name: Memory new-plain-after
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: new-plain-after
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: .
+          run: npm run bench -- benchmarks/e2e/diagnostic-new-plain-after.bench.ts
+      - name: Memory old-plain-after
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: old-plain-after
+          DIAGNOSTIC_OBSERVE: '0'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          working-directory: comparison-old
+          run: npm run bench -- benchmarks/e2e/diagnostic-old-plain-after.bench.ts
+      - name: Read post-GC observations
+        if: ${{ !cancelled() }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readdirSync, readFileSync } from 'node:fs'
+          let count = 0
+          for (const root of ['.', 'comparison-old']) {
+            for (const file of readdirSync(`${root}/.diagnostic-published`)) {
+              const rows = JSON.parse(readFileSync(`${root}/.diagnostic-published/${file}`, 'utf8'))
+              if (rows.length !== 1 || rows[0].afterForcedGc !== true) throw Error('expected one post-GC measurement window')
+              console.log(JSON.stringify(rows[0]))
+              count++
+            }
+          }
+          if (count !== 4) throw Error('expected four observed windows')
+          NODE
+
+  native:
+    name: Native attribution after GC
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports: ['8080:8080']
+        env:
+          CHATSTATE_TTL_SECS: '3'
+          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        options: --log-driver none
+    env:
+      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
+      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      LOG_LEVEL: silent
+      BENCH_SUITE: e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: oxidezap/whatsapp-rust-bridge
+          ref: 04f014aefbf248f2ecbf7551cc73e67b949c9e73
+          path: bridge-source
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: { node-version: '24', cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: Build exact diagnostic and matched uninstrumented core
+        id: build
+        run: |
+          rustup toolchain install nightly-2026-06-16 --profile minimal --target wasm32-unknown-unknown
+          cargo +nightly-2026-06-16 install wasm-bindgen-cli --version 0.2.130 --locked
+          mkdir -p .diagnostic-build/profiled .diagnostic-build/rebuilt
+          cd bridge-source
+          git rev-parse HEAD
+          cargo +nightly-2026-06-16 build --locked --profile profiling --target wasm32-unknown-unknown --features memory-profiling
+          wasm-bindgen --target web --out-dir ../.diagnostic-build/profiled target/wasm32-unknown-unknown/profiling/whatsapp_rust_bridge.wasm
+          cargo +nightly-2026-06-16 build --locked --profile profiling --target wasm32-unknown-unknown
+          wasm-bindgen --target web --out-dir ../.diagnostic-build/rebuilt target/wasm32-unknown-unknown/profiling/whatsapp_rust_bridge.wasm
+          git diff --exit-code
+          cd ..
+          sha256sum .diagnostic-build/*/*.wasm node_modules/@oxidezap/whatsapp-rust-bridge/dist/*.wasm
+      - name: Prepare native attribution windows
+        id: prepare
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          const source = readFileSync('benchmarks/e2e/lifecycle.bench.ts', 'utf8')
+          for (const label of ['npm-native', 'rebuilt-native', 'profiled-native']) {
+            let copy = 'import "../../scripts/diagnostics/published-lifetimes.mjs"\n' + source.replace("'bartender/lifecycle'", `'diagnostic/native-postgc/${label}'`)
+            copy = copy.replace('await settle()', 'await settle(); (globalThis as any).__memoryLifetimes.begin()')
+            copy = copy.replace('afterEach: cleanup', 'afterEach: async () => { (globalThis as any).__memoryLifetimes.end(); await cleanup(); (globalThis as any).__memoryLifetimes.cleaned() }')
+            writeFileSync(`benchmarks/e2e/diagnostic-${label}.bench.ts`, copy)
+          }
+          NODE
+      - name: Native Memory npm
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: npm-native
+          DIAGNOSTIC_VARIANT: npm
+          DIAGNOSTIC_NATIVE: '1'
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-npm-native.bench.ts
+      - name: Native Memory rebuilt
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: rebuilt-native
+          DIAGNOSTIC_VARIANT: rebuilt
+          DIAGNOSTIC_NATIVE: '1'
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-rebuilt-native.bench.ts
+      - name: Native Memory profiled
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        env:
+          DIAGNOSTIC_LABEL: profiled-native
+          DIAGNOSTIC_VARIANT: profiled
+          DIAGNOSTIC_NATIVE: '1'
+          DIAGNOSTIC_OBSERVE: '1'
+        with:
+          mode: memory
+          runner-version: '5.6.3'
+          run: npm run bench -- benchmarks/e2e/diagnostic-profiled-native.bench.ts
+      - name: Verify native attribution records
+        if: ${{ !cancelled() }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readdirSync, readFileSync } from 'node:fs'
+          const files = readdirSync('.diagnostic-published')
+          if (files.length !== 3) throw Error('expected three native attribution records')
+          for (const file of files) {
+            const rows = JSON.parse(readFileSync(`.diagnostic-published/${file}`, 'utf8'))
+            if (rows.length !== 1 || rows[0].afterForcedGc !== true || !rows[0].before.native) throw Error('invalid native attribution window')
+          }
+          NODE

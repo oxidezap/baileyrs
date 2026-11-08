@@ -63,9 +63,6 @@ try {
 				// Only the configured Bartender test endpoint is used.
 				dangerSkipCertChainVerify: true
 			})
-			;(
-				globalThis as typeof globalThis & { __legacyTransitionSocket?: (socket: typeof sock, account: number) => void }
-			).__legacyTransitionSocket?.(sock, index + 1)
 			sockets[index] = sock
 			sock.ev.on('creds.update', () => {
 				const pending = saveCreds()
