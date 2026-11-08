@@ -39,12 +39,12 @@ executes unobserved–observed–observed–unobserved on the same physical runn
 mock service. All four fail with the existing message-delivery timeout. The two
 observed restores show:
 
-| Event | First observed restore | Second observed restore |
-| --- | ---: | ---: |
-| Four relay calls enter | 457 ms | 434–435 ms |
-| Test disables reconnect and calls first end/disconnect | 15,454 ms | 15,434–15,435 ms |
-| First pending relay rejects `not connected` | 21,224 ms | 21,991 ms |
-| Final reported error | delivery timeout | delivery timeout |
+| Event                                                  | First observed restore | Second observed restore |
+| ------------------------------------------------------ | ---------------------: | ----------------------: |
+| Four relay calls enter                                 |                 457 ms |              434–435 ms |
+| Test disables reconnect and calls first end/disconnect |              15,454 ms |        15,434–15,435 ms |
+| First pending relay rejects `not connected`            |              21,224 ms |               21,991 ms |
+| Final reported error                                   |       delivery timeout |        delivery timeout |
 
 These are within-process ordering timestamps, not benchmark latency measurements.
 There is no observed core disconnected event or stream-end event before the first
@@ -161,15 +161,15 @@ host Memory profiles must be considered together.
 [CodSpeed 6af00b685f0d6951f221462c](https://app.codspeed.io/oxidezap/baileyrs/runs/6af00b685f0d6951f221462c)
 completed seven Memory benchmark points at f56db9d, on one physical runner:
 
-| Artifact / observer | Peak |
-| --- | ---: |
-| npm, plain before | 163.9 KB |
-| npm, observed | 101.9 KB |
-| matched rebuild, observed | 107.3 KB |
+| Artifact / observer        |     Peak |
+| -------------------------- | -------: |
+| npm, plain before          | 163.9 KB |
+| npm, observed              | 101.9 KB |
+| matched rebuild, observed  | 107.3 KB |
 | profiled rebuild, observed | 107.3 KB |
-| profiled rebuild, plain | 105.5 KB |
-| matched rebuild, plain | 106.0 KB |
-| npm, plain after | 149.8 KB |
+| profiled rebuild, plain    | 105.5 KB |
+| matched rebuild, plain     | 106.0 KB |
+| npm, plain after           | 149.8 KB |
 
 Delivery and receipt assertions passed for all seven, but this does not establish
 numeric performance equivalence: observation/build shape clearly changes the npm
