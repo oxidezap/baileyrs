@@ -31,6 +31,7 @@ interface NativeJid {
 }
 
 interface NativeDevice {
+	account?: number[] | null
 	pn?: NativeJid | null
 	lid?: NativeJid | null
 	registration_id?: number
@@ -92,6 +93,7 @@ function deviceFromCreds(creds: AuthenticationCreds): Uint8Array | null {
 	if (!creds.me?.id || isAllZero(creds.noiseKey?.private) || isAllZero(creds.signedIdentityKey?.private)) return null
 	const pn = legacyJidToNative(creds.me.id)
 	const lid = legacyJidToNative(creds.me.lid)
+	const account = accountBytes(creds)
 	return toJsonBytes({
 		pn,
 		lid,
@@ -106,7 +108,7 @@ function deviceFromCreds(creds: AuthenticationCreds): Uint8Array | null {
 		adv_secret_key: creds.advSecretKey
 			? bytesToNumbers(base64Decode(creds.advSecretKey))
 			: Array<number>(SignalKeyLength.ADV_SECRET).fill(0),
-		account: null,
+		account: account ? bytesToNumbers(account) : null,
 		push_name: creds.me.name ?? '',
 		app_version_primary: APP_VERSION_PRIMARY,
 		app_version_secondary: APP_VERSION_SECONDARY,
@@ -132,6 +134,12 @@ const accountBytes = (creds: AuthenticationCreds): Uint8Array | null => {
 
 function prepareNativeDevice(payload: Uint8Array): (creds: AuthenticationCreds) => void {
 	const native = fromJsonBytes(payload) as NativeDevice
+	// Inline presence is authoritative in the bridge. Omission alone permits
+	// the older account sidecar fallback; null explicitly retires the account.
+	const account =
+		native.account == null
+			? native.account
+			: signedDeviceIdentityCodec.decode(new Uint8Array(requireByteArray(native.account, 'device account')))
 	const pn = nativeJidToString(native.pn)
 	const lid = nativeJidToString(native.lid)
 	const registrationId =
@@ -166,6 +174,8 @@ function prepareNativeDevice(payload: Uint8Array): (creds: AuthenticationCreds) 
 		// Upstream marks the initial Signal material readonly on the public
 		// credential contract. Native-state hydration is the one internal owner
 		// allowed to replace that material after reading Rust's persisted device.
+		if (account === null) delete creds.account
+		else if (account !== undefined) creds.account = account
 		const mutableCreds = creds as { -readonly [K in keyof AuthenticationCreds]: AuthenticationCreds[K] }
 		if (pn) {
 			mutableCreds.me = { ...creds.me, id: pn }
