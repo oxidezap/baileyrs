@@ -22,7 +22,7 @@ describe('file snapshot/atomic', () => {
 				await bench(`durable tc-token update with ${size}B row`, async () => {
 					await store.touchTcTokenSenderTimestamp(jid, String(timestamp++))
 				}).run(integrationOptions)
-				assert.deepEqual(await store.get('meta', 'fixture'), payload)
+				assert.deepEqual(Array.from((await store.get('meta', 'fixture'))!), Array.from(payload))
 				await store.flush!()
 			} finally {
 				await rm(folder, { recursive: true, force: true })

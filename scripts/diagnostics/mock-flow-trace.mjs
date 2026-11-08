@@ -70,6 +70,23 @@ const attrs = input =>
 				].includes(key) && typeof value === 'string'
 		)
 	)
+const errorVocabulary = new Set(
+	'invalid recipient sender unknown jid device devices no session identity not found malformed encryption participant payload error bad request routing failed missing mac to message signature cert certificate stale decrypt primary companion linked forbidden unsupported version rate limit exceeded too many recipients mismatch hash checksum addressing expired duplicate counter desync ratchet authorized unauthorized disconnected ciphertext plaintext hmac aes gcm encrypt incorrect unexpected state online offline token peer connection resume resumed owner client stanza socket packet parse parsing format decode failure retry domain type id'.split(
+		' '
+	)
+)
+const summarizeError = bytes => {
+	const text = new TextDecoder().decode(bytes)
+	return {
+		validUtf8: !text.includes('\ufffd'),
+		printableAscii: [...text].every(char => char.charCodeAt(0) >= 32 && char.charCodeAt(0) <= 126),
+		characters: text.length,
+		words: text
+			.toLowerCase()
+			.split(/[^a-z]+/)
+			.filter(word => errorVocabulary.has(word))
+	}
+}
 const node = (value, depth = 0) =>
 	value && typeof value === 'object'
 		? {
@@ -79,50 +96,11 @@ const node = (value, depth = 0) =>
 					? { children: value.content.map(child => node(child, depth + 1)) }
 					: {}),
 				...(value.content instanceof Uint8Array ? { bytes: digest(value.content) } : {}),
-				...(value.tag === 'ack' && value.attrs?.class === 'error' && value.content instanceof Uint8Array
-					? {
-							errorWords: new TextDecoder()
-								.decode(value.content)
-								.toLowerCase()
-								.split(/[^a-z]+/)
-								.filter(word =>
-									[
-										'invalid',
-										'recipient',
-										'sender',
-										'unknown',
-										'jid',
-										'device',
-										'devices',
-										'no',
-										'session',
-										'identity',
-										'not',
-										'found',
-										'malformed',
-										'encryption',
-										'participant',
-										'payload',
-										'error',
-										'bad',
-										'request',
-										'routing',
-										'failed',
-										'missing',
-										'mac',
-										'to',
-										'message',
-										'signature',
-										'cert',
-										'certificate',
-										'stale',
-										'decrypt',
-										'primary',
-										'companion',
-										'linked'
-									].includes(word)
-								)
-						}
+				...(value.tag === 'ack' &&
+				value.attrs?.class === 'error' &&
+				value.content instanceof Uint8Array &&
+				value.content.byteLength < 256
+					? { error: summarizeError(value.content) }
 					: {})
 			}
 		: null
