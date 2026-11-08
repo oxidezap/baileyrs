@@ -9,24 +9,14 @@ concurrency:
   group: bridge-qualification-diagnostic-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  integration:
-    name: Restart and handoff (${{ matrix.bridge }}, ${{ matrix.mock }})
+  baseline:
+    name: Original main with ADV mock
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        bridge: ['0.26.4', '0.26.5', '0.26.6']
-        mock: [legacy, adv]
-        include:
-          - mock: legacy
-            image: ghcr.io/whiskeysockets-devtools/bartender@sha256:9f9df686b1a70d27d4f2dbb70e28988529be4cda062a5013ab90d8a00e9d78c6
-          - mock: adv
-            image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
     services:
       mock-server:
-        image: ${{ matrix.image }}
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
         credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
@@ -44,101 +34,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: d9c6ba84d0903ed6e9c24484dc0a9b3c8f392adc
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
-      - name: Install exact published bridge
         id: install
-        env:
-          BRIDGE_VERSION: ${{ matrix.bridge }}
+      - name: Verify original main and lockfile package
         run: |
-          npm install --ignore-scripts --save-exact "@oxidezap/whatsapp-rust-bridge@$BRIDGE_VERSION"
+          git rev-parse HEAD
           npm ls @oxidezap/whatsapp-rust-bridge
-      - name: Unchanged process restoration scenarios
+      - name: Original main process restoration scenarios
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node --expose-gc --test --test-concurrency=1 src/__tests__/e2e/process-restart.test-e2e.ts
-      - name: Unchanged reconnect scenarios
+      - name: Original main reconnect scenarios
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node --expose-gc --test --test-concurrency=1 src/__tests__/e2e/reconnect.test-e2e.ts
-      # The legacy-mock handoff matrix already ran in 42442841586.
-      - name: Unchanged handoff with corrected ADV mock
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.mock == 'adv' }}
+      - name: Original main handoff scenarios
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: node --expose-gc --test --test-concurrency=1 src/__tests__/e2e/baileys-handoff.test-e2e.ts
-  paired-performance:
-    name: Paired first DM (${{ matrix.mode }})
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [simulation, memory]
-    permissions:
-      contents: read
-      id-token: write
-    services:
-      mock-server:
-        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
-        credentials:
-          username: ${{ github.actor }}
-          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
-        ports:
-          - 8080:8080
-        env:
-          CHATSTATE_TTL_SECS: '3'
-          ADV_SECRET_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
-        options: --log-driver none
-    env:
-      SOCKET_URL: 'wss://127.0.0.1:8080/ws/chat'
-      ADV_SECRET_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
-      NODE_TLS_REJECT_UNAUTHORIZED: '0'
-      LOG_LEVEL: silent
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: d9c6ba84d0903ed6e9c24484dc0a9b3c8f392adc
-          path: comparison-base
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm ci --ignore-scripts
-        working-directory: comparison-base
-      - name: Label otherwise unchanged benchmark copies
-        run: |
-          sha256sum benchmarks/e2e/lifecycle.bench.ts comparison-base/benchmarks/e2e/lifecycle.bench.ts
-          npm ls @oxidezap/whatsapp-rust-bridge
-          npm ls --prefix comparison-base @oxidezap/whatsapp-rust-bridge
-          node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs'
-          for (const [root, labels] of [['.', ['head-first', 'head-second']], ['comparison-base', ['base-before', 'base-after']]]) {
-            const source = readFileSync(`${root}/benchmarks/e2e/lifecycle.bench.ts`, 'utf8')
-            for (const label of labels) {
-              writeFileSync(`${root}/benchmarks/e2e/diagnostic-${label}.bench.ts`, source.replace("'bartender/lifecycle'", `'diagnostic/first-DM/${label}'`))
-            }
-          }
-          NODE
-      - name: Measure base-head-head-base on one runner and one mock
-        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
-        with:
-          mode: ${{ matrix.mode }}
-          runner-version: '5.6.3'
-          run: |
-            set -e
-            cd comparison-base
-            npm run bench:e2e -- benchmarks/e2e/diagnostic-base-before.bench.ts
-            cd ..
-            npm run bench:e2e -- benchmarks/e2e/diagnostic-head-first.bench.ts
-            npm run bench:e2e -- benchmarks/e2e/diagnostic-head-second.bench.ts
-            cd comparison-base
-            npm run bench:e2e -- benchmarks/e2e/diagnostic-base-after.bench.ts
