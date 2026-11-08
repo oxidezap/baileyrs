@@ -189,11 +189,14 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 
 export const makeHttpClient = (config: TransportConfig): JsHttpClientConfig => ({
 	async execute(url, method, headers, body) {
-		const fetchOpts: RequestInit = { method, headers }
+		const fetchOpts: RequestInit = { method, headers, redirect: 'error' }
 		if (body) fetchOpts.body = body as unknown as BodyInit
 		if (config.options?.dispatcher) fetchOpts.dispatcher = config.options.dispatcher
 
 		const resp = await fetch(url, fetchOpts)
+		if (resp.status === 0 || resp.type === 'opaqueredirect') {
+			throw new Error('HTTP adapter received an unobservable redirect or network response')
+		}
 		const buf = new Uint8Array(await resp.arrayBuffer())
 		return { statusCode: resp.status, body: buf }
 	}

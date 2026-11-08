@@ -128,6 +128,8 @@ export type HostSocketConfig = {
 	browser?: [os: string, browser: string, version: string]
 	pushName?: string
 	emitOwnEvents?: boolean
+	/** Additional exact HTTPS authorities for static media; redirects remain disabled. */
+	additionalStaticMediaHosts?: readonly string[]
 	customUploadHosts?: Array<{ hostname: string; maxContentLengthBytes: number }>
 	shouldIgnoreJid?: (jid: string) => boolean | undefined
 	options?: RequestInit

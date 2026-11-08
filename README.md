@@ -147,6 +147,25 @@ out-of-order gaps can become native-only and need a new Signal handshake after
 rollback. Engines older than 0.2.8 cannot read newer seed-only skipped-key records;
 do not delete native-only session rows to force a downgrade.
 
+### Bridge 0.26.6 storage and media
+
+Custom native stores must implement complete, account-scoped `listKeys` and set
+`capabilities.enumerate: true` for ADV identity recovery. Enumeration must include
+historical `session`, `identity` and `sender_key_devices` rows and observe other
+writers on every call. Propagate scan errors; a successful partial list can leave
+stale Signal state behind. `useMultiFileAuthState` and `useMemoryStore` provide
+this capability. `wrapLegacyStore`, including `useLegacyMultiFileAuthState`, does
+not advertise enumeration, so recovery requiring it fails with a storage error.
+Ordinary reads and writes still work; a cache of newly written keys cannot make
+historical legacy state enumerable. Use a native store when recovery is required.
+
+The socket option `additionalStaticMediaHosts: ['cdn.example:8443']` adds exact
+HTTPS authorities for static media at construction. Omit schemes, paths and
+wildcards. It does not configure uploads or TLS trust. The built-in HTTP adapter
+rejects redirects, including when `options.redirect` requests following them.
+Custom host transports must also reject redirects or return the original visible
+3xx response; status-zero and opaque redirects are errors.
+
 ### Connection lifecycle
 
 Transient drops are retried by Rust and report `connecting`. A terminal `close`

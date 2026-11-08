@@ -696,8 +696,9 @@ async function usePerKeyBridgeStore(
 				try {
 					key = decodeURIComponent(encoded)
 				} catch {
-					continue // skip a filename we can't decode rather than crash
+					throw new TypeError(`invalid native auth filename: ${file}`)
 				}
+				if (encodeURIComponent(key) !== encoded) throw new TypeError(`noncanonical native auth filename: ${file}`)
 				if (prefix && !key.startsWith(prefix)) continue
 				found.add(key)
 			}

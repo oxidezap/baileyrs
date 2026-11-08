@@ -244,11 +244,13 @@ describe('wrap-legacy-store: exact native mirror', () => {
 			writes++
 			return originalSet(updates)
 		}
+		// Bridge 0.26.6 rejects the malformed public key during record decoding,
+		// before the compatibility projection can validate its components.
 		const malformed = buildBridgeSenderKeyBytes({ signingPublic: fill(31, 41) })
 
 		await expect(
 			wrapped.set(NativeStore.SENDER_KEY, `${SAMPLE_GROUP}:100000037037034@lid.0`, malformed)
-		).rejects.toThrow(/sender signing public key/)
+		).rejects.toThrow(/^invalid encoding: invalid public key$/)
 		expect(writes).toBe(0)
 	})
 })

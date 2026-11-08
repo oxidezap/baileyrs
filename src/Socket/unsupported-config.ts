@@ -100,6 +100,7 @@ export const READ_CONFIG_KEYS = [
 	'pushName',
 	'auth',
 	'cache',
+	'additionalStaticMediaHosts',
 	'deviceProps',
 	'wantedPreKeyCount',
 	'dangerSkipCertChainVerify',

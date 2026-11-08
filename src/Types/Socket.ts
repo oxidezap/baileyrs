@@ -65,6 +65,9 @@ export type SocketConfig = {
 	emitOwnEvents: boolean
 	/** Custom media upload hosts. */
 	customUploadHosts: MediaConnInfo['hosts']
+	/** Additional exact HTTPS authorities for static media. No schemes, paths,
+	 * wildcards or redirects. Captured by the bridge at client construction. */
+	additionalStaticMediaHosts?: readonly string[]
 	/** provide an auth state object to maintain the auth state */
 	auth: AuthenticationState
 	/**
