@@ -682,3 +682,26 @@ test('flush joins more than 32 consecutive critical writes before reporting dura
 		await rm(folder, { recursive: true, force: true })
 	}
 })
+
+// Cache-hit callbacks can keep a microtask chain alive without letting a
+// setTimeout deadline run. The wall-clock guard must also bound that path.
+test('enumeration enforces its deadline during a continuous cache-hit admission chain', async context => {
+	const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-cache-deadline-'))
+	const store = await useBridgeStore(folder)
+	await store.set('session', 'cached', new Uint8Array([1]))
+	context.mock.timers.enable({ apis: ['Date'], now: 0 })
+	const writer = (async () => {
+		for (let i = 0; i < 200; i++) {
+			await store.get('session', 'cached')
+			if (i === 10) context.mock.timers.tick(30_001)
+		}
+	})()
+	try {
+		await assert.rejects(store.listKeys!('session'), /did not quiesce within 30s/)
+	} finally {
+		await writer
+		context.mock.timers.reset()
+		await store.flush!()
+		await rm(folder, { recursive: true, force: true })
+	}
+})

@@ -1,5 +1,6 @@
 import {
 	settleBeforeFlushDeadline,
+	flushDeadlineError,
 	recordFlushFailure,
 	settledFlushError,
 	trackFlushFailures,
@@ -460,6 +461,9 @@ async function usePerKeyBridgeStore(
 				// their admission barrier within this pass, under the same 30s
 				// deadline; only actual pending-write drains spend the 32 passes.
 				while (admitted.size > 0) {
+					// Cache hits can settle only through microtasks and starve the
+					// timeout callback, so enforce the wall clock before each batch.
+					if (Date.now() >= deadline) throw flushDeadlineError('use-bridge-store flush', errors)
 					await settleBeforeFlushDeadline([...admitted], deadline, 'use-bridge-store flush', errors)
 					if (errors.size) break
 				}
