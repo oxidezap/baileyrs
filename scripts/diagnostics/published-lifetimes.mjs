@@ -3,6 +3,7 @@ import { nodeRuntime } from '../../src/Runtime/node.ts'
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { Buffer } from 'node:buffer'
 import { getHeapSpaceStatistics, getHeapStatistics } from 'node:v8'
 const endpoint = new URL(process.env.SOCKET_URL ?? 'https://invalid')
 if (
@@ -77,6 +78,41 @@ if (observed) {
 		}
 	}
 }
+const traceBuffers = process.env.DIAGNOSTIC_BUFFER_LIFETIME === '1'
+const finalized = []
+if (observed && traceBuffers) {
+	const labels = new WeakMap()
+	let nextLabel = 0
+	const registry = new FinalizationRegistry(bufferLabel => finalized.push(bufferLabel))
+	for (const method of ['from', 'alloc', 'allocUnsafe', 'allocUnsafeSlow']) {
+		const original = Buffer[method]
+		Buffer[method] = function (...args) {
+			const result = Reflect.apply(original, this, args)
+			if (active && result.byteLength >= 32_768) {
+				if (!labels.has(result.buffer)) {
+					labels.set(result.buffer, ++nextLabel)
+					registry.register(result.buffer, nextLabel)
+				}
+				const stack = new Error().stack
+				const site = stack.includes('snapshot-transactions.ts')
+					? 'snapshot'
+					: stack.includes('internal/fs')
+						? 'fs'
+						: stack.includes('internal/deps/undici')
+							? 'undici'
+							: 'other'
+				record('large-buffer', {
+					method,
+					label: labels.get(result.buffer),
+					bytes: result.byteLength,
+					backingBytes: result.buffer.byteLength,
+					site
+				})
+			}
+			return result
+		}
+	}
+}
 const nativeGc = globalThis.gc
 if (typeof nativeGc !== 'function') throw Error('CodSpeed exposed GC required')
 globalThis.gc = (...args) => {
@@ -105,9 +141,17 @@ globalThis.__memoryLifetimes = {
 			results.push(current)
 		}
 	},
-	cleaned() {
+	async cleaned() {
 		if (current) {
 			current.afterCleanup = snapshot()
+			if (traceBuffers) {
+				nativeGc()
+				await new Promise(done => setImmediate(done))
+				nativeGc()
+				await new Promise(done => setImmediate(done))
+				current.afterCleanupGc = snapshot()
+				current.finalizedBufferLabels = [...finalized]
+			}
 			mkdirSync('.diagnostic-published', { recursive: true })
 			writeFileSync(`.diagnostic-published/${label}-${process.pid}.json`, JSON.stringify([current]))
 			console.log('DIA_LIFETIME ' + JSON.stringify(current))
