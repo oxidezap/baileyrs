@@ -71,7 +71,7 @@ const attrs = input =>
 		)
 	)
 const errorVocabulary = new Set(
-	'invalid recipient sender unknown jid device devices no session identity not found malformed encryption participant payload error bad request routing failed missing mac to message signature cert certificate stale decrypt primary companion linked forbidden unsupported version rate limit exceeded too many recipients mismatch hash checksum addressing expired duplicate counter desync ratchet authorized unauthorized disconnected ciphertext plaintext hmac aes gcm encrypt incorrect unexpected state online offline token peer connection resume resumed owner client stanza socket packet parse parsing format decode failure retry domain type id'.split(
+	'invalid recipient sender unknown jid device devices no session identity not found malformed encryption participant payload error bad request routing failed missing mac to message signature cert certificate stale decrypt primary companion linked forbidden unsupported version rate limit exceeded too many recipients mismatch hash checksum addressing expired duplicate counter desync ratchet authorized unauthorized disconnected ciphertext plaintext hmac aes gcm encrypt incorrect unexpected state online offline token peer connection resume resumed owner client stanza socket packet parse parsing format decode failure retry domain type id non canonical address has been deleted obsolete phone header protocol violation validation assertion'.split(
 		' '
 	)
 )
@@ -82,6 +82,7 @@ const summarizeError = bytes => {
 		printableAscii: [...text].every(char => char.charCodeAt(0) >= 32 && char.charCodeAt(0) <= 126),
 		characters: text.length,
 		words: text
+			.replace(/([a-z])([A-Z])/g, '$1 $2')
 			.toLowerCase()
 			.split(/[^a-z]+/)
 			.filter(word => errorVocabulary.has(word))

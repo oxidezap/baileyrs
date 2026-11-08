@@ -18,7 +18,6 @@ jobs:
       matrix:
         include:
           - { bridge: '0.26.6', mock: adv, suite: reconnect }
-          - { bridge: '0.26.4', mock: adv, suite: reconnect }
     services:
       mock-server:
         image: ghcr.io/whiskeysockets-devtools/bartender@sha256:${{ matrix.mock == 'adv' && '56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75' || '9f9df686b1a70d27d4f2dbb70e28988529be4cda062a5013ab90d8a00e9d78c6' }}
@@ -31,6 +30,12 @@ jobs:
           ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
         options: --log-driver none
     steps:
+      - name: Read static mock provenance labels
+        env:
+          MOCK_CONTAINER_ID: ${{ job.services['mock-server'].id }}
+        run: |
+          docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$MOCK_CONTAINER_ID"
+          docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$MOCK_CONTAINER_ID"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -57,94 +62,3 @@ jobs:
           for trace in .diagnostic-traces/*.jsonl; do
             if [ -f "$trace" ]; then sed 's/^/FLOW_TRACE /' "$trace"; fi
           done
-  allocation-pair:
-    name: Snapshot encoding pair (${{ matrix.mode }})
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [memory, walltime]
-    permissions:
-      contents: read
-      id-token: write
-    services:
-      mock-server:
-        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
-        credentials:
-          username: ${{ github.actor }}
-          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
-        ports: ['8080:8080']
-        env:
-          CHATSTATE_TTL_SECS: '3'
-          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-        options: --log-driver none
-    env:
-      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
-      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      NODE_TLS_REJECT_UNAUTHORIZED: '0'
-      LOG_LEVEL: silent
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 9ce36514d003b8c09402e8fe65c417757ce2d3f3
-          path: comparison-before
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with: { node-version: '24', cache: npm }
-      - run: npm ci --ignore-scripts
-      - run: npm ci --ignore-scripts
-        working-directory: comparison-before
-      - name: Prepare identical labeled workloads
-        id: prepare
-        run: |
-          npm ls @oxidezap/whatsapp-rust-bridge
-          npm ls --prefix comparison-before @oxidezap/whatsapp-rust-bridge
-          git rev-parse HEAD
-          git -C comparison-before rev-parse HEAD
-          node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs'
-          for (const [root, labels] of [['.', ['view-first', 'view-second']], ['comparison-before', ['copy-before', 'copy-after']]]) {
-            const snapshot = readFileSync('benchmarks/local/file-snapshot.bench.ts', 'utf8')
-            for (const label of labels) {
-              writeFileSync(`${root}/benchmarks/local/diagnostic-${label}.bench.ts`, snapshot.replace("'file snapshot/atomic'", `'diagnostic/snapshot-isolation/${label}'`))
-            }
-          }
-          NODE
-      - name: Isolated snapshot copy-before
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
-        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
-        with:
-          mode: ${{ matrix.mode }}
-          runner-version: '5.6.3'
-          working-directory: comparison-before
-          run: npm run bench -- benchmarks/local/diagnostic-copy-before.bench.ts
-      - name: Isolated snapshot view-first
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
-        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
-        with:
-          mode: ${{ matrix.mode }}
-          runner-version: '5.6.3'
-          working-directory: .
-          run: npm run bench -- benchmarks/local/diagnostic-view-first.bench.ts
-      - name: Isolated snapshot view-second
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
-        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
-        with:
-          mode: ${{ matrix.mode }}
-          runner-version: '5.6.3'
-          working-directory: .
-          run: npm run bench -- benchmarks/local/diagnostic-view-second.bench.ts
-      - name: Isolated snapshot copy-after
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
-        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
-        with:
-          mode: ${{ matrix.mode }}
-          runner-version: '5.6.3'
-          working-directory: comparison-before
-          run: npm run bench -- benchmarks/local/diagnostic-copy-after.bench.ts
