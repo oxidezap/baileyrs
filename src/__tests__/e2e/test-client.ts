@@ -17,7 +17,14 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import process from 'node:process'
 import P from 'pino'
-import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
+import {
+	type AuthenticationState,
+	type Boom,
+	DisconnectReason,
+	jidNormalizedUser,
+	makeWASocket,
+	useMultiFileAuthState
+} from '../../index.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent } from './wait.ts'
 
@@ -46,6 +53,8 @@ export interface CreateTestClientOptions {
 	 * has to get in here.
 	 */
 	onSocket?: (sock: WASocket) => void
+	/** Optional synthetic diagnostics, installed before the socket starts. */
+	onStore?: (store: NonNullable<AuthenticationState['store']>) => void
 }
 
 export interface TestClient {
@@ -66,6 +75,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 	const timeoutMs = opts.connectTimeoutMs ?? 30_000
 
 	const { state } = await useMultiFileAuthState(folder)
+	opts.onStore?.(state.store!)
 
 	const sock = makeWASocket({
 		auth: state,

@@ -26,8 +26,7 @@ const summarize = (namespace: unknown, bytes: unknown) => {
 	}
 }
 
-const onSocket: NonNullable<Parameters<typeof createTestClient>[0]['onSocket']> = socket => {
-	const store = socket.authState.store!
+const onStore: NonNullable<Parameters<typeof createTestClient>[0]['onStore']> = store => {
 	for (const method of ['get', 'getMany', 'set', 'setMany', 'delete', 'deleteMany', 'listKeys'] as const) {
 		const original = store[method]
 		if (!original) continue
@@ -58,7 +57,7 @@ const onSocket: NonNullable<Parameters<typeof createTestClient>[0]['onSocket']> 
 for (const parallel of [false, true]) {
 	const clients: TestClient[] = []
 	try {
-		const create = (label: string) => createTestClient({ label: `diag-${parallel}-${label}`, onSocket })
+		const create = (label: string) => createTestClient({ label: `diag-${parallel}-${label}`, onStore })
 		if (parallel) clients.push(...(await Promise.all(['alice', 'bob', 'charlie'].map(create))))
 		else for (const label of ['alice', 'bob', 'charlie']) clients.push(await create(label))
 		const group = await clients[0]!.sock.groupCreate(
