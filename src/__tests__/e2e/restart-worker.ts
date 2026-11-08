@@ -64,10 +64,6 @@ try {
 				dangerSkipCertChainVerify: true
 			})
 			sockets[index] = sock
-			;(globalThis as { __bridgeTraceSocket?: (sock: unknown, label: string) => void }).__bridgeTraceSocket?.(
-				sock,
-				`${phase}-${format}-${index}`
-			)
 			sock.ev.on('creds.update', () => {
 				const pending = saveCreds()
 				saves.push(pending)

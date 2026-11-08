@@ -80,10 +80,6 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 	})
 
 	opts.onSocket?.(sock)
-	;(globalThis as { __bridgeTraceSocket?: (sock: unknown, label: string) => void }).__bridgeTraceSocket?.(
-		sock,
-		opts.label
-	)
 	attachQrAutoresponder(sock, url)
 	const startupSync = waitForEvent(
 		sock,
