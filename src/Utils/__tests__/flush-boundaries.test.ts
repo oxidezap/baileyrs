@@ -658,3 +658,27 @@ test('file: prefix failure does not finish flush while a sibling delete remains 
 		await rm(folder, { recursive: true, force: true })
 	}
 })
+
+// A finite callback chain must not spend the pending-write drain budget.
+// This reproduced the group benchmark teardown failure with bridge 0.26.6.
+test('flush joins more than 32 consecutive critical writes before reporting durability', async () => {
+	const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-critical-chain-'))
+	const store = await useBridgeStore(folder)
+	let completed = 0
+	const writer = (async () => {
+		for (let i = 0; i < 80; i++) {
+			await store.set('session', String(i), new Uint8Array([i]))
+			completed++
+		}
+	})()
+	try {
+		await store.flush!()
+		assert.equal(completed, 80)
+		const reopened = await useBridgeStore(folder)
+		assert.deepEqual(await reopened.get('session', '79'), new Uint8Array([79]))
+	} finally {
+		await writer
+		await store.flush!()
+		await rm(folder, { recursive: true, force: true })
+	}
+})
