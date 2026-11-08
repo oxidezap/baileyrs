@@ -171,6 +171,10 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 	})
 
 	// Persist as keys/creds advance — without this the swap reads stale state.
+	;(globalThis as { __bridgeTraceSocket?: (sock: unknown, label: string) => void }).__bridgeTraceSocket?.(
+		sock,
+		`${label}-client`
+	)
 	sock.ev.on('creds.update', saveCreds)
 
 	// Bartender mock-server is scan-driven; an external "phone" must POST
@@ -215,6 +219,10 @@ async function createUpstreamClient(label: string, authFolder: string): Promise<
 		getMessage: async () => undefined
 	})
 
+	;(globalThis as { __bridgeTraceSocket?: (sock: unknown, label: string) => void }).__bridgeTraceSocket?.(
+		sock,
+		`${label}-client`
+	)
 	sock.ev.on('creds.update', saveCreds)
 
 	const jid = await new Promise<string>((resolve, reject) => {
