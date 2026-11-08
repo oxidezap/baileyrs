@@ -62,7 +62,14 @@ export const createSnapshotTransactions = (
 	}
 	const persist = async (rows: AtomicRows): Promise<void> => {
 		const bytes = Buffer.from(
-			JSON.stringify([...rows].map(([key, value]) => [key, Buffer.from(value).toString('base64')]))
+			// Rows are owned snapshots. Consume a bounded view synchronously while
+			// encoding, instead of copying every row into another native buffer.
+			JSON.stringify(
+				[...rows].map(([key, value]) => [
+					key,
+					Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64')
+				])
+			)
 		)
 		await clearRollbackProof(folder, snapshotName, syncDir)
 		const tmp = `${path}.${randomUUID()}.tmp`

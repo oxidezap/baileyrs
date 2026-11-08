@@ -831,3 +831,21 @@ test('completed rollback proof rejects an archive whose contents changed', () =>
 		await writeFile(join(folder, archive), '[]')
 		await assert.rejects(prepareNativeAuthRollback(folder, { offline: true }), /proof|archive|authoritative/)
 	}))
+
+test('file: atomic snapshots retain bounded byte views and caller ownership across publication and reopen', () =>
+	withFolder(async folder => {
+		const store = await useBridgeStore(folder)
+		const backing = Uint8Array.of(99, 17, 0, 255, 88)
+		const view = backing.subarray(1, 4)
+		const writing = store.set('meta', 'bounded', view)
+		backing.fill(7)
+		await writing
+		// Re-read the first snapshot, then publish again. Base64-decoded rows
+		// can themselves occupy only a slice of Node's pooled Buffer storage.
+		await store.set('meta', 'next', Uint8Array.of(8))
+		await store.flush!()
+		const reopened = await useBridgeStore(folder)
+		assert.deepEqual(Array.from((await reopened.get('meta', 'bounded'))!), [17, 0, 255])
+		const rows = JSON.parse(await readFile(join(folder, 'bridge-atomic-v1.json'), 'utf8'))
+		assert.equal(rows.find(([key]: [string, string]) => key === rowKey('meta', 'bounded'))[1], 'EQD/')
+	}))

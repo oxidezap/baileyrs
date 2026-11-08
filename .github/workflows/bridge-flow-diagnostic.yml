@@ -56,11 +56,21 @@ jobs:
           NODE_OPTIONS: --import=./scripts/diagnostics/mock-flow-trace.mjs
           SUITE: ${{ matrix.suite }}
         run: node --expose-gc --test --test-concurrency=1 "src/__tests__/e2e/$SUITE.test-e2e.ts"
-  memory-control:
-    name: Same-bridge consumer Memory control
+      - name: Read redacted trace files
+        if: ${{ !cancelled() }}
+        run: |
+          for trace in .diagnostic-traces/*.jsonl; do
+            if [ -f "$trace" ]; then sed 's/^/FLOW_TRACE /' "$trace"; fi
+          done
+  allocation-pair:
+    name: Snapshot encoding pair (${{ matrix.mode }})
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [memory, walltime]
     permissions:
       contents: read
       id-token: write
@@ -87,59 +97,92 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: d9c6ba84d0903ed6e9c24484dc0a9b3c8f392adc
-          path: comparison-main
+          ref: 9ce36514d003b8c09402e8fe65c417757ce2d3f3
+          path: comparison-before
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with: { node-version: '24', cache: npm }
       - run: npm ci --ignore-scripts
       - run: npm ci --ignore-scripts
-        working-directory: comparison-main
-      - name: Pin only bridge on main
-        working-directory: comparison-main
-        run: npm install --ignore-scripts --save-exact @oxidezap/whatsapp-rust-bridge@0.26.6
+        working-directory: comparison-before
       - name: Prepare identical labeled workloads
         id: prepare
         run: |
           npm ls @oxidezap/whatsapp-rust-bridge
-          npm ls --prefix comparison-main @oxidezap/whatsapp-rust-bridge
-          sha256sum benchmarks/e2e/lifecycle.bench.ts comparison-main/benchmarks/e2e/lifecycle.bench.ts
+          npm ls --prefix comparison-before @oxidezap/whatsapp-rust-bridge
+          sha256sum benchmarks/e2e/lifecycle.bench.ts comparison-before/benchmarks/e2e/lifecycle.bench.ts
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from 'node:fs'
-          for (const [root, labels] of [['.', ['consumer-first', 'consumer-second']], ['comparison-main', ['pin-only-before', 'pin-only-after']]]) {
+          for (const [root, labels] of [['.', ['view-first', 'view-second']], ['comparison-before', ['copy-before', 'copy-after']]]) {
             const source = readFileSync(`${root}/benchmarks/e2e/lifecycle.bench.ts`, 'utf8')
-            for (const label of labels) writeFileSync(`${root}/benchmarks/e2e/diagnostic-${label}.bench.ts`, source.replace("'bartender/lifecycle'", `'diagnostic/same-bridge/${label}'`))
+            const snapshot = readFileSync('benchmarks/local/file-snapshot.bench.ts', 'utf8')
+            for (const label of labels) {
+              writeFileSync(`${root}/benchmarks/e2e/diagnostic-${label}.bench.ts`, source.replace("'bartender/lifecycle'", `'diagnostic/snapshot-view/${label}'`))
+              writeFileSync(`${root}/benchmarks/local/diagnostic-${label}.bench.ts`, snapshot.replace("'file snapshot/atomic'", `'diagnostic/snapshot-isolation/${label}'`))
+            }
           }
           NODE
-      - name: Memory pin-only-before
+      - name: Measure copy-before
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
         with:
-          mode: memory
+          mode: ${{ matrix.mode }}
           runner-version: '5.6.3'
-          working-directory: comparison-main
-          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-pin-only-before.bench.ts
-      - name: Memory consumer-first
+          working-directory: comparison-before
+          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-copy-before.bench.ts
+      - name: Measure view-first
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
         with:
-          mode: memory
-          runner-version: '5.6.3'
-          working-directory: .
-          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-consumer-first.bench.ts
-      - name: Memory consumer-second
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
-        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
-        with:
-          mode: memory
+          mode: ${{ matrix.mode }}
           runner-version: '5.6.3'
           working-directory: .
-          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-consumer-second.bench.ts
-      - name: Memory pin-only-after
+          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-view-first.bench.ts
+      - name: Measure view-second
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
         with:
-          mode: memory
+          mode: ${{ matrix.mode }}
           runner-version: '5.6.3'
-          working-directory: comparison-main
-          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-pin-only-after.bench.ts
+          working-directory: .
+          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-view-second.bench.ts
+      - name: Measure copy-after
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        with:
+          mode: ${{ matrix.mode }}
+          runner-version: '5.6.3'
+          working-directory: comparison-before
+          run: npm run bench:e2e -- benchmarks/e2e/diagnostic-copy-after.bench.ts
+      - name: Isolated snapshot copy-before
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        with:
+          mode: ${{ matrix.mode }}
+          runner-version: '5.6.3'
+          working-directory: comparison-before
+          run: npm run bench -- benchmarks/local/diagnostic-copy-before.bench.ts
+      - name: Isolated snapshot view-first
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        with:
+          mode: ${{ matrix.mode }}
+          runner-version: '5.6.3'
+          working-directory: .
+          run: npm run bench -- benchmarks/local/diagnostic-view-first.bench.ts
+      - name: Isolated snapshot view-second
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        with:
+          mode: ${{ matrix.mode }}
+          runner-version: '5.6.3'
+          working-directory: .
+          run: npm run bench -- benchmarks/local/diagnostic-view-second.bench.ts
+      - name: Isolated snapshot copy-after
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f
+        with:
+          mode: ${{ matrix.mode }}
+          runner-version: '5.6.3'
+          working-directory: comparison-before
+          run: npm run bench -- benchmarks/local/diagnostic-copy-after.bench.ts

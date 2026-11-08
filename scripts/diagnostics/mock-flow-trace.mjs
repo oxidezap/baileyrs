@@ -1,5 +1,6 @@
 // Temporary loopback-only tracing. All identifiers become process-local labels; no keys, hashes, QR data or plaintext are published.
-import { writeSync } from 'node:fs'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { nodeRuntime } from '../../src/Runtime/node.ts'
 
 const url = new URL(process.env.SOCKET_URL ?? 'https://invalid')
@@ -77,7 +78,52 @@ const node = (value, depth = 0) =>
 				...(Array.isArray(value.content) && depth < 6
 					? { children: value.content.map(child => node(child, depth + 1)) }
 					: {}),
-				...(value.content instanceof Uint8Array ? { bytes: digest(value.content) } : {})
+				...(value.content instanceof Uint8Array ? { bytes: digest(value.content) } : {}),
+				...(value.tag === 'ack' && value.attrs?.class === 'error' && value.content instanceof Uint8Array
+					? {
+							errorWords: new TextDecoder()
+								.decode(value.content)
+								.toLowerCase()
+								.split(/[^a-z]+/)
+								.filter(word =>
+									[
+										'invalid',
+										'recipient',
+										'sender',
+										'unknown',
+										'jid',
+										'device',
+										'devices',
+										'no',
+										'session',
+										'identity',
+										'not',
+										'found',
+										'malformed',
+										'encryption',
+										'participant',
+										'payload',
+										'error',
+										'bad',
+										'request',
+										'routing',
+										'failed',
+										'missing',
+										'mac',
+										'to',
+										'message',
+										'signature',
+										'cert',
+										'certificate',
+										'stale',
+										'decrypt',
+										'primary',
+										'companion',
+										'linked'
+									].includes(word)
+								)
+						}
+					: {})
 			}
 		: null
 const mapping = value => {
@@ -110,8 +156,15 @@ const sourceInfo = source =>
 	Object.fromEntries(
 		['chat', 'sender', 'sender_alt', 'recipient_alt', 'is_from_me', 'is_group'].map(key => [key, source[key]])
 	)
+const traceFolder = join(process.cwd(), '.diagnostic-traces')
+mkdirSync(traceFolder, { recursive: true })
+const tracePath = join(traceFolder, `flow-${process.pid}.jsonl`)
 const dump = () => {
-	for (const row of rows) if (row.seq > printed) writeSync(2, `FLOW_TRACE ${JSON.stringify(redactTraceRow(row))}\n`)
+	const pending = rows.filter(row => row.seq > printed)
+	if (pending.length)
+		appendFileSync(tracePath, pending.map(row => JSON.stringify(redactTraceRow(row))).join('\n') + '\n', {
+			mode: 0o600
+		})
 	printed = sequence
 }
 process.on('exit', dump)
@@ -218,15 +271,8 @@ nodeRuntime.bridge = {
 							})
 						}
 					} else if (key === 'onMessageBatch') {
-						try {
-							const batch = bridge.decodeMessageWireBatch(events[0])
-							push('bridge/messages', {
-								client: clientId,
-								infos: batch.infos.map(info => ({ id: info.id, source: sourceInfo(info.source) }))
-							})
-						} catch (error) {
-							push('bridge/messages/error', { client: clientId, error: String(error) })
-						}
+						// The decoder advances a stream dictionary: only the real handler may decode.
+						push('bridge/messages', { client: clientId, bytes: events[0].byteLength })
 					}
 					return original.apply(target, events)
 				}
@@ -274,9 +320,12 @@ nodeRuntime.bridge = {
 						push('call/start', {
 							client: clientId,
 							method: key,
-							args: callArgs.filter(arg => typeof arg === 'string' && arg.includes('@')).slice(0, 4)
+							args: callArgs
+								.filter(arg => typeof arg === 'string' && /@(s\.whatsapp\.net|lid|hosted|hosted\.lid)$/.test(arg))
+								.slice(0, 4)
 						})
-					for (const arg of callArgs) if (typeof arg === 'string' && arg.includes('@')) seenJids.add(arg)
+					for (const arg of callArgs)
+						if (typeof arg === 'string' && /@(s\.whatsapp\.net|lid|hosted|hosted\.lid)$/.test(arg)) seenJids.add(arg)
 					const result = original.apply(target, callArgs)
 					if (!result?.then) return result
 					return result.then(
@@ -296,7 +345,9 @@ nodeRuntime.bridge = {
 							if (typeof key === 'string' && /^(send|relay|signal|getUSync)/.test(key)) {
 								await snapshotAliases(
 									'after-error',
-									callArgs.filter(arg => typeof arg === 'string' && arg.includes('@')).slice(0, 4)
+									callArgs
+										.filter(arg => typeof arg === 'string' && /@(s\.whatsapp\.net|lid|hosted|hosted\.lid)$/.test(arg))
+										.slice(0, 4)
 								)
 							}
 							throw error
