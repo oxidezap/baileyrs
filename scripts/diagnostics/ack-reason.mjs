@@ -102,3 +102,5 @@ globalThis.__ackReasonSocket = sock => {
 		return result
 	}
 }
+
+globalThis.__ackReasonStore = data => record('store-mutation-yield', data)

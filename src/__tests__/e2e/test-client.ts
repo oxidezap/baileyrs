@@ -102,11 +102,42 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 					[method]: async (...args: unknown[]) => {
 						const result = await original(...args)
 						const scope = process.env.DIAGNOSTIC_MEMORY_YIELD_SCOPE
-						if (scope && (scope === 'session') !== (args[0] === 'session')) return result
+						if (
+							scope &&
+							(scope === 'topology') !== ['identity', 'lid_mapping', 'device_list'].includes(String(args[0]))
+						)
+							return result
 						const phase = process.env.DIAGNOSTIC_MEMORY_YIELD_PHASE
 						const generation = diagnosticGenerations.get(folder) ?? 0
-						if (!phase || (phase === 'before' && generation === 1) || (phase === 'after' && generation > 1))
+						if (!phase || (phase === 'before' && generation === 1) || (phase === 'after' && generation > 1)) {
+							const namespace = [
+								'session',
+								'identity',
+								'lid_mapping',
+								'device_list',
+								'device',
+								'prekey',
+								'signed_prekey',
+								'sender_key',
+								'sender_key_devices',
+								'base_key',
+								'tc_token',
+								'sent_message',
+								'msg_secret',
+								'meta',
+								'sync_version',
+								'sync_key',
+								'mutation_mac'
+							].includes(String(args[0]))
+								? String(args[0])
+								: 'other'
+							;(
+								globalThis as typeof globalThis & {
+									__ackReasonStore?: (data: { namespace: string; method: string; generation: number }) => void
+								}
+							).__ackReasonStore?.({ namespace, method, generation })
 							await yieldTurn()
+						}
 						return result
 					}
 				})
