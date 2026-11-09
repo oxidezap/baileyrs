@@ -35,6 +35,9 @@ const bodyCategory = content => {
 	])
 	const categories = []
 	for (const [name, pattern] of [
+		['decrypt', /decrypt/i],
+		['session', /session/i],
+		['message-decrypt-error-enum', /^MessageDecryptError$/],
 		['mac', /bad\s*mac|mac\s+verification\s+failed|authentication failed/i],
 		['missing-session', /no session|session not found/i],
 		['missing-prekey', /unknown (?:signed )?prekey|prekey not found/i],

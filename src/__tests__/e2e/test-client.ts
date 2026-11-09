@@ -88,7 +88,10 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 	let memoryStore = diagnosticStores.get(folder)
 	if (memoryControl && !memoryStore) {
 		memoryStore = useMemoryStore()
-		if (process.env.DIAGNOSTIC_MEMORY_YIELD === '1') {
+		if (
+			process.env.DIAGNOSTIC_MEMORY_YIELD === '1' &&
+			(!process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET || process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET === opts.label)
+		) {
 			for (const method of ['get', 'getMany', 'set', 'setMany', 'delete', 'deleteMany'] as const) {
 				const original = memoryStore[method]!.bind(memoryStore) as (...args: unknown[]) => Promise<unknown>
 				Object.assign(memoryStore, {
