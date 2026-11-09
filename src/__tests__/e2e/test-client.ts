@@ -107,6 +107,8 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 						const result = await original(...args)
 						const scope = process.env.DIAGNOSTIC_MEMORY_YIELD_SCOPE
 						if (scope && args[0] !== scope) return result
+						const metaRow = process.env.DIAGNOSTIC_MEMORY_YIELD_META_ROW
+						if (metaRow && (metaRow === 'latest') !== (args[1] === 'latest_sync_key_id')) return result
 						const phase = process.env.DIAGNOSTIC_MEMORY_YIELD_PHASE
 						const generation = diagnosticGenerations.get(folder) ?? 0
 						if (!phase || (phase === 'before' && generation === 1) || (phase === 'after' && generation > 1)) {
