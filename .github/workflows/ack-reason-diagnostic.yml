@@ -1,7 +1,7 @@
 name: Published bridge ACK reason diagnostic
 on:
   pull_request:
-    paths: ['.github/workflows/ack-reason-diagnostic.yml', 'scripts/diagnostics/ack-reason.mjs', 'scripts/diagnostics/mock-stdout-categories.mjs', 'scripts/diagnostics/safe-node-reporter.mjs']
+    paths: ['.github/workflows/ack-reason-diagnostic.yml', 'scripts/diagnostics/ack-reason.mjs', 'scripts/diagnostics/mock-stdout-categories.mjs', 'scripts/diagnostics/safe-node-reporter.mjs', 'src/__tests__/e2e/test-client.ts']
 permissions:
   contents: read
 concurrency:
@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reconnect:
-    name: Published reconnect and filtered mock output
+    name: Reusable memory reconnect and filtered mock output
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -31,6 +31,7 @@ jobs:
       ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       NODE_TLS_REJECT_UNAUTHORIZED: '0'
       LOG_LEVEL: silent
+      DIAGNOSTIC_REUSABLE_MEMORY: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
@@ -45,7 +46,7 @@ jobs:
           mkdir -p .diagnostic-ack
           docker attach --no-stdin --sig-proxy=false "$MOCK_CONTAINER_ID" 2>&1 | node scripts/diagnostics/mock-stdout-categories.mjs > .diagnostic-ack/mock.jsonl &
           printf '%s' "$!" > .diagnostic-ack/filter.pid
-      - name: Original reconnect scenario, published artifact
+      - name: Original reconnect sequence, reusable host memory control
         env:
           NODE_OPTIONS: --import=./scripts/diagnostics/ack-reason.mjs
         run: node --expose-gc --test --test-concurrency=1 --test-reporter=./scripts/diagnostics/safe-node-reporter.mjs src/__tests__/e2e/reconnect.test-e2e.ts

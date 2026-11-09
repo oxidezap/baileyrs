@@ -17,11 +17,23 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import process from 'node:process'
 import P from 'pino'
-import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
+import {
+	type Boom,
+	DisconnectReason,
+	jidNormalizedUser,
+	makeWASocket,
+	useMemoryStore,
+	useMultiFileAuthState
+} from '../../index.ts'
+import { createDeviceProjection } from '../../Compatibility/legacy-store/device.ts'
+import { projectNativeStore } from '../../Compatibility/legacy-store/native-projection.ts'
+import { initAuthCreds } from '../../Utils/generics.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent } from './wait.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
+
+const diagnosticStores = new Map<string, ReturnType<typeof useMemoryStore>>()
 
 const defaultLogger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
 const defaultSocketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
@@ -65,7 +77,29 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 	const url = opts.socketUrl ?? defaultSocketUrl
 	const timeoutMs = opts.connectTimeoutMs ?? 30_000
 
-	const { state } = await useMultiFileAuthState(folder)
+	const memoryControl = process.env.DIAGNOSTIC_REUSABLE_MEMORY === '1'
+	if (
+		memoryControl &&
+		(process.env.ADV_SECRET_KEY !== 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' ||
+			!['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname))
+	)
+		throw new Error('synthetic mock required')
+	let memoryStore = diagnosticStores.get(folder)
+	if (memoryControl && !memoryStore) {
+		memoryStore = useMemoryStore()
+		diagnosticStores.set(folder, memoryStore)
+	}
+	const memoryAuth = async () => {
+		const store = memoryStore!
+		const creds = initAuthCreds()
+		const projection = createDeviceProjection(creds)
+		for (const key of ['device', 'account'] as const) {
+			const value = await store.get('device', key)
+			if (value) projection.prepare(key, value)()
+		}
+		return { store, creds, keys: projectNativeStore(store, creds) }
+	}
+	const state = memoryControl ? await memoryAuth() : (await useMultiFileAuthState(folder)).state
 
 	const sock = makeWASocket({
 		auth: state,

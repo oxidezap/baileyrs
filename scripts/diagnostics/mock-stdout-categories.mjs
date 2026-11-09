@@ -28,6 +28,10 @@ const accept = line => {
 				observedAtMs: Date.now(),
 				elapsedMs: Math.round(performance.now() - start),
 				categories,
+				prekey: /pre.?key/i.test(line),
+				whisper: /whisper/i.test(line),
+				messageCounterPresent: /message.?counter/i.test(line),
+				ratchetPresent: /ratchet/i.test(line),
 				warning: /\bwarn\b/i.test(line),
 				error: /\berror\b/i.test(line)
 			}) + '\n'
