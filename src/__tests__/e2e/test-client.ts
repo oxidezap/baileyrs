@@ -79,6 +79,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 		logger: defaultLogger.child({ user: opts.label })
 	})
 
+	;(globalThis as typeof globalThis & { __ackReasonSocket?: (socket: typeof sock) => void }).__ackReasonSocket?.(sock)
 	opts.onSocket?.(sock)
 	attachQrAutoresponder(sock, url)
 	const startupSync = waitForEvent(
