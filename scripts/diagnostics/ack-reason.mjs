@@ -36,6 +36,10 @@ const bodyCategory = content => {
 	const categories = []
 	for (const [name, pattern] of [
 		['decrypt', /decrypt/i],
+		['mac-word', /\bmac\b/i],
+		['invalid-word', /invalid/i],
+		['error-word', /error/i],
+		['message-word', /message/i],
 		['session', /session/i],
 		['message-decrypt-error-enum', /^MessageDecryptError$/],
 		['mac', /bad\s*mac|mac\s+verification\s+failed|authentication failed/i],

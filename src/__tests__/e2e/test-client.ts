@@ -34,6 +34,7 @@ import { waitForEvent } from './wait.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
 
+const diagnosticGenerations = new Map<string, number>()
 const diagnosticStores = new Map<string, ReturnType<typeof useMemoryStore>>()
 
 const defaultLogger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
@@ -85,6 +86,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 			!['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname))
 	)
 		throw new Error('synthetic mock required')
+	if (memoryControl) diagnosticGenerations.set(folder, (diagnosticGenerations.get(folder) ?? 0) + 1)
 	let memoryStore = diagnosticStores.get(folder)
 	if (memoryControl && !memoryStore) {
 		memoryStore = useMemoryStore()
@@ -97,7 +99,10 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 				Object.assign(memoryStore, {
 					[method]: async (...args: unknown[]) => {
 						const result = await original(...args)
-						await yieldTurn()
+						const phase = process.env.DIAGNOSTIC_MEMORY_YIELD_PHASE
+						const generation = diagnosticGenerations.get(folder) ?? 0
+						if (!phase || (phase === 'before' && generation === 1) || (phase === 'after' && generation > 1))
+							await yieldTurn()
 						return result
 					}
 				})
