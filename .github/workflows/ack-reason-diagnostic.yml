@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        store: [read, write]
+        store: [session, other]
         repeat: [1, 2]
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
@@ -40,7 +40,8 @@ jobs:
       DIAGNOSTIC_MEMORY_YIELD: '1'
       DIAGNOSTIC_MEMORY_YIELD_TARGET: alice
       DIAGNOSTIC_MEMORY_YIELD_PHASE: after
-      DIAGNOSTIC_MEMORY_YIELD_GROUP: ${{ matrix.store }}
+      DIAGNOSTIC_MEMORY_YIELD_GROUP: write
+      DIAGNOSTIC_MEMORY_YIELD_SCOPE: ${{ matrix.store }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }

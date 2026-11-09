@@ -101,6 +101,8 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 				Object.assign(memoryStore, {
 					[method]: async (...args: unknown[]) => {
 						const result = await original(...args)
+						const scope = process.env.DIAGNOSTIC_MEMORY_YIELD_SCOPE
+						if (scope && (scope === 'session') !== (args[0] === 'session')) return result
 						const phase = process.env.DIAGNOSTIC_MEMORY_YIELD_PHASE
 						const generation = diagnosticGenerations.get(folder) ?? 0
 						if (!phase || (phase === 'before' && generation === 1) || (phase === 'after' && generation > 1))
