@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        store: [topology, other]
-        repeat: [1, 2]
+        store: [device, sent_message, msg_secret, meta, sync_key, prekey]
+        repeat: [1]
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
