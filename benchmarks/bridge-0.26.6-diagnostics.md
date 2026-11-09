@@ -361,3 +361,279 @@ tree; the diagnostic commits and this report preserve reproduction evidence.
   implementation, publication, merge, deploy or CodSpeed acceptance/reclassification
   was attempted in this round. A new bridge release alone is not established as
   sufficient for either remaining qualification problem.
+
+## Published ACK and callback scheduling, 2026-11-09
+
+These controls use the published npm 0.26.6 artifact, exact bridge/core pins and
+mock digest in Fixed inputs. No #1869 build is substituted. npm `latest` was
+rechecked on November 9 and remains 0.26.6. The original reconnect test's five
+assertions, sequence, timeouts, signature/trust verification and teardown remain
+unchanged. Diagnostic variants do not qualify the original file-store workload.
+
+The temporary workflow attaches to the mock's live stdout with Docker logging
+still disabled. A bounded filter emits fixed categories and booleans only. It
+never writes raw lines, keys, fingerprints, routing identifiers, payloads or QR.
+Client message identifiers are mapped privately to process-local labels. The safe
+Node reporter preserves the test's exit status and numeric outcomes without
+printing assertion data. Mock logging is set to warn for these controls; this is
+an observer/timing difference from ordinary CI.
+
+### File and reusable-memory contrast
+
+[ACK diagnostic 42603334149](https://github.com/oxidezap/baileyrs/actions/runs/42603334149/job/129112904236),
+head `6213dd4cca4a1b85d278ebb2c162d3f14627394b`, runs the original file store:
+4 passed, 1 failed, 0 skipped. Send 5, the second post-recreation forward send,
+receives a correlated class=error ACK with a 19-byte body. Mock MAC/decryption
+categories occur within one millisecond. Reverse send 6 is delivered. The
+category filter does not correlate server message IDs, so simultaneity alone
+cannot identify the failed server session or establish packet-level causality.
+Generic Uint8Array/ArrayBuffer/Object string coercions are rejected by exact
+comparisons. No raw ACK body is exposed.
+
+[Reusable-memory control 42605799939](https://github.com/oxidezap/baileyrs/actions/runs/42605799939/job/129121362217),
+head `7240808df1e11becc2de1384bb695c872c6d9c3a`, passes all 5 tests. A host
+`useMemoryStore()` owns copied bytes across socket destruction/recreation. Each
+factory call creates fresh credential/key wrappers, hydrates device/account from
+that store before projecting Signal codecs, and never reuses a live credential
+object. The ephemeral core-native backend is not selected. No categorized mock
+errors were observed.
+
+[Repeated contrast 42606091307](https://github.com/oxidezap/baileyrs/actions/runs/42606091307),
+head `979cffd6256a08d982590cb2e6ba3021334ed918`, uses a fresh pinned mock per job:
+
+| Variant              | Repetition 1    | Repetition 2    |
+| -------------------- | --------------- | --------------- |
+| Original file store  | 4 pass / 1 fail | 4 pass / 1 fail |
+| Reusable host memory | 5 pass / 0 fail | 5 pass / 0 fail |
+
+Both file failures are the second-roundtrip delivery guard. Categorized mock
+lines mention Whisper, ratchet and message counter, with MAC verification and
+decryption failures; those lines do not mention prekeys. These are literal log
+category observations, not a decoded or inspected server session. Different
+hosts/timing mean this contrast alone cannot establish a file-store defect.
+
+### Yielding callbacks without files
+
+[Callback-turn control 42606399703](https://github.com/oxidezap/baileyrs/actions/runs/42606399703),
+head `55fa59326556dad1717cc73173a228a546f18b5e`, keeps the reusable memory bytes,
+then awaits one `setImmediate()` after each get/getMany/set/setMany/delete/
+deleteMany result. Return bytes and errors are unchanged. The original
+assertions and deadlines remain. This diagnostic changes callback scheduling;
+it is not an optimization or an allowed production workaround.
+
+Both yielded-memory repetitions fail 4 pass / 1 fail at the same second-roundtrip
+guard, with send 5 receiving class=error and mock Whisper/MAC/decryption categories.
+Both contemporaneous file controls also fail 4 pass / 1 fail. Therefore filesystem
+persistence is not necessary to reproduce this failure. Plain-memory success
+does not qualify restore or justify removing durability. The result narrows the
+next question to callback/interleaving-dependent session behavior across the
+client and mock; it does not identify which implementation violates its contract.
+
+The native core's existing `test_session_survives_reconnect` is not an equivalent
+control: it reconnects the same Client and sends several forward messages before
+the final reverse message. This consumer test destroys/recreates Alice and
+alternates the ratchet before the second forward send. Native passes cannot be
+used to dismiss this reproduction.
+
+Reproduction lives in the diagnostic commits above. Run with Node 24:
+
+```sh
+NODE_OPTIONS=--import=./scripts/diagnostics/ack-reason.mjs \
+node --expose-gc --test --test-concurrency=1 \
+  --test-reporter=./scripts/diagnostics/safe-node-reporter.mjs \
+  src/__tests__/e2e/reconnect.test-e2e.ts
+```
+
+The workflow sets loopback SOCKET_URL, the synthetic ADV secret, and the exact
+service digest. `DIAGNOSTIC_REUSABLE_MEMORY=1` selects the reusable host store;
+`DIAGNOSTIC_MEMORY_YIELD=1` adds the scheduling control. Missing/other secrets or
+non-loopback endpoints are rejected. No private mock source route is attempted.
+
+### Qualification boundaries
+
+At `6213dd4`, group Memory job
+[129112904742](https://github.com/oxidezap/baileyrs/actions/runs/42603333945/job/129112904742)
+fails with `device list account identity unavailable`. This is an unmeasured
+functional failure, not a memory-regression measurement. Group Simulation also
+fails. The prior paired first-DM memory findings remain unresolved and separate.
+
+Core #1869 remains at `a467e345a9e89066b76468e759519094c4b5ab7b` in this
+observation. Its description calls for isolating a different tree after a failed
+size experiment; it is not a stable diagnostic candidate yet. No new Group
+Simulation comparison or ACK-fix claim is made. A stable pinned head is the
+prerequisite for the requested controlled Group Simulation experiment. No
+upstream implementation, merge or release is performed here.
+
+### Participant and restore-phase controls
+
+Each result below is a diagnostic variant with fresh mocks, published 0.26.6 and
+unchanged five-test sequence. Only the indicated memory callbacks yield. There
+is no callback cache, key replacement, signature bypass or deadline extension.
+
+[Participant run 42606675470](https://github.com/oxidezap/baileyrs/actions/runs/42606675470),
+head `02a144870795a7b2c469a5c63a4024341d7045e9`:
+
+| Callback target                      | Repetition 1    | Repetition 2    |
+| ------------------------------------ | --------------- | --------------- |
+| Alice, original and recreated socket | 4 pass / 1 fail | 4 pass / 1 fail |
+| Bob only                             | 5 pass / 0 fail | 5 pass / 0 fail |
+
+[Restore-phase run 42606935976](https://github.com/oxidezap/baileyrs/actions/runs/42606935976),
+head `9003ec8e7ea86ef2280320b5cb24dc093146b80f`, yields Alice callbacks only:
+
+| Yielding phase                     | Repetition 1    | Repetition 2    |
+| ---------------------------------- | --------------- | --------------- |
+| Before destruction/recreation only | 5 pass / 0 fail | 5 pass / 0 fail |
+| After recreation only              | 4 pass / 1 fail | 4 pass / 1 fail |
+
+Failing cases retain delivery before destruction and the first post-recreation
+roundtrip, then send 5 receives class=error with the same 19-byte classification
+and reverse send 6 is delivered. The mock logs MAC/Whisper decryption categories.
+This identifies scheduling on restored Alice as sufficient in these controls;
+it does not establish server ratchet ownership or which peer/session row is
+wrong. Server log IDs were not matched to client IDs. Neither the ASCII body
+nor synthetic message content is published.
+
+The phase control increments a per-folder generation when a new auth wrapper is
+created. Original Alice is generation 1; restored Alice is generation 2. Bob has
+its own folder/store/generation. The same Map-owned bytes survive recreation;
+only callback completion scheduling changes. `DIAGNOSTIC_MEMORY_YIELD_TARGET`
+selects the local fixture label, and `DIAGNOSTIC_MEMORY_YIELD_PHASE=before|after`
+selects the generation. The guard retains the synthetic loopback restriction.
+
+[Read/write run 42607233286](https://github.com/oxidezap/baileyrs/actions/runs/42607233286),
+head `3c1c51ecfccd031752a75cb38e9fd8056f1380ff`, targets restored Alice only:
+
+| Yielded callbacks             | Repetition 1    | Repetition 2    |
+| ----------------------------- | --------------- | --------------- |
+| get/getMany                   | 5 pass / 0 fail | 5 pass / 0 fail |
+| set/setMany/delete/deleteMany | 4 pass / 1 fail | 4 pass / 1 fail |
+
+The memory backend copies/applies the incoming mutation before the observer yields;
+its resolution is delayed by one event-loop turn, not the mutation itself. Each
+failing write control again rejects send 5 and delivers send 6. Read-only yielding
+passes with no categorized mock output. `DIAGNOSTIC_MEMORY_YIELD_GROUP=read|write`
+selects this control. This is evidence of dependence on async mutation completion
+scheduling after restoration, not proof of a specific lost update or ratchet bug.
+
+[Session-write control 42607504400](https://github.com/oxidezap/baileyrs/actions/runs/42607504400),
+head `081fb3ca17c75472627ff4d2a4a56d2f737def11`, again targets restored Alice's
+mutation completions only:
+
+| Yielded mutation namespace | Repetition 1    | Repetition 2    |
+| -------------------------- | --------------- | --------------- |
+| session only               | 5 pass / 0 fail | 5 pass / 0 fail |
+| All except session         | 4 pass / 1 fail | 4 pass / 1 fail |
+
+This negative result rejects the narrower claim that asynchronous session-write
+completion alone suffices. It does not prove session bytes are always correct.
+The all-except-session variant still produces the same second-roundtrip error
+ACK and mock decryption categories. Follow-up traces use only fixed namespace
+names, method names and local generation numbers; no row keys or values are
+logged. The remaining question is which non-session mutation completion exposes
+the interleaving, rather than assuming lost Signal writes.
+
+[Topology/identity control 42607763138](https://github.com/oxidezap/baileyrs/actions/runs/42607763138),
+head `a16dc1cc067fb1d2220088d2eecc86021f37b98d`:
+
+| Yielded restored-Alice mutation namespaces | Repetition 1    | Repetition 2    |
+| ------------------------------------------ | --------------- | --------------- |
+| identity, lid_mapping, device_list         | 5 pass / 0 fail | 5 pass / 0 fail |
+| All remaining namespaces                   | 4 pass / 1 fail | 4 pass / 1 fail |
+
+In the passing trace, only device_list mutations actually yield, so this does not
+exercise a delayed identity or lid_mapping write. In a failing trace, mutations
+observed before/during send 5 include device, sent_message, session, msg_secret,
+meta and sync_key, followed by prekey deletions. A burst of sync_key/meta writes
+overlaps the second forward send. Temporal overlap does not establish those
+writes as the cause. The six non-session candidates are tested individually in
+the follow-up instead of repeating a version matrix or assuming ADV migration.
+The remaining-namespace group includes session; the earlier session-only control
+is the independent negative evidence for that namespace.
+
+### Individual namespace controls and repeated positives
+
+[Individual run 42608060399](https://github.com/oxidezap/baileyrs/actions/runs/42608060399),
+head `76b3cec739dbb244f1826aa9bd45855635ce83a3`, runs one fresh mock per selected
+restored-Alice mutation namespace:
+
+| Sole yielding namespace | Outcome         |
+| ----------------------- | --------------- |
+| device                  | 5 pass / 0 fail |
+| sent_message            | 5 pass / 0 fail |
+| msg_secret              | 5 pass / 0 fail |
+| prekey                  | 5 pass / 0 fail |
+| meta                    | 4 pass / 1 fail |
+| sync_key                | 4 pass / 1 fail |
+
+[Positive confirmation 42608496441](https://github.com/oxidezap/baileyrs/actions/runs/42608496441),
+head `383bd0e636eb74a8611913d4bf3be6da304dcd8a`, repeats each positive twice.
+Both meta repeats and both sync_key repeats fail 4 pass / 1 fail at send 5,
+with reverse delivery successful and the same mock Whisper/MAC categories.
+
+Row labels are private to the one account's store closure and reused across its
+socket generations. They never compare accounts or disclose row keys. Meta has
+71 observed mutation yields: one local row once and a second local row 70 times.
+Sync_key has 70 distinct local rows, each written once. No bytes, key IDs,
+fingerprints or value digests are emitted. These are counts, not an inspection
+of the encrypted message that produced those writes.
+
+The exact published bridge source
+[src/js_backend.rs](https://github.com/oxidezap/whatsapp-rust-bridge/blob/04f014aefbf248f2ecbf7551cc73e67b949c9e73/src/js_backend.rs)
+defines `set_sync_key` as an awaited sync_key JSON write followed by an awaited
+meta/latest_sync_key_id write. The exact core source
+[src/message/special.rs](https://github.com/oxidezap/whatsapp-rust/blob/f077a5d4a5dc12d7c51e79e46598740648c3824f/src/message/special.rs)
+loops over key-share entries and awaits `set_sync_key` for each entry. This is
+source-level call-path evidence; it does not prove which incoming packet caused
+the observed writes or that either implementation caused the server MAC failure.
+A final fixed-row control selects only the public latest_sync_key_id constant
+versus other meta rows, without exposing any row values.
+
+### Fixed-row result and coordination boundary
+
+[Fixed-row run 42608749242](https://github.com/oxidezap/baileyrs/actions/runs/42608749242),
+head `dad38863c6ff6a5d00d898153c01929350f04a93`:
+
+| Only yielded restored-Alice meta writes | Repetition 1    | Repetition 2    |
+| --------------------------------------- | --------------- | --------------- |
+| latest_sync_key_id                      | 4 pass / 1 fail | 4 pass / 1 fail |
+| Every other meta row                    | 5 pass / 0 fail | 5 pass / 0 fail |
+
+The exact fixed-row cases each observe 70 mutation completions and one class=error
+ACK for send 5; the other-meta cases each observe one completion and no error ACK.
+The incoming value is already copied/applied before `setImmediate()` and returned
+unchanged. Core source line 64 and bridge source line 833 identify the relevant
+published call path above. No upstream source was changed or built in this round.
+
+Minimal coordinated reproduction: published bridge 0.26.6 and the pinned mock;
+reusable host byte store; fresh socket/credential wrappers on Alice recreation;
+unchanged bidirectional pre-roundtrip, recreation, first bidirectional
+post-roundtrip, then second roundtrip. After recreation only, let
+`set('meta', 'latest_sync_key_id', value)` copy/apply normally, then await one
+`setImmediate()` before resolving. All other callbacks remain normal. The
+existing 10-second delivery guard fails for the second forward message while the
+reverse arrives. Both repeated cases retain mock Whisper/MAC/decryption log
+categories. This is a concrete interleaving input, not a completed diagnosis of
+the server's rejected session or client Signal state.
+
+The next implementation-level discriminator belongs with the existing core
+front: reproduce this callback-completion interleaving while observing its
+inbound key-share handling and Signal session commit/publication ordering, then
+compare with the mock's corresponding packet/session if authorized logs can
+supply that association. Current filtered logs do not carry an exact server
+message-ID match; the accessible historical native log errors also lack a
+message/frame-ID field. Their mixed negative fixtures are not evidence that the
+consumer's packet was rejected for the same reason. The private mock-source 404
+remains respected. No JavaScript cache, deferred trust check, dropped message,
+callback short-circuit or durability reduction is justified by this result.
+
+No consumer production fix is demonstrated. The exact input above can be
+forwarded to the existing core thread without opening a duplicate upstream PR.
+The #1869 ADV migration reproduction remains separate; these callbacks do not
+establish an actual PN/LID migration at the ACK rejection. A stable core head
+is still needed before the requested Group Simulation comparison. This round
+makes no new performance measurement or allocation attribution claim.
+
+All temporary workflow, observer scripts, host-memory selection and callback
+hooks are removed from the final tree. Diagnostic commit URLs preserve the
+reproduction; production code and original test scenarios match clean 49f2cf1.
