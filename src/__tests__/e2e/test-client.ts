@@ -95,6 +95,8 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 			(!process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET || process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET === opts.label)
 		) {
 			for (const method of ['get', 'getMany', 'set', 'setMany', 'delete', 'deleteMany'] as const) {
+				const group = process.env.DIAGNOSTIC_MEMORY_YIELD_GROUP
+				if (group && (group === 'read') !== method.startsWith('get')) continue
 				const original = memoryStore[method]!.bind(memoryStore) as (...args: unknown[]) => Promise<unknown>
 				Object.assign(memoryStore, {
 					[method]: async (...args: unknown[]) => {
