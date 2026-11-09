@@ -16,6 +16,7 @@ import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import process from 'node:process'
+import { setImmediate as yieldTurn } from 'node:timers/promises'
 import P from 'pino'
 import {
 	type Boom,
@@ -87,6 +88,18 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 	let memoryStore = diagnosticStores.get(folder)
 	if (memoryControl && !memoryStore) {
 		memoryStore = useMemoryStore()
+		if (process.env.DIAGNOSTIC_MEMORY_YIELD === '1') {
+			for (const method of ['get', 'getMany', 'set', 'setMany', 'delete', 'deleteMany'] as const) {
+				const original = memoryStore[method]!.bind(memoryStore) as (...args: unknown[]) => Promise<unknown>
+				Object.assign(memoryStore, {
+					[method]: async (...args: unknown[]) => {
+						const result = await original(...args)
+						await yieldTurn()
+						return result
+					}
+				})
+			}
+		}
 		diagnosticStores.set(folder, memoryStore)
 	}
 	const memoryAuth = async () => {
