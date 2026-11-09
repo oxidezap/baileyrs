@@ -94,12 +94,16 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 			process.env.DIAGNOSTIC_MEMORY_YIELD === '1' &&
 			(!process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET || process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET === opts.label)
 		) {
+			const rowLabels = new Map<string, string>()
 			for (const method of ['get', 'getMany', 'set', 'setMany', 'delete', 'deleteMany'] as const) {
 				const group = process.env.DIAGNOSTIC_MEMORY_YIELD_GROUP
 				if (group && (group === 'read') !== method.startsWith('get')) continue
 				const original = memoryStore[method]!.bind(memoryStore) as (...args: unknown[]) => Promise<unknown>
 				Object.assign(memoryStore, {
 					[method]: async (...args: unknown[]) => {
+						const privateRow = JSON.stringify([args[0], typeof args[1] === 'string' ? args[1] : method])
+						if (!rowLabels.has(privateRow)) rowLabels.set(privateRow, `row-${rowLabels.size + 1}`)
+						const row = rowLabels.get(privateRow)!
 						const result = await original(...args)
 						const scope = process.env.DIAGNOSTIC_MEMORY_YIELD_SCOPE
 						if (scope && args[0] !== scope) return result
@@ -129,9 +133,14 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 								: 'other'
 							;(
 								globalThis as typeof globalThis & {
-									__ackReasonStore?: (data: { namespace: string; method: string; generation: number }) => void
+									__ackReasonStore?: (data: {
+										namespace: string
+										method: string
+										generation: number
+										row: string
+									}) => void
 								}
-							).__ackReasonStore?.({ namespace, method, generation })
+							).__ackReasonStore?.({ namespace, method, generation, row })
 							await yieldTurn()
 						}
 						return result

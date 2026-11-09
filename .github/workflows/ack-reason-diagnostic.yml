@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        store: [device, sent_message, msg_secret, meta, sync_key, prekey]
-        repeat: [1]
+        store: [meta, sync_key]
+        repeat: [1, 2]
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
