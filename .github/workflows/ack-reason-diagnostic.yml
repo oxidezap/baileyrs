@@ -9,7 +9,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   reconnect:
-    name: Reusable memory reconnect and filtered mock output
+    name: Reconnect ${{ matrix.store }} repeat ${{ matrix.repeat }}
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [file, memory]
+        repeat: [1, 2]
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -31,7 +36,7 @@ jobs:
       ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
       NODE_TLS_REJECT_UNAUTHORIZED: '0'
       LOG_LEVEL: silent
-      DIAGNOSTIC_REUSABLE_MEMORY: '1'
+      DIAGNOSTIC_REUSABLE_MEMORY: ${{ matrix.store == 'memory' && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
