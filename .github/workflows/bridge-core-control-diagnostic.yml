@@ -1,0 +1,108 @@
+name: Controlled published and merged core diagnostics
+on:
+  pull_request:
+    paths: ['.github/workflows/bridge-core-control-diagnostic.yml', 'scripts/diagnostics/core-bridge-artifact.mjs', 'scripts/diagnostics/group-core-control.ts', 'scripts/diagnostics/tsconfig.json']
+permissions:
+  contents: read
+concurrency:
+  group: core-control-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Diagnostic bridge core ${{ matrix.core }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [f077a5d4a5dc12d7c51e79e46598740648c3824f, cef244e914affabbd5ee62be67b2e34eba97338e]
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
+      CORE_REV: ${{ matrix.core }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: oxidezap/whatsapp-rust-bridge
+          ref: 04f014aefbf248f2ecbf7551cc73e67b949c9e73
+          path: .diagnostic-bridge
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: { node-version: '26.13.0' }
+      - run: rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68
+        with: { tool: 'wasm-pack@0.15.1,protoc@3.36.2' }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with: { bun-version: '1.4.4' }
+      - run: node scripts/diagnostics/core-bridge-artifact.mjs prepare "$CORE_REV"
+      - name: Build exact bridge with selected core, not a published npm package
+        working-directory: .diagnostic-bridge
+        run: |
+          cargo update -p whatsapp-rust --precise "$CORE_REV"
+          cargo tree -p whatsapp-rust --depth 0
+          bun install --frozen-lockfile
+          bash scripts/install-binaryen.sh
+          bun run build
+          git diff --stat
+      - run: node scripts/diagnostics/core-bridge-artifact.mjs record "$CORE_REV"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: diagnostic-bridge-${{ matrix.core }}
+          retention-days: 7
+          path: |
+            .diagnostic-bridge/dist
+            .diagnostic-bridge/package.json
+            .diagnostic-bridge/diagnostic-provenance.json
+  control:
+    name: Functional ${{ matrix.scenario }} with ${{ matrix.core }}
+    needs: build
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        core: [npm, f077a5d4a5dc12d7c51e79e46598740648c3824f, cef244e914affabbd5ee62be67b2e34eba97338e]
+        scenario: [group, reconnect]
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports: ['8080:8080']
+        env:
+          CHATSTATE_TTL_SECS: '3'
+          ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+        options: --log-driver none
+    env:
+      SOCKET_URL: wss://127.0.0.1:8080/ws/chat
+      ADV_SECRET_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      NODE_TLS_REJECT_UNAUTHORIZED: '0'
+      LOG_LEVEL: silent
+      CORE_REV: ${{ matrix.core }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: { ref: '${{ github.event.pull_request.head.sha }}', persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with: { node-version: '24', cache: npm }
+      - run: npm ci --ignore-scripts
+      - run: npm ls @oxidezap/whatsapp-rust-bridge
+      - run: npx tsc -p scripts/diagnostics/tsconfig.json
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: ${{ matrix.core != 'npm' }}
+        with:
+          name: diagnostic-bridge-${{ matrix.core }}
+          path: .diagnostic-artifact
+      - run: node scripts/diagnostics/core-bridge-artifact.mjs install "$CORE_REV"
+        if: ${{ matrix.core != 'npm' }}
+      - name: Functional group control, not a performance measurement
+        if: ${{ matrix.scenario == 'group' }}
+        run: node --expose-gc --no-liftoff --test --test-reporter=./scripts/diagnostics/safe-node-reporter.mjs scripts/diagnostics/group-core-control.ts
+      - name: Original reconnect assertions and deadlines
+        if: ${{ matrix.scenario == 'reconnect' }}
+        run: node --expose-gc --test --test-concurrency=1 --test-reporter=./scripts/diagnostics/safe-node-reporter.mjs src/__tests__/e2e/reconnect.test-e2e.ts
+      - name: Safe group phase observations
+        if: ${{ !cancelled() && matrix.scenario == 'group' }}
+        run: if [ -f .diagnostic-core-state.jsonl ]; then cat .diagnostic-core-state.jsonl; fi

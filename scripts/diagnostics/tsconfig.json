@@ -1,0 +1,5 @@
+{
+  "extends": "../../bench/tsconfig.json",
+  "include": ["./group-core-control.ts", "../../src/**/*.d.ts"],
+  "exclude": ["../../node_modules"]
+}
