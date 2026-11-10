@@ -16,12 +16,26 @@ import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import process from 'node:process'
+import { setImmediate as yieldTurn } from 'node:timers/promises'
 import P from 'pino'
-import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
+import {
+	type Boom,
+	DisconnectReason,
+	jidNormalizedUser,
+	makeWASocket,
+	useMemoryStore,
+	useMultiFileAuthState
+} from '../../index.ts'
+import { createDeviceProjection } from '../../Compatibility/legacy-store/device.ts'
+import { projectNativeStore } from '../../Compatibility/legacy-store/native-projection.ts'
+import { initAuthCreds } from '../../Utils/generics.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent } from './wait.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
+
+const diagnosticGenerations = new Map<string, number>()
+const diagnosticStores = new Map<string, ReturnType<typeof useMemoryStore>>()
 
 const defaultLogger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
 const defaultSocketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
@@ -65,7 +79,90 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 	const url = opts.socketUrl ?? defaultSocketUrl
 	const timeoutMs = opts.connectTimeoutMs ?? 30_000
 
-	const { state } = await useMultiFileAuthState(folder)
+	const memoryControl = process.env.DIAGNOSTIC_REUSABLE_MEMORY === '1'
+	if (
+		memoryControl &&
+		(process.env.ADV_SECRET_KEY !== 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' ||
+			!['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname))
+	)
+		throw new Error('synthetic mock required')
+	if (memoryControl) diagnosticGenerations.set(folder, (diagnosticGenerations.get(folder) ?? 0) + 1)
+	let memoryStore = diagnosticStores.get(folder)
+	if (memoryControl && !memoryStore) {
+		memoryStore = useMemoryStore()
+		if (
+			process.env.DIAGNOSTIC_MEMORY_YIELD === '1' &&
+			(!process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET || process.env.DIAGNOSTIC_MEMORY_YIELD_TARGET === opts.label)
+		) {
+			const rowLabels = new Map<string, string>()
+			for (const method of ['get', 'getMany', 'set', 'setMany', 'delete', 'deleteMany'] as const) {
+				const group = process.env.DIAGNOSTIC_MEMORY_YIELD_GROUP
+				if (group && (group === 'read') !== method.startsWith('get')) continue
+				const original = memoryStore[method]!.bind(memoryStore) as (...args: unknown[]) => Promise<unknown>
+				Object.assign(memoryStore, {
+					[method]: async (...args: unknown[]) => {
+						const privateRow = JSON.stringify([args[0], typeof args[1] === 'string' ? args[1] : method])
+						if (!rowLabels.has(privateRow)) rowLabels.set(privateRow, `row-${rowLabels.size + 1}`)
+						const row = rowLabels.get(privateRow)!
+						const result = await original(...args)
+						const scope = process.env.DIAGNOSTIC_MEMORY_YIELD_SCOPE
+						if (scope && args[0] !== scope) return result
+						const metaRow = process.env.DIAGNOSTIC_MEMORY_YIELD_META_ROW
+						if (metaRow && (metaRow === 'latest') !== (args[1] === 'latest_sync_key_id')) return result
+						const phase = process.env.DIAGNOSTIC_MEMORY_YIELD_PHASE
+						const generation = diagnosticGenerations.get(folder) ?? 0
+						if (!phase || (phase === 'before' && generation === 1) || (phase === 'after' && generation > 1)) {
+							const namespace = [
+								'session',
+								'identity',
+								'lid_mapping',
+								'device_list',
+								'device',
+								'prekey',
+								'signed_prekey',
+								'sender_key',
+								'sender_key_devices',
+								'base_key',
+								'tc_token',
+								'sent_message',
+								'msg_secret',
+								'meta',
+								'sync_version',
+								'sync_key',
+								'mutation_mac'
+							].includes(String(args[0]))
+								? String(args[0])
+								: 'other'
+							;(
+								globalThis as typeof globalThis & {
+									__ackReasonStore?: (data: {
+										namespace: string
+										method: string
+										generation: number
+										row: string
+									}) => void
+								}
+							).__ackReasonStore?.({ namespace, method, generation, row })
+							await yieldTurn()
+						}
+						return result
+					}
+				})
+			}
+		}
+		diagnosticStores.set(folder, memoryStore)
+	}
+	const memoryAuth = async () => {
+		const store = memoryStore!
+		const creds = initAuthCreds()
+		const projection = createDeviceProjection(creds)
+		for (const key of ['device', 'account'] as const) {
+			const value = await store.get('device', key)
+			if (value) projection.prepare(key, value)()
+		}
+		return { store, creds, keys: projectNativeStore(store, creds) }
+	}
+	const state = memoryControl ? await memoryAuth() : (await useMultiFileAuthState(folder)).state
 
 	const sock = makeWASocket({
 		auth: state,
@@ -79,6 +176,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 		logger: defaultLogger.child({ user: opts.label })
 	})
 
+	;(globalThis as typeof globalThis & { __ackReasonSocket?: (socket: typeof sock) => void }).__ackReasonSocket?.(sock)
 	opts.onSocket?.(sock)
 	attachQrAutoresponder(sock, url)
 	const startupSync = waitForEvent(
