@@ -1,0 +1,66 @@
+# Dependency updates arrive as two batched pull requests a week, not one per
+# package. CI here is lint, tests, the build and the e2e suite; batching is what
+# keeps a routine week from running all of that once per bumped dependency.
+# Configuration reference:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Group PRs, not individual bumps — 5 is headroom for the two groups below
+    # plus anything Dependabot has to split out (a security advisory opens its
+    # own PR regardless of grouping).
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    groups:
+      # The routine weekly batch, runtime and dev together: one PR, one CI run,
+      # one merge. `npm ci` reads a single lockfile, so splitting the two would
+      # only produce two PRs that each rewrite the same file and conflict.
+      npm:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      # Majors in their own PR: this package's dependencies are mostly 1.x or
+      # later, where a major really is the breaking one, and it usually needs
+      # code changes that should not hold the routine batch.
+      npm-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
+    ignore:
+      # `typescript-compat-auditor` is an alias for typescript@6.0.3, a second
+      # compiler kept deliberately behind the ^7 one the package builds with:
+      # scripts/compatibility/audit-core.ts imports it to audit against that
+      # older baseline. Bumping it to match the main compiler is what makes the
+      # audit stop measuring anything, so which baseline it pins is a decision
+      # to make by hand, not one to take from a weekly batch.
+      - dependency-name: typescript-compat-auditor
+
+  # Not previously configured, and the workflows show the drift that allows:
+  # actions/checkout, actions/setup-node and actions/upload-artifact each appear
+  # both SHA-pinned with a version comment and riding a bare major tag, at
+  # different versions. One weekly PR moves them together; SHA pins are updated
+  # in place and their trailing version comment with them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions:
+        patterns:
+          - "*"

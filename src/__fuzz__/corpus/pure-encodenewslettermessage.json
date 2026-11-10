@@ -1,0 +1,12 @@
+[
+	{
+		"note": "unpaired UTF-16 surrogate: protobufjs emits WTF-8 (ed bf bf), the Rust encoder substitutes U+FFFD (ef bf bd)",
+		"input": [
+			{
+				"imageMessage": {
+					"url": "\udfff"
+				}
+			}
+		]
+	}
+]

@@ -1,0 +1,385 @@
+/**
+ * The differential oracle.
+ *
+ * Two decisions here define what the whole suite considers a bug:
+ *
+ *  1. **Throwing is part of the contract.** A helper that returns `undefined`
+ *     where upstream throws breaks every caller with a `try`/`catch` around it,
+ *     so "one threw, the other did not" is a divergence even when the returned
+ *     value looks harmless. The *message* is not compared — wording is not a
+ *     contract and pinning it would only generate noise.
+ *
+ *  2. **Representation differences are normalised, value differences are not.**
+ *     `Buffer` vs `Uint8Array`, protobufjs `Long` vs `number` vs numeric string,
+ *     and an explicit `undefined` property vs an absent one are all invisible to
+ *     ordinary consumer code, and reporting them would bury the findings that
+ *     matter. Everything else is compared exactly, including `NaN` and array
+ *     order.
+ */
+
+export type Outcome =
+	| { readonly kind: 'return'; readonly value: unknown }
+	| { readonly kind: 'throw'; readonly name: string; readonly message: string }
+
+export const runOutcome = (call: () => unknown): Outcome => {
+	try {
+		return { kind: 'return', value: call() }
+	} catch (error) {
+		const failure = error as Error
+		return { kind: 'throw', name: failure?.name ?? 'Error', message: String(failure?.message ?? error) }
+	}
+}
+
+const isBytes = (value: unknown): value is Uint8Array => value instanceof Uint8Array
+
+/** protobufjs Long, and the bridge's plain-object equivalent. */
+const isLongLike = (value: unknown): value is { low: number; high: number; unsigned?: boolean } =>
+	typeof value === 'object' &&
+	value !== null &&
+	typeof (value as { low?: unknown }).low === 'number' &&
+	typeof (value as { high?: unknown }).high === 'number' &&
+	Object.keys(value).every(key => key === 'low' || key === 'high' || key === 'unsigned')
+
+const longToBigInt = (value: { low: number; high: number; unsigned?: boolean }): bigint => {
+	const low = BigInt(value.low >>> 0)
+	const high = BigInt(value.unsigned ? value.high >>> 0 : value.high)
+	return (high << 32n) | low
+}
+
+/**
+ * Collapses the representations that consumers cannot tell apart into one form.
+ *
+ * Integers arriving as `number`, `bigint`, `Long` or a decimal `string` all
+ * normalise to `bigint` when they are integral — that is the only way a
+ * Rust-side u64 and a protobufjs Long can be compared without either side
+ * winning by accident.
+ */
+export interface NormaliseOptions {
+	/**
+	 * Collapse integers written as `number`, `bigint`, `Long` or a decimal string
+	 * into one form (default true).
+	 *
+	 * Required to compare a Rust-side u64 against a protobufjs Long, and wrong
+	 * everywhere else: for a plain helper, returning the number `123` where
+	 * upstream returns the string `"123"` is a real API difference that `typeof`,
+	 * `===` and arithmetic all expose. The pure-helper differential therefore
+	 * turns this off.
+	 */
+	readonly coerceScalars?: boolean
+	/**
+	 * Names a field the schema declares as text, by its property path.
+	 *
+	 * Without it `coerceScalars` folds *every* decimal string into a bigint, so
+	 * `{ text: "0" }` and `{ text: 0 }` compare equal and a decoder that turned a
+	 * numeric-looking string into a number is invisible. The coercion is right for
+	 * a 64-bit integer — protobufjs renders one as a string, the bridge as a
+	 * bigint — and wrong for a declared string, and only the schema tells them
+	 * apart. Omit it and the behaviour is unchanged.
+	 */
+	readonly isTextField?: (propertyPath: readonly string[]) => boolean
+	/**
+	 * Keep an own property whose value is `undefined` distinct from an absent one
+	 * (default false).
+	 *
+	 * Collapsing the two is right for a protobuf message, where an unset field and
+	 * a field set to nothing are the same thing on the wire. It is wrong for a
+	 * plain helper: `Object.keys`, object spread, `Object.hasOwn` and `in` all tell
+	 * them apart, and `trimUndefined` — a fuzz target here — exists precisely to
+	 * turn one into the other. With the two collapsed, the oracle could not observe
+	 * that helper doing its job, nor one implementation deleting a key where the
+	 * other left it present.
+	 */
+	readonly preservePresence?: boolean
+}
+
+// Out-of-band brands keep report-friendly wrappers distinct from literal data.
+// Weak keys do not retain results after the caller releases them.
+const brands = new WeakMap<object, string>()
+const marker = (tag: string, value: unknown): Record<string, unknown> => {
+	const out = { [tag]: value }
+	brands.set(out, tag)
+	return out
+}
+
+const UNDEFINED_PRESENT = marker('__undefined__', true)
+
+/** Bound traversal work, including Map ordering. Exhaustion is not equality. */
+const workBudget = (): ((amount?: number) => void) => {
+	let remaining = 100_000
+	return (amount = 1) => {
+		remaining -= amount
+		if (remaining < 0) throw new Error('Comparison work budget exceeded')
+	}
+}
+
+/** JSON's ordering representation, without JSON.stringify's recursive walk. */
+const sortKey = (value: unknown, spend: (amount?: number) => void): string => {
+	if (typeof value === 'bigint') return `n:${value.toString()}`
+	if (typeof value === 'string') return `s:${value}`
+	if (typeof value === 'number' || typeof value === 'boolean' || value === null) return `p:${String(value)}`
+	const parts: string[] = []
+	const jobs: (() => void)[] = []
+	const render = (item: unknown): void => {
+		if (typeof item !== 'object' || item === null) {
+			parts.push(JSON.stringify(typeof item === 'bigint' ? `${item}n` : item) ?? 'null')
+			return
+		}
+		const array = Array.isArray(item)
+		const keys = array ? Array.from({ length: item.length }, (_, index) => String(index)) : Object.keys(item)
+		spend(keys.length)
+		parts.push(array ? '[' : '{')
+		jobs.push(() => {
+			parts.push(array ? ']' : '}')
+		})
+		const entries = keys.filter(key => {
+			const entry = (item as Record<string, unknown>)[key]
+			return array || (entry !== undefined && typeof entry !== 'function' && typeof entry !== 'symbol')
+		})
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const key = entries[index]!
+			jobs.push(() => {
+				if (index > 0) parts.push(',')
+				if (!array) parts.push(`${JSON.stringify(key)}:`)
+				render((item as Record<string, unknown>)[key])
+			})
+		}
+	}
+	if (value === undefined || typeof value === 'function' || typeof value === 'symbol') return 'j:undefined'
+	jobs.push(() => render(value))
+	while (jobs.length) jobs.pop()!()
+	return `j:${parts.join('')}`
+}
+
+/**
+ * Exact, stack-safe normalisation. Shared children compare by value, while
+ * cycles throw TypeError. More than 100,000 child slots and Map-ordering steps
+ * throws a budget error, never a partial result. `depth` is retained only for
+ * call compatibility; it no longer changes the comparison policy.
+ */
+export const normalise = (
+	value: unknown,
+	_depth = 0,
+	options: NormaliseOptions = {},
+	propertyPath: readonly string[] = []
+): unknown => {
+	const coerce = options.coerceScalars ?? true
+	const spend = workBudget()
+	// Linked paths avoid copying every prefix of a deep chain. Materialise a
+	// schema path only when a decimal string actually needs the predicate.
+	type Path = { key: string; parent: Path | undefined }
+	let rootPath: Path | undefined
+	for (const key of propertyPath) rootPath = { key, parent: rootPath }
+	const pathArray = (path: Path | undefined): string[] => {
+		const keys: string[] = []
+		for (let cursor = path; cursor; cursor = cursor.parent) keys.push(cursor.key)
+		return keys.toReversed()
+	}
+	// Sharing is value-based (a DAG equals independent copies); only an active
+	// ancestor is a cycle. Cycles are unsupported, never an equality marker.
+	const active = new WeakSet<object>()
+	const jobs: (() => void)[] = []
+	let result: unknown
+	const visit = (item: unknown, path: Path | undefined, assign: (output: unknown) => void): void => {
+		const nested = (entry: unknown, write: (output: unknown) => void, childPath = path): void => {
+			jobs.push(() => visit(entry, childPath, write))
+		}
+		if (item === null) return assign(null)
+		if (typeof item === 'bigint') return assign(coerce ? item : marker('__bigint__', item.toString()))
+		if (typeof item === 'number') {
+			if (coerce && Number.isSafeInteger(item)) return assign(BigInt(item))
+			return assign(Object.is(item, -0) && !coerce ? marker('__negative_zero__', true) : item)
+		}
+		if (typeof item === 'string') {
+			return assign(
+				coerce && /^-?\d{1,20}$/u.test(item) && options.isTextField?.(pathArray(path)) !== true ? BigInt(item) : item
+			)
+		}
+		if (isBytes(item)) return assign(marker('__bytes__', Buffer.from(item).toString('base64')))
+		if (typeof item !== 'object') return assign(item)
+		if (item instanceof Date) return assign(marker('__date__', item.getTime()))
+		if (active.has(item)) throw new TypeError('Cannot normalise a cycle')
+		active.add(item)
+		jobs.push(() => {
+			active.delete(item)
+		})
+		if (Array.isArray(item)) {
+			spend(item.length)
+			const out: unknown[] = []
+			out.length = item.length
+			assign(out)
+			for (let index = item.length - 1; index >= 0; index--) {
+				if (Object.hasOwn(item, index))
+					nested(item[index], output => {
+						out[index] = output
+					})
+			}
+			return
+		}
+		if (item instanceof Map) {
+			spend(item.size * 2)
+			const entries: [unknown, unknown][] = []
+			assign(marker('__map__', entries))
+			jobs.push(() => {
+				entries.sort((left, right) => {
+					const keyA = sortKey(left[0], spend)
+					const keyB = sortKey(right[0], spend)
+					if (keyA !== keyB) return keyA < keyB ? -1 : 1
+					const valueA = sortKey(left[1], spend)
+					const valueB = sortKey(right[1], spend)
+					return valueA < valueB ? -1 : valueA > valueB ? 1 : 0
+				})
+			})
+			for (const [key, entry] of item) {
+				const pair: [unknown, unknown] = [undefined, undefined]
+				entries.push(pair)
+				nested(key, output => {
+					pair[0] = output
+				})
+				nested(entry, output => {
+					pair[1] = output
+				})
+			}
+			return
+		}
+		if (item instanceof Set) {
+			spend(item.size)
+			const entries = [...item]
+			assign(marker('__set__', entries))
+			for (let index = entries.length - 1; index >= 0; index--)
+				nested(entries[index], output => {
+					entries[index] = output
+				})
+			return
+		}
+		if (isLongLike(item)) return assign(longToBigInt(item))
+		if (typeof (item as { toString?: unknown }).toString === 'function' && item.constructor?.name === 'Long') {
+			return assign(BigInt(String(item)))
+		}
+		const out: Record<string, unknown> = {}
+		const brand = brands.get(item)
+		if (brand !== undefined) brands.set(out, brand)
+		assign(out)
+		const keys = Object.keys(item)
+		spend(keys.length)
+		for (const key of keys.toSorted().toReversed()) {
+			const entry = (item as Record<string, unknown>)[key]
+			if (entry === undefined && !(options.preservePresence ?? false)) continue
+			nested(
+				entry,
+				output => {
+					Object.defineProperty(out, key, {
+						value: output === undefined ? UNDEFINED_PRESENT : output,
+						enumerable: true,
+						writable: true,
+						configurable: true
+					})
+				},
+				{ key, parent: path }
+			)
+		}
+	}
+	jobs.push(() =>
+		visit(value, rootPath, output => {
+			result = output
+		})
+	)
+	while (jobs.length) jobs.pop()!()
+	return result
+}
+
+/** A single iterative walk serves equality and directional key omission. */
+const compareNormalised = (left: unknown, right: unknown, omissions = false): boolean => {
+	const pending: [unknown, unknown, boolean][] = [[left, right, omissions]]
+	let omitted = false
+	while (pending.length) {
+		const [a, b, allowOmissions] = pending.pop()!
+		if (Object.is(a, b)) continue
+		if (typeof a !== typeof b || a === null || b === null) return false
+		if (typeof a !== 'object' || typeof b !== 'object') return false
+		const brand = brands.get(a)
+		if (brand !== brands.get(b)) return false
+		const mayOmit = allowOmissions && brand === undefined
+		if (Array.isArray(a) || Array.isArray(b)) {
+			if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+			for (let index = 0; index < a.length; index++) pending.push([a[index], b[index], mayOmit])
+			continue
+		}
+		const record = a as Record<string, unknown>
+		const reference = b as Record<string, unknown>
+		const keys = Object.keys(record)
+		const referenceKeys = Object.keys(reference)
+		if (keys.length !== referenceKeys.length) {
+			if (!mayOmit || keys.length > referenceKeys.length) return false
+			omitted = true
+		}
+		for (const key of keys) {
+			if (!Object.hasOwn(reference, key)) return false
+			pending.push([record[key], reference[key], mayOmit])
+		}
+	}
+	return omissions ? omitted : true
+}
+
+const deepSame = (left: unknown, right: unknown): boolean => compareNormalised(left, right)
+
+/** Equal after normalisation. */
+export const equivalent = (left: unknown, right: unknown, options?: NormaliseOptions): boolean =>
+	deepSame(normalise(left, 0, options), normalise(right, 0, options))
+
+export interface OutcomeComparison {
+	readonly same: boolean
+	readonly detail?: string
+}
+
+export const compareOutcomes = (local: Outcome, upstream: Outcome, options?: NormaliseOptions): OutcomeComparison => {
+	if (local.kind !== upstream.kind) {
+		return {
+			same: false,
+			detail:
+				local.kind === 'throw'
+					? `baileyrs threw (${local.name}) where baileys returned a value`
+					: `baileys threw (${upstream.kind === 'throw' ? upstream.name : ''}) where baileyrs returned a value`
+		}
+	}
+	// Both threw: the fact of throwing is the contract, the wording is not.
+	//
+	// One exception, and only one. Comparing error *classes* across two
+	// independent implementations would report on every `TypeError` versus `Boom`
+	// pair and bury everything else — the class is not a contract either. But a
+	// WebAssembly trap is not an error a caller can act on: it carries a
+	// `wasm://wasm/<hash>` stack with no frame pointing at the call, which is the
+	// whole reason the argument-boundary suite exists. Upstream is pure JS and can
+	// never produce one, so "we trapped where they threw" is always a real finding.
+	if (local.kind === 'throw') {
+		const trapped = local.name === 'RuntimeError' || local.name === 'CompileError'
+		if (trapped && upstream.kind === 'throw' && upstream.name !== local.name) {
+			return { same: false, detail: `baileyrs raised a WASM ${local.name} where baileys threw ${upstream.name}` }
+		}
+		return { same: true }
+	}
+	if (equivalent(local.value, (upstream as { value: unknown }).value, options)) return { same: true }
+	return { same: false, detail: 'return values differ' }
+}
+
+/** Renders an outcome for a failure report. */
+export const showOutcome = (outcome: Outcome): unknown =>
+	outcome.kind === 'throw' ? `<throw ${outcome.name}: ${outcome.message.slice(0, 160)}>` : outcome.value
+
+/**
+ * True when `local` is `upstream` with some keys missing, and nothing changed.
+ *
+ * The decode-side twin of `isWireSubset`: it tells "the decoder dropped a field"
+ * apart from "the decoder read a different value". Only the first is a single
+ * defect that one allowlist entry may reasonably cover.
+ *
+ * `options` must carry whatever the caller's own comparison used. Callers reach
+ * here *because* their comparison already said the two sides differ, so
+ * re-normalising under weaker rules can only re-fold a difference they had
+ * deliberately kept apart: with the default coercion a declared string field
+ * holding `'0'` and a decoder that returned the number `0` both become `0n`, the
+ * changed value vanishes, and what is left — a genuinely dropped field — makes
+ * the whole finding read as `proto:field-omission`. That entry is the broader
+ * one, so a new text-type regression rode in on a known omission unnoticed.
+ */
+export const omitsKeysOnly = (local: unknown, upstream: unknown, options: NormaliseOptions = {}): boolean =>
+	compareNormalised(normalise(local, 0, options), normalise(upstream, 0, options), true)

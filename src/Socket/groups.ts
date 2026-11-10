@@ -1,0 +1,218 @@
+import {
+	bridgeInviteLinkToCode,
+	bridgeMembershipRequestsToBaileys,
+	bridgeMembershipRequestUpdatesToBaileys,
+	bridgeParticipantChangesToBaileys
+} from '../Compatibility/socket-results.ts'
+import { emitMessageUpsert } from '../Compatibility/message-upsert.ts'
+import {
+	PARTICIPANT_ACTIONS,
+	WAMessageStubType,
+	type GroupMetadata,
+	type ParticipantAction,
+	type WAMessageKey
+} from '../Types/index.ts'
+import { assertArgumentDomain } from '../Utils/argument-domain.ts'
+import { generateMessageIDV2Portable } from '../Compatibility/message-ids.ts'
+import { toNumber } from '../Runtime/bytes.ts'
+import { proto } from '../WAProto/runtime.ts'
+import { bridgeGroupMetadataToBaileys } from '../Compatibility/group-metadata.ts'
+import type { SocketContext } from './types.ts'
+
+const GROUP_SETTING_ALIASES = {
+	announcement: { setting: 'announce', value: true },
+	not_announcement: { setting: 'announce', value: false },
+	locked: { setting: 'locked', value: true },
+	unlocked: { setting: 'locked', value: false }
+} as const satisfies Record<string, { setting: 'locked' | 'announce'; value: boolean }>
+
+/** The table is the definition: both the type and the accepted set come off it. */
+export type GroupSetting = keyof typeof GROUP_SETTING_ALIASES
+
+export const GROUP_SETTINGS: readonly GroupSetting[] = Object.keys(GROUP_SETTING_ALIASES) as GroupSetting[]
+
+export const GROUP_REQUEST_ACTIONS = ['approve', 'reject'] as const
+
+export type GroupRequestAction = (typeof GROUP_REQUEST_ACTIONS)[number]
+
+export const MEMBER_ADD_MODES = ['admin_add', 'all_member_add'] as const
+
+export type MemberAddMode = (typeof MEMBER_ADD_MODES)[number]
+
+export const JOIN_APPROVAL_MODES = ['on', 'off'] as const
+
+export type JoinApprovalMode = (typeof JOIN_APPROVAL_MODES)[number]
+
+// `toNumber` rather than calling `.toNumber()`: a 64-bit field now crosses the
+// bridge as a plain `{ low, high, unsigned }` once the value is too wide to be
+// exact as a double, and that shape carries no methods. The helper reads both
+// forms, and reconstructs the high word instead of dropping it.
+const inviteExpirationNumber = (value: proto.Message.IGroupInviteMessage['inviteExpiration']): number => toNumber(value)
+
+export const makeGroupMethods = (ctx: SocketContext) => {
+	const groupMetadata = async (jid: string): Promise<GroupMetadata> => {
+		const metadata = await ctx.withClient(client => client.getGroupMetadata(jid))
+		return bridgeGroupMetadataToBaileys(metadata)
+	}
+
+	const groupSettingUpdate = async (jid: string, setting: GroupSetting): Promise<void> => {
+		const checked = assertArgumentDomain('groupSettingUpdate', 'setting', setting, GROUP_SETTINGS)
+		const mapped = GROUP_SETTING_ALIASES[checked]
+		await ctx.withClient(client => client.groupSettingUpdate(jid, mapped.setting, mapped.value))
+	}
+
+	const groupAcceptInviteV4 = ctx.ev.createBufferedFunction(
+		async (
+			key: string | WAMessageKey,
+			inviteMessage: proto.Message.IGroupInviteMessage
+			// oxlint-disable-next-line typescript/no-explicit-any -- the established public contract returns Promise<any>.
+		): Promise<any> => {
+			const messageKey = typeof key === 'string' ? { remoteJid: key } : key
+			const groupJid = inviteMessage.groupJid
+			if (!groupJid || !inviteMessage.inviteCode || !messageKey.remoteJid) {
+				throw new TypeError('groupAcceptInviteV4 requires groupJid, inviteCode and inviter JID')
+			}
+
+			const joinedJid: string = await ctx.withClient(client =>
+				client.groupAcceptInviteV4(
+					groupJid,
+					inviteMessage.inviteCode!,
+					inviteExpirationNumber(inviteMessage.inviteExpiration),
+					messageKey.remoteJid!
+				)
+			)
+
+			if (messageKey.id) {
+				const expiredInvite = proto.Message.GroupInviteMessage.fromObject(inviteMessage)
+				expiredInvite.inviteExpiration = 0
+				expiredInvite.inviteCode = ''
+				ctx.ev.emit('messages.update', [
+					{
+						key: messageKey,
+						update: { message: { groupInviteMessage: expiredInvite } }
+					}
+				])
+			}
+
+			emitMessageUpsert(
+				ctx,
+				[
+					{
+						key: {
+							remoteJid: inviteMessage.groupJid,
+							id: generateMessageIDV2Portable(ctx.getUser()?.id, ctx.randomBytes),
+							fromMe: false,
+							participant: messageKey.remoteJid
+						},
+						messageStubType: WAMessageStubType.GROUP_PARTICIPANT_ADD,
+						messageStubParameters: [JSON.stringify(ctx.getMe())!],
+						participant: messageKey.remoteJid,
+						messageTimestamp: Math.floor(Date.now() / 1000)
+					}
+				],
+				{ type: 'notify' }
+			)
+
+			return joinedJid
+		}
+	)
+
+	return {
+		groupMetadata,
+
+		groupCreate: async (subject: string, participants: string[]): Promise<GroupMetadata> => {
+			const metadata = await ctx.withClient(client => client.createGroup(subject, participants))
+			return bridgeGroupMetadataToBaileys(metadata)
+		},
+
+		groupLeave: async (id: string): Promise<void> => {
+			await ctx.withClient(client => client.groupLeave(id))
+		},
+
+		groupUpdateSubject: async (jid: string, subject: string): Promise<void> => {
+			await ctx.withClient(client => client.groupUpdateSubject(jid, subject))
+		},
+
+		groupRequestParticipantsList: async (jid: string): Promise<Array<Record<string, string>>> => {
+			return bridgeMembershipRequestsToBaileys(await ctx.withClient(client => client.groupRequestParticipantsList(jid)))
+		},
+
+		groupRequestParticipantsUpdate: async (jid: string, participants: string[], action: GroupRequestAction) => {
+			assertArgumentDomain('groupRequestParticipantsUpdate', 'action', action, GROUP_REQUEST_ACTIONS)
+			return bridgeMembershipRequestUpdatesToBaileys(
+				await ctx.withClient(client => client.groupRequestParticipantsUpdate(jid, participants, action))
+			)
+		},
+
+		groupParticipantsUpdate: async (jid: string, participants: string[], action: ParticipantAction) => {
+			assertArgumentDomain('groupParticipantsUpdate', 'action', action, PARTICIPANT_ACTIONS)
+			return bridgeParticipantChangesToBaileys(
+				await ctx.withClient(client => client.groupParticipantsUpdate(jid, participants, action))
+			)
+		},
+
+		groupUpdateDescription: async (jid: string, description?: string): Promise<void> => {
+			await ctx.withClient(client => client.groupUpdateDescription(jid, description))
+		},
+
+		groupInviteCode: async (jid: string): Promise<string | undefined> => {
+			return bridgeInviteLinkToCode(await ctx.withClient(client => client.groupInviteCode(jid)))
+		},
+
+		groupRevokeInvite: async (jid: string): Promise<string | undefined> => {
+			return bridgeInviteLinkToCode(await ctx.withClient(client => client.groupRevokeInvite(jid)))
+		},
+
+		groupAcceptInvite: async (code: string): Promise<string | undefined> => {
+			return ctx.withClient(client => client.groupAcceptInvite(code))
+		},
+
+		groupRevokeInviteV4: async (groupJid: string, invitedJid: string): Promise<boolean> => {
+			return ctx.withClient(client => client.groupRevokeInviteV4(groupJid, invitedJid))
+		},
+
+		groupAcceptInviteV4,
+
+		groupGetInviteInfo: async (code: string): Promise<GroupMetadata> => {
+			return bridgeGroupMetadataToBaileys(await ctx.withClient(client => client.groupGetInviteInfo(code)))
+		},
+
+		groupToggleEphemeral: async (jid: string, ephemeralExpiration: number): Promise<void> => {
+			await ctx.withClient(client => client.groupToggleEphemeral(jid, ephemeralExpiration))
+		},
+
+		groupSettingUpdate,
+
+		groupMemberAddMode: async (jid: string, mode: MemberAddMode): Promise<void> => {
+			assertArgumentDomain('groupMemberAddMode', 'mode', mode, MEMBER_ADD_MODES)
+			await ctx.withClient(client => client.groupMemberAddMode(jid, mode))
+		},
+
+		groupJoinApprovalMode: async (jid: string, mode: JoinApprovalMode): Promise<void> => {
+			// Anything but 'on' used to mean off, so a typo turned approvals off
+			// and reported success.
+			assertArgumentDomain('groupJoinApprovalMode', 'mode', mode, JOIN_APPROVAL_MODES)
+			await ctx.withClient(client => client.groupSettingUpdate(jid, 'membership_approval', mode === 'on'))
+		},
+
+		groupFetchAllParticipating: async (): Promise<Record<string, GroupMetadata>> => {
+			// The bridge listing contains only overviews. Fetch the full records
+			// while holding one client lease; never publish a partial roster.
+			const result = await ctx.withClient(async client => {
+				const overviews = await client.groupFetchAllParticipating()
+				const metadata: Record<string, GroupMetadata> = {}
+				for (const jid of Object.keys(overviews)) {
+					metadata[jid] = bridgeGroupMetadataToBaileys(await client.getGroupMetadata(jid))
+				}
+				return metadata
+			})
+
+			ctx.ev.emit('groups.update', Object.values(result))
+			return result
+		},
+
+		updateMemberLabel: async (jid: string, memberLabel: string): Promise<string> => {
+			return ctx.withClient(client => client.updateMemberLabel(jid, memberLabel.slice(0, 30)))
+		}
+	}
+}

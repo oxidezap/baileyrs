@@ -1,0 +1,12 @@
+[
+	{
+		"note": "a Long-shaped pair whose high word upstream drops (returns low), baileyrs reconstructs",
+		"input": [
+			{
+				"low": 1,
+				"high": 1,
+				"unsigned": false
+			}
+		]
+	}
+]

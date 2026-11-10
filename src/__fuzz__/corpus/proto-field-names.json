@@ -1,0 +1,10 @@
+[
+	{
+		"note": "the bridge round-trips deviceAgentID as deviceAgentId and drops the upstream spelling on encode",
+		"input": {
+			"path": "SyncActionValue.ChatAssignmentAction",
+			"field": "deviceAgentID",
+			"kind": 2
+		}
+	}
+]

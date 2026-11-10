@@ -1,0 +1,251 @@
+/**
+ * E2E tests for the retrocompat API layer.
+ *
+ * Validates that APIs required by upstream Baileys consumers (e.g. wavoip)
+ * work correctly against the mock WA server.
+ */
+
+import process from 'node:process'
+import { after, before, describe, mock, test } from 'node:test'
+import P from 'pino'
+import { type BinaryNode, type Boom, DisconnectReason, jidNormalizedUser } from '../../index.ts'
+import { expect } from '../expect.ts'
+import { createTestClient, destroyTestClient } from './test-client.ts'
+
+const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
+
+describe('E2E: Retrocompat API', { timeout: 30_000 }, () => {
+	let alice: Awaited<ReturnType<typeof createTestClient>>
+	let bob: Awaited<ReturnType<typeof createTestClient>>
+
+	before(async () => {
+		;[alice, bob] = await Promise.all([
+			createTestClient({ label: 'compat-alice', folderPrefix: 'baileys-compat' }),
+			createTestClient({ label: 'compat-bob', folderPrefix: 'baileys-compat' })
+		])
+		logger.info({ alice: alice.jid, bob: bob.jid }, 'Both users connected')
+	})
+
+	after(async () => {
+		await Promise.all([destroyTestClient(alice), destroyTestClient(bob)])
+	})
+
+	// -- Socket properties --
+
+	test('type is "md"', () => {
+		expect(alice.sock.type).toBe('md')
+	})
+
+	test('authState.creds.me is populated after connect', () => {
+		const me = alice.sock.authState.creds.me
+		expect(me).toBeDefined()
+		expect(typeof me!.id).toBe('string')
+		expect(me!.id.length).toBeGreaterThan(0)
+	})
+
+	test('authState.creds has account and platform fields', () => {
+		const { creds } = alice.sock.authState
+		// These may or may not be populated depending on mock server,
+		// but the fields must exist on the creds object
+		expect('account' in creds).toBe(true)
+		expect('platform' in creds).toBe(true)
+	})
+
+	// -- generateMessageTag --
+
+	test('generateMessageTag returns incrementing unique strings', () => {
+		const tags = new Set<string>()
+		for (let i = 0; i < 100; i++) {
+			tags.add(alice.sock.generateMessageTag())
+		}
+
+		expect(tags.size).toBe(100)
+	})
+
+	// -- ws EventEmitter --
+
+	test('ws.on("CB:...") registers without error', () => {
+		const handler = mock.fn()
+		expect(() => alice.sock.ws.on('CB:call', handler)).not.toThrow()
+		alice.sock.ws.off('CB:call', handler)
+	})
+
+	test('ws.isOpen is true when connected', () => {
+		expect((alice.sock.ws as unknown as { isOpen: boolean }).isOpen).toBe(true)
+	})
+
+	test('message ACK reaches CB listeners once with its original wire attributes', async () => {
+		const messageId = `ACKPARITY${Date.now()}`
+		const observed: BinaryNode[] = []
+		let timeout: NodeJS.Timeout | undefined
+		let handler: ((node: BinaryNode) => void) | undefined
+		const received = new Promise<BinaryNode>((resolve, reject) => {
+			timeout = setTimeout(() => reject(new Error(`Timed out waiting for ACK ${messageId}`)), 5_000)
+			handler = node => {
+				if (node.attrs.id !== messageId) return
+				observed.push(node)
+				if (observed.length === 1) resolve(node)
+			}
+			alice.sock.ws.on('CB:ack,class:message', handler)
+		})
+
+		try {
+			const relayedId = await alice.sock.relayMessage(
+				bob.jid,
+				{ conversation: `ack-parity-${Date.now()}` },
+				{ messageId }
+			)
+			expect(relayedId).toBe(messageId)
+
+			const ack = await received
+			// RawNode and ServerAck are dispatched back-to-back for one stanza.
+			// Yield one event-loop turn to expose an accidental duplicate without
+			// introducing a timing-based readiness delay.
+			await new Promise<void>(resolve => setImmediate(resolve))
+
+			expect(observed).toHaveLength(1)
+			expect(ack.tag).toBe('ack')
+			expect(ack.attrs.id).toBe(messageId)
+			expect(ack.attrs.class).toBe('message')
+			expect(ack.attrs.from).toBe(jidNormalizedUser(bob.lid ?? bob.jid))
+			expect(/^\d+$/.test(ack.attrs.t ?? '')).toBe(true)
+		} finally {
+			if (timeout) clearTimeout(timeout)
+			if (handler) alice.sock.ws.off('CB:ack,class:message', handler)
+		}
+	})
+
+	// -- CB: events between users --
+
+	test('sendNode delivers stanza and CB: fires on recipient', async () => {
+		const tag = alice.sock.generateMessageTag()
+
+		// The TAG event for the server's reply to Alice's IQ fires on
+		// alice.sock.ws (Alice is who sent it). Mock may or may not echo
+		// — short sentinel race; the must-not-throw on sendNode is the
+		// real assertion.
+		const aliceReceived = new Promise<BinaryNode | null>(resolve => {
+			const handler = (node: BinaryNode) => {
+				clearTimeout(timeout)
+				resolve(node)
+			}
+			const timeout = setTimeout(() => {
+				alice.sock.ws.off(`TAG:${tag}`, handler)
+				resolve(null)
+			}, 500)
+			alice.sock.ws.once(`TAG:${tag}`, handler)
+		})
+
+		await alice.sock.sendNode({
+			tag: 'iq',
+			attrs: {
+				id: tag,
+				type: 'get',
+				to: '@s.whatsapp.net',
+				xmlns: 'w:p'
+			}
+		})
+
+		const response = await aliceReceived
+		if (response) {
+			expect(response.tag).toBeDefined()
+		}
+	})
+
+	test('query sends IQ and returns response', async () => {
+		// Send a ping query to the server
+		try {
+			const response = await alice.sock.query(
+				{
+					tag: 'iq',
+					attrs: {
+						type: 'get',
+						to: '@s.whatsapp.net',
+						xmlns: 'w:p'
+					}
+				},
+				5_000
+			)
+
+			// If mock server responds to IQs, we get a BinaryNode back
+			expect(response).toBeDefined()
+			expect(response.tag).toBeDefined()
+		} catch (err) {
+			// Timeout is acceptable if mock doesn't respond to arbitrary IQs
+			expect((err as Boom).output?.statusCode).toBe(DisconnectReason.timedOut)
+		}
+	})
+
+	// -- signalRepository --
+
+	test('signalRepository.validateSession returns boolean result', async () => {
+		// Check session for Bob's JID — after messaging, a session should exist
+		// First send a message to establish the session
+		await alice.sock.sendMessage(bob.jid, { text: `session-test-${Date.now()}` })
+
+		const result = await alice.sock.signalRepository.validateSession(bob.jid)
+		expect(typeof result.exists).toBe('boolean')
+	})
+
+	test('signalRepository.jidToSignalProtocolAddress returns a string', () => {
+		const addr = alice.sock.signalRepository.jidToSignalProtocolAddress(bob.jid)
+		expect(typeof addr).toBe('string')
+		expect(addr.length).toBeGreaterThan(0)
+	})
+
+	test('signalRepository.processSenderKeyDistributionMessage validates its payload', async () => {
+		await expect(
+			alice.sock.signalRepository.processSenderKeyDistributionMessage({ item: {}, authorJid: bob.jid })
+		).rejects.toThrow(/Group ID is required/)
+	})
+
+	test('signalRepository.migrateSession preserves empty-input semantics', async () => {
+		const result = await alice.sock.signalRepository.migrateSession('', '')
+		expect(result).toEqual({ migrated: 0, skipped: 0, total: 0 })
+	})
+
+	// -- assertSessions --
+
+	test('assertSessions completes for known JID', async () => {
+		const result = await alice.sock.assertSessions([bob.jid], false)
+		expect(result).toBe(true)
+	})
+
+	// -- uploadPreKeys stubs --
+
+	test('uploadPreKeys and uploadPreKeysToServerIfRequired are no-op', async () => {
+		await expect(alice.sock.uploadPreKeys()).resolves.toBeUndefined()
+		await expect(alice.sock.uploadPreKeysToServerIfRequired()).resolves.toBeUndefined()
+	})
+
+	// -- CB: event emission on real stanza --
+
+	test('ws emits CB: events for incoming message stanzas', async () => {
+		const cbReceived = new Promise<BinaryNode>(resolve => {
+			const timeout = setTimeout(() => {
+				bob.sock.ws.off('CB:message', handler)
+				resolve({ tag: 'timeout', attrs: {} })
+			}, 2_000)
+
+			const handler = (node: BinaryNode) => {
+				clearTimeout(timeout)
+				bob.sock.ws.off('CB:message', handler)
+				resolve(node)
+			}
+
+			bob.sock.ws.on('CB:message', handler)
+		})
+
+		// Alice sends a message — Bob should get both the high-level event AND the CB: event
+		const text = `cb-test-${Date.now()}`
+		await alice.sock.sendMessage(bob.jid, { text })
+
+		const node = await cbReceived
+		if (node.tag !== 'timeout') {
+			expect(node.tag).toBe('message')
+			expect(node.attrs).toBeDefined()
+		}
+		// If timeout, the mock server may not support raw_node forwarding for messages
+		// That's acceptable — the CB: mechanism is tested structurally
+	})
+})

@@ -1,0 +1,96 @@
+/**
+ * Drift detection between the bridge's `WhatsAppEvent` union (the runtime
+ * contract) and our adapter's `KNOWN_BRIDGE_EVENT_TYPES` (the set of types
+ * we explicitly handle).
+ *
+ * When the bridge ships a new event variant or removes an existing one, this
+ * test fails with a precise diff — long before the missing handler shows up
+ * as a silently-dropped event in production. Pair with
+ * `npm test` so any bridge bump that changes the event surface is
+ * caught before merge.
+ */
+
+import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+import { KNOWN_BRIDGE_EVENT_TYPES } from '../adapt.ts'
+import { loadBridgeDts } from '../../__tests__/bridge-dts.ts'
+import { expect } from '../../__tests__/expect.ts'
+
+/**
+ * Extract every discriminator string from the `WhatsAppEvent` union. The
+ * bridge declares it as:
+ *
+ *   export type WhatsAppEvent =
+ *     | { type: 'connected'; data: ... }
+ *     | { type: 'disconnected'; data: ... }
+ *     ...
+ *     ;
+ *
+ * We slice from the `export type WhatsAppEvent =` line down to the
+ * terminating `;` and pull out every quoted `type:` literal.
+ */
+function extractWhatsAppEventTypes(dts: string): string[] {
+	const start = dts.indexOf('export type WhatsAppEvent =')
+	if (start < 0) throw new Error('WhatsAppEvent union not found in .d.ts')
+	const after = dts.slice(start)
+	const end = after.indexOf(';\n')
+	if (end < 0) throw new Error('WhatsAppEvent union has no terminator in .d.ts')
+	const block = after.slice(0, end)
+
+	// Match `type: 'foo'` or `type: "foo"` (the bridge currently uses single quotes
+	// but stay forgiving).
+	const re = /type:\s*['"]([a-z_]+)['"]/g
+	const seen = new Set<string>()
+	for (const m of block.matchAll(re)) {
+		seen.add(m[1]!)
+	}
+	if (seen.size === 0) throw new Error('Failed to parse any variant from WhatsAppEvent union')
+	return [...seen].toSorted()
+}
+
+describe('Bridge .d.ts ↔ adapter drift', () => {
+	const bridgeDts = loadBridgeDts()
+	const bridgeTypes = extractWhatsAppEventTypes(bridgeDts)
+
+	it('every bridge event type from .d.ts is handled by the adapter', () => {
+		const missing = bridgeTypes.filter(t => !KNOWN_BRIDGE_EVENT_TYPES.has(t))
+		// If this fails, the bridge added a new variant we don't handle yet.
+		// Add a `case` in `adaptBridgeEvent` and the matching string in
+		// `KNOWN_BRIDGE_EVENT_TYPES`.
+		expect(missing).toEqual([])
+	})
+
+	it('KNOWN_BRIDGE_EVENT_TYPES has no entries the bridge no longer ships', () => {
+		const stale = [...KNOWN_BRIDGE_EVENT_TYPES].filter(t => !bridgeTypes.includes(t))
+		// If this fails, the bridge removed a variant we still claim to handle.
+		// Remove the corresponding `case` from `adaptBridgeEvent` and the entry
+		// from `KNOWN_BRIDGE_EVENT_TYPES`.
+		expect(stale).toEqual([])
+	})
+
+	it('parser found a non-trivial number of variants (sanity check)', () => {
+		// If this drops to 0/few, the regex broke against a `.d.ts` reformat
+		// and the two assertions above would silently pass.
+		expect(bridgeTypes.length).toBeGreaterThanOrEqual(20)
+	})
+
+	it('keeps the typed USync method connected to generated request and response declarations', () => {
+		assert.match(bridgeDts, /export interface UsyncQuery\s*\{/u)
+		assert.match(bridgeDts, /export interface UsyncResponse\s*\{/u)
+		assert.match(bridgeDts, /queryUsync\(query: UsyncQuery\): Promise<UsyncResponse>;/u)
+		assert.match(bridgeDts, /tc_token\?: Uint8Array \| null;/u)
+	})
+
+	it('keeps stanza response methods on the typed neutral node boundary', () => {
+		assert.match(bridgeDts, /export interface BinaryNode\s*\{/u)
+		assert.match(bridgeDts, /acknowledgeStanza\(stanza_js: BinaryNode\): Promise<void>;/u)
+		assert.match(
+			bridgeDts,
+			/rejectStanza\(stanza_js: BinaryNode, error_code: number, failure_reason\?: number \| null\): Promise<void>;/u
+		)
+		assert.match(
+			bridgeDts,
+			/requestMessageRetry\(stanza_js: BinaryNode, force_include_keys\?: boolean \| null\): Promise<void>;/u
+		)
+	})
+})

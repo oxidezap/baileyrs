@@ -1,0 +1,12 @@
+[
+	{
+		"note": "key with no remoteJid/participant: upstream normalises to \"\", baileyrs leaves undefined",
+		"input": [
+			{
+				"key": {}
+			},
+			"",
+			""
+		]
+	}
+]

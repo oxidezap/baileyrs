@@ -1,0 +1,304 @@
+name: CI
+
+# Reusable CI for PRs, main and releases.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_call:
+    inputs:
+      full:
+        description: 'Run every job whatever the diff touches (the release path)'
+        type: boolean
+        default: false
+    secrets:
+      BARTENDER_GHCR_TOKEN:
+        description: 'Pull credentials for the private mock-server image'
+        required: false
+
+permissions:
+  contents: read
+
+# Include the caller workflow so a main push cannot cancel release verification.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  # Skip only version/changelog-only diffs. Decide from files, not commit messages.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      # Use the compare API for both PR and push diffs.
+      - id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FULL: ${{ inputs.full }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          decide() {
+            echo "run=$1" >>"$GITHUB_OUTPUT"
+            echo "changes: run=$1 — $2"
+            echo "**\`run=$1\`** — $2" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+
+          # Releases always run every check.
+          if [ "$FULL" = true ]; then
+            decide true "called by the release workflow"
+          fi
+
+          # Run all checks when there is no comparable base.
+          case "$BASE" in
+            "" | 0000000000000000000000000000000000000000)
+              decide true "no base commit to compare against" ;;
+          esac
+
+          compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
+          count=$(jq '.files | length' <<<"$compare")
+
+          # Treat truncated or empty compare results as requiring all checks.
+          if [ "$count" -eq 0 ] || [ "$count" -ge 300 ]; then
+            decide true "$count files listed by the compare API"
+          fi
+
+          jq -r '.files[] | "changes:   \(.status)  \(.filename)"' <<<"$compare"
+
+          skippable=$(jq '
+            # Release notes and the version manifest do not affect checked code.
+            def inert:
+              .filename == "CHANGELOG.md"
+              or .filename == ".release-please-manifest.json";
+
+            # Exclude diff headers from changed lines.
+            def patch_lines:
+              [ (.patch // "") | split("\n")[]
+                | select(test("^[+-]") and (test("^(\\+\\+\\+|---)") | not)) ];
+
+            # Reject incomplete patches by checking GitHub line counts.
+            def patch_is_whole:
+              ([ patch_lines[] | select(startswith("+")) ] | length) == (.additions // -1)
+              and ([ patch_lines[] | select(startswith("-")) ] | length) == (.deletions // -1);
+
+            # Package files may skip checks only when their version fields are the sole changes.
+            def version_bump_only:
+              (.filename == "package.json" or .filename == "package-lock.json")
+              and patch_is_whole
+              and (patch_lines
+                   | length > 0
+                     and all(test("^[+-][ \t]*\"version\": \"[^\"]*\",?[ \t]*$")));
+
+            [ .files[]
+              | (.status == "modified" or .status == "added")
+                and (inert or version_bump_only)
+            ] | all
+          ' <<<"$compare")
+
+          if [ "$skippable" = true ]; then
+            decide false "every changed file is a release version bump"
+          fi
+          decide true "the change reaches the checks"
+
+  lint:
+    name: Lint & format
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # Skip prepare; lint reads source files.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run lint
+
+      - run: npm run format:check
+
+      - run: npm run check:host-boundaries
+
+  test:
+    name: Tests
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # Skip prepare; tests read source files.
+      - run: npm ci --ignore-scripts
+
+      - run: npm test
+
+  storage:
+    name: Storage (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - run: node --test src/Utils/__tests__/atomic-store.test.ts src/Utils/__tests__/flush-boundaries.test.ts
+
+  build:
+    name: Build
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # Build once here.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run build
+
+      - run: npm run typecheck:compat-declarations
+
+      - run: npm run check:host-boundaries
+
+      # Check the package before publishing.
+      - run: node scripts/check-pack.ts
+
+      # Validate the installed tarball and upstream alias, including host initialization.
+      - run: npm run test:packaged
+
+      - run: npm run compat:audit:proto
+
+      - run: npm run compat:audit:wire
+
+      - run: npm run compat:audit:lifecycle
+
+      # Only releases upload the verified build for publication.
+      - name: Record the tree publish must ship
+        if: ${{ inputs.full }}
+        run: |
+          set -euo pipefail
+          (cd lib && find . -type f -print0 | sort -z | xargs -0r sha256sum) > lib.sha256
+          echo "build: $(wc -l < lib.sha256) files recorded"
+
+      - name: Hand the verified build to publish
+        if: ${{ inputs.full }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-build
+          path: |
+            lib
+            lib.sha256
+          if-no-files-found: error
+          # Allow time for environment approval before publication.
+          retention-days: 7
+
+  e2e:
+    name: E2E tests
+    needs: changes
+    # Fork PRs cannot pull the private mock image without secrets.
+    if: >-
+      needs.changes.outputs.run == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      mock-server:
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:56cbabbc2bba22a3306bfdf7bf02f0fbd6041483a7cac8b0c6217ac4cfa58f75
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
+        ports:
+          - 8080:8080
+        env:
+          CHATSTATE_TTL_SECS: "3"
+          ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        options: --log-driver none
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci --ignore-scripts
+
+      - name: Wait for mock server
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sk https://localhost:8080/ > /dev/null 2>&1; then
+              echo "Mock server is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Mock server failed to become ready"
+          exit 1
+
+      - name: Run E2E tests
+        env:
+          SOCKET_URL: "wss://127.0.0.1:8080/ws/chat"
+          ADV_SECRET_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        run: npm run test:e2e
+
+  # Require this aggregate check, including when release-only diffs skip jobs.
+  success:
+    name: All checks passed
+    if: always()
+    needs: [changes, lint, test, storage, build, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job passed or was deliberately skipped
+        env:
+          # Skipped jobs are expected for release-only diffs.
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) echo "::error::a required job ended in '$result'"; exit 1 ;;
+            esac
+          done
+          echo "All checks passed!"

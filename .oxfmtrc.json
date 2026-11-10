@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "useTabs": true,
+  "tabWidth": 2,
+  "semi": false,
+  "singleQuote": true,
+  "jsxSingleQuote": true,
+  "bracketSpacing": true,
+  "arrowParens": "avoid",
+  "printWidth": 120,
+  "trailingComma": "none",
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "lib",
+    "coverage",
+    "*.lock",
+    "*.json",
+    "src/WABinary/index.ts",
+    "WAProto",
+    "WASignalGroup",
+    "Example/Example.ts",
+    "docs"
+  ]
+}

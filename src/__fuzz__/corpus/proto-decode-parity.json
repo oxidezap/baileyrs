@@ -1,0 +1,13 @@
+[
+	{
+		"note": "a 64-bit field above Number.MAX_SAFE_INTEGER: the bridge decoder throws where protobufjs returns a Long",
+		"input": {
+			"path": "Message",
+			"message": {
+				"videoMessage": {
+					"fileLength": "9007199254740992"
+				}
+			}
+		}
+	}
+]

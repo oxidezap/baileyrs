@@ -1,0 +1,10 @@
+[
+	{
+		"note": "mediaKeyDomain is proto3 optional; set to its zero value the bridge encodes nothing at all",
+		"input": {
+			"path": "Message.MMSThumbnailMetadata",
+			"field": "mediaKeyDomain",
+			"kind": 1
+		}
+	}
+]

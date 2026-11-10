@@ -1,0 +1,19 @@
+[
+	{
+		"note": "a declared event type with no data slot throws instead of returning null",
+		"input": [
+			{
+				"type": "dirty_state"
+			}
+		]
+	},
+	{
+		"note": "type \"__proto__\" resolves to a non-function and throws \"adapter is not a function\"",
+		"input": [
+			{
+				"type": "__proto__",
+				"data": {}
+			}
+		]
+	}
+]

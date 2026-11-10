@@ -1,0 +1,36 @@
+[
+	{
+		"note": "two buffered events release in a different order than upstream",
+		"input": [
+			{
+				"kind": "buffer"
+			},
+			{
+				"kind": "emit",
+				"event": "contacts.upsert",
+				"data": [
+					{
+						"id": "15551234567@s.whatsapp.net"
+					}
+				]
+			},
+			{
+				"kind": "emit",
+				"event": "message-receipt.update",
+				"data": [
+					{
+						"key": {
+							"remoteJid": "15551234567@s.whatsapp.net",
+							"id": "A1",
+							"fromMe": false
+						},
+						"receipt": {
+							"userJid": "15551234567@s.whatsapp.net",
+							"readTimestamp": 1
+						}
+					}
+				]
+			}
+		]
+	}
+]
