@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "rootDir": "../..",
-    "noEmit": true,
-    "types": ["node"]
-  },
-  "include": ["./**/*.ts", "./__tests__/fixtures/*.d.ts", "../clean-build.ts", "../../src/Types/globals.d.ts", "../../src/Types/fs-native-extensions.d.ts"]
-}

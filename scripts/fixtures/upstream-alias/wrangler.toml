@@ -1,8 +1,0 @@
-name = "baileyrs-packaged-workerd-smoke"
-main = "worker.ts"
-compatibility_date = "2025-05-08"
-
-[[rules]]
-type = "CompiledWasm"
-globs = ["bridge.wasm"]
-fallthrough = true

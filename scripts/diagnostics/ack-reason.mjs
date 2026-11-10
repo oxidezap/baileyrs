@@ -1,6 +1,8 @@
 // Temporary, synthetic-loopback-only categorization. Never write raw content or routing identifiers.
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
+import { createRequire } from 'node:module'
+const { PreKeyWhisperMessage, WhisperMessage } = createRequire(import.meta.url)('libsignal/src/protobufs.js')
 const endpoint = new URL(process.env.SOCKET_URL ?? 'https://invalid')
 if (
 	!['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) ||
@@ -68,17 +70,38 @@ const bodyCategory = content => {
 }
 globalThis.__ackReasonSocket = sock => {
 	const account = ++accounts
+	let firstBase, previousBase, firstRatchet, previousRatchet
+	const header = bytes => {
+		try {
+			if (!(bytes instanceof Uint8Array) || bytes.byteLength < 2) return { parsed: false }
+			const prekey = PreKeyWhisperMessage.decode(Buffer.from(bytes).subarray(1))
+			const message = Buffer.from(prekey.message)
+			const whisper = WhisperMessage.decode(message.subarray(1, -8))
+			const base = Buffer.from(prekey.baseKey)
+			const ratchet = Buffer.from(whisper.ephemeralKey)
+			if (base.length !== 33 || ratchet.length !== 33 || !Number.isSafeInteger(whisper.counter) || !Number.isSafeInteger(whisper.previousCounter)) return { parsed: false }
+			const result = { parsed: true, sameBaseAsFirst: firstBase ? base.equals(firstBase) : null, sameBaseAsPrevious: previousBase ? base.equals(previousBase) : null, sameRatchetAsFirst: firstRatchet ? ratchet.equals(firstRatchet) : null, sameRatchetAsPrevious: previousRatchet ? ratchet.equals(previousRatchet) : null, counter: whisper.counter, previousCounter: whisper.previousCounter }
+			firstBase ??= base
+			firstRatchet ??= ratchet
+			previousBase = base
+			previousRatchet = ratchet
+			return result
+		} catch { return { parsed: false } }
+	}
 	const userPart = value => typeof value === 'string' ? value.split('@')[0].split(':')[0] : null
 	sock.ws.on('CB:message', node => {
 		const from = userPart(node.attrs?.from)
 		const own = [sock.user?.id, sock.user?.lid].map(userPart).filter(Boolean)
 		const types = []
+		const referenceHeaders = []
+		const isOwn = from !== null && own.includes(from)
 		const visit = item => {
+			if (item?.tag === 'enc' && item.attrs?.type === 'pkmsg' && isOwn) referenceHeaders.push(header(item.content))
 			if (item?.tag === 'enc') types.push(['pkmsg', 'msg', 'skmsg', 'msmsg'].includes(item.attrs?.type) ? item.attrs.type : 'other')
 			if (Array.isArray(item?.content)) for (const child of item.content) visit(child)
 		}
 		visit(node)
-		record('incoming-envelope', { account, message: localId(node.attrs?.id), fromOwnAccount: from !== null && own.includes(from), ownComparisonAvailable: own.length > 0, encryptedTypes: types, retryCountPresent: node.attrs?.retry_count !== undefined })
+		record('incoming-envelope', { account, message: localId(node.attrs?.id), fromOwnAccount: from !== null && own.includes(from), ownComparisonAvailable: own.length > 0, encryptedTypes: types, referenceHeaders, retryCountPresent: node.attrs?.retry_count !== undefined })
 	})
 
 	sock.ws.on('CB:ack', node =>

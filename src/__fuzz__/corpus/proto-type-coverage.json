@@ -1,6 +1,0 @@
-[
-	{
-		"note": "a message type upstream declares that the bridge codec does not implement",
-		"input": "BotAvatarMetadata"
-	}
-]
