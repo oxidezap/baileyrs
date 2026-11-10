@@ -5,12 +5,12 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: core-control-diagnostic-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  group: core-control-diagnostic-latest-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   build:
     name: Diagnostic bridge core ${{ matrix.core }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -58,7 +58,7 @@ jobs:
     name: Functional ${{ matrix.scenario }} with ${{ matrix.core }}
     needs: build
     if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false

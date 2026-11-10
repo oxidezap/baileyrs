@@ -5,8 +5,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ack-reason-diagnostic-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  group: ack-reason-diagnostic-latest-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   reconnect:
     name: Reconnect ${{ matrix.store }} repeat ${{ matrix.repeat }}
@@ -16,7 +16,7 @@ jobs:
         store: [file, latest]
         repeat: [1]
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
       mock-server:

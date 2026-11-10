@@ -17,7 +17,7 @@ if (mode === 'prepare') {
   pkg.version = `0.26.6-diagnostic.${revision.slice(0,12)}`
   await writeFile(`${root}/package.json`, JSON.stringify(pkg, null, 2) + '\n')
   const digest = createHash('sha256').update(await readFile(`${root}/dist/whatsapp_rust_bridge_bg.wasm`)).digest('hex')
-  const provenance = { diagnostic: true, bridge: '04f014aefbf248f2ecbf7551cc73e67b949c9e73', core: revision, build: 'bun run build', wasmSha256: digest, version: pkg.version }
+  const provenance = { diagnostic: true, bridge: '04f014aefbf248f2ecbf7551cc73e67b949c9e73', core: revision, build: 'bun run build', runnerImage: process.env.ImageOS ?? null, runnerImageVersion: process.env.ImageVersion ?? null, wasmSha256: digest, version: pkg.version }
   await writeFile(`${root}/diagnostic-provenance.json`, JSON.stringify(provenance, null, 2) + '\n')
   console.log(JSON.stringify(provenance))
 } else if (mode === 'install') {
