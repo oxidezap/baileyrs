@@ -59,7 +59,7 @@ import P from 'pino'
 import { Agent, type Dispatcher } from 'undici'
 import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket } from '../../index.ts'
 import { expect } from '../expect.ts'
-import { waitForMockHistory } from './mock-startup.ts'
+import { waitForMockHistory, waitForMockStartup } from './mock-startup.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
@@ -198,7 +198,7 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 	attachQrAutoresponder(sock, socketUrl)
 
 	const historySync = waitForMockHistory(sock)
-	const jid = await new Promise<string>((resolve, reject) => {
+	const connection = new Promise<string>((resolve, reject) => {
 		const tid = setTimeout(() => reject(new Error(`${label}: connect timeout (bridge)`)), 30_000)
 		sock.ev.on('connection.update', update => {
 			if (update.connection === 'open') {
@@ -214,7 +214,7 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 		})
 	})
 
-	await historySync
+	const jid = await waitForMockStartup(connection, historySync)
 	return { kind: 'bridge', sock, jid, lid: sock.user?.lid, authFolder: folder, label }
 }
 
@@ -242,7 +242,7 @@ async function createUpstreamClient(label: string, authFolder: string): Promise<
 	sock.ev.on('creds.update', saveCreds)
 
 	const historySync = waitForMockHistory(sock)
-	const jid = await new Promise<string>((resolve, reject) => {
+	const connection = new Promise<string>((resolve, reject) => {
 		const tid = setTimeout(() => reject(new Error(`${label}: connect timeout (upstream)`)), 30_000)
 		sock.ev.on('connection.update', update => {
 			if (update.connection === 'open') {
@@ -261,7 +261,7 @@ async function createUpstreamClient(label: string, authFolder: string): Promise<
 		})
 	})
 
-	await historySync
+	const jid = await waitForMockStartup(connection, historySync)
 	return { kind: 'upstream', sock, jid, lid: sock.user?.lid, authFolder, label }
 }
 

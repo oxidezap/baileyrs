@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import P from 'pino'
 import type * as PublicApi from '../../index.ts'
 import type { makeWASocket as SocketFactory, WAMessage } from '../../index.ts'
-import { waitForMockHistory } from './mock-startup.ts'
+import { waitForMockHistory, waitForMockStartup } from './mock-startup.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForMessage } from './wait.ts'
 
@@ -72,7 +72,7 @@ try {
 			})
 			const historySync = waitForMockHistory(sock)
 			if (phase === 'seed') attachQrAutoresponder(sock, socketUrl)
-			await new Promise<void>((resolve, reject) => {
+			const connection = new Promise<void>((resolve, reject) => {
 				let open = false
 				let synced = false
 				sock.ev.on('connection.update', update => {
@@ -90,7 +90,7 @@ try {
 					if (open && synced) resolve()
 				})
 			})
-			await historySync
+			await waitForMockStartup(connection, historySync)
 			assert.ok(sock.user?.id)
 			identities[index] = {
 				id: api.jidNormalizedUser(sock.user.id),

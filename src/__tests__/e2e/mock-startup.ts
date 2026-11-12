@@ -33,3 +33,9 @@ export function waitForMockHistory(sock: HistorySource, timeoutMs = 30_000): Pro
 		sock.ev.on('messaging-history.set', onHistory)
 	})
 }
+
+/** Observe both startup branches immediately, including a later second failure. */
+export async function waitForMockStartup<T>(connection: Promise<T>, history: Promise<void>): Promise<T> {
+	const [result] = await Promise.all([connection, history])
+	return result
+}
