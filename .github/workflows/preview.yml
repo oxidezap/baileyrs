@@ -8,8 +8,9 @@ on:
       - main
   pull_request:
 
-# PR code needs no GitHub token permissions.
-permissions: {}
+# Only the selector needs read access to fetch Git history.
+permissions:
+  contents: read
 
 # Cancel superseded PR previews; preserve a preview for each main commit.
 concurrency:
@@ -17,7 +18,15 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+
   preview:
+    permissions: {}
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: Publish preview
     runs-on: ubuntu-latest
     timeout-minutes: 15
