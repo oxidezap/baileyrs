@@ -709,16 +709,16 @@ describe('useBridgeStore — durability', () => {
 
 	it('flush that never quiesces reports itself instead of dropping writes', async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'dur-quiesce-'))
+		let store: Awaited<ReturnType<typeof useBridgeStore>> | undefined
+		let churn = true
+		let n = 0
 		try {
-			let store!: Awaited<ReturnType<typeof useBridgeStore>>
-			let n = 0
 			store = await useBridgeStore(dir, {
 				io: {
 					writeTmp: async (tmpPath, value) => {
-						const i = n++
 						// Every flushed write is replaced by a fresh pending
 						// one, so no pass can drain the queue.
-						void store.set(NON_CRITICAL, `churn-${i}`, enc('x'))
+						if (churn) await store!.set(NON_CRITICAL, `churn-${n++}`, enc('x'))
 						return realWriteTmp(tmpPath, value)
 					},
 					publishTmp: realPublishTmp,
@@ -727,8 +727,21 @@ describe('useBridgeStore — durability', () => {
 			})
 
 			await store.set(NON_CRITICAL, 'churn-start', enc('x'))
-			await assert.rejects(() => store.flush!(), /did not quiesce/)
+			await assert.rejects(() => store!.flush!(), /did not quiesce/)
+
+			churn = false
+			await store.flush!()
+			const reopened = await useBridgeStore(dir)
+			assert.equal(dec(await reopened.get(NON_CRITICAL, 'churn-start')), 'x')
+			assert.ok(n > 0, 'the flush must have generated replacement writes')
+			for (let i = 0; i < n; i++) {
+				assert.equal(dec(await reopened.get(NON_CRITICAL, `churn-${i}`)), 'x')
+			}
 		} finally {
+			// A rejected flush leaves pending writes and their debounce timers alive.
+			// Stop the producer and drain those writes before removing its directory.
+			churn = false
+			await store?.flush!()
 			await rm(dir, { recursive: true, force: true })
 		}
 	})
