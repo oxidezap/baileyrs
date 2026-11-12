@@ -18,7 +18,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+
   autofix:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: Fix lint & format
     runs-on: ubuntu-latest
     timeout-minutes: 10

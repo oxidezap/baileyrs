@@ -442,11 +442,13 @@ const ADAPTERS = {
 	}),
 
 	/**
-	 * The QR refs ran out. Upstream ends the socket with `timedOut` when its own
-	 * QR timer gives up (`Socket/socket.ts`), which is the same end state, so
-	 * this becomes the same terminal close rather than a new signal to learn.
+	 * QR exhaustion can leave a pair-code flow alive. Older bridges omit the
+	 * flag, so preserve their terminal-timeout behavior by default.
 	 */
-	pairing_qr_codes_exhausted: () => ({ type: 'qrCodesExhausted' }),
+	pairing_qr_codes_exhausted: data => ({
+		type: 'qrCodesExhausted',
+		disconnected: asBoolOr(data?.disconnected, true)
+	}),
 
 	/**
 	 * Another linked device turned link previews on or off account-wide.

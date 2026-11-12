@@ -75,6 +75,11 @@ Native auth persists automatically. Keep `auth_info` private and reuse it on
 restart. The example stops on terminal closure; [Example/example.ts](Example/example.ts)
 includes QR authentication, sending messages and a reconnect policy.
 
+When QR refs expire while a pair code is still outstanding, the socket stays
+open if the engine keeps that pairing flow alive. No `connection.update` is
+emitted for that QR expiry. QR-only exhaustion still closes with a 408 timeout;
+bridges that omit the disconnection flag retain that behavior.
+
 ### Host-neutral entrypoint
 
 For Workers, Deno and browser-like hosts, initialize WASM before creating a socket:
@@ -147,7 +152,7 @@ out-of-order gaps can become native-only and need a new Signal handshake after
 rollback. Engines older than 0.2.8 cannot read newer seed-only skipped-key records;
 do not delete native-only session rows to force a downgrade.
 
-### Bridge 0.26.6 storage and media
+### Bridge 0.26.7 storage and media
 
 Custom native stores must implement complete, account-scoped `listKeys` and set
 `capabilities.enumerate: true` for ADV identity recovery. Enumeration must include

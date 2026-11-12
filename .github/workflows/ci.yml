@@ -30,7 +30,6 @@ env:
   NODE_VERSION: '24'
 
 jobs:
-  # Skip only version/changelog-only diffs. Decide from files, not commit messages.
   changes:
     name: What changed
     runs-on: ubuntu-latest
@@ -38,78 +37,22 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
-      # Use the compare API for both PR and push diffs.
+      # Full history avoids API file limits and includes both sides of renames.
+      # PRs use their merge base, pushes use the complete before..after range.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
       - id: decide
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FULL: ${{ inputs.full }}
+          EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-
-          decide() {
-            echo "run=$1" >>"$GITHUB_OUTPUT"
-            echo "changes: run=$1 — $2"
-            echo "**\`run=$1\`** — $2" >>"$GITHUB_STEP_SUMMARY"
-            exit 0
-          }
-
-          # Releases always run every check.
-          if [ "$FULL" = true ]; then
-            decide true "called by the release workflow"
-          fi
-
-          # Run all checks when there is no comparable base.
-          case "$BASE" in
-            "" | 0000000000000000000000000000000000000000)
-              decide true "no base commit to compare against" ;;
-          esac
-
-          compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
-          count=$(jq '.files | length' <<<"$compare")
-
-          # Treat truncated or empty compare results as requiring all checks.
-          if [ "$count" -eq 0 ] || [ "$count" -ge 300 ]; then
-            decide true "$count files listed by the compare API"
-          fi
-
-          jq -r '.files[] | "changes:   \(.status)  \(.filename)"' <<<"$compare"
-
-          skippable=$(jq '
-            # Release notes and the version manifest do not affect checked code.
-            def inert:
-              .filename == "CHANGELOG.md"
-              or .filename == ".release-please-manifest.json";
-
-            # Exclude diff headers from changed lines.
-            def patch_lines:
-              [ (.patch // "") | split("\n")[]
-                | select(test("^[+-]") and (test("^(\\+\\+\\+|---)") | not)) ];
-
-            # Reject incomplete patches by checking GitHub line counts.
-            def patch_is_whole:
-              ([ patch_lines[] | select(startswith("+")) ] | length) == (.additions // -1)
-              and ([ patch_lines[] | select(startswith("-")) ] | length) == (.deletions // -1);
-
-            # Package files may skip checks only when their version fields are the sole changes.
-            def version_bump_only:
-              (.filename == "package.json" or .filename == "package-lock.json")
-              and patch_is_whole
-              and (patch_lines
-                   | length > 0
-                     and all(test("^[+-][ \t]*\"version\": \"[^\"]*\",?[ \t]*$")));
-
-            [ .files[]
-              | (.status == "modified" or .status == "added")
-                and (inert or version_bump_only)
-            ] | all
-          ' <<<"$compare")
-
-          if [ "$skippable" = true ]; then
-            decide false "every changed file is a release version bump"
-          fi
-          decide true "the change reaches the checks"
+        run: node scripts/ci/changes.mjs
 
   lint:
     name: Lint & format

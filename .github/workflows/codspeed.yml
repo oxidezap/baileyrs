@@ -22,7 +22,14 @@ env:
   NODE_VERSION: '24'
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+
   benchmarks:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     name: Run benchmarks (${{ matrix.mode }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -51,11 +58,13 @@ jobs:
           run: npm run bench
 
   e2e:
+    needs: changes
     name: Bartender (${{ matrix.suite }}, ${{ matrix.mode }})
     # Untrusted fork code never receives the private image credential.
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      needs.changes.outputs.run == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
