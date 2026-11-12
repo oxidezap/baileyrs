@@ -52,7 +52,7 @@ const GC_SETTLE_MS = 60
  * two release paths. Throws when the shapes are missing so a wasm-bindgen
  * upgrade fails loudly here instead of silently reporting zero leaks.
  */
-function instrument(source: string): string {
+export function instrumentHandleGlue(source: string): string {
 	// `[\w$]` rather than `\w`: `$` is a valid identifier character and the
 	// minifier does emit it, so a name like `h$` slipped past a `\w+` and read
 	// as a wasm-bindgen shape change that had not happened.
@@ -71,24 +71,41 @@ function instrument(source: string): string {
 	// hooks in at the unref assignment that follows them. That assignment sits
 	// inside a `return` sequence, so the hook has to be an expression: keying
 	// live handles by the record lets survivors be reported with their stack.
-	const unref = out.match(/([\w$]+)\._wbg_cb_unref=\(\)=>\{if\(--([\w$]+)\.cnt===0\)/)
-	if (!unref) throw new Error('handle probe: unref hook not found in the bridge bundle')
+	const unrefs = [
+		...out.matchAll(
+			/([\w$]+)\._wbg_cb_unref\s*=\s*\(\s*\)\s*=>\s*\{\s*(?:if\s*\(\s*(--([\w$]+)\.cnt\s*===\s*0)\s*\)|(0\s*===\s*--([\w$]+)\.cnt)\s*&&\s*\()/g
+		)
+	]
+	if (unrefs.length !== 1) throw new Error('handle probe: unref hook not found or ambiguous in the bridge bundle')
+	const unref = unrefs[0]!
+	const record = unref[3] ?? unref[5]!
+	const condition = unref[2] ?? unref[4]!
+	if (record !== created[2]) throw new Error('handle probe: unref does not release the recognized closure record')
 	out = out.replace(
 		unref[0],
-		`(globalThis.__handleProbe.trace&&globalThis.__handleProbe.alive.set(${unref[2]},new Error().stack)),` +
-			`${unref[0]}globalThis.__handleProbe.freed++,globalThis.__handleProbe.alive.delete(${unref[2]}),`
+		`(globalThis.__handleProbe.trace&&globalThis.__handleProbe.alive.set(${record},new Error().stack)),` +
+			unref[0].replace(
+				condition,
+				`(${condition}&&(globalThis.__handleProbe.freed++,globalThis.__handleProbe.alive.delete(${record}),true))`
+			)
 	)
 
-	const finalizer = out.match(
-		/new FinalizationRegistry\(\(([\w$]+)\)=>([\w$]+)\.(__wbindgen_export\d+)\(\1\.a,\1\.b\)\)/
-	)
-	if (!finalizer) throw new Error('handle probe: closure FinalizationRegistry not found in the bridge bundle')
+	const finalizers = [
+		...out.matchAll(
+			/new\s+FinalizationRegistry\(\s*(?:\(\s*([\w$]+)\s*\)|([\w$]+))\s*=>\s*([\w$]+)\.(__wbindgen_export\d+)\(\s*([\w$]+)\.a\s*,\s*\5\.b\s*\)\s*\)/g
+		)
+	]
+	if (finalizers.length !== 1)
+		throw new Error('handle probe: closure FinalizationRegistry not found or ambiguous in the bridge bundle')
+	const finalizer = finalizers[0]!
+	const argument = finalizer[1] ?? finalizer[2]!
+	if (argument !== finalizer[5]) throw new Error('handle probe: finalizer record does not match its argument')
 	out = out.replace(
 		finalizer[0],
-		`new FinalizationRegistry((${finalizer[1]})=>(globalThis.__handleProbe.freed++,` +
+		`new FinalizationRegistry((${argument})=>(globalThis.__handleProbe.freed++,` +
 			`globalThis.__handleProbe.finalized++,` +
-			`globalThis.__handleProbe.alive.delete(${finalizer[1]}),` +
-			`${finalizer[2]}.${finalizer[3]}(${finalizer[1]}.a,${finalizer[1]}.b)))`
+			`globalThis.__handleProbe.alive.delete(${argument}),` +
+			`${finalizer[3]}.${finalizer[4]}(${argument}.a,${argument}.b)))`
 	)
 
 	return (
@@ -112,9 +129,9 @@ export async function loadInstrumentedBridge(): Promise<InstrumentedBridge> {
 
 	copyFileSync(join(dist, 'whatsapp_rust_bridge_bg.wasm'), join(dir, 'whatsapp_rust_bridge_bg.wasm'))
 	if (glueFile === entry) {
-		writeFileSync(join(dir, 'index.js'), instrument(readFileSync(entry, 'utf8')))
+		writeFileSync(join(dir, 'index.js'), instrumentHandleGlue(readFileSync(entry, 'utf8')))
 	} else {
-		writeFileSync(join(dir, 'bridge.js'), instrument(readFileSync(glueFile, 'utf8')))
+		writeFileSync(join(dir, 'bridge.js'), instrumentHandleGlue(readFileSync(glueFile, 'utf8')))
 		copyFileSync(entry, join(dir, 'index.js'))
 	}
 

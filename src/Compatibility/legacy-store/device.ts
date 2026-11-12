@@ -207,6 +207,10 @@ function prepareNativeDevice(payload: Uint8Array): (creds: AuthenticationCreds) 
 	}
 }
 
+/** Only omission permits loading the historical account sidecar. */
+export const hasInlineDeviceAccount = (payload: Uint8Array): boolean =>
+	Object.hasOwn(fromJsonBytes(payload) as object, 'account')
+
 export type DeviceProjection = {
 	read(key: DeviceRecordKeyName): Uint8Array | null
 	prepare(key: DeviceRecordKeyName, payload: Uint8Array): () => void

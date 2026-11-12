@@ -2,7 +2,7 @@ import type { StoreMigrationOptions } from './store-migration.ts'
 import { mkdir, stat } from 'node:fs/promises'
 import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge'
 import type { AuthenticationCreds, AuthenticationState } from '../Types/index.ts'
-import { createDeviceProjection } from '../Compatibility/legacy-store/device.ts'
+import { createDeviceProjection, hasInlineDeviceAccount } from '../Compatibility/legacy-store/device.ts'
 import { projectNativeStore } from '../Compatibility/legacy-store/native-projection.ts'
 import { initAuthCreds } from './generics.ts'
 import { useBridgeStore } from './use-bridge-store.ts'
@@ -32,10 +32,13 @@ const DEVICE_RECORDS = ['device', 'account'] as const
  */
 const hydrateFromStore = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Promise<void> => {
 	const projection = createDeviceProjection(creds)
+	let inlineAccount = false
 	for (const record of DEVICE_RECORDS) {
+		if (record === 'account' && inlineAccount) continue
 		const payload = await store.get(DEVICE_STORE, record)
 		if (!payload) continue
 		try {
+			if (record === 'device') inlineAccount = hasInlineDeviceAccount(payload)
 			projection.prepare(record, payload)()
 		} catch {
 			/* a record we cannot read leaves that part of the mirror at its default */
