@@ -205,17 +205,8 @@ jobs:
 
       - run: npm ci --ignore-scripts
 
-      - name: Wait for mock server
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sk https://localhost:8080/ > /dev/null 2>&1; then
-              echo "Mock server is ready"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Mock server failed to become ready"
-          exit 1
+      - name: Wait for mock HTTP service
+        run: node scripts/ci/wait-for-mock.mjs
 
       - name: Run E2E tests
         env:
