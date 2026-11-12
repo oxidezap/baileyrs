@@ -18,6 +18,7 @@ import { basename, join } from 'node:path'
 import process from 'node:process'
 import P from 'pino'
 import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket, useMultiFileAuthState } from '../../index.ts'
+import { waitForMockHistory } from './mock-startup.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent } from './wait.ts'
 
@@ -81,6 +82,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 
 	opts.onSocket?.(sock)
 	attachQrAutoresponder(sock, url)
+	const historySync = waitForMockHistory(sock, timeoutMs)
 	const startupSync = waitForEvent(
 		sock,
 		'connection.update',
@@ -104,7 +106,7 @@ export async function createTestClient(opts: CreateTestClientOptions): Promise<T
 		})
 	})
 	try {
-		const [jid] = await Promise.all([connected, startupSync])
+		const [jid] = await Promise.all([connected, startupSync, historySync])
 		return { sock, jid, lid: sock.user?.lid, authFolder: folder, label: opts.label }
 	} catch (error) {
 		// A failed factory has no returned owner to tear down its live socket.

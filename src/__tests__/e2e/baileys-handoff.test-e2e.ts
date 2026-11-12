@@ -56,16 +56,36 @@ import process from 'node:process'
 import { after, before, describe, test } from 'node:test'
 import * as upstreamBaileys from 'baileys'
 import P from 'pino'
+import { Agent, type Dispatcher } from 'undici'
 import { type Boom, DisconnectReason, jidNormalizedUser, makeWASocket } from '../../index.ts'
 import { expect } from '../expect.ts'
+import { waitForMockHistory } from './mock-startup.ts'
 import { attachQrAutoresponder } from './qr-autoresponder.ts'
 import { waitForEvent, waitForMessage } from './wait.ts'
 
 type WASocket = ReturnType<typeof makeWASocket>
 type UpstreamSocket = ReturnType<typeof upstreamBaileys.makeWASocket>
 
-const logger = P({ level: process.env.LOG_LEVEL ?? 'warn' })
+const logger = P({ level: process.env.LOG_LEVEL ?? 'warn', serializers: { error: P.stdSerializers.err } })
 const socketUrl = process.env.SOCKET_URL ?? 'wss://127.0.0.1:8080/ws/chat'
+
+// Upstream resolves history direct paths against mmg.whatsapp.net. These
+// synthetic blobs live on Bartender, so route only that download path to it.
+// Keep the real fetch, encrypted bytes, decryption and history parser intact.
+const mockMediaAgent = new Agent()
+const mockMediaDispatcher = {
+	dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler) {
+		const origin = new URL(String(options.origin))
+		if (origin.hostname === 'mmg.whatsapp.net' && options.path.startsWith('/mms/md-msg-hist/')) {
+			const mock = new URL(socketUrl)
+			mock.protocol = mock.protocol === 'wss:' ? 'https:' : 'http:'
+			return mockMediaAgent.dispatch({ ...options, origin: mock.origin }, handler)
+		}
+		return mockMediaAgent.dispatch(options, handler)
+	}
+}
+
+after(() => mockMediaAgent.close())
 
 interface BridgeClient {
 	kind: 'bridge'
@@ -177,6 +197,7 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 	// the QR for pair-success to flow.
 	attachQrAutoresponder(sock, socketUrl)
 
+	const historySync = waitForMockHistory(sock)
 	const jid = await new Promise<string>((resolve, reject) => {
 		const tid = setTimeout(() => reject(new Error(`${label}: connect timeout (bridge)`)), 30_000)
 		sock.ev.on('connection.update', update => {
@@ -193,6 +214,7 @@ async function createBridgeClient(label: string, authFolder?: string): Promise<B
 		})
 	})
 
+	await historySync
 	return { kind: 'bridge', sock, jid, lid: sock.user?.lid, authFolder: folder, label }
 }
 
@@ -203,8 +225,10 @@ async function createUpstreamClient(label: string, authFolder: string): Promise<
 	await prepareLegacyAuthRollback(authFolder, { offline: true })
 	const { state, saveCreds } = await upstreamBaileys.useMultiFileAuthState(authFolder)
 
+	const options = { headers: {}, dispatcher: mockMediaDispatcher }
 	const sock = upstreamBaileys.makeWASocket({
 		auth: state,
+		options,
 		waWebSocketUrl: socketUrl,
 		logger: logger.child({ user: label, impl: 'upstream' }) as never,
 		// Match the bridge client's browser identity so the mock keeps the
@@ -217,6 +241,7 @@ async function createUpstreamClient(label: string, authFolder: string): Promise<
 
 	sock.ev.on('creds.update', saveCreds)
 
+	const historySync = waitForMockHistory(sock)
 	const jid = await new Promise<string>((resolve, reject) => {
 		const tid = setTimeout(() => reject(new Error(`${label}: connect timeout (upstream)`)), 30_000)
 		sock.ev.on('connection.update', update => {
@@ -236,6 +261,7 @@ async function createUpstreamClient(label: string, authFolder: string): Promise<
 		})
 	})
 
+	await historySync
 	return { kind: 'upstream', sock, jid, lid: sock.user?.lid, authFolder, label }
 }
 
