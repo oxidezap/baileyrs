@@ -831,10 +831,12 @@ const DISPATCHERS: DispatcherMap = {
 		})
 	},
 
-	// Upstream ends the socket with `timedOut` when its own QR timer gives up
-	// (`Socket/socket.ts`), so the canonical reconnect handler already knows
-	// this state. Reporting anything else would make it learn a second one.
-	qrCodesExhausted: (_, dispatchCtx) => emitClose(dispatchCtx, 'QR refs attempts ended', DisconnectReason.timedOut),
+	qrCodesExhausted: (evt, dispatchCtx) => {
+		// Rust owns pairing deadlines. A live pair code must survive QR expiry
+		// without a close or connecting update clearing it on the consumer.
+		if (!evt.disconnected) return
+		emitClose(dispatchCtx, 'QR refs attempts ended', DisconnectReason.timedOut)
+	},
 
 	// Straight onto upstream's own channel for this: `settings.update` already
 	// declares the `disableLinkPreviews` arm, and a consumer that reads it is

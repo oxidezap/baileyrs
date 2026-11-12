@@ -100,6 +100,42 @@ const dispatch = (bridgeEvent: BridgeEvent, opts: { autoReconnect?: boolean } = 
 	}
 }
 
+describe('QR exhaustion during pairing', () => {
+	it('preserves the displayed code until the same socket connects', () => {
+		const { ctx, ev } = makeCtx()
+		const updates: Partial<ConnectionState>[] = []
+		const terminalCloses: Error[] = []
+		ev.on('connection.update', (update: Partial<ConnectionState>) => updates.push(update))
+		const handlers = makeEventHandlers(ctx, {
+			onTerminalClose: (error, publish) => {
+				terminalCloses.push(error)
+				publish()
+			}
+		})
+		handlers.onEvent?.({ type: 'pairing_code', data: { code: 'TESTCODE' } } as never)
+		handlers.onEvent?.({ type: 'pairing_qr_codes_exhausted', data: { disconnected: false } } as never)
+		expect(terminalCloses).toEqual([])
+		expect(updates).toEqual([{ qr: 'TESTCODE' }])
+		handlers.onEvent?.({ type: 'connected' } as never)
+		expect(updates).toEqual([{ qr: 'TESTCODE' }, { connection: 'open' }])
+	})
+
+	it('keeps the socket and outstanding pair code alive when the engine stays connected', () => {
+		const result = dispatch({ type: 'pairing_qr_codes_exhausted', data: { disconnected: false } })
+		expect(result.updates).toEqual([])
+		expect(result.terminalCloses).toEqual([])
+	})
+
+	for (const data of [{ disconnected: true }, {}, undefined, { disconnected: 'false' }, { disconnected: null }]) {
+		it(`preserves terminal QR timeout for ${JSON.stringify(data)}`, () => {
+			const result = dispatch({ type: 'pairing_qr_codes_exhausted', data })
+			expect(result.statusCode).toBe(DisconnectReason.timedOut)
+			expect(result.terminalCloses).toHaveLength(1)
+			expect(result.trace).toEqual(['end', 'close'])
+		})
+	}
+})
+
 /**
  * Disconnects where `whatsapp-rust` stores `enable_auto_reconnect = false` and
  * exits its run loop. None recover without a new socket.
