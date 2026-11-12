@@ -484,13 +484,12 @@ export interface CanonicalLabelAssociation {
 }
 
 /**
- * The server ran out of QR refs before anyone scanned one.
- *
- * Terminal: nothing else is coming on this socket, and the consumer builds a
- * new one to be shown a fresh code.
+ * QR refs ran out, but an outstanding pair code may keep the socket alive.
  */
 export interface CanonicalQrCodesExhausted {
 	type: 'qrCodesExhausted'
+	/** False when the engine keeps an outstanding pair-code flow alive. */
+	disconnected: boolean
 }
 
 /**
