@@ -77,7 +77,7 @@ jobs:
       id-token: write
     services:
       mock-server:
-        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:4af617d7cd0ab12918387f306f38f54915f18169f638656180fa36d9db7cd3fa
+        image: ghcr.io/whiskeysockets-devtools/bartender@sha256:fc36deb3b936488832353742140fefae05ee05cddc833d942cb273929635f909
         credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.BARTENDER_GHCR_TOKEN }}
