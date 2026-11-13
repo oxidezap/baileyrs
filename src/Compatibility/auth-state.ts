@@ -54,14 +54,15 @@ const newSignedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
  */
 export const initHostAuthCreds = (): AuthenticationCreds => {
 	const signedIdentityKey = newKeyPair()
-	const registration = readU16BE(randomBytes(2)) & 0x3fff
+	const entropy = randomBytes(34)
+	const registration = readU16BE(entropy) & 0x3fff
 	return {
 		noiseKey: newKeyPair(),
 		pairingEphemeralKeyPair: newKeyPair(),
 		signedIdentityKey,
 		signedPreKey: newSignedKeyPair(signedIdentityKey, 1),
 		registrationId: registration,
-		advSecretKey: base64Encode(randomBytes(32)),
+		advSecretKey: base64Encode(entropy.slice(2)),
 		processedHistoryMessages: [],
 		nextPreKeyId: 1,
 		firstUnuploadedPreKeyId: 1,

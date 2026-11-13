@@ -38,6 +38,36 @@ describe('host auth creds', () => {
 		['host', initHostAuthCreds],
 		['projected', initProjectedAuthCreds]
 	] as const) {
+		it(`uses disjoint cryptographic entropy for ${name} registration and ADV secret`, t => {
+			const entropy = Uint8Array.from({ length: 34 }, (_, index) => (index < 2 ? 255 : (index - 2) * 17))
+			const original = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+			let fills = 0
+			const fill: typeof globalThis.crypto.getRandomValues = array => {
+				if (array instanceof Uint8Array && array.byteLength === entropy.byteLength) {
+					array.set(entropy)
+					fills++
+					return array
+				}
+				return original(array)
+			}
+			t.mock.method(globalThis.crypto, 'getRandomValues', fill)
+			const creds = create()
+			assert.equal(fills, 1)
+			assert.equal(creds.registrationId, 16_383)
+			assert.deepEqual(Buffer.from(creds.advSecretKey, 'base64'), Buffer.from(entropy.subarray(2)))
+		})
+
+		it(`propagates ${name} credential entropy failures without a fallback`, t => {
+			const expected = new Error('credential entropy unavailable')
+			const original = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+			const fill: typeof globalThis.crypto.getRandomValues = array => {
+				if (array instanceof Uint8Array && array.byteLength === 34) throw expected
+				return original(array)
+			}
+			t.mock.method(globalThis.crypto, 'getRandomValues', fill)
+			assert.throws(create, error => error === expected)
+		})
+
 		it(`keeps ${name} key snapshots independent across bridge allocations`, () => {
 			const creds = create()
 			const keys = [creds.noiseKey, creds.pairingEphemeralKeyPair, creds.signedIdentityKey, creds.signedPreKey.keyPair]
