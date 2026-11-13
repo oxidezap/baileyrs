@@ -8,7 +8,7 @@ import { jidEncode } from '../WABinary/jid-utils.ts'
 
 const pair = (): HostKeyPair => {
 	const value = generateKeyPair()
-	return { private: new Uint8Array(value.privKey), public: new Uint8Array(value.pubKey.subarray(1)) }
+	return { private: new Uint8Array(value.privKey), public: value.pubKey.slice(1) }
 }
 const signed = (identity: HostKeyPair) => {
 	const keyPair = pair()

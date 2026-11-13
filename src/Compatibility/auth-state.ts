@@ -25,7 +25,7 @@ const newKeyPair = (): KeyPair => {
 	const pair = generateKeyPair()
 	return {
 		private: new Uint8Array(pair.privKey),
-		public: new Uint8Array(pair.pubKey.subarray(1))
+		public: pair.pubKey.slice(1)
 	}
 }
 
