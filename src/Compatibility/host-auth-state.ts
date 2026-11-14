@@ -8,7 +8,7 @@ import { jidEncode } from '../WABinary/jid-utils.ts'
 
 const pair = (): HostKeyPair => {
 	const value = generateKeyPair()
-	return { private: new Uint8Array(value.privKey), public: new Uint8Array(value.pubKey.subarray(1)) }
+	return { private: new Uint8Array(value.privKey), public: value.pubKey.slice(1) }
 }
 const signed = (identity: HostKeyPair) => {
 	const keyPair = pair()
@@ -18,13 +18,14 @@ const signed = (identity: HostKeyPair) => {
 
 export const initHostAuthCreds = (): HostAuthenticationState['creds'] => {
 	const identity = pair()
+	const entropy = randomBytes(34)
 	return {
 		noiseKey: pair(),
 		pairingEphemeralKeyPair: pair(),
 		signedIdentityKey: identity,
 		signedPreKey: signed(identity),
-		registrationId: readU16BE(randomBytes(2)) & 0x3fff,
-		advSecretKey: base64Encode(randomBytes(32)),
+		registrationId: readU16BE(entropy) & 0x3fff,
+		advSecretKey: base64Encode(entropy.slice(2)),
 		processedHistoryMessages: [],
 		nextPreKeyId: 1,
 		firstUnuploadedPreKeyId: 1,

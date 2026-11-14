@@ -1,4 +1,11 @@
-import { recordFlushFailure, settledFlushError, trackFlushFailures, withTrackedFailures } from './flush-deadline.ts'
+import {
+	settleBeforeFlushDeadline,
+	flushDeadlineError,
+	recordFlushFailure,
+	settledFlushError,
+	trackFlushFailures,
+	withTrackedFailures
+} from './flush-deadline.ts'
 import type { StoreMigrationOptions } from './store-migration.ts'
 import type { OrdinaryStoreCallbacks } from './atomic-store.ts'
 import { defaultSyncDir } from './durable-directory.ts'
@@ -423,6 +430,7 @@ async function usePerKeyBridgeStore(
 	type DrainScope = { failedEntries: WeakSet<object>; exhausted?: { operation: Promise<void>; error: Error } }
 	const newDrainScope = (): DrainScope => ({ failedEntries: new WeakSet<object>() })
 	const flushAll = (scope: DrainScope = newDrainScope()): Promise<void> => {
+		const deadline = Date.now() + 30_000
 		const errors = new Map<Promise<unknown>, unknown>()
 		const drain = async () => {
 			if (scope.exhausted) {
@@ -449,20 +457,17 @@ async function usePerKeyBridgeStore(
 			// guards a caller emitting writes in a tight loop —
 			// `Socket/index.ts.end()` waits on this and must return.
 			for (let i = 0; i < FLUSH_MAX_PASSES; i++) {
-				const outstanding = [...admitted]
-				if (outstanding.length > 0) {
-					await Promise.all(
-						outstanding.map(operation =>
-							operation.catch(error => {
-								recordFlushFailure(errors, operation, error)
-							})
-						)
-					)
+				// Consecutive critical callbacks are already writing through. Join
+				// their admission barrier within this pass, under the same 30s
+				// deadline; only actual pending-write drains spend the 32 passes.
+				while (admitted.size > 0) {
+					// Cache hits can settle only through microtasks and starve the
+					// timeout callback, so enforce the wall clock before each batch.
+					if (Date.now() >= deadline) throw flushDeadlineError('use-bridge-store flush', errors)
+					await settleBeforeFlushDeadline([...admitted], deadline, 'use-bridge-store flush', errors)
+					if (errors.size) break
 				}
-				if (eligibleKeys().length === 0) {
-					if (admitted.size === 0) break
-					continue
-				}
+				if (errors.size || eligibleKeys().length === 0) break
 				const keys = eligibleKeys()
 				let failed = false
 				await Promise.all(
@@ -696,8 +701,9 @@ async function usePerKeyBridgeStore(
 				try {
 					key = decodeURIComponent(encoded)
 				} catch {
-					continue // skip a filename we can't decode rather than crash
+					throw new TypeError(`invalid native auth filename: ${file}`)
 				}
+				if (encodeURIComponent(key) !== encoded) throw new TypeError(`noncanonical native auth filename: ${file}`)
 				if (prefix && !key.startsWith(prefix)) continue
 				found.add(key)
 			}

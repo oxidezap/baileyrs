@@ -8,6 +8,7 @@ import { generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import { generateSignalPubKey } from '../../Utils/crypto.ts'
 import { verifySignature } from '@oxidezap/whatsapp-rust-bridge/host'
 import { createAuthenticationState, initHostAuthCreds } from '../host-auth-state.ts'
+import { initHostAuthCreds as initProjectedAuthCreds } from '../auth-state.ts'
 import { useMemoryStore } from '../../Utils/use-memory-store.ts'
 import { initAuthCreds } from '../../Utils/generics.ts'
 import { expect } from '../../__tests__/expect.ts'
@@ -32,6 +33,67 @@ describe('host auth creds', () => {
 		expect(host.signedPreKey.signature).toHaveLength(64)
 		expect(host.signedPreKey.keyId).toBe(1)
 	})
+
+	for (const [name, create] of [
+		['host', initHostAuthCreds],
+		['projected', initProjectedAuthCreds]
+	] as const) {
+		it(`uses disjoint cryptographic entropy for ${name} registration and ADV secret`, t => {
+			const entropy = Uint8Array.from({ length: 34 }, (_, index) => (index < 2 ? 255 : (index - 2) * 17))
+			const original = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+			let fills = 0
+			const fill: typeof globalThis.crypto.getRandomValues = array => {
+				if (array instanceof Uint8Array && array.byteLength === entropy.byteLength) {
+					array.set(entropy)
+					fills++
+					return array
+				}
+				return original(array)
+			}
+			t.mock.method(globalThis.crypto, 'getRandomValues', fill)
+			const creds = create()
+			assert.equal(fills, 1)
+			assert.equal(creds.registrationId, 16_383)
+			assert.deepEqual(Buffer.from(creds.advSecretKey, 'base64'), Buffer.from(entropy.subarray(2)))
+		})
+
+		it(`propagates ${name} credential entropy failures without a fallback`, t => {
+			const expected = new Error('credential entropy unavailable')
+			const original = globalThis.crypto.getRandomValues.bind(globalThis.crypto)
+			const fill: typeof globalThis.crypto.getRandomValues = array => {
+				if (array instanceof Uint8Array && array.byteLength === 34) throw expected
+				return original(array)
+			}
+			t.mock.method(globalThis.crypto, 'getRandomValues', fill)
+			assert.throws(create, error => error === expected)
+		})
+
+		it(`keeps ${name} key snapshots independent across bridge allocations`, () => {
+			const creds = create()
+			const keys = [creds.noiseKey, creds.pairingEphemeralKeyPair, creds.signedIdentityKey, creds.signedPreKey.keyPair]
+			const snapshots = keys.map(key => ({ private: Array.from(key.private), public: Array.from(key.public) }))
+			const buffers = keys.flatMap(key => [key.private.buffer, key.public.buffer])
+			assert.equal(new Set(buffers).size, buffers.length)
+			for (let i = 0; i < 32; i++) {
+				const next = create()
+				next.signedIdentityKey.public.fill(0)
+				next.signedIdentityKey.private.fill(0)
+			}
+			for (const [index, key] of keys.entries()) {
+				assert.equal(key.public.byteLength, 32)
+				assert.deepEqual(Array.from(key.private), snapshots[index]!.private)
+				assert.deepEqual(Array.from(key.public), snapshots[index]!.public)
+			}
+			assert.equal(
+				verifySignature(
+					generateSignalPubKey(creds.signedIdentityKey.public),
+					generateSignalPubKey(creds.signedPreKey.keyPair.public),
+					creds.signedPreKey.signature
+				),
+				true
+			)
+		})
+	}
 
 	it('builds host auth from a native store without legacy projection', async () => {
 		const auth = await createAuthenticationState(useMemoryStore())

@@ -76,16 +76,38 @@ test('retries service errors and succeeds only after HTTP 200', async t => {
 	assert.equal(requests, 3)
 })
 
-test('permanent failure exhausts the original bounded budget', async t => {
-	const url = await listen(
-		t,
-		createServer((_, response) => response.writeHead(503).end())
-	)
-	await assert.rejects(
-		waitForMock({ url, budgetMs: 60, requestTimeoutMs: 20, intervalMs: 1 }),
-		error => /deadline/.test(error.message) && /HTTP 503/.test(error.cause.message)
-	)
-})
+for (const finalError of [
+	new Error('Mock status endpoint returned HTTP 503'),
+	new Error('Mock HTTP probe timed out')
+]) {
+	test(`permanent failure preserves the last error and exhausts the bounded budget: ${finalError.message}`, async () => {
+		let time = 0
+		const timeouts = []
+		const sleeps = []
+		await assert.rejects(
+			waitForMock(
+				{ url: 'http://127.0.0.1/api/status', budgetMs: 60, requestTimeoutMs: 20, intervalMs: 1 },
+				{
+					now: () => time,
+					probe: async (url, timeoutMs) => {
+						assert.equal(url, 'http://127.0.0.1/api/status')
+						timeouts.push(timeoutMs)
+						time += timeoutMs
+						throw time >= 60 ? finalError : new Error('Mock status endpoint returned HTTP 503')
+					},
+					sleep: async ms => {
+						sleeps.push(ms)
+						time += ms
+					}
+				}
+			),
+			error => /deadline/.test(error.message) && error.cause === finalError
+		)
+		assert.equal(time, 60)
+		assert.deepEqual(timeouts, [20, 20, 18])
+		assert.deepEqual(sleeps, [1, 1])
+	})
+}
 
 test('rejects remote endpoints before making a request', async () => {
 	await assert.rejects(probeMock('https://example.test/api/status', 100), /loopback/)

@@ -12,7 +12,7 @@ export default defineConfig({
 		// 0.1-1.3 MB of compiler memory each time. When that landed inside a
 		// measured call it was counted in the result, so memory rows swung by
 		// several hundred KB on unchanged code. See benchmarks/README.md.
-		execArgv: ['--expose-gc', '--no-liftoff'],
+		execArgv: ['--expose-gc', '--no-liftoff', '--wasm-wrapper-tiering-budget=1'],
 		maxWorkers: 1,
 		fileParallelism: false,
 		hookTimeout: 120_000,

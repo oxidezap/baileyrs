@@ -677,7 +677,10 @@ const createWASocketFactoryInner = (
 			// coercion could promote a malformed opt-out into an opt-in.
 			// Absent stays strict.
 			fullConfig.dangerSkipCertChainVerify,
-			makeHistorySyncAdmission(shouldSyncHistoryMessage)
+			{
+				...makeHistorySyncAdmission(shouldSyncHistoryMessage),
+				additionalStaticMediaHosts: fullConfig.additionalStaticMediaHosts
+			}
 		)
 		// `end()` can land while the client is still being built — a `sock.end()`
 		// or `await using` right after `makeWASocket()` does exactly that. When

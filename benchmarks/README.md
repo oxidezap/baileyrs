@@ -106,6 +106,17 @@ once inside that call, rather than per operation, moves the result.
   TurboFan on its first call, during setup or warmup, and never again.
   Production code also ends up on TurboFan for hot functions, so steady-state
   results stay representative.
+  WASM-to-JS import wrappers have a separate tiering budget. `--no-liftoff`
+  does not prevent `Runtime_TierUpWasmToJSWrapper` from compiling one later.
+  The worker also uses `--wasm-wrapper-tiering-budget=1` so a used wrapper
+  reaches its optimized form on its first call. The setup guard requires both
+  flags. On Node 24.22.0, an unchanged group callback with the original seven
+  provider warmups allocated 254,076 bytes in the native wrapper compiler
+  during its first measurement and none during its second. With the wrapper
+  budget set to one, neither measurement allocated in that compiler. The
+  callback, receipt assertions and quiet-start requirements were unchanged.
+  These rows measure warmed code, including the first DM on a fresh session.
+  They do not include cold process startup or its compiler cost.
 - **Rows removed for noise.** Some rows still moved far more than any code
   change on identical commits, and were removed rather than left to raise
   false regressions:

@@ -14,9 +14,7 @@ import type { WasmWhatsAppClient as MockClient } from '@oxidezap/whatsapp-rust-b
  * takes them. The other pins that anything left over rejects.
  */
 
-import { readFileSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
-import path from 'node:path'
 import { describe, it } from 'node:test'
 import type { WasmWhatsAppClient } from '@oxidezap/whatsapp-rust-bridge'
 
@@ -25,6 +23,7 @@ import type { SocketContext } from '../Socket/types.ts'
 import type { ChatModification } from '../Types/index.ts'
 import type { ILogger } from '../Utils/logger.ts'
 import { expect } from './expect.ts'
+import { loadBridgeDts } from './bridge-dts.ts'
 
 const CHAT = '15551230000@s.whatsapp.net'
 
@@ -217,13 +216,7 @@ describe('chatModify: a field the wire call cannot carry is refused, not dropped
  * takes first.
  */
 describe('the argument order these tests assume is the one the bridge declares', () => {
-	const dts = readFileSync(
-		path.resolve(
-			import.meta.dirname,
-			'../../node_modules/@oxidezap/whatsapp-rust-bridge/dist/whatsapp_rust_bridge.d.ts'
-		),
-		'utf8'
-	)
+	const dts = loadBridgeDts()
 
 	const parameterNames = (method: string): string[] => {
 		const declaration = new RegExp(`^\\s{4}${method}\\((.*?)\\):`, 'm').exec(dts)

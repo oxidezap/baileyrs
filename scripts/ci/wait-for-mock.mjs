@@ -35,23 +35,21 @@ export function probeMock(url, timeoutMs) {
 	})
 }
 
-export async function waitForMock({
-	url = 'https://127.0.0.1:8080/api/status',
-	budgetMs = 30_000,
-	requestTimeoutMs = 2_000,
-	intervalMs = 1_000
-} = {}) {
-	const deadline = performance.now() + budgetMs
+export async function waitForMock(
+	{ url = 'https://127.0.0.1:8080/api/status', budgetMs = 30_000, requestTimeoutMs = 2_000, intervalMs = 1_000 } = {},
+	{ probe = probeMock, now = () => performance.now(), sleep = delay } = {}
+) {
+	const deadline = now() + budgetMs
 	let lastError = new Error('No probe completed')
-	while (performance.now() < deadline) {
+	while (now() < deadline) {
 		try {
-			await probeMock(url, Math.min(requestTimeoutMs, deadline - performance.now()))
+			await probe(url, Math.min(requestTimeoutMs, deadline - now()))
 			return
 		} catch (error) {
 			lastError = error
 		}
-		const remaining = deadline - performance.now()
-		if (remaining > 0) await delay(Math.min(intervalMs, remaining))
+		const remaining = deadline - now()
+		if (remaining > 0) await sleep(Math.min(intervalMs, remaining))
 	}
 	throw new Error('Mock HTTP service did not become ready within its deadline', { cause: lastError })
 }

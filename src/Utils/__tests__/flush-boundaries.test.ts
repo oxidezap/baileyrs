@@ -658,3 +658,50 @@ test('file: prefix failure does not finish flush while a sibling delete remains 
 		await rm(folder, { recursive: true, force: true })
 	}
 })
+
+// A finite callback chain must not spend the pending-write drain budget.
+// This reproduced the group benchmark teardown failure with bridge 0.26.6.
+test('flush joins more than 32 consecutive critical writes before reporting durability', async () => {
+	const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-critical-chain-'))
+	const store = await useBridgeStore(folder)
+	let completed = 0
+	const writer = (async () => {
+		for (let i = 0; i < 80; i++) {
+			await store.set('session', String(i), new Uint8Array([i]))
+			completed++
+		}
+	})()
+	try {
+		await store.flush!()
+		assert.equal(completed, 80)
+		const reopened = await useBridgeStore(folder)
+		assert.deepEqual(await reopened.get('session', '79'), new Uint8Array([79]))
+	} finally {
+		await writer
+		await store.flush!()
+		await rm(folder, { recursive: true, force: true })
+	}
+})
+
+// Cache-hit callbacks can keep a microtask chain alive without letting a
+// setTimeout deadline run. The wall-clock guard must also bound that path.
+test('enumeration enforces its deadline during a continuous cache-hit admission chain', async context => {
+	const folder = await mkdtemp(join(tmpdir(), 'baileyrs-flush-cache-deadline-'))
+	const store = await useBridgeStore(folder)
+	await store.set('session', 'cached', new Uint8Array([1]))
+	context.mock.timers.enable({ apis: ['Date'], now: 0 })
+	const writer = (async () => {
+		for (let i = 0; i < 200; i++) {
+			await store.get('session', 'cached')
+			if (i === 10) context.mock.timers.tick(30_001)
+		}
+	})()
+	try {
+		await assert.rejects(store.listKeys!('session'), /did not quiesce within 30s/)
+	} finally {
+		await writer
+		context.mock.timers.reset()
+		await store.flush!()
+		await rm(folder, { recursive: true, force: true })
+	}
+})

@@ -13,44 +13,12 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { KNOWN_BRIDGE_EVENT_TYPES } from '../adapt.ts'
-import { loadBridgeDts } from '../../__tests__/bridge-dts.ts'
+import { bridgeEventTypes, loadBridgeDts } from '../../__tests__/bridge-dts.ts'
 import { expect } from '../../__tests__/expect.ts'
-
-/**
- * Extract every discriminator string from the `WhatsAppEvent` union. The
- * bridge declares it as:
- *
- *   export type WhatsAppEvent =
- *     | { type: 'connected'; data: ... }
- *     | { type: 'disconnected'; data: ... }
- *     ...
- *     ;
- *
- * We slice from the `export type WhatsAppEvent =` line down to the
- * terminating `;` and pull out every quoted `type:` literal.
- */
-function extractWhatsAppEventTypes(dts: string): string[] {
-	const start = dts.indexOf('export type WhatsAppEvent =')
-	if (start < 0) throw new Error('WhatsAppEvent union not found in .d.ts')
-	const after = dts.slice(start)
-	const end = after.indexOf(';\n')
-	if (end < 0) throw new Error('WhatsAppEvent union has no terminator in .d.ts')
-	const block = after.slice(0, end)
-
-	// Match `type: 'foo'` or `type: "foo"` (the bridge currently uses single quotes
-	// but stay forgiving).
-	const re = /type:\s*['"]([a-z_]+)['"]/g
-	const seen = new Set<string>()
-	for (const m of block.matchAll(re)) {
-		seen.add(m[1]!)
-	}
-	if (seen.size === 0) throw new Error('Failed to parse any variant from WhatsAppEvent union')
-	return [...seen].toSorted()
-}
 
 describe('Bridge .d.ts ↔ adapter drift', () => {
 	const bridgeDts = loadBridgeDts()
-	const bridgeTypes = extractWhatsAppEventTypes(bridgeDts)
+	const bridgeTypes = bridgeEventTypes(bridgeDts)
 
 	it('every bridge event type from .d.ts is handled by the adapter', () => {
 		const missing = bridgeTypes.filter(t => !KNOWN_BRIDGE_EVENT_TYPES.has(t))

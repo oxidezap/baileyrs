@@ -15,7 +15,7 @@ import type { JsStoreCallbacks } from '@oxidezap/whatsapp-rust-bridge/host'
 import { calculateSignature, generateKeyPair } from '@oxidezap/whatsapp-rust-bridge/host'
 import type { AuthenticationCreds, AuthenticationState, KeyPair } from '../Types/index.ts'
 import { concatBytes } from '../Runtime/bytes.ts'
-import { createDeviceProjection } from './legacy-store/device.ts'
+import { createDeviceProjection, hasInlineDeviceAccount } from './legacy-store/device.ts'
 import { base64Encode, randomBytes, readU16BE } from '../Runtime/bytes.ts'
 
 const DEVICE_STORE = 'device'
@@ -25,7 +25,7 @@ const newKeyPair = (): KeyPair => {
 	const pair = generateKeyPair()
 	return {
 		private: new Uint8Array(pair.privKey),
-		public: new Uint8Array(pair.pubKey.subarray(1))
+		public: pair.pubKey.slice(1)
 	}
 }
 
@@ -54,14 +54,15 @@ const newSignedKeyPair = (identityKeyPair: KeyPair, keyId: number) => {
  */
 export const initHostAuthCreds = (): AuthenticationCreds => {
 	const signedIdentityKey = newKeyPair()
-	const registration = readU16BE(randomBytes(2)) & 0x3fff
+	const entropy = randomBytes(34)
+	const registration = readU16BE(entropy) & 0x3fff
 	return {
 		noiseKey: newKeyPair(),
 		pairingEphemeralKeyPair: newKeyPair(),
 		signedIdentityKey,
 		signedPreKey: newSignedKeyPair(signedIdentityKey, 1),
 		registrationId: registration,
-		advSecretKey: base64Encode(randomBytes(32)),
+		advSecretKey: base64Encode(entropy.slice(2)),
 		processedHistoryMessages: [],
 		nextPreKeyId: 1,
 		firstUnuploadedPreKeyId: 1,
@@ -77,10 +78,13 @@ export const initHostAuthCreds = (): AuthenticationCreds => {
 
 const hydrateFromStore = async (store: JsStoreCallbacks, creds: AuthenticationCreds): Promise<void> => {
 	const projection = createDeviceProjection(creds)
+	let inlineAccount = false
 	for (const record of DEVICE_RECORDS) {
+		if (record === 'account' && inlineAccount) continue
 		const payload = await store.get(DEVICE_STORE, record)
 		if (!payload) continue
 		try {
+			if (record === 'device') inlineAccount = hasInlineDeviceAccount(payload)
 			projection.prepare(record, payload)()
 		} catch (error) {
 			throw new Error(`failed to hydrate persisted auth record '${record}'`, { cause: error })
