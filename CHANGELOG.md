@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.15](https://github.com/oxidezap/baileyrs/compare/v0.3.14...v0.3.15) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** adopt bridge 0.26.8 for companion sender-key fixes ([#190](https://github.com/oxidezap/baileyrs/issues/190)) ([26c81a6](https://github.com/oxidezap/baileyrs/commit/26c81a6331e06c1180fe5e1a30c1f8d18ca79c31))
+
 ## [0.3.14](https://github.com/oxidezap/baileyrs/compare/v0.3.13...v0.3.14) (2026-11-12)
 
 
