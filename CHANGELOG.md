@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.16](https://github.com/oxidezap/baileyrs/compare/v0.3.15...v0.3.16) (2026-11-18)
+
+
+### Bug Fixes
+
+* reject HTTP redirects on Cloudflare Workers ([#201](https://github.com/oxidezap/baileyrs/issues/201)) ([34a8db1](https://github.com/oxidezap/baileyrs/commit/34a8db1257ef9ba27d6a3b1a648134b451c3f40d))
+
 ## [0.3.15](https://github.com/oxidezap/baileyrs/compare/v0.3.14...v0.3.15) (2026-11-14)
 
 
