@@ -189,13 +189,18 @@ export const makeTransport = (config: TransportConfig): JsTransportCallbacks => 
 
 export const makeHttpClient = (config: TransportConfig): JsHttpClientConfig => ({
 	async execute(url, method, headers, body) {
-		const fetchOpts: RequestInit = { method, headers, redirect: 'error' }
+		// Workers supports manual redirects. Keep the bridge on the original authority.
+		const fetchOpts: RequestInit = { method, headers, redirect: 'manual' }
 		if (body) fetchOpts.body = body as unknown as BodyInit
 		if (config.options?.dispatcher) fetchOpts.dispatcher = config.options.dispatcher
 
 		const resp = await fetch(url, fetchOpts)
 		if (resp.status === 0 || resp.type === 'opaqueredirect') {
 			throw new Error('HTTP adapter received an unobservable redirect or network response')
+		}
+		if (resp.status >= 300 && resp.status < 400) {
+			await resp.body?.cancel()
+			throw new TypeError(`HTTP adapter rejected redirect (HTTP ${resp.status})`)
 		}
 		const buf = new Uint8Array(await resp.arrayBuffer())
 		return { statusCode: resp.status, body: buf }
