@@ -55,30 +55,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
           persist-credentials: false
 
       - name: Identify and verify the release commit
         id: tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUSH_BASE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           version=$(jq -er '.version' package.json)
           manifest=$(jq -er '.["."]' .release-please-manifest.json)
           tag="v$version"
+          release_sha="$GITHUB_SHA"
 
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            previous=$(git show HEAD^:.release-please-manifest.json | jq -er '.["."]')
+            if [ "$PUSH_BASE" = 0000000000000000000000000000000000000000 ]; then
+              exit 0
+            fi
+            git fetch --no-tags --depth=1 origin "$PUSH_BASE"
+            previous=$(git show "$PUSH_BASE:.release-please-manifest.json" | jq -er '.["."]')
             if [ "$manifest" = "$previous" ]; then
               exit 0
             fi
+            release_sha=$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits" \
+              -f "sha=$GITHUB_SHA" -f path=.release-please-manifest.json -F per_page=1 --jq '.[0].sha')
+            [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
           else
             status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
             case "$status" in
@@ -104,12 +113,16 @@ jobs:
           ref="repos/$GITHUB_REPOSITORY/git/ref/tags/$tag"
           if [ "$GITHUB_EVENT_NAME" = push ] && ! gh api "$ref" --silent; then
             gh api "repos/$GITHUB_REPOSITORY/git/refs" --silent \
-              -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA"
+              -f "ref=refs/tags/$tag" -f "sha=$release_sha"
           fi
           object=$(gh api "$ref" --jq .object.sha)
-          if [ "$object" != "$GITHUB_SHA" ]; then
+          if [ "$object" != "$release_sha" ]; then
             echo "::error::$tag must identify this exact commit"
             exit 1
+          fi
+          if [ "$release_sha" != "$GITHUB_SHA" ]; then
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+            exit 0
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
@@ -128,6 +141,7 @@ jobs:
     concurrency:
       group: npm-release
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Configure required reviewers on this environment if publication needs approval.
