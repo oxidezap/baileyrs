@@ -214,6 +214,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -239,3 +240,21 @@ jobs:
           ' CHANGELOG.md > "$notes"
           test -s "$notes"
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes"
+      - name: Finalize release PR labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pulls=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls")
+          number=$(jq -ser --arg sha "$GITHUB_SHA" '
+            [ .[][] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)
+              | select(any(.labels[]; .name == "autorelease: pending" or .name == "autorelease: tagged")) ]
+            | if length == 1 then .[0].number else error("Expected one merged release PR") end
+          ' <<< "$pulls")
+          endpoint="repos/$GITHUB_REPOSITORY/issues/$number/labels"
+          if jq -se --argjson number "$number" '
+            any(.[][]; .number == $number and any(.labels[]; .name == "autorelease: pending"))
+          ' <<< "$pulls" >/dev/null; then
+            gh api --silent "$endpoint" -f 'labels[]=autorelease: tagged'
+            gh api --silent -X DELETE "$endpoint/autorelease%3A%20pending"
+          fi
