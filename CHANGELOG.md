@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.17](https://github.com/oxidezap/baileyrs/compare/v0.3.16...v0.3.17) (2026-11-20)
+
+
+### Bug Fixes
+
+* **ci:** restore Node 24 compatibility in handoff tests ([#204](https://github.com/oxidezap/baileyrs/issues/204)) ([ed80e97](https://github.com/oxidezap/baileyrs/commit/ed80e97a4b946ebd0452e5458619022794b294c2))
+
 ## [0.3.16](https://github.com/oxidezap/baileyrs/compare/v0.3.15...v0.3.16) (2026-11-18)
 
 
