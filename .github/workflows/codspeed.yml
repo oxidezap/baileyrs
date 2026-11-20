@@ -72,6 +72,11 @@ jobs:
       matrix:
         mode: [simulation, memory]
         suite: [lifecycle, messaging, group]
+        exclude:
+          # The first DM, the only lifecycle row, is simulation only (see
+          # benchmarks/README.md). An empty memory run fails the CodSpeed action.
+          - suite: lifecycle
+            mode: memory
     permissions:
       contents: read
       id-token: write
