@@ -1,9 +1,13 @@
 import { test, describe } from 'vitest'
 import { createTestClient, destroyTestClient, roundtrip, settle, type TestClient } from './fixture.ts'
-import { integrationOptions } from '../options.ts'
+import { integrationOptions, memoryMode } from '../options.ts'
 
 describe('bartender/lifecycle', () => {
-	test('first DM', async ({ bench }) => {
+	// Simulation only. The first DM's peak memory was bimodal on unchanged code
+	// (~164 KB or ~230-244 KB, same allocation count), set by how socket writes
+	// and Signal session persistence happened to overlap. Simulation stays
+	// within 2.5%.
+	test.skipIf(memoryMode)('first DM', async ({ bench }) => {
 		let sender: TestClient | undefined
 		let receiver: TestClient | undefined
 		const cleanup = async () => {

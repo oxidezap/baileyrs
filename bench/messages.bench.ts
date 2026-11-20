@@ -24,6 +24,7 @@ const contents: WAMessageContent[] = [
 ]
 const batch = Array.from({ length: 1000 }, (_, i) => contents[i % contents.length]!)
 
+const pollRepeats = 10
 const options = Array.from({ length: 12 }, (_, i) => ({ optionName: `Option ${i}` }))
 const pollMessage: Pick<WAMessage, 'pollUpdates' | 'message'> = {
 	message: { pollCreationMessage: { name: 'Poll', options, selectableOptionsCount: 0 } },
@@ -66,9 +67,14 @@ describe('message generation', () => {
 		}).run(benchmarkOptions)
 	})
 
-	test('getAggregateVotesInPollMessage (12 options, 200 votes)', async ({ bench }) => {
-		await bench('getAggregateVotesInPollMessage (12 options, 200 votes)', () => {
-			getAggregateVotesInPollMessage(pollMessage, '5511888880000@s.whatsapp.net')
+	// One aggregation is ~1 ms, and on CI its first pass over the fixture paid
+	// cold-cache costs and a few system calls that moved the row by ~18% on unchanged
+	// code. Ten passes amortize that one-off cost.
+	test(`getAggregateVotesInPollMessage (12 options, 200 votes) x${pollRepeats}`, async ({ bench }) => {
+		await bench(`getAggregateVotesInPollMessage (12 options, 200 votes) x${pollRepeats}`, () => {
+			repeat(() => {
+				getAggregateVotesInPollMessage(pollMessage, '5511888880000@s.whatsapp.net')
+			}, pollRepeats)
 		}).run(benchmarkOptions)
 	})
 })
