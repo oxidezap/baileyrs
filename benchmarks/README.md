@@ -80,6 +80,9 @@ once inside that call, rather than per operation, moves the result.
   the operation (`opsPerSample` in `options.ts`, 100 by default; 10 for the
   32-row store batch). The row names carry the count (`(100 ops)`, `x100`), and
   the value is the cost of the whole batch.
+  The poll aggregation row runs 10 aggregations (`x10`): one aggregation is
+  about 1 ms, but its cold first pass moved the row by ~18% on CI between
+  runs of unchanged code.
 - **Complete exchanges.** `roundtrip` returns only after every receiver has
   published the message and the sender has processed a delivery receipt from
   each of them. Group rows wait for both members. The receipt work is always
@@ -130,6 +133,14 @@ once inside that call, rather than per operation, moves the result.
     traffic) that the client cannot hold constant from one run to the next.
   - The single 4 KiB DM peak memory moved between ~96 KB and ~167 KB. The
     16-message 4 KiB row covers the same path and stays within a few percent.
+  - _First DM_ and the single 64 B DM keep only their simulation rows. The
+    first DM's peak memory was bimodal across main runs of unchanged code
+    (~164 KB or ~230-244 KB, with the same ~4,200 allocations), and the
+    single 64 B DM moved between ~42 KB and ~48 KB. Total allocations barely
+    changed, so the peak reflects how many socket write and persistence
+    buffers happened to be live at the same moment, which the client does not
+    control. Their simulation rows moved by at most 2.5% and 8%, and the
+    16-message 64 B memory row stays within 3%.
 - **No memory row for JS-heap-only work.** The memory instrument sees native
   allocations, not objects on the V8 heap. Rows that only build JS objects
   report a fixed 0.6-4 KB of V8 runtime bookkeeping: `protobuf decode` and
