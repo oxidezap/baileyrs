@@ -1,6 +1,6 @@
 name: Release
 
-# release-please manages versions and tags. Use fix(deps) for runtime upgrades intended for release.
+# release-please manages version PRs. Use fix(deps) for runtime upgrades intended for release.
 on:
   push:
     branches: [main]
@@ -11,15 +11,16 @@ on:
 permissions:
   contents: read
 
-# Serialize all publications so concurrent refs cannot race over npm latest.
+# Keep a queued release push when another commit lands on main.
 concurrency:
-  group: release
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   release-please:
     name: Prepare release
-    if: github.event_name == 'push'
+    needs: verify-tag
+    if: github.event_name == 'push' && needs.verify-tag.outputs.tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -27,11 +28,6 @@ jobs:
       pull-requests: write
       # The GITHUB_TOKEN fallback needs Issues permission for release-PR labels.
       issues: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      # The tagged commit may differ from the push that triggered release creation.
-      sha: ${{ steps.release.outputs.sha }}
     steps:
       # Optional RELEASE_APP_CLIENT_ID and RELEASE_APP_PRIVATE_KEY enable automatic release-PR checks.
       # The App needs Contents, Pull requests and Issues read/write; GITHUB_TOKEN may require manual CI approval.
@@ -46,100 +42,81 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
 
-      - id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          skip-github-release: true
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Validate release identity before building or requesting publish rights.
   verify-tag:
-    name: Verify the tag
-    needs: release-please
-    # Run on dispatch when release-please is skipped, but respect cancellation.
-    if: >-
-      !cancelled() &&
-      (needs.release-please.outputs.release_created == 'true' ||
-       (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'))
+    name: Verify the release version
+    if: github.event_name == 'push' || github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
-      # Pin the checkout to a SHA so a retargeted tag cannot change the published tree.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.sha || github.sha }}
+          fetch-depth: 2
           persist-credentials: false
 
-      # Require a GitHub release, matching package version and valid npm version progression.
-      - name: Confirm the dispatch targets a release tag
-        if: github.event_name == 'workflow_dispatch'
+      - name: Identify and verify the release commit
+        id: tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
         run: |
-          # Require the release commit to be on main; a GitHub release alone is insufficient.
-          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
-          case "$status" in
-            identical | behind) ;;
-            *)
-              echo "::error::$TAG is at a commit that is not on main ($status)"
+          set -euo pipefail
+          version=$(jq -er '.version' package.json)
+          manifest=$(jq -er '.["."]' .release-please-manifest.json)
+          tag="v$version"
+
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            previous=$(git show HEAD^:.release-please-manifest.json | jq -er '.["."]')
+            if [ "$manifest" = "$previous" ]; then
+              exit 0
+            fi
+          else
+            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+            case "$status" in
+              identical | behind) ;;
+              *) echo "::error::Release commit is outside main ($status)"; exit 1 ;;
+            esac
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::Selected tag must be $tag"
               exit 1
-              ;;
-          esac
+            fi
+          fi
 
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::$TAG has no GitHub release; only release tags can be published"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || [ "$version" != "$manifest" ]; then
+            echo "::error::Expected matching stable package and manifest versions"
+            exit 1
+          fi
+          if ! grep -Fq "## [$version](" CHANGELOG.md; then
+            echo "::error::Missing changelog entry for $version"
             exit 1
           fi
 
-          version=$(jq -r .version package.json)
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::$TAG does not match package.json version $version"
+          # Create the recovery ref without publishing a GitHub release.
+          ref="repos/$GITHUB_REPOSITORY/git/ref/tags/$tag"
+          if [ "$GITHUB_EVENT_NAME" = push ] && ! gh api "$ref" --silent; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" --silent \
+              -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA"
+          fi
+          object=$(gh api "$ref" --jq .object.sha)
+          if [ "$object" != "$GITHUB_SHA" ]; then
+            echo "::error::$tag must identify this exact commit"
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-          name=$(jq -r .name package.json)
-          latest=$(npm view "$name" version 2>/dev/null || true)
-          if [ -n "$latest" ] && [ "$latest" != "$version" ] &&
-             [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -1)" = "$latest" ]; then
-            echo "::error::$name@$latest is already published; $version cannot take latest implicitly"
-            exit 1
-          fi
-
-      # Confirm the release tag and action SHA name the same commit.
-      - name: Confirm the release tag points at this commit
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
-          RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
-        run: |
-          # Event SHA must match the workspace SHA for npm provenance.
-          if [ "$RELEASE_SHA" != "$GITHUB_SHA" ]; then
-            echo "::error::$TAG was tagged at $RELEASE_SHA but this event is $GITHUB_SHA;"
-            echo "::error::provenance would name the wrong commit. Dispatch this workflow on $TAG instead."
-            exit 1
-          fi
-
-          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
-          target=$(jq -r '.object.sha' <<<"$ref")
-          if [ "$(jq -r '.object.type' <<<"$ref")" = tag ]; then
-            target=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$target" --jq '.object.sha')
-          fi
-          if [ "$target" != "$RELEASE_SHA" ]; then
-            echo "::error::$TAG points at $target, not $RELEASE_SHA"
-            exit 1
-          fi
-
-  # Run complete reusable CI, including E2E, on the verified release commit.
-  # full disables the version-bump skip and enables the build artifact required by publish.
   ci:
     name: Verify the release commit
-    needs: [release-please, verify-tag]
-    if: ${{ !cancelled() && needs.verify-tag.result == 'success' }}
+    needs: verify-tag
+    if: needs.verify-tag.outputs.tag != ''
     uses: ./.github/workflows/ci.yml
     with:
       full: true
@@ -147,8 +124,10 @@ jobs:
 
   publish:
     name: Publish to npm
-    needs: [release-please, verify-tag, ci]
-    if: ${{ !cancelled() && needs.ci.result == 'success' }}
+    needs: ci
+    concurrency:
+      group: npm-release
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Configure required reviewers on this environment if publication needs approval.
@@ -160,8 +139,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Publish the immutable commit verified above.
-          ref: ${{ needs.release-please.outputs.sha || github.sha }}
           # No later step needs persisted Git credentials.
           persist-credentials: false
 
@@ -200,4 +177,65 @@ jobs:
       - run: node scripts/check-registry-deps.mjs
 
       # Trusted publishing handles OIDC and provenance. Publish from the package directory.
-      - run: npm publish --ignore-scripts
+      - name: Publish and verify registry integrity
+        run: |
+          set -euo pipefail
+          name=$(jq -er '.name' package.json)
+          version=$(jq -er '.version' package.json)
+          expected=$(npm pack --ignore-scripts --dry-run --json | jq -er '.[0].integrity')
+          registry=https://registry.npmjs.org/
+          current=$(npm view "$name@$version" dist.integrity --registry "$registry" --prefer-online 2>/dev/null || true)
+          if [ -z "$current" ]; then
+            latest=$(npm view "$name" version --registry "$registry" --prefer-online)
+            if [ "$latest" = "$version" ] || [ "$(printf '%s\n' "$latest" "$version" | sort -V | tail -1)" != "$version" ]; then
+              echo "::error::Refusing to replace npm latest ($latest) with $version"
+              exit 1
+            fi
+            npm publish --ignore-scripts --registry "$registry"
+          fi
+          for _ in {1..24}; do
+            current=$(npm view "$name@$version" dist.integrity --registry "$registry" --prefer-online 2>/dev/null || true)
+            if [ "$current" = "$expected" ]; then
+              exit 0
+            fi
+            if [ -n "$current" ]; then
+              echo "::error::The npm package does not match the verified build"
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::The npm registry has not confirmed $name@$version"
+          exit 1
+
+  github-release:
+    name: Publish the GitHub release
+    needs: [verify-tag, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Publish the verified tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.verify-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" != "$GITHUB_SHA" ]; then
+            echo "::error::Release tag moved since verification"
+            exit 1
+          fi
+          if gh release view "$TAG" --json isDraft --jq .isDraft | grep -qx false; then
+            exit 0
+          fi
+          notes=$(mktemp)
+          awk -v heading="## [${TAG#v}](" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$notes"
+          test -s "$notes"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes"
