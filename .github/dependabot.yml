@@ -45,6 +45,9 @@ updates:
       # audit stop measuring anything, so which baseline it pins is a decision
       # to make by hand, not one to take from a weekly batch.
       - dependency-name: typescript-compat-auditor
+      # Node 24's built-in fetch passes legacy callbacks to the E2E dispatcher.
+      - dependency-name: undici
+        versions: [">=8"]
 
   # Not previously configured, and the workflows show the drift that allows:
   # actions/checkout, actions/setup-node and actions/upload-artifact each appear
