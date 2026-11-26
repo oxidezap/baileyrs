@@ -36,7 +36,7 @@ export const loadOptionalPeer = <Module>(specifier: string, loader?: PeerLoader)
 	const effectiveLoader =
 		loader ??
 		(typeof (globalThis as typeof globalThis & { process?: { getBuiltinModule?: unknown } }).process
-			?.getBuiltinModule === 'function'
+			?.getBuiltinModule === 'function' && import.meta.url
 			? nodePeerLoader(import.meta.url)
 			: undefined)
 	if (!effectiveLoader) return undefined

@@ -1,4 +1,7 @@
 import { describe, it } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
+import { stripTypeScriptTypes } from 'node:module'
 import { loadOptionalPeer, type PeerLoader } from '../Utils/optional-peer.ts'
 import { expect } from './expect.ts'
 
@@ -24,6 +27,25 @@ const present = (module: unknown): PeerLoader => ({
 })
 
 describe('optional peer loading', () => {
+	it('falls back when a bundled host has no module URL', () => {
+		const source = readFileSync(new URL('../Utils/optional-peer.ts', import.meta.url), 'utf8')
+		const bundled = stripTypeScriptTypes(source.replaceAll('import.meta.url', 'undefined')).replaceAll(
+			'export const ',
+			'const '
+		)
+		const exports = {} as { loadOptionalPeer: (specifier: string) => unknown }
+		runInNewContext(`${bundled}\nexports.loadOptionalPeer = loadOptionalPeer`, {
+			exports,
+			process: {
+				getBuiltinModule: () => ({
+					createRequire: () => {
+						throw new Error('missing URL')
+					}
+				})
+			}
+		})
+		expect(exports.loadOptionalPeer('peer')).toBeUndefined()
+	})
 	it('falls back only when the package manifest is missing', () => {
 		expect(loadOptionalPeer('missing-peer', absent())).toBeUndefined()
 	})
