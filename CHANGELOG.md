@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.18](https://github.com/oxidezap/baileyrs/compare/v0.3.17...v0.3.18) (2026-11-26)
+
+
+### Bug Fixes
+
+* handle missing module URL in bundled hosts ([#212](https://github.com/oxidezap/baileyrs/issues/212)) ([9357b07](https://github.com/oxidezap/baileyrs/commit/9357b07949cf83a71e91c4ccc96e4bc9926723bd))
+
 ## [0.3.17](https://github.com/oxidezap/baileyrs/compare/v0.3.16...v0.3.17) (2026-11-20)
 
 
